@@ -9,6 +9,7 @@ use crate::ui::components::styled::{island_central_panel, StyledCard, StyledChec
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
+use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
@@ -239,28 +240,44 @@ impl NetworkChooserScreen {
                                             if let Some(file_name) = file_name {
                                                 self.custom_dash_qt_path = None;
                                                 self.custom_dash_qt_error_message = None;
-                                                let required_file_name =
-                                                    if cfg!(target_os = "windows") {
-                                                        String::from("dash-qt.exe")
-                                                    } else if cfg!(target_os = "macos") {
-                                                        String::from("dash-qt")
-                                                    } else {
-                                                        //linux
-                                                        String::from("dash-qt")
-                                                    };
-                                                if file_name.to_ascii_lowercase().ends_with(required_file_name.as_str())
-                                                {
-                                                    self.custom_dash_qt_path =
-                                                        Some(path);
+
+                                                // Handle macOS .app bundles
+                                                let resolved_path = if cfg!(target_os = "macos") && path.extension().and_then(|s| s.to_str()) == Some("app") {
+                                                    // For .app bundles, resolve to the actual executable inside
+                                                    path.join("Contents").join("MacOS").join("Dash-Qt")
+                                                } else {
+                                                    path.clone()
+                                                };
+
+                                                // Check if the resolved path exists and is valid
+                                                let is_valid = if cfg!(target_os = "windows") {
+                                                    file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
+                                                } else if cfg!(target_os = "macos") {
+                                                    // Accept both direct executable and .app bundle
+                                                    file_name.to_ascii_lowercase() == "dash-qt" || 
+                                                    (file_name.to_ascii_lowercase().ends_with(".app") && resolved_path.exists())
+                                                } else {
+                                                    // Linux
+                                                    file_name.to_ascii_lowercase() == "dash-qt"
+                                                };
+
+                                                if is_valid {
+                                                    self.custom_dash_qt_path = Some(resolved_path);
                                                     self.custom_dash_qt_error_message = None;
                                                     self.save()
                                                         .expect("Expected to save db settings");
                                                 } else {
-                                                    self.custom_dash_qt_error_message =
-                                                        Some(format!(
-                                                    "Invalid file: Please select a valid '{}'.",
-                                                    required_file_name
-                                                ));
+                                                    let required_file_name = if cfg!(target_os = "windows") {
+                                                        "dash-qt.exe"
+                                                    } else if cfg!(target_os = "macos") {
+                                                        "Dash-Qt or Dash-Qt.app"
+                                                    } else {
+                                                        "dash-qt"
+                                                    };
+                                                    self.custom_dash_qt_error_message = Some(format!(
+                                                        "Invalid file: Please select a valid '{}'.",
+                                                        required_file_name
+                                                    ));
                                                 }
                                             }
                                         }
@@ -290,8 +307,9 @@ impl NetworkChooserScreen {
                                     ui.horizontal(|ui| {
                                         ui.label("Selected:");
                                         ui.label(
-                                            egui::RichText::new(file.display().to_string()).color(DashColors::SUCCESS),
-                                        );
+                                            egui::RichText::new(format_path_for_display(file)).color(DashColors::SUCCESS),
+                                        )
+                                        .on_hover_text(format!("Full path: {}", file.display()));
                                     });
                                 } else if let Some(ref error) = self.custom_dash_qt_error_message {
                                     ui.horizontal(|ui| {

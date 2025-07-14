@@ -1,6 +1,6 @@
 use crate::app_dir::{app_user_data_file_path, create_dash_core_config_if_not_exists};
-
 use crate::context::AppContext;
+use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
 use tokio::process::{Child, Command};
@@ -17,7 +17,10 @@ impl AppContext {
         if !dash_qt_path.is_file() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Dash-Qt binary file not found at: {:?}", dash_qt_path),
+                format!(
+                    "Dash-Qt binary file not found at: {}",
+                    format_path_for_display(&dash_qt_path)
+                ),
             ));
         }
 

@@ -629,7 +629,7 @@ impl IdentitiesScreen {
                                                         ui.memory_mut(|mem| mem.toggle_popup(actions_popup_id));
                                                     }
 
-                                                    egui::popup::popup_below_widget(
+                                                    egui::old_popup::popup_below_widget(
                                                         ui,
                                                         actions_popup_id,
                                                         &actions_response,
@@ -698,7 +698,7 @@ impl IdentitiesScreen {
                                                         ui.memory_mut(|mem| mem.toggle_popup(popup_id));
                                                     }
 
-                                                    egui::popup::popup_below_widget(
+                                                    egui::old_popup::popup_below_widget(
                                                         ui,
                                                         popup_id,
                                                         &response,

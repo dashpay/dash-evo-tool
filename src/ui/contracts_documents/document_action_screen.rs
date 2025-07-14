@@ -345,9 +345,10 @@ impl DocumentActionScreen {
                             self.document_id_input = doc_id_str.clone();
                         }
 
-                        egui::popup::popup_above_or_below_widget(
+                        let popup_id = egui::Id::new(format!("popup_{}", doc_id_str));
+                        egui::old_popup::popup_above_or_below_widget(
                             ui,
-                            egui::Id::new(format!("popup_{}", doc_id_str)),
+                            popup_id,
                             &view_button_response,
                             egui::AboveOrBelow::Below,
                             PopupCloseBehavior::CloseOnClickOutside,
@@ -366,7 +367,7 @@ impl DocumentActionScreen {
                                     ui.label("Failed to serialize document.");
                                 }
                                 if ui.button("Close").clicked() {
-                                    ui.memory_mut(|mem| mem.close_popup());
+                                    ui.memory_mut(|mem| mem.close_popup(popup_id));
                                 }
                             },
                         );

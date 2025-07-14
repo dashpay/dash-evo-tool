@@ -7,7 +7,8 @@ use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{
-    Align, Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
+    Align, Color32, Context, Frame, Margin, Popup, RichText, Stroke, TextureHandle, TopBottomPanel,
+    Ui,
 };
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -60,13 +61,13 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
         // Apply negative vertical offset to move text up
         let offset = egui::vec2(0.0, -7.0);
 
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
                 ui.cursor().min + offset,
                 ui.available_size(),
             )),
             |ui| {
-                egui::menu::bar(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
                     ui.horizontal(|ui| {
                         let len = location.len();
                         for (idx, (text, loc_action)) in location.into_iter().enumerate() {
@@ -122,7 +123,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
     // Wrap in a container that can be positioned vertically
     ui.allocate_ui(ui.available_size(), |ui| {
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
                 ui.cursor().min,
                 ui.available_size(),
@@ -327,19 +328,19 @@ pub fn add_top_panel(
                                     .stroke(Stroke::NONE)
                                     .min_size(egui::vec2(100.0, 30.0));
 
-                                    // a unique ID for the popup
-                                    let popup_id = ui.auto_id_with("documents_popup");
                                     let resp = ui.add(docs_btn);
+                                    let popup_id = ui.make_persistent_id("docs_popup");
+
                                     if resp.clicked() {
-                                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+                                        Popup::toggle_id(ui.ctx(), popup_id);
                                     }
 
                                     // open the popup directly below the button
-                                    egui::popup::popup_below_widget(
+                                    egui::old_popup::popup_below_widget(
                                         ui,
                                         popup_id,
                                         &resp,
-                                        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                                        egui::PopupCloseBehavior::CloseOnClickOutside,
                                         |ui| {
                                             ui.set_min_width(150.0);
                                             for (text, da) in doc_actions {
@@ -371,11 +372,11 @@ pub fn add_top_panel(
                                         ui.memory_mut(|mem| mem.toggle_popup(popup_id));
                                     }
 
-                                    egui::popup::popup_below_widget(
+                                    egui::old_popup::popup_below_widget(
                                         ui,
                                         popup_id,
                                         &resp,
-                                        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                                        egui::PopupCloseBehavior::CloseOnClickOutside,
                                         |ui| {
                                             ui.set_min_width(150.0);
                                             for (text, ca) in contract_actions {

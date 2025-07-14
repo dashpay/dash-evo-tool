@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use dash_sdk::{
-    dpp::{dashcore::Network, data_contract::accessors::v0::DataContractV0Getters},
-    platform::{transition::put_contract::PutContract, DataContract, Fetch, IdentityPublicKey},
     Error, Sdk,
+    dpp::{dashcore::Network, data_contract::accessors::v0::DataContractV0Getters},
+    platform::{DataContract, Fetch, IdentityPublicKey, transition::put_contract::PutContract},
 };
 use tokio::time::sleep;
 
@@ -68,7 +68,7 @@ impl AppContext {
                     {
                         Ok(id) => id,
                         Err(e) => {
-                            return Err(format!("Failed to extract id from error message: {}", e))
+                            return Err(format!("Failed to extract id from error message: {}", e));
                         }
                     };
                     let maybe_contract = match DataContract::fetch(sdk, id).await {
@@ -77,7 +77,7 @@ impl AppContext {
                             return Err(format!(
                                 "Failed to fetch contract from Platform state: {}",
                                 e
-                            ))
+                            ));
                         }
                     };
                     if let Some(contract) = maybe_contract {

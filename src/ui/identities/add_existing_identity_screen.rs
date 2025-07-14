@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;

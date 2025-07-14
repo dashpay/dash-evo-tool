@@ -10,8 +10,8 @@ use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -19,7 +19,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;

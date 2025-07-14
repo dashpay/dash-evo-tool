@@ -82,8 +82,8 @@ pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
 
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.as_flat_samples();
-    let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-    color_image
+
+    ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
 }
 
 pub fn validate_perpetual_distribution_recipient(
@@ -2878,8 +2878,8 @@ mod tests {
     use std::path::Path;
 
     use crate::database::Database;
-    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::IdentityStatus;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 
     use super::*; use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;

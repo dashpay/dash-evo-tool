@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -22,7 +22,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 
 use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;

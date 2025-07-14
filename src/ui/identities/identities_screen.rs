@@ -1,7 +1,7 @@
 use super::withdraw_screen::WithdrawalScreen;
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
-use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,

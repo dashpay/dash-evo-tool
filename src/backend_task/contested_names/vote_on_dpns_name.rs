@@ -2,18 +2,18 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
-use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
-use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::Vote;
+use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
+use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
 use dash_sdk::platform::transition::vote::PutVote;
-use dash_sdk::Sdk;
 use std::sync::Arc;
 
 impl AppContext {

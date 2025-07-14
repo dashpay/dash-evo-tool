@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
-use bip39::rand::{rngs::StdRng, Rng, SeedableRng};
+use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
+    Sdk,
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
@@ -13,8 +14,7 @@ use dash_sdk::{
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
     drive::query::{WhereClause, WhereOperator},
-    platform::{transition::put_document::PutDocument, Document, DocumentQuery, FetchMany},
-    Sdk,
+    platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
@@ -50,7 +50,7 @@ impl AppContext {
             entropy.as_slice(),
         );
 
-        let salt: [u8; 32] = rng.gen();
+        let salt: [u8; 32] = rng.r#gen();
         let mut salted_domain_buffer: Vec<u8> = vec![];
         salted_domain_buffer.extend(salt);
         salted_domain_buffer

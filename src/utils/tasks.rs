@@ -1,5 +1,5 @@
-use std::sync::{atomic::AtomicUsize, Arc};
-use tokio::time::{timeout, Duration};
+use std::sync::{Arc, atomic::AtomicUsize};
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
 /// Timeout duration for graceful shutdown.

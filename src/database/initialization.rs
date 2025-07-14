@@ -1,6 +1,6 @@
 use crate::database::Database;
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
@@ -23,10 +23,7 @@ impl Database {
                     let version_after_migration = self.db_schema_version()?;
                     panic!(
                         "Database migration from version {} to {} failed, database is at version {}. Error: {:?}",
-                        current_version,
-                        DEFAULT_DB_VERSION,
-                        version_after_migration,
-                        e
+                        current_version, DEFAULT_DB_VERSION, version_after_migration, e
                     );
                 }
             }
@@ -107,13 +104,10 @@ impl Database {
                 );
                 Ok(false)
             }
-            std::cmp::Ordering::Greater => {
-                Err(
-                format!(
-                    "Database schema version {} is too new, max supported version: {}. Please update dash-evo-tool.",
-                    original_version, to_version
-                ))
-            }
+            std::cmp::Ordering::Greater => Err(format!(
+                "Database schema version {} is too new, max supported version: {}. Please update dash-evo-tool.",
+                original_version, to_version
+            )),
             std::cmp::Ordering::Less => {
                 let mut conn = self
                     .conn
@@ -121,10 +115,12 @@ impl Database {
                     .expect("Failed to lock database connection");
 
                 for version in (original_version + 1)..=to_version {
-                    let tx = conn.transaction().map_err(|e|e.to_string())?;
-                    self.apply_version_changes(version, &tx).map_err(|e|e.to_string())?;
-                    self.update_database_version(version, &tx).map_err(|e|e.to_string())?;
-                    tx.commit().map_err(|e|e.to_string())?;
+                    let tx = conn.transaction().map_err(|e| e.to_string())?;
+                    self.apply_version_changes(version, &tx)
+                        .map_err(|e| e.to_string())?;
+                    self.update_database_version(version, &tx)
+                        .map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
                 }
                 Ok(true)
             }

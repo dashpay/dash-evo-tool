@@ -644,7 +644,7 @@ impl IdentitiesScreen {
                                                                         &self.app_context,
                                                                     )),
                                                                 );
-                                                                ui.close_menu();
+                                                               ui.close_kind(egui::UiKind::Menu);
                                                             }
 
                                                             if ui.button("💰 Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
@@ -654,7 +654,7 @@ impl IdentitiesScreen {
                                                                         &self.app_context,
                                                                     )),
                                                                 );
-                                                                ui.close_menu();
+                                                               ui.close_kind(egui::UiKind::Menu);
                                                             }
 
                                                             if ui.button("📤 Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
@@ -664,7 +664,7 @@ impl IdentitiesScreen {
                                                                         &self.app_context,
                                                                     )),
                                                                 );
-                                                                ui.close_menu();
+                                                               ui.close_kind(egui::UiKind::Menu);
                                                             }
                                                         },
                                                     );
@@ -743,7 +743,7 @@ impl IdentitiesScreen {
                                                                             holding_private_key,
                                                                             &self.app_context,
                                                                         )));
-                                                                        ui.close_menu();
+                                                                       ui.close_kind(egui::UiKind::Menu);
                                                                     }
                                                                 }
                                                             }
@@ -790,7 +790,7 @@ impl IdentitiesScreen {
                                                                                 holding_private_key,
                                                                                 &self.app_context,
                                                                             )));
-                                                                            ui.close_menu();
+                                                                           ui.close_kind(egui::UiKind::Menu);
                                                                         }
                                                                     }
                                                                 }
@@ -809,7 +809,7 @@ impl IdentitiesScreen {
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
                                                                     )));
-                                                                    ui.close_menu();
+                                                                   ui.close_kind(egui::UiKind::Menu);
                                                                 }
                                                             }
                                                         },

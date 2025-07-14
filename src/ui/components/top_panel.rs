@@ -346,7 +346,7 @@ pub fn add_top_panel(
                                             for (text, da) in doc_actions {
                                                 if ui.button(text).clicked() {
                                                     action = da.create_action(app_context);
-                                                    ui.close_menu();
+                                                    ui.close_kind(egui::UiKind::Menu);
                                                 }
                                             }
                                         },
@@ -382,7 +382,7 @@ pub fn add_top_panel(
                                             for (text, ca) in contract_actions {
                                                 if ui.button(text).clicked() {
                                                     action = ca.create_action(app_context);
-                                                    ui.close_menu();
+                                                    ui.close_kind(egui::UiKind::Menu);
                                                 }
                                             }
                                         },

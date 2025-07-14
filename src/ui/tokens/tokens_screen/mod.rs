@@ -927,6 +927,7 @@ pub struct TokenBuildArgs {
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+    pub marketplace_trade_mode: u8,
     pub marketplace_rules: ChangeControlRules,
     pub change_direct_purchase_pricing_rules: ChangeControlRules,
 }
@@ -3073,6 +3074,7 @@ mod tests {
                 build_args.distribution_rules,
                 build_args.groups,
                 build_args.document_schemas,
+                build_args.marketplace_trade_mode,
                 build_args.marketplace_rules,
             )
             .expect("Contract build failed");
@@ -3286,6 +3288,7 @@ mod tests {
                 build_args.distribution_rules,
                 build_args.groups,
                 build_args.document_schemas,
+                build_args.marketplace_trade_mode,
                 build_args.marketplace_rules,
             )
             .expect("Should build successfully");

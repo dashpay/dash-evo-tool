@@ -5,6 +5,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::Tok
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -610,6 +611,7 @@ impl TokensScreen {
                                             args.distribution_rules,
                                             args.groups,
                                             args.document_schemas,
+                                            args.marketplace_trade_mode,
                                             args.marketplace_rules,
                                         ) {
                                             Ok(dc) => dc,
@@ -907,6 +909,7 @@ impl TokensScreen {
             distribution_rules: TokenDistributionRules::V0(distribution_rules),
             groups,
             document_schemas: self.parsed_document_schemas.clone(),
+            marketplace_trade_mode: self.marketplace_trade_mode,
             marketplace_rules,
             change_direct_purchase_pricing_rules,
         })
@@ -1034,6 +1037,29 @@ impl TokensScreen {
 
                 ui.add_space(10.0);
 
+                // Check if marketplace is locked to NotTradeable forever
+                if let Some(args) = &self.cached_build_args {
+                    let is_not_tradeable = args.marketplace_trade_mode == 0;
+                    let marketplace_rules_locked = matches!(
+                        args.marketplace_rules,
+                        ChangeControlRules::V0(ChangeControlRulesV0 {
+                            authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                            admin_action_takers: AuthorizedActionTakers::NoOne,
+                            ..
+                        })
+                    );
+
+                    if is_not_tradeable && marketplace_rules_locked {
+                        ui.colored_label(
+                            Color32::DARK_RED,
+                            "WARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!"
+                        );
+                        ui.add_space(10.0);
+                    }
+                }
+
+                ui.add_space(10.0);
+
                 // Confirm
                 if ui.button("Confirm").clicked() {
                     let args = match &self.cached_build_args {
@@ -1084,6 +1110,7 @@ impl TokensScreen {
                             distribution_rules: args.distribution_rules,
                             groups: args.groups,
                             document_schemas: args.document_schemas,
+                            marketplace_trade_mode: args.marketplace_trade_mode,
                             marketplace_rules: args.marketplace_rules,
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),

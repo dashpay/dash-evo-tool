@@ -1,7 +1,8 @@
 use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
 use dash_sdk::dpp;
 
-use crate::kms::generic::key_handle::KeyHandle;
+use crate::kms::Kms;
+use crate::kms::generic::key_handle::{KeyHandle, SeedHash};
 use bitflags::bitflags;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -14,8 +15,9 @@ use dash_sdk::dpp::dashcore::{
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
+use std::process::Child;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 
@@ -112,12 +114,193 @@ pub struct AssetLock {
 
 /// Address watcher for tracking addresses and their associated information.
 pub struct AddressWatcher {
-    pub watched_addresses: BTreeMap<Address, AddressInfo>,
+    pub addresses: BTreeMap<Address, AddressInfo>,
+}
+
+fn derivation_path_starts_with(path:&DerivationPath, prefix:&DerivationPath) -> bool {
+    if path.len() < prefix.len() {
+        return false;
+    }
+    for i in 0..prefix.len() {
+        if path[i] != prefix[i] {
+            return false;
+        }
+    }
+    true
+}
+
+impl AddressWatcher {
+    /// Given some prefix of a derivation path, finds the first unused ChildNumber
+    /// with the given prefix.
+    /// 
+    /// Returns list of unused indexes with the given prefix.
+    /// It is assumed that all indexes after the last used index are unused.
+    /// 
+    /// If `skip_known_addresses_with_no_funds` is true, it will assume addresses with zero balance (and with None balance) as used.
+   pub fn bip44_unused_indexes_with_prefix(&self, prefix:&DerivationPath, 
+        skip_known_addresses_with_no_funds: bool) -> BTreeSet<ChildNumber> {
+            let  used_indexes = self.addresses.iter()
+                .filter(|(_, info)| {
+                    if info.derivation_path.len() < prefix.len()+1 {
+                        return false; // Derivation path is shorter than prefix + 1 (the last index)
+                    }
+                    if !derivation_path_starts_with(&info.derivation_path, prefix) {
+                        return false; // Not matching prefix
+                    }
+
+                    // matching prefix, now check if we should assume it as used
+                    if info.balance.unwrap_or(0) == 0 {                        
+                        return  skip_known_addresses_with_no_funds; // we assume it used if we skip known addresses with no funds
+                    } else {
+                        return true; // Address has funds, so it's used
+                    }
+                })
+                .map(|(_, info)| {
+                    if let Some(ChildNumber::Normal { index }) = info.derivation_path.into_iter().last() {
+                        *index
+                    } else {
+                        0 // Default to 0 if no normal child number found
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+
+                let mut result = BTreeSet::new();
+                let mut next_index = 0;
+                for used_index in used_indexes {
+                    while next_index < used_index {
+                        result.insert(ChildNumber::Normal { index: next_index });
+                        next_index += 1;
+                    }
+                    next_index =used_index+1; // Skip the used index                    
+                };
+                
+                // Add the next index after the last used index
+                result.insert(ChildNumber::Normal { index: next_index });
+
+                result
+        }
+
+    /// Finds first unused ChildNumber of bip44 payment path.
+    /// If `change` is true, it will look for change addresses (index 1),
+    /// otherwise it will look for receive addresses (index 0).
+    ///
+    /// If `skip_known_addresses_with_no_funds` is true, it will consider addresses with zero balance (and with None balance) as used.
+    fn first_unused_index(
+        &self,
+        change: bool,
+        network: &Network,
+        skip_known_addresses_with_no_funds: bool,
+    ) -> ChildNumber {
+        let mut address_index = 0;
+        let mut found_unused_derivation_path = None;
+        let mut known_public_key = None;
+        while found_unused_derivation_path.is_none() {
+            let derivation_path_extension = DerivationPath::from(
+                [
+                    ChildNumber::Normal {
+                        index: change.into(),
+                    },
+                    ChildNumber::Normal {
+                        index: address_index,
+                    },
+                ]
+                .as_slice(),
+            );
+            let derivation_path_prefix =
+                DerivationPath::bip_44_payment_path(*network, 0, change, 0);
+
+            // Finds the address at `derivation_path` and check if it is a match; note we need to find None here.
+            if let Some(_) = self.addresses.iter().find(|(_, info)| {
+                if info.derivation_path == derivation_path {
+                    if info.balance.unwrap_or(0) == 0  {
+                        // Address has zero balance, so it's a good candidate if we don't skip known addresses with no funds
+                        !skip_known_addresses_with_no_funds
+                    if skip_known_addresses_with_no_funds && {
+                        // Address has no funds, but we still assume it's  used
+                        false 
+                    } else {
+                        //
+                        true // Address is a match
+                    }}
+                } else {
+                    false // derivation path does not match
+                }
+            }) {
+                // Address is known
+                let address = &address_info.address;
+                let balance = address_info.balance.unwrap_or(0);
+
+                if balance > 0 {
+                    // Address has funds, skip it
+                    address_index += 1;
+                    continue;
+                }
+
+                // Address is known and has zero balance
+                if !skip_known_addresses_with_no_funds {
+                    // We can use this address
+                    found_unused_derivation_path = Some(derivation_path.clone());
+                    let secp = Secp256k1::new();
+                    let public_key = self
+                        .master_bip44_ecdsa_extended_public_key
+                        .derive_pub(&secp, &derivation_path_extension)
+                        .map_err(|e| e.to_string())?
+                        .to_pub();
+                    known_public_key = Some(public_key);
+                    break;
+                } else {
+                    // Skip known addresses with no funds
+                    address_index += 1;
+                    continue;
+                }
+            } else {
+                let secp = Secp256k1::new();
+                let public_key = self
+                    .master_bip44_ecdsa_extended_public_key
+                    .derive_pub(&secp, &derivation_path_extension)
+                    .map_err(|e| e.to_string())?
+                    .to_pub();
+                known_public_key = Some(public_key);
+                if let Some(app_context) = register {
+                    let address = Address::p2pkh(&public_key, network);
+                    app_context
+                        .core_client
+                        .read()
+                        .expect("Core client lock was poisoned")
+                        .import_address(
+                            &address,
+                            Some(
+                                format!(
+                                    "Managed by Dash Evo Tool {} {}",
+                                    self.alias.clone().unwrap_or_default(),
+                                    derivation_path
+                                )
+                                .as_str(),
+                            ),
+                            Some(false),
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                    self.register_address(
+                        address,
+                        &derivation_path,
+                        DerivationPathType::CLEAR_FUNDS,
+                        DerivationPathReference::BIP44,
+                        app_context,
+                    )?;
+                }
+                found_unused_derivation_path = Some(derivation_path.clone());
+                break;
+            }
+        }
+
+        let derivation_path = found_unused_derivation_path.unwrap();
+    }
 }
 
 impl AsRef<BTreeMap<Address, AddressInfo>> for AddressWatcher {
     fn as_ref(&self) -> &BTreeMap<Address, AddressInfo> {
-        &self.watched_addresses
+        &self.addresses
     }
 }
 
@@ -137,6 +320,7 @@ pub struct DashCoreWallet {
     pub key_store: crate::kms::generic::GenericKms,
     // TODO: move to higher-level wallet?
     pub wallet_seed: KeyHandle,
+    network: Network,
 }
 
 impl DashCoreWallet {
@@ -172,20 +356,28 @@ impl DashCoreWallet {
         skip_known_addresses_with_no_funds: bool,
         change: bool,
         register: Option<bool>,
-    ) -> Result<(PublicKey, DerivationPath), String> {
+    ) -> Result<KeyHandle, String> {
         // First, we try to find some known address with zero balance; once we find it, we will use it.
         let unused_address = self
             .watched_addresses
+            .addresses
             .iter()
-            .filter_map(|(address, balance)| {
-                if *balance == 0 && !skip_known_addresses_with_no_funds {
-                    self.known_addresses
+            .filter_map(|(address, address_info)| {
+                // we assume addresses with unknown balance are not used
+                if !skip_known_addresses_with_no_funds && address_info.balance.unwrap_or(1) == 0 {
+                    self.watched_addresses
+                        .addresses
                         .get(address)
-                        .and_then(|derivation_path| {
-                            if derivation_path.is_bip44() && derivation_path.is_change() == change {
-                                Some((address, derivation_path))
-                            } else {
-                                None
+                        .and_then(|info| {
+                            let path = info.derivation_path;
+                            if path.len() < 2 {
+                                return None; // We need at least two segments to determine change.
+                            }
+
+                            // is change address when item before last is 1
+                            match path[path.len() - 2] {
+                                ChildNumber::Normal { index } if index == 1 => Some(info),
+                                _ => None,
                             }
                         })
                 } else {
@@ -193,6 +385,21 @@ impl DashCoreWallet {
                 }
             })
             .next();
+
+        // We found a known address with zero balance, so we can use it.
+        if let Some(address_info) = unused_address {
+            let key_handle = KeyHandle::Derived {
+                seed_hash: self.seed_hash(),
+                derivation_path: address_info.derivation_path,
+                network: self.network(),
+            };
+
+            return Ok(key_handle);
+        }
+
+        // otherwise, we need to generate a new address
+
+        let unused_index = self.watched_addresses.first_unused_index();
 
         let mut address_index = 0;
         let mut found_unused_derivation_path = None;
@@ -599,5 +806,9 @@ impl DashCoreWallet {
             .db
             .update_address_balance(&self.seed_hash(), address, new_balance)
             .map_err(|e| e.to_string())
+    }
+
+    fn network(&self) -> Network {
+        todo!()
     }
 }

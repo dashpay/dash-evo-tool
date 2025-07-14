@@ -625,49 +625,38 @@ impl IdentitiesScreen {
 
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
 
-                                                    if actions_response.clicked() {
-                                                        ui.memory_mut(|mem| mem.toggle_popup(actions_popup_id));
-                                                    }
+                                                    egui::Popup::new(actions_popup_id, ui.ctx().clone(), &actions_response, actions_response.layer_id)
+                                                        .open_memory(actions_response.clicked().then_some(egui::SetOpenCommand::Toggle))
+                                                        .show(|ui| {
+                                                        ui.set_min_width(150.0);
 
-                                                    egui::old_popup::popup_below_widget(
-                                                        ui,
-                                                        actions_popup_id,
-                                                        &actions_response,
-                                                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                                                        |ui| {
-                                                            ui.set_min_width(150.0);
+                                                        if ui.button("💸 Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
 
-                                                            if ui.button("💸 Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                                        qualified_identity.clone(),
-                                                                        &self.app_context,
-                                                                    )),
-                                                                );
-                                                               ui.close_kind(egui::UiKind::Menu);
-                                                            }
+                                                        if ui.button("💰 Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
 
-                                                            if ui.button("💰 Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
-                                                                        qualified_identity.clone(),
-                                                                        &self.app_context,
-                                                                    )),
-                                                                );
-                                                               ui.close_kind(egui::UiKind::Menu);
-                                                            }
-
-                                                            if ui.button("📤 Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::TransferScreen(TransferScreen::new(
-                                                                        qualified_identity.clone(),
-                                                                        &self.app_context,
-                                                                    )),
-                                                                );
-                                                               ui.close_kind(egui::UiKind::Menu);
-                                                            }
-                                                        },
-                                                    );
+                                                        if ui.button("📤 Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::TransferScreen(TransferScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
+                                                    });
                                             });
                                             });
                                         });
@@ -694,16 +683,10 @@ impl IdentitiesScreen {
 
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
 
-                                                    if response.clicked() {
-                                                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                                                    }
-
-                                                    egui::old_popup::popup_below_widget(
-                                                        ui,
-                                                        popup_id,
-                                                        &response,
-                                                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                                                        |ui| {
+                                                    egui::Popup::new(popup_id, ui.ctx().clone(), &response, response.layer_id)
+                                                        .open_memory(response.clicked().then_some(egui::SetOpenCommand::Toggle))
+                                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .show(|ui| {
                                                             ui.set_min_width(200.0);
 
                                                             // Main Identity Keys

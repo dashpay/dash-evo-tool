@@ -254,11 +254,11 @@ impl NetworkChooserScreen {
                                                     file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
                                                 } else if cfg!(target_os = "macos") {
                                                     // Accept both direct executable and .app bundle
-                                                    file_name.to_ascii_lowercase() == "dash-qt" || 
+                                                    file_name.eq_ignore_ascii_case("dash-qt") || 
                                                     (file_name.to_ascii_lowercase().ends_with(".app") && resolved_path.exists())
                                                 } else {
                                                     // Linux
-                                                    file_name.to_ascii_lowercase() == "dash-qt"
+                                                    file_name.eq_ignore_ascii_case("dash-qt")
                                                 };
 
                                                 if is_valid {

@@ -969,7 +969,6 @@ impl TokensScreen {
             preset.default_main_control_group_can_be_modified();
 
         // Marketplace settings
-        self.marketplace_trade_mode = 0; // Always NotTradeable for now
         self.marketplace_rules =
             if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
                 // Most restrictive = no one can change marketplace rules

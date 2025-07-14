@@ -7,8 +7,7 @@ use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use egui::{
-    Align, Color32, Context, Frame, Margin, Popup, RichText, Stroke, TextureHandle, TopBottomPanel,
-    Ui,
+    Align, Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
 };
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -331,26 +330,25 @@ pub fn add_top_panel(
                                     let resp = ui.add(docs_btn);
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
-                                    if resp.clicked() {
-                                        Popup::toggle_id(ui.ctx(), popup_id);
-                                    }
-
-                                    // open the popup directly below the button
-                                    egui::old_popup::popup_below_widget(
-                                        ui,
+                                    egui::Popup::new(
                                         popup_id,
+                                        ui.ctx().clone(),
                                         &resp,
-                                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                                        |ui| {
-                                            ui.set_min_width(150.0);
-                                            for (text, da) in doc_actions {
-                                                if ui.button(text).clicked() {
-                                                    action = da.create_action(app_context);
-                                                    ui.close_kind(egui::UiKind::Menu);
-                                                }
+                                        resp.layer_id,
+                                    )
+                                    .open_memory(
+                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                    )
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, da) in doc_actions {
+                                            if ui.button(text).clicked() {
+                                                action = da.create_action(app_context);
+                                                // ui.close();
                                             }
-                                        },
-                                    );
+                                        }
+                                    });
                                 }
 
                                 // Grouped Contracts menu
@@ -368,25 +366,26 @@ pub fn add_top_panel(
 
                                     let popup_id = ui.auto_id_with("contracts_popup");
                                     let resp = ui.add(contracts_btn);
-                                    if resp.clicked() {
-                                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                                    }
 
-                                    egui::old_popup::popup_below_widget(
-                                        ui,
+                                    egui::Popup::new(
                                         popup_id,
+                                        ui.ctx().clone(),
                                         &resp,
-                                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                                        |ui| {
-                                            ui.set_min_width(150.0);
-                                            for (text, ca) in contract_actions {
-                                                if ui.button(text).clicked() {
-                                                    action = ca.create_action(app_context);
-                                                    ui.close_kind(egui::UiKind::Menu);
-                                                }
+                                        resp.layer_id,
+                                    )
+                                    .open_memory(
+                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                    )
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, ca) in contract_actions {
+                                            if ui.button(text).clicked() {
+                                                action = ca.create_action(app_context);
+                                                ui.close();
                                             }
-                                        },
-                                    );
+                                        }
+                                    });
                                 }
 
                                 // Render other buttons normally

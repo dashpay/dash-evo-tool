@@ -28,7 +28,7 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
-use egui::{Color32, ComboBox, ScrollArea, Ui};
+use egui::{Button, Color32, ComboBox, ScrollArea, Ui};
 use std::cmp::PartialEq;
 use std::fmt;
 use std::sync::atomic::Ordering;
@@ -255,10 +255,8 @@ impl AddNewIdentityScreen {
                             let enabled = !is_used || is_selected;
 
                             // Use `add_enabled` to disable used indices
-                            let response = ui.add_enabled(
-                                enabled,
-                                egui::SelectableLabel::new(is_selected, label),
-                            );
+                            let response =
+                                ui.add_enabled(enabled, Button::selectable(is_selected, label));
 
                             // Only allow selection if the index is not used
                             if response.clicked() && !is_used {

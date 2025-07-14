@@ -82,8 +82,8 @@ pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
 
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.as_flat_samples();
-    let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-    color_image
+
+    ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
 }
 
 pub fn validate_perpetual_distribution_recipient(

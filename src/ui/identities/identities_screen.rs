@@ -630,7 +630,7 @@ impl IdentitiesScreen {
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
-                                                        if ui.button("💸 Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💸 Withdraw")).on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
                                                             action = AppAction::AddScreen(
                                                                 Screen::WithdrawalScreen(WithdrawalScreen::new(
                                                                     qualified_identity.clone(),
@@ -639,7 +639,7 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        if ui.button("💰 Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
                                                             action = AppAction::AddScreen(
                                                                 Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
                                                                     qualified_identity.clone(),
@@ -648,7 +648,7 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        if ui.button("📤 Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📤 Transfer")).on_hover_text("Transfer credits from this identity to another identity").clicked() {
                                                             action = AppAction::AddScreen(
                                                                 Screen::TransferScreen(TransferScreen::new(
                                                                     qualified_identity.clone(),

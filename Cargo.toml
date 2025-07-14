@@ -2,9 +2,9 @@
 name = "dash-evo-tool"
 version = "0.9.0-preview.4"
 license = "MIT"
-edition = "2021"
+edition = "2024"
 default-run = "dash-evo-tool"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }

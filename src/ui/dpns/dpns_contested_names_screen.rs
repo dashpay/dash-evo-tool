@@ -11,9 +11,9 @@ use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
+use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};

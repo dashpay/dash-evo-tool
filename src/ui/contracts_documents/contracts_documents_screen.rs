@@ -1,11 +1,11 @@
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // Updated import
-use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::contract_chooser_panel::{
-    add_contract_chooser_panel, ContractChooserState,
+    ContractChooserState, add_contract_chooser_panel,
 };
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::top_panel::add_top_panel;

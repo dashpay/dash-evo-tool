@@ -73,7 +73,7 @@ impl TokensScreen {
                         ui.add_space(5.0);
 
                         // If a key was selected, set the wallet reference
-                        if let (Some(ref qid), Some(ref key)) = (&self.selected_identity, &self.selected_key) {
+                        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
                             // If the key belongs to a wallet, set that wallet reference:
                             self.selected_wallet = crate::ui::identities::get_selected_wallet(
                                 qid,

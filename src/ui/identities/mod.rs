@@ -12,7 +12,7 @@ use crate::{
     context::AppContext,
     model::{
         qualified_identity::{
-            encrypted_key_storage::PrivateKeyData, PrivateKeyTarget, QualifiedIdentity,
+            PrivateKeyTarget, QualifiedIdentity, encrypted_key_storage::PrivateKeyData,
         },
         wallet::Wallet,
     },

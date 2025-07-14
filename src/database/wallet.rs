@@ -4,8 +4,8 @@ use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
     Wallet, WalletSeed,
 };
-use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::bip32::{DerivationPath, ExtendedPubKey};
@@ -15,8 +15,8 @@ use dash_sdk::dpp::dashcore::{
     self, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use rusqlite::params;
@@ -251,7 +251,9 @@ impl Database {
             wallet?;
         }
 
-        tracing::trace!("step 2: retrieve all addresses, balances, and derivation paths associated with the wallets");
+        tracing::trace!(
+            "step 2: retrieve all addresses, balances, and derivation paths associated with the wallets"
+        );
         let mut address_stmt = conn.prepare(
             "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
         )?;

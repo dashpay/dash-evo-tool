@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -8,7 +8,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::{add_identity_key_chooser_with_doc_type, TransactionType};
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser_with_doc_type};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -84,7 +84,7 @@ impl RegisterDpnsNameScreen {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
             self.selected_key = None; // Reset key selection
-                                      // Update the selected wallet
+            // Update the selected wallet
             self.selected_wallet =
                 get_selected_wallet(qi, Some(&self.app_context), None, &mut self.error_message);
         } else {

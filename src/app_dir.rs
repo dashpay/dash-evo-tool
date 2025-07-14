@@ -118,7 +118,7 @@ pub fn create_dash_core_config_if_not_exists(network: Network) -> Result<PathBuf
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Unsupported network",
-            ))
+            ));
         }
     };
     // Construct the full path to the config file

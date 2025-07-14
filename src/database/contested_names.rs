@@ -10,7 +10,7 @@ use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dash_sdk::query_types::Contenders;
-use rusqlite::{params, params_from_iter, Result};
+use rusqlite::{Result, params, params_from_iter};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 use tracing::{error, info};

@@ -8,22 +8,22 @@ use crate::{
     },
 };
 use dash_sdk::{
+    Error, Sdk,
     dpp::{
         dashcore::Network,
         data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters},
-        identity::{accessors::IdentityGettersV0, SecurityLevel},
+        identity::{SecurityLevel, accessors::IdentityGettersV0},
         platform_value::string_encoding::Encoding,
         state_transition::{
-            data_contract_update_transition::DataContractUpdateTransition, StateTransition,
-            StateTransitionSigningOptions,
+            StateTransition, StateTransitionSigningOptions,
+            data_contract_update_transition::DataContractUpdateTransition,
         },
         version::TryIntoPlatformVersioned,
     },
     platform::{
-        transition::broadcast::BroadcastStateTransition, DataContract, Fetch, Identifier,
-        IdentityPublicKey,
+        DataContract, Fetch, Identifier, IdentityPublicKey,
+        transition::broadcast::BroadcastStateTransition,
     },
-    Error, Sdk,
 };
 use std::time::Duration;
 use tokio::time::sleep;
@@ -133,7 +133,7 @@ impl AppContext {
                     {
                         Ok(id) => id,
                         Err(e) => {
-                            return Err(format!("Failed to extract id from error message: {}", e))
+                            return Err(format!("Failed to extract id from error message: {}", e));
                         }
                     };
 
@@ -143,7 +143,7 @@ impl AppContext {
                             return Err(format!(
                                 "Failed to fetch contract from Platform state: {}",
                                 e
-                            ))
+                            ));
                         }
                     };
                     if let Some(contract) = maybe_contract {

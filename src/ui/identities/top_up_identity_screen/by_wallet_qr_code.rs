@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use dash_sdk::dashcore_rpc::RpcApi;

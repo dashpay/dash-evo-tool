@@ -2,10 +2,10 @@ use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
-    consensus::{deserialize, serialize},
     InstantLock, Network, Transaction,
+    consensus::{deserialize, serialize},
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 impl Database {
     /// Stores an asset lock transaction and optional InstantLock into the database.

@@ -2,13 +2,13 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
-use dash_sdk::Sdk;
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -78,7 +78,7 @@ impl AppContext {
                                 }) {
                                 Ok(encoded_path_query) => encoded_path_query,
                                 Err(e) => {
-                                    return Err(format!("Contested resource query failed: {}", e))
+                                    return Err(format!("Contested resource query failed: {}", e));
                                 }
                             };
 

@@ -1,8 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
 use crate::backend_task::identity::{
     IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
-use crate::backend_task::BackendTask;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };

@@ -2,41 +2,41 @@ use super::BackendTaskSuccessResult;
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::Fetch;
 use dash_sdk::{
+    Sdk,
     dpp::{
+        ProtocolError,
         data_contract::{
+            TokenConfiguration, TokenContractPosition,
             associated_token::{
                 token_configuration::v0::TokenConfigurationV0,
                 token_configuration_convention::TokenConfigurationConvention,
                 token_configuration_localization::{
-                    v0::TokenConfigurationLocalizationV0, TokenConfigurationLocalization,
+                    TokenConfigurationLocalization, v0::TokenConfigurationLocalizationV0,
                 },
                 token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
                 token_keeps_history_rules::TokenKeepsHistoryRules,
             },
             change_control_rules::{
-                authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
+                ChangeControlRules, authorized_action_takers::AuthorizedActionTakers,
             },
             config::DataContractConfig,
             group::Group,
             v1::DataContractV1,
-            TokenConfiguration, TokenContractPosition,
         },
         identity::accessors::IdentityGettersV0,
-        ProtocolError,
     },
     platform::{
-        proto::get_documents_request::get_documents_request_v0::Start, DataContract, Identifier,
-        IdentityPublicKey,
+        DataContract, Identifier, IdentityPublicKey,
+        proto::get_documents_request::get_documents_request_v0::Start,
     },
-    Sdk,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -520,8 +520,8 @@ impl AppContext {
                 }
             }
             TokenTask::FetchTokenByTokenId(token_id) => {
-                use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
                 use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
+                use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
 
                 match TokenContractInfo::fetch(sdk, *token_id).await {
                     Ok(Some(token_contract_info)) => {

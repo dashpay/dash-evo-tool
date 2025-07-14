@@ -418,7 +418,7 @@ impl TokensScreen {
                                 ComboBox::from_id_salt("preset_selector")
                                     .selected_text(
                                         self.selected_token_preset
-                                            .map(|p|                                         match p {
+                                            .map(|p| match p {
                                                 MostRestrictive => "Most Restrictive",
                                                 WithOnlyEmergencyAction => "Only Emergency Action",
                                                 WithMintingAndBurningActions => "Minting And Burning",
@@ -463,8 +463,6 @@ impl TokensScreen {
                                         }
                                     });
                             });
-
-                            ui.add_space(3.0);
 
                             self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
                             self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None);

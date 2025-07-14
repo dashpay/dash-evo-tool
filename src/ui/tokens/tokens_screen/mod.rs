@@ -245,8 +245,6 @@ impl ChangeControlRulesUI {
         special_case_option: Option<&mut bool>,
     ) {
         ui.collapsing(action_name, |ui| {
-            ui.add_space(3.0);
-
             egui::Grid::new("basic_token_info_grid")
                 .num_columns(2)
                 .spacing([16.0, 8.0]) // Horizontal, vertical spacing
@@ -458,8 +456,6 @@ impl ChangeControlRulesUI {
                         }
                     }
                 });
-
-            ui.add_space(3.0);
         });
     }
 
@@ -476,8 +472,6 @@ impl ChangeControlRulesUI {
         minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
     ) {
         ui.collapsing("Manual Mint", |ui| {
-            ui.add_space(3.0);
-
             egui::Grid::new("basic_token_info_grid")
                 .num_columns(2)
                 .spacing([16.0, 8.0]) // Horizontal, vertical spacing
@@ -742,8 +736,6 @@ impl ChangeControlRulesUI {
                         }
                     }
                 });
-
-            ui.add_space(3.0);
         });
     }
 

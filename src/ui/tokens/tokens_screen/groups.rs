@@ -1,3 +1,4 @@
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
@@ -6,7 +7,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::ComboBox;
 use std::collections::BTreeMap;
 
 #[derive(Default, Clone)]
@@ -157,38 +157,32 @@ impl TokensScreen {
                             ui.horizontal(|ui| {
                                 ui.label(format!("Member {}:", j + 1));
 
-                                ComboBox::from_id_salt(format!("member_identity_selector_{}", j))
-                                    .width(200.0)
-                                    .selected_text(
-                                        self.identities
-                                            .get(&Identifier::from_string(&member.identity_str, Encoding::Base58).unwrap_or_default())
-                                            .map(|q| q.display_string())
-                                            .unwrap_or_else(|| member.identity_str.clone()),
-                                    )
-                                    .show_ui(ui, |ui| {
-                                        for (identifier, qualified_identity) in self.identities.iter() {
-                                            let id_str = identifier.to_string(Encoding::Base58);
+                                // Collect other member identities to exclude duplicates
+                                let exclude_identities: Vec<_> = if !self.app_context.is_developer_mode() {
+                                    group_ui
+                                        .members
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(i, m)| if i != j && !m.identity_str.is_empty() { 
+                                            let identifier = Identifier::from_string(&m.identity_str, Encoding::Base58).ok()?;
+                                            Some(identifier)
+                                        } else {
+                                            None
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
 
-                                            // Prevent duplicates unless in developer mode
-                                            if !self.app_context.is_developer_mode()
-                                                && group_ui
-                                                .members
-                                                .iter()
-                                                .enumerate().any(|(i, m)| i != j && m.identity_str == id_str)
-                                            {
-                                                continue;
-                                            }
-
-                                            if ui
-                                                .selectable_label(false, qualified_identity.display_string())
-                                                .clicked()
-                                            {
-                                                member.identity_str = id_str.clone();
-                                            }
-                                        }
-                                    });
-
-                                ui.text_edit_singleline(&mut member.identity_str);
+                                // Use the reusable identity selector widget
+                                let _identity_response = ui.add(IdentitySelector::new(
+                                    format!("member_identity_selector_{}", j),
+                                    &mut member.identity_str,
+                                    &self.identities.clone().into_iter().collect::<BTreeMap<_, _>>(),
+                                )
+                                .width(200.0)
+                                .allow_duplicates(self.app_context.is_developer_mode())
+                                .exclude(&exclude_identities));
 
                                 ui.label("Power (u32):");
                                 ui.text_edit_singleline(&mut member.power_str);

@@ -5,6 +5,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -43,7 +44,7 @@ pub enum UnfreezeTokensStatus {
     Complete,
 }
 
-/// A screen that allows unfreezing a previously frozen identity’s tokens for a specific contract
+/// A screen that allows unfreezing a previously frozen identity's tokens for a specific contract
 pub struct UnfreezeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_info: IdentityTokenInfo,
@@ -53,6 +54,10 @@ pub struct UnfreezeTokensScreen {
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+    /// A list of identities that are frozen and can be unfrozen.
+    ///
+    /// TODO: Right now it is just a list of all identities, but it should be filtered to only show frozen ones.
+    frozen_identities: Vec<QualifiedIdentity>,
 
     /// The identity we want to freeze
     pub unfreeze_identity_id: String,
@@ -74,6 +79,11 @@ pub struct UnfreezeTokensScreen {
 
 impl UnfreezeTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        // TODO: filter to include only frozen identities
+        let frozen_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -191,13 +201,23 @@ impl UnfreezeTokensScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
+            frozen_identities,
         }
     }
 
     fn render_unfreeze_identity_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Identity to Unfreeze:");
-            ui.text_edit_singleline(&mut self.unfreeze_identity_id);
+
+            // Use our reusable IdentitySelector widget
+            let _response = ui.add(
+                IdentitySelector::new(
+                    "unfreeze_identity_selector",
+                    &mut self.unfreeze_identity_id,
+                    &self.frozen_identities,
+                )
+                .width(300.0),
+            );
         });
     }
 

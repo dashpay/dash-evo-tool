@@ -22,7 +22,7 @@ use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -118,7 +118,7 @@ pub enum TransferTokensStatus {
 pub struct TransferTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
-    friend_identities: BTreeMap<Identifier, QualifiedIdentity>,
+    known_identities: Vec<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     pub public_note: Option<String>,
     pub receiver_identity_id: String,
@@ -137,16 +137,11 @@ impl TransferTokensScreen {
         identity_token_balance: IdentityTokenBalance,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        let all_identities = app_context
+        let known_identities = app_context
             .load_local_qualified_identities()
             .expect("Identities not loaded");
 
-        let friend_identities: BTreeMap<Identifier, QualifiedIdentity> = all_identities
-            .iter()
-            .map(|id| (id.identity.id(), id.clone()))
-            .collect();
-
-        let identity = all_identities
+        let identity = known_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
             .expect("Identity not found")
@@ -163,16 +158,15 @@ impl TransferTokensScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key, &mut error_message);
 
-        let receiver_identity_id = friend_identities
-            .iter()
-            .next()
-            .map(|x| x.0.to_string(Encoding::Base58))
+        let receiver_identity_id = known_identities
+            .first()
+            .map(|identity| identity.identity.id().to_string(Encoding::Base58))
             .unwrap_or_default();
 
         Self {
             identity,
             identity_token_balance,
-            friend_identities,
+            known_identities,
             selected_key: selected_key.cloned(),
             public_note: None,
             receiver_identity_id,
@@ -213,7 +207,7 @@ impl TransferTokensScreen {
                 IdentitySelector::new(
                     "transfer_recipient_selector",
                     &mut self.receiver_identity_id,
-                    &self.friend_identities,
+                    &self.known_identities,
                 )
                 .width(300.0)
                 .exclude(&[self.identity.identity.id()]),

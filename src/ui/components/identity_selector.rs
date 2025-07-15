@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::{
+    identity::accessors::IdentityGettersV0, platform_value::string_encoding::Encoding,
+};
 use dash_sdk::platform::Identifier;
 use egui::{ComboBox, Response, Ui, Widget};
 
@@ -44,12 +46,10 @@ pub struct IdentitySelector<'a> {
     id: String,
     /// Width of the ComboBox
     width: f32,
-    /// Whether to show duplicates or filter them out based on provided exclude_identities
-    allow_duplicates: bool,
     /// Mutable reference to the current identity string
     identity_str: &'a mut String,
     /// Map of available identities to choose from
-    identities: &'a BTreeMap<Identifier, QualifiedIdentity>,
+    identities: BTreeMap<Identifier, &'a QualifiedIdentity>,
     /// Slice of identity strings to exclude from dropdown (can be empty)
     exclude_identities: &'a [Identifier],
 }
@@ -59,14 +59,13 @@ impl<'a> IdentitySelector<'a> {
     pub fn new(
         id: impl Into<String>,
         identity_str: &'a mut String,
-        identities: &'a BTreeMap<Identifier, QualifiedIdentity>,
+        identities: &'a [QualifiedIdentity],
     ) -> Self {
         Self {
             id: id.into(),
             width: 200.0,
-            allow_duplicates: true,
             identity_str,
-            identities,
+            identities: identities.iter().map(|q| (q.identity.id(), q)).collect(),
             exclude_identities: &[],
         }
     }
@@ -74,12 +73,6 @@ impl<'a> IdentitySelector<'a> {
     /// Set the width of the ComboBox
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
-        self
-    }
-
-    /// Set whether duplicates are allowed
-    pub fn allow_duplicates(mut self, allow_duplicates: bool) -> Self {
-        self.allow_duplicates = allow_duplicates;
         self
     }
 
@@ -125,12 +118,11 @@ impl<'a> Widget for IdentitySelector<'a> {
 
                     // Add existing identities to the dropdown
                     for (identifier, qualified_identity) in self.identities.iter() {
-                        let id_str = identifier.to_string(Encoding::Base58);
-
-                        // Filter out excluded identities if duplicates are not allowed
-                        if !self.allow_duplicates && self.exclude_identities.contains(identifier) {
+                        // Filter out excluded identities
+                        if self.exclude_identities.contains(identifier) {
                             continue;
                         }
+                        let id_str = identifier.to_string(Encoding::Base58);
 
                         if ui
                             .selectable_label(

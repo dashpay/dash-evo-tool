@@ -1,3 +1,4 @@
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -174,14 +175,14 @@ impl TokensScreen {
                                     Vec::new()
                                 };
 
+                                let identities = self.identities.values().cloned().collect::<Vec<QualifiedIdentity>>();
                                 // Use the reusable identity selector widget
                                 let _identity_response = ui.add(IdentitySelector::new(
                                     format!("member_identity_selector_{}", j),
                                     &mut member.identity_str,
-                                    &self.identities.clone().into_iter().collect::<BTreeMap<_, _>>(),
+                                    &identities,
                                 )
                                 .width(200.0)
-                                .allow_duplicates(self.app_context.is_developer_mode())
                                 .exclude(&exclude_identities));
 
                                 ui.label("Power (u32):");

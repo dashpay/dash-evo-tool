@@ -4,6 +4,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -38,6 +39,7 @@ pub enum TransferCreditsStatus {
 pub struct TransferScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
+    known_identities: Vec<QualifiedIdentity>,
     receiver_identity_id: String,
     amount: String,
     transfer_credits_status: TransferCreditsStatus,
@@ -52,6 +54,10 @@ pub struct TransferScreen {
 
 impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
+        let known_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let max_amount = identity.identity.balance();
         let identity_clone = identity.identity.clone();
         let selected_key = identity_clone.get_first_public_key_matching(
@@ -66,6 +72,7 @@ impl TransferScreen {
         Self {
             identity,
             selected_key: selected_key.cloned(),
+            known_identities,
             receiver_identity_id: String::new(),
             amount: String::new(),
             transfer_credits_status: TransferCreditsStatus::NotStarted,
@@ -108,7 +115,16 @@ impl TransferScreen {
         ui.horizontal(|ui| {
             ui.label("Receiver Identity Id:");
 
-            ui.text_edit_singleline(&mut self.receiver_identity_id);
+            // Use our reusable IdentitySelector widget
+            let _response = ui.add(
+                IdentitySelector::new(
+                    "transfer_recipient_selector",
+                    &mut self.receiver_identity_id,
+                    &self.known_identities,
+                )
+                .width(300.0)
+                .exclude(&[self.identity.identity.id()]),
+            );
         });
     }
 

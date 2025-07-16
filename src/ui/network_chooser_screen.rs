@@ -193,23 +193,25 @@ impl NetworkChooserScreen {
         ui.add_space(20.0);
 
         // Advanced Settings - Collapsible
-        let mut collapsing_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("advanced_settings_header"),
-            false,
-        );
+        let mut collapsing_header = egui::CollapsingHeader::new("Advanced Settings")
+            .id_salt("advanced_settings_header")
+            .default_open(false);
 
         // Force close if we need to reset
         if self.should_reset_collapsing_states {
-            collapsing_state.set_open(false);
+            collapsing_header = collapsing_header.open(Some(false));
             self.should_reset_collapsing_states = false;
         }
 
-        collapsing_state
-            .show_header(ui, |ui| {
-                ui.label("Advanced Settings");
-            })
-            .body(|ui| {
+        // Customize the styling to prevent hover effects on arrow
+        ui.scope(|ui| {
+            // Override the widget colors and expansion to prevent hover effects on collapsing header arrow
+            ui.style_mut().visuals.widgets.hovered.bg_fill = ui.style().visuals.widgets.inactive.bg_fill;
+            ui.style_mut().visuals.widgets.hovered.weak_bg_fill = ui.style().visuals.widgets.inactive.weak_bg_fill;
+            ui.style_mut().visuals.widgets.hovered.fg_stroke = ui.style().visuals.widgets.inactive.fg_stroke;
+            ui.style_mut().visuals.widgets.hovered.expansion = ui.style().visuals.widgets.inactive.expansion;
+            
+            let response = collapsing_header.show(ui, |ui| {
                 // Advanced Settings Card Content
                 StyledCard::new().padding(20.0).show(ui, |ui| {
                     ui.vertical(|ui| {
@@ -517,6 +519,12 @@ impl NetworkChooserScreen {
                     });
                 });
             });
+            
+            // Change cursor to pointer when hovering over the header
+            if response.header_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        });
 
         app_action
     }

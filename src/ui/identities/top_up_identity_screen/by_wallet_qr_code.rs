@@ -20,17 +20,18 @@ impl TopUpIdentityScreen {
                         false,
                         Some(&self.app_context),
                     )?;
-                    
+
                     // Import address to Core if needed for monitoring
-                    let core_client = self.app_context
+                    let core_client = self
+                        .app_context
                         .core_client
                         .read()
                         .expect("Core client lock was poisoned");
-                    
+
                     let info = core_client
                         .get_address_info(&receive_address)
                         .map_err(|e| e.to_string())?;
-                    
+
                     if !(info.is_watchonly || info.is_mine) {
                         core_client
                             .import_address(
@@ -40,9 +41,9 @@ impl TopUpIdentityScreen {
                             )
                             .map_err(|e| e.to_string())?;
                     }
-                    
+
                     drop(core_client);
-                    
+
                     self.funding_address = Some(receive_address.clone());
                     receive_address
                 } else {

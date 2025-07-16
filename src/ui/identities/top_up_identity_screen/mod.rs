@@ -34,7 +34,6 @@ pub struct TopUpIdentityScreen {
     step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     wallet: Option<Arc<RwLock<Wallet>>>,
-    core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
@@ -55,7 +54,6 @@ impl TopUpIdentityScreen {
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             wallet: None,
-            core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "".to_string(),
@@ -498,7 +496,7 @@ impl ScreenLike for TopUpIdentityScreen {
                             step_number
                         ));
                         ui.add_space(10.0);
-                        
+
                         // Add info icon with hover tooltip
                         crate::ui::helpers::info_icon_button(
                             ui,
@@ -507,7 +505,7 @@ impl ScreenLike for TopUpIdentityScreen {
                             • Hold the private keys needed to create the asset lock transaction\n\
                             • Sign and broadcast the transaction to top up your identity\n\n\
                             The wallet must have control over the funds to create the asset lock \
-                            that credits your identity on the Dash Platform."
+                            that credits your identity on the Dash Platform.",
                         );
                     });
                     step_number += 1;

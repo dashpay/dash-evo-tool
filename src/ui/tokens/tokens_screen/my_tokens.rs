@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::Screen;
-use crate::ui::components::styled::StyledButton;
+use crate::ui::components::styled::{StyledButton, ClickableCollapsingHeader};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
@@ -55,7 +55,9 @@ impl TokensScreen {
         ui.separator();
 
         // Basic Information
-        ui.collapsing("Basic Information", |ui| {
+        ClickableCollapsingHeader::new("Basic Information")
+            .id_salt("token_basic_info_header")
+            .show(ui, |ui| {
             egui::Grid::new("token_basic_info")
                 .num_columns(2)
                 .spacing([10.0, 5.0])
@@ -133,7 +135,9 @@ impl TokensScreen {
         });
 
         // Token Configuration Summary
-        ui.collapsing("Token Configuration", |ui| {
+        ClickableCollapsingHeader::new("Token Configuration")
+            .id_salt("token_config_header")
+            .show(ui, |ui| {
             ui.label("This token has the following configuration:");
             ui.add_space(5.0);
 
@@ -520,7 +524,9 @@ impl TokensScreen {
                             ));
                             ui.separator();
 
-                            ui.collapsing("Basic Explanation", |ui| {
+                            ClickableCollapsingHeader::new("Basic Explanation")
+                                .id_salt("basic_explanation_header")
+                                .show(ui, |ui| {
                                 let local_time = Local::now();
                                 let timezone = local_time.format("%Z").to_string();
 
@@ -533,15 +539,21 @@ impl TokensScreen {
                                 ui.label(short_explanation);
                             });
 
-                            ui.collapsing("Detailed Explanation", |ui| {
+                            ClickableCollapsingHeader::new("Detailed Explanation")
+                                .id_salt("detailed_explanation_header")
+                                .show(ui, |ui| {
                                 ui.label(explanation.detailed_explanation());
                             });
 
                             if !explanation.evaluation_steps.is_empty() {
-                                ui.collapsing("Step-by-Step Breakdown", |ui| {
+                                ClickableCollapsingHeader::new("Step-by-Step Breakdown")
+                                    .id_salt("step_by_step_header")
+                                    .show(ui, |ui| {
                                     for (i, step) in explanation.evaluation_steps.iter().enumerate()
                                     {
-                                        ui.collapsing(format!("Step {}", i + 1), |ui| {
+                                        ClickableCollapsingHeader::new(format!("Step {}", i + 1))
+                                            .id_salt(format!("step_{}_header", i))
+                                            .show(ui, |ui| {
                                             if let Some(step_explanation) =
                                                 explanation.explanation_for_step(step.step_index)
                                             {

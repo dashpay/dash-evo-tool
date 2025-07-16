@@ -59,7 +59,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{island_central_panel, ClickableCollapsingHeader};
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -243,7 +243,9 @@ impl ChangeControlRulesUI {
         action_name: &str,
         special_case_option: Option<&mut bool>,
     ) {
-        ui.collapsing(action_name, |ui| {
+        ClickableCollapsingHeader::new(action_name)
+            .id_salt(format!("{}_header", action_name.replace(" ", "_").to_lowercase()))
+            .show(ui, |ui| {
             egui::Grid::new("basic_token_info_grid")
                 .num_columns(2)
                 .spacing([16.0, 8.0]) // Horizontal, vertical spacing
@@ -470,7 +472,9 @@ impl ChangeControlRulesUI {
         new_tokens_destination_identity: &mut String,
         minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
     ) {
-        ui.collapsing("Manual Mint", |ui| {
+        ClickableCollapsingHeader::new("Manual Mint")
+            .id_salt("manual_mint_header")
+            .show(ui, |ui| {
             egui::Grid::new("basic_token_info_grid")
                 .num_columns(2)
                 .spacing([16.0, 8.0]) // Horizontal, vertical spacing

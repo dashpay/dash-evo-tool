@@ -1,3 +1,4 @@
+use crate::ui::components::styled::ClickableCollapsingHeader;
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
@@ -97,23 +98,14 @@ impl TokensScreen {
     pub fn render_groups(&mut self, ui: &mut egui::Ui) {
         ui.add_space(5.0);
 
-        let mut groups_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("token_creator_groups"),
-            false,
-        );
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            groups_state.set_open(false);
-        }
-
-        groups_state.store(ui.ctx());
-
-        groups_state.show_header(ui, |ui| {
-            ui.label("Groups");
-        })
-        .body(|ui| {
+        ClickableCollapsingHeader::new("Groups")
+            .id_salt("token_creator_groups")
+            .open(if self.should_reset_collapsing_states {
+                Some(false)
+            } else {
+                None
+            })
+            .show(ui, |ui| {
             ui.add_space(3.0);
             ui.label("Define one or more groups for multi-party control of the contract.");
             ui.add_space(2.0);
@@ -131,15 +123,10 @@ impl TokensScreen {
             let last_group_position = self.groups_ui.len().saturating_sub(1);
 
             for (group_position, group_ui) in self.groups_ui.iter_mut().enumerate() {
-                egui::collapsing_header::CollapsingState::load_with_default_open(
-                    ui.ctx(),
-                    format!("group_header_{}", group_position).into(),
-                    true,
-                )
-                    .show_header(ui, |ui| {
-                        ui.label(format!("Group {}", group_position));
-                    })
-                    .body(|ui| {
+                ClickableCollapsingHeader::new(format!("Group {}", group_position))
+                    .id_salt(format!("group_header_{}", group_position))
+                    .default_open(true)
+                    .show(ui, |ui| {
                         ui.add_space(3.0);
 
                         ui.horizontal(|ui| {

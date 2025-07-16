@@ -478,28 +478,8 @@ impl AppContext {
 
     /// Retrieves the current settings
     pub fn get_settings(&self) -> Result<Option<Settings>> {
-        let settings_tuple = self.db.get_settings()?;
-
-        if let Some((
-            network,
-            root_screen_type,
-            password_info,
-            dash_qt_path,
-            developer_mode,
-            theme_mode,
-        )) = settings_tuple
-        {
-            Ok(Some(Settings::new(
-                network,
-                root_screen_type,
-                password_info,
-                dash_qt_path, // This will map to dash_qt_path in Settings::new
-                developer_mode,
-                theme_mode,
-            )))
-        } else {
-            Ok(None)
-        }
+        let settings = self.db.get_settings()?.map(Settings::from);
+        Ok(settings)
     }
 
     /// Retrieves all contracts from the database plus the system contracts from app context.

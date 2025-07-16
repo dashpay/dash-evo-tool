@@ -13,7 +13,6 @@ use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
-use nix::NixPath;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -572,7 +571,7 @@ impl NetworkChooserScreen {
 
         // Add a button to start the network
         let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
-            !path.is_empty() && path.is_file()
+            !path.as_os_str().is_empty() && path.is_file()
         } else {
             false
         };

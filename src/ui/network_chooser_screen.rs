@@ -13,6 +13,7 @@ use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
+use nix::NixPath;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -295,7 +296,7 @@ impl NetworkChooserScreen {
                                             )
                                             .clicked()
                                     {
-                                        self.custom_dash_qt_path = None;
+                                        self.custom_dash_qt_path = Some(PathBuf::new()); // Reset to empty to avoid auto-detection
                                         self.custom_dash_qt_error_message = None;
                                         self.save().expect("Expected to save db settings");
                                     }
@@ -570,12 +571,18 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
+        let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
+            !path.is_empty() && path.is_file()
+        } else {
+            false
+        };
+
         if network != Network::Regtest {
-            ui.add_enabled_ui(self.custom_dash_qt_path.is_some(), |ui| {
+            ui.add_enabled_ui(start_enabled, |ui| {
                 if ui
                     .button("Start")
                     .on_disabled_hover_text(
-                        "Configure dash-qt binary using Advanced Settings below",
+                        "Please select path to dash-qt binary in Advanced Settings",
                     )
                     .clicked()
                 {

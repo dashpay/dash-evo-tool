@@ -10,6 +10,7 @@ pub struct Settings {
     pub network: Network,
     pub root_screen_type: RootScreenType,
     pub password_info: Option<PasswordInfo>,
+    /// Path to the Dash-Qt binary, if set. None means autodetect. Empty string means no path set and no autodetect.
     pub dash_qt_path: Option<PathBuf>,
     pub overwrite_dash_conf: bool,
     pub theme_mode: ThemeMode,

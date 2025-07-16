@@ -490,11 +490,26 @@ impl ScreenLike for TopUpIdentityScreen {
 
                 if funding_method == FundingMethod::UseWalletBalance
                     || funding_method == FundingMethod::UseUnusedAssetLock
+                    || funding_method == FundingMethod::AddressWithQRCode
                 {
-                    ui.heading(format!(
-                        "{}. Choose the wallet to use to top up this identity.",
-                        step_number
-                    ));
+                    ui.horizontal(|ui| {
+                        ui.heading(format!(
+                            "{}. Choose the wallet to use to top up this identity.",
+                            step_number
+                        ));
+                        ui.add_space(10.0);
+                        
+                        // Add info icon with hover tooltip
+                        crate::ui::helpers::info_icon_button(
+                            ui,
+                            "The selected wallet will be used to:\n\n\
+                            • Generate a receive address for the QR code\n\
+                            • Hold the private keys needed to create the asset lock transaction\n\
+                            • Sign and broadcast the transaction to top up your identity\n\n\
+                            The wallet must have control over the funds to create the asset lock \
+                            that credits your identity on the Dash Platform."
+                        );
+                    });
                     step_number += 1;
 
                     ui.add_space(10.0);

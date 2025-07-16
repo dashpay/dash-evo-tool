@@ -9,6 +9,7 @@ use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
+use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
@@ -33,7 +34,6 @@ use derive_more::From;
 use eframe::{App, egui};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
-use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
@@ -155,14 +155,14 @@ impl AppState {
         let db = Arc::new(Database::new(&db_file_path).unwrap());
         db.initialize(&db_file_path).unwrap();
 
-        let settings = db.get_settings().expect("expected to get settings");
-
-        let (password_info, theme_preference) =
-            if let Some((_, _, password_info, _, _, theme_pref)) = settings.clone() {
-                (password_info, theme_pref)
-            } else {
-                (None, ThemeMode::System) // Default values if no settings found
-            };
+        let settings = db
+            .get_settings()
+            .expect("expected to get settings")
+            .map(Settings::from)
+            .unwrap_or_default();
+        let password_info = settings.password_info;
+        let theme_preference = settings.theme_mode;
+        let overwrite_dash_conf = settings.overwrite_dash_conf;
 
         let subtasks = Arc::new(TaskManager::new());
         let mainnet_app_context = match AppContext::new(
@@ -226,113 +226,89 @@ impl AppState {
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
-        let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((.., custom_dash_qt_path, db_overwrite_dash_conf, _theme_pref)) => {
-                // Use the stored settings
-                let custom_dash_qt_path = custom_dash_qt_path.or_else(detect_dash_qt_path);
-                (custom_dash_qt_path, db_overwrite_dash_conf)
-            }
-            None => {
-                // Only use defaults if there are no settings at all
-                (None, true)
-            }
-        };
-
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
             local_app_context.as_ref(),
             Network::Dash,
-            custom_dash_qt_path,
             overwrite_dash_conf,
         );
 
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
-        let mut selected_main_screen = RootScreenType::RootScreenIdentities;
+        let selected_main_screen = settings.root_screen_type;
+        let chosen_network = settings.network;
+        network_chooser_screen.current_network = chosen_network;
 
-        let mut chosen_network = Network::Dash;
-
-        if let Some((network, screen_type, _password_info, _, _, _)) = settings {
-            selected_main_screen = screen_type;
-            chosen_network = network;
-            network_chooser_screen.current_network = chosen_network;
-
-            if chosen_network == Network::Testnet && testnet_app_context.is_some() {
-                let testnet_app_context = testnet_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(testnet_app_context);
-                dpns_active_contests_screen =
-                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen =
-                    DPNSScreen::new(testnet_app_context, DPNSSubscreen::ScheduledVotes);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
-                proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
-                document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-                wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
-                proof_log_screen = ProofLogScreen::new(testnet_app_context);
-                platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
-                tokens_balances_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
-                token_search_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
-                token_creator_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
-            } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
-                let devnet_app_context = devnet_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(devnet_app_context);
-                dpns_active_contests_screen =
-                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen =
-                    DPNSScreen::new(devnet_app_context, DPNSSubscreen::ScheduledVotes);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
-                proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
-                document_query_screen = DocumentQueryScreen::new(devnet_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
-                wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
-                proof_log_screen = ProofLogScreen::new(devnet_app_context);
-                platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
-                tokens_balances_screen =
-                    TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
-                token_search_screen =
-                    TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
-                token_creator_screen =
-                    TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
-            } else if chosen_network == Network::Regtest && local_app_context.is_some() {
-                let local_app_context = local_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(local_app_context);
-                dpns_active_contests_screen =
-                    DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen =
-                    DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
-                proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
-                document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
-                contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
-                document_query_screen = DocumentQueryScreen::new(local_app_context);
-                wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
-                proof_log_screen = ProofLogScreen::new(local_app_context);
-                platform_info_screen = PlatformInfoScreen::new(local_app_context);
-                tokens_balances_screen =
-                    TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
-                token_search_screen =
-                    TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
-                token_creator_screen =
-                    TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
-            }
+        if chosen_network == Network::Testnet && testnet_app_context.is_some() {
+            let testnet_app_context = testnet_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(testnet_app_context);
+            dpns_active_contests_screen =
+                DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(testnet_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(testnet_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(testnet_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
+            document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
+            contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
+            document_query_screen = DocumentQueryScreen::new(testnet_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
+            proof_log_screen = ProofLogScreen::new(testnet_app_context);
+            platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
+            tokens_balances_screen =
+                TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
+            token_search_screen =
+                TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
+            token_creator_screen =
+                TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
+        } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
+            let devnet_app_context = devnet_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(devnet_app_context);
+            dpns_active_contests_screen =
+                DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(devnet_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(devnet_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(devnet_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
+            document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
+            document_query_screen = DocumentQueryScreen::new(devnet_app_context);
+            contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
+            proof_log_screen = ProofLogScreen::new(devnet_app_context);
+            platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
+            tokens_balances_screen =
+                TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
+            token_search_screen =
+                TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
+            token_creator_screen =
+                TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
+        } else if chosen_network == Network::Regtest && local_app_context.is_some() {
+            let local_app_context = local_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(local_app_context);
+            dpns_active_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
+            document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
+            contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
+            document_query_screen = DocumentQueryScreen::new(local_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
+            proof_log_screen = ProofLogScreen::new(local_app_context);
+            platform_info_screen = PlatformInfoScreen::new(local_app_context);
+            tokens_balances_screen =
+                TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
+            token_search_screen =
+                TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
+            token_creator_screen =
+                TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
@@ -881,33 +857,5 @@ impl App for AppState {
             tracing::debug!("Shutdown already in progress, ignoring close request");
         }
         // }
-    }
-}
-
-pub(crate) fn detect_dash_qt_path() -> Option<PathBuf> {
-    let path = which::which("dash-qt")
-        .map(|path| path.to_string_lossy().to_string())
-        .inspect_err(|e| tracing::warn!("failed to find dash-qt: {}", e))
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // Fallback to default paths based on the operating system
-            if cfg!(target_os = "macos") {
-                PathBuf::from("/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt")
-            } else if cfg!(target_os = "windows") {
-                // Retrieve the PROGRAMFILES environment variable or default to "C:\\Program Files"
-                let program_files = std::env::var("PROGRAMFILES")
-                    .unwrap_or_else(|_| "C:\\Program Files".to_string());
-                PathBuf::from(program_files).join("DashCore\\dash-qt.exe")
-            } else {
-                PathBuf::from("/usr/local/bin/dash-qt") // Default Linux path
-            }
-        });
-
-    if path.is_file() {
-        Some(path)
-    } else {
-        tracing::warn!("Dash-Qt binary not found at: {:?}", path);
-        None
     }
 }

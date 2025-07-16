@@ -199,20 +199,16 @@ impl TransferTokensScreen {
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("To:");
-
-            // Use our reusable IdentitySelector widget
-            let _response = ui.add(
-                IdentitySelector::new(
-                    "transfer_recipient_selector",
-                    &mut self.receiver_identity_id,
-                    &self.known_identities,
-                )
-                .width(300.0)
-                .exclude(&[self.identity.identity.id()]),
-            );
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "transfer_recipient_selector",
+                &mut self.receiver_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Recipient:")
+            .exclude(&[self.identity.identity.id()]),
+        );
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {

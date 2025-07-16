@@ -23,9 +23,9 @@ use egui::{ComboBox, Response, Ui, Widget};
 ///
 /// // This example shows the API usage, but cannot be run in doctest
 /// // due to complex dependencies
-/// fn example_usage(ui: &mut egui::Ui, identities: &IndexMap<Identifier, QualifiedIdentity>) {
+/// fn example_usage(ui: &mut egui::Ui, identities: &[QualifiedIdentity]) {
 ///     let mut identity_str = String::new();
-///     let exclude_list = vec!["already_used_identity".to_string()];
+///     let exclude_list = vec![/* some identifiers */];
 ///
 ///     let response = ui.add(IdentitySelector::new(
 ///         "my_selector",
@@ -33,7 +33,7 @@ use egui::{ComboBox, Response, Ui, Widget};
 ///         identities
 ///     )
 ///     .width(250.0)
-///     .allow_duplicates(false)
+///     .label("Select Identity:")
 ///     .exclude(&exclude_list));
 ///
 ///     if response.changed() {
@@ -52,6 +52,8 @@ pub struct IdentitySelector<'a> {
     identities: BTreeMap<Identifier, &'a QualifiedIdentity>,
     /// Slice of identity strings to exclude from dropdown (can be empty)
     exclude_identities: &'a [Identifier],
+    /// Optional label to display before the selector
+    label: Option<String>,
 }
 
 impl<'a> IdentitySelector<'a> {
@@ -67,6 +69,7 @@ impl<'a> IdentitySelector<'a> {
             identity_str,
             identities: identities.iter().map(|q| (q.identity.id(), q)).collect(),
             exclude_identities: &[],
+            label: None,
         }
     }
 
@@ -81,11 +84,27 @@ impl<'a> IdentitySelector<'a> {
         self.exclude_identities = exclude_identities;
         self
     }
+
+    /// Set an optional label to display before the selector
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
 }
 
 impl<'a> Widget for IdentitySelector<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.horizontal(|ui| {
+            // Display label if present, with centered vertical alignment
+
+            if let Some(label) = &self.label {
+                ui.vertical(|ui| {
+                    // FIXME we add space because vertical alignment is not working as expected
+                    ui.add_space(15.0);
+                    ui.label(label);
+                });
+            }
+
             // Check if current identity_str matches any existing identity
             let current_identity = if !self.identity_str.is_empty() {
                 Identifier::from_string(self.identity_str, Encoding::Base58).ok()

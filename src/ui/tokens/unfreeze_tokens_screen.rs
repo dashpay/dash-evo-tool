@@ -206,19 +206,15 @@ impl UnfreezeTokensScreen {
     }
 
     fn render_unfreeze_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Identity to Unfreeze:");
-
-            // Use our reusable IdentitySelector widget
-            let _response = ui.add(
-                IdentitySelector::new(
-                    "unfreeze_identity_selector",
-                    &mut self.unfreeze_identity_id,
-                    &self.frozen_identities,
-                )
-                .width(300.0),
-            );
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "unfreeze_identity_selector",
+                &mut self.unfreeze_identity_id,
+                &self.frozen_identities,
+            )
+            .width(300.0)
+            .label("Unfreeze Identity ID to unfreeze:"),
+        );
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {

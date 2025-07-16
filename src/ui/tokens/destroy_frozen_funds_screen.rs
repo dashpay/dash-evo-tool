@@ -214,14 +214,14 @@ impl DestroyFrozenFundsScreen {
 
     /// Renders the text input for specifying the “frozen identity”
     fn render_frozen_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Frozen Identity ID:");
-            ui.add(IdentitySelector::new(
+        ui.add(
+            IdentitySelector::new(
                 "frozen_identity_selector",
                 &mut self.frozen_identity_id,
                 &self.frozen_identities,
-            ));
-        });
+            )
+            .label("Frozen Identity ID:"),
+        );
     }
 
     /// Confirmation popup

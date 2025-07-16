@@ -214,20 +214,16 @@ impl MintTokensScreen {
 
     /// Renders an optional text input for the user to specify a "Recipient Identity"
     fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient:");
-
-            // Use our reusable IdentitySelector widget
-            let _response = ui.add(
-                IdentitySelector::new(
-                    "mint_recipient_selector",
-                    &mut self.recipient_identity_id,
-                    &self.known_identities,
-                )
-                .width(300.0)
-                .exclude(&[self.identity_token_info.identity.identity.id()]),
-            );
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "mint_recipient_selector",
+                &mut self.recipient_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Recipient:")
+            .exclude(&[self.identity_token_info.identity.identity.id()]),
+        );
 
         // If empty, minted tokens go to the 'issuer' identity (self.identity).
     }

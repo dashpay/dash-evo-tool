@@ -112,20 +112,16 @@ impl TransferScreen {
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Receiver Identity Id:");
-
-            // Use our reusable IdentitySelector widget
-            let _response = ui.add(
-                IdentitySelector::new(
-                    "transfer_recipient_selector",
-                    &mut self.receiver_identity_id,
-                    &self.known_identities,
-                )
-                .width(300.0)
-                .exclude(&[self.identity.identity.id()]),
-            );
-        });
+        ui.add(
+            IdentitySelector::new(
+                "transfer_recipient_selector",
+                &mut self.receiver_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Receiver Identity ID:")
+            .exclude(&[self.identity.identity.id()]),
+        );
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {

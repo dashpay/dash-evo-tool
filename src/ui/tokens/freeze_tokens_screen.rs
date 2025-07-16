@@ -202,19 +202,15 @@ impl FreezeTokensScreen {
 
     /// Renders text input for the identity to freeze
     fn render_freeze_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Freeze Identity ID:");
-
-            // Use our reusable IdentitySelector widget
-            let _response = ui.add(
-                IdentitySelector::new(
-                    "freeze_identity_selector",
-                    &mut self.freeze_identity_id,
-                    &self.known_identities,
-                )
-                .width(300.0),
-            );
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "freeze_identity_selector",
+                &mut self.freeze_identity_id,
+                &self.known_identities,
+            )
+            .label("Freeze Identity ID:")
+            .width(300.0),
+        );
     }
 
     /// Confirmation popup

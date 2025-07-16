@@ -5,7 +5,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
+use crate::ui::components::styled::{
+    ClickableCollapsingHeader, StyledCard, StyledCheckbox, island_central_panel,
+};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
@@ -193,25 +195,15 @@ impl NetworkChooserScreen {
         ui.add_space(20.0);
 
         // Advanced Settings - Collapsible
-        let mut collapsing_header = egui::CollapsingHeader::new("Advanced Settings")
+        ClickableCollapsingHeader::new("Advanced Settings")
             .id_salt("advanced_settings_header")
-            .default_open(false);
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            collapsing_header = collapsing_header.open(Some(false));
-            self.should_reset_collapsing_states = false;
-        }
-
-        // Customize the styling to prevent hover effects on arrow
-        ui.scope(|ui| {
-            // Override the widget colors and expansion to prevent hover effects on collapsing header arrow
-            ui.style_mut().visuals.widgets.hovered.bg_fill = ui.style().visuals.widgets.inactive.bg_fill;
-            ui.style_mut().visuals.widgets.hovered.weak_bg_fill = ui.style().visuals.widgets.inactive.weak_bg_fill;
-            ui.style_mut().visuals.widgets.hovered.fg_stroke = ui.style().visuals.widgets.inactive.fg_stroke;
-            ui.style_mut().visuals.widgets.hovered.expansion = ui.style().visuals.widgets.inactive.expansion;
-            
-            let response = collapsing_header.show(ui, |ui| {
+            .open(if self.should_reset_collapsing_states {
+                self.should_reset_collapsing_states = false;
+                Some(false)
+            } else {
+                None
+            })
+            .show(ui, |ui| {
                 // Advanced Settings Card Content
                 StyledCard::new().padding(20.0).show(ui, |ui| {
                     ui.vertical(|ui| {
@@ -519,12 +511,6 @@ impl NetworkChooserScreen {
                     });
                 });
             });
-            
-            // Change cursor to pointer when hovering over the header
-            if response.header_response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-        });
 
         app_action
     }

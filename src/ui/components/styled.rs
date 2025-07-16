@@ -9,6 +9,9 @@ use egui::{
     Ui, Vec2,
 };
 
+// Re-export commonly used components
+pub use super::clickable_collapsing_header::ClickableCollapsingHeader;
+
 /// Styled button variants
 #[allow(dead_code)]
 pub(crate) enum ButtonVariant {

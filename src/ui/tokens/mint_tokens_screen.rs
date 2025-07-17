@@ -3,7 +3,9 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -52,6 +54,7 @@ pub struct MintTokensScreen {
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+    known_identities: Vec<QualifiedIdentity>,
 
     pub recipient_identity_id: String,
 
@@ -73,6 +76,10 @@ pub struct MintTokensScreen {
 
 impl MintTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let known_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -181,6 +188,7 @@ impl MintTokensScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
+            known_identities,
             recipient_identity_id: "".to_string(),
             amount_to_mint: "".to_string(),
             status: MintTokensStatus::NotStarted,
@@ -206,10 +214,16 @@ impl MintTokensScreen {
 
     /// Renders an optional text input for the user to specify a "Recipient Identity"
     fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient:");
-            ui.text_edit_singleline(&mut self.recipient_identity_id);
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "mint_recipient_selector",
+                &mut self.recipient_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Recipient:")
+            .exclude(&[self.identity_token_info.identity.identity.id()]),
+        );
 
         // If empty, minted tokens go to the 'issuer' identity (self.identity).
     }

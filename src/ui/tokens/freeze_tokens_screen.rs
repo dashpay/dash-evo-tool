@@ -5,6 +5,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -52,6 +53,7 @@ pub struct FreezeTokensScreen {
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+    known_identities: Vec<QualifiedIdentity>,
 
     /// The identity we want to freeze
     pub freeze_identity_id: String,
@@ -73,6 +75,10 @@ pub struct FreezeTokensScreen {
 
 impl FreezeTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let known_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -190,15 +196,21 @@ impl FreezeTokensScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
+            known_identities,
         }
     }
 
     /// Renders text input for the identity to freeze
     fn render_freeze_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Freeze Identity ID:");
-            ui.text_edit_singleline(&mut self.freeze_identity_id);
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "freeze_identity_selector",
+                &mut self.freeze_identity_id,
+                &self.known_identities,
+            )
+            .label("Freeze Identity ID:")
+            .width(300.0),
+        );
     }
 
     /// Confirmation popup

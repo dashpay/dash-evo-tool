@@ -26,7 +26,7 @@ impl TopUpIdentityScreen {
                         .app_context
                         .core_client
                         .read()
-                        .expect("Core client lock was poisoned");
+                        .map_err(|_| "Core client lock was poisoned".to_string())?;
 
                     let info = core_client
                         .get_address_info(&receive_address)

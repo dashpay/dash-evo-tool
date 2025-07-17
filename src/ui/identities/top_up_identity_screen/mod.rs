@@ -29,6 +29,9 @@ use egui::{ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
+const WALLET_SELECTION_TOOLTIP: &str = "This wallet will provide the address for receiving funds \
+and create the asset lock transaction to top up your identity.";
+
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
     step: Arc<RwLock<WalletFundedScreenStep>>,
@@ -498,15 +501,7 @@ impl ScreenLike for TopUpIdentityScreen {
                         ui.add_space(10.0);
 
                         // Add info icon with hover tooltip
-                        crate::ui::helpers::info_icon_button(
-                            ui,
-                            "The selected wallet will be used to:\n\n\
-                            • Generate a receive address for the QR code\n\
-                            • Hold the private keys needed to create the asset lock transaction\n\
-                            • Sign and broadcast the transaction to top up your identity\n\n\
-                            The wallet must have control over the funds to create the asset lock \
-                            that credits your identity on the Dash Platform.",
-                        );
+                        crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP);
                     });
                     step_number += 1;
 

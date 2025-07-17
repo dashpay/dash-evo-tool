@@ -10,11 +10,9 @@ use std::sync::Arc;
 
 impl TopUpIdentityScreen {
     fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
-        let (address, _should_check_balance) = {
-            // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
-
+        let address = {
             if let Some(wallet_guard) = self.wallet.as_ref() {
-                // Get the receive address
+                // Get the receive address from the selected wallet
                 if self.funding_address.is_none() {
                     let mut wallet = wallet_guard.write().unwrap();
                     let receive_address = wallet.receive_address(
@@ -23,49 +21,33 @@ impl TopUpIdentityScreen {
                         Some(&self.app_context),
                     )?;
 
-                    if let Some(has_address) = self.core_has_funding_address {
-                        if !has_address {
-                            self.app_context
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned")
-                                .import_address(
-                                    &receive_address,
-                                    Some("Managed by Dash Evo Tool"),
-                                    Some(false),
-                                )
-                                .map_err(|e| e.to_string())?;
-                        }
-                        self.funding_address = Some(receive_address);
-                    } else {
-                        let info = self
-                            .app_context
-                            .core_client
-                            .read()
-                            .expect("Core client lock was poisoned")
-                            .get_address_info(&receive_address)
-                            .map_err(|e| e.to_string())?;
+                    // Import address to Core if needed for monitoring
+                    let core_client = self
+                        .app_context
+                        .core_client
+                        .read()
+                        .map_err(|_| "Core client lock was poisoned".to_string())?;
 
-                        if !(info.is_watchonly || info.is_mine) {
-                            self.app_context
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned")
-                                .import_address(
-                                    &receive_address,
-                                    Some("Managed by Dash Evo Tool"),
-                                    Some(false),
-                                )
-                                .map_err(|e| e.to_string())?;
-                        }
-                        self.funding_address = Some(receive_address);
-                        self.core_has_funding_address = Some(true);
+                    let info = core_client
+                        .get_address_info(&receive_address)
+                        .map_err(|e| e.to_string())?;
+
+                    if !(info.is_watchonly || info.is_mine) {
+                        core_client
+                            .import_address(
+                                &receive_address,
+                                Some("Managed by Dash Evo Tool"),
+                                Some(false),
+                            )
+                            .map_err(|e| e.to_string())?;
                     }
 
-                    // Extract the address to return it outside this scope
-                    (self.funding_address.as_ref().unwrap().clone(), true)
+                    drop(core_client);
+
+                    self.funding_address = Some(receive_address.clone());
+                    receive_address
                 } else {
-                    (self.funding_address.as_ref().unwrap().clone(), false)
+                    self.funding_address.as_ref().unwrap().clone()
                 }
             } else {
                 return Err("No wallet selected".to_string());
@@ -113,10 +95,6 @@ impl TopUpIdentityScreen {
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
 
-        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
-            return AppAction::None;
-        };
-
         ui.heading(
             format!(
                 "{}. Select how much you would like to transfer?",
@@ -130,8 +108,17 @@ impl TopUpIdentityScreen {
         self.top_up_funding_amount_input(ui);
 
         let response = ui.vertical_centered(|ui| {
-            if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                self.error_message = Some(e);
+            // Only try to render QR code if we have a valid amount
+            if let Ok(amount_dash) = self.funding_amount.parse::<f64>() {
+                if amount_dash > 0.0 {
+                    if let Err(e) = self.render_qr_code(ui, amount_dash) {
+                        self.error_message = Some(e);
+                    }
+                } else {
+                    ui.label("Please enter an amount greater than 0");
+                }
+            } else if !self.funding_amount.is_empty() {
+                ui.label("Please enter a valid amount");
             }
 
             ui.add_space(20.0);
@@ -162,7 +149,7 @@ impl TopUpIdentityScreen {
                             .unwrap_or_default();
                         let identity_input = IdentityTopUpInfo {
                             qualified_identity: self.identity.clone(),
-                            wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                            wallet: Arc::clone(selected_wallet),
                             identity_funding_method: TopUpIdentityFundingMethod::FundWithUtxo(
                                 utxo,
                                 tx_out,
@@ -175,7 +162,6 @@ impl TopUpIdentityScreen {
                         let mut step = self.step.write().unwrap();
                         *step = WalletFundedScreenStep::WaitingForAssetLock;
 
-                        // Create the backend task to register the identity
                         return AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::TopUpIdentity(identity_input),
                         ));
@@ -183,9 +169,7 @@ impl TopUpIdentityScreen {
                 }
                 WalletFundedScreenStep::ReadyToCreate => {}
                 WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading(
-                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                    );
+                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
                     ui.add_space(20.0);
                     ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
                 }

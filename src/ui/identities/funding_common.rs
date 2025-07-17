@@ -1,5 +1,6 @@
 use arboard::Clipboard;
 use eframe::epaint::{Color32, ColorImage};
+use egui::Vec2;
 use image::Luma;
 use qrcode::QrCode;
 
@@ -33,7 +34,11 @@ pub fn generate_qr_code_image(pay_uri: &str) -> Result<ColorImage, qrcode::types
         })
         .collect();
 
-    Ok(ColorImage { size, pixels })
+    Ok(ColorImage {
+        size,
+        source_size: Vec2::new(size[0] as f32, size[1] as f32),
+        pixels,
+    })
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {

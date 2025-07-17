@@ -10,18 +10,20 @@ pub enum ThemeMode {
 }
 
 /// Detect system theme preference
-pub fn detect_system_theme() -> ThemeMode {
-    match dark_light::detect() {
-        dark_light::Mode::Dark => ThemeMode::Dark,
-        dark_light::Mode::Light => ThemeMode::Light,
-        dark_light::Mode::Default => ThemeMode::Light, // Default to light if unknown
+pub fn detect_system_theme() -> Result<ThemeMode, String> {
+    match dark_light::detect().map_err(|e| e.to_string())? {
+        dark_light::Mode::Dark => Ok(ThemeMode::Dark),
+        dark_light::Mode::Light => Ok(ThemeMode::Light),
+        dark_light::Mode::Unspecified => Ok(ThemeMode::Light), // Default to light if unknown
     }
 }
 
 /// Resolve the actual theme to use based on preference
 pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
     match preference {
-        ThemeMode::System => detect_system_theme(),
+        ThemeMode::System => detect_system_theme()
+            .inspect_err(|e| tracing::warn!("Failed to detect system theme: {}", e))
+            .unwrap_or(ThemeMode::Light),
         other => other,
     }
 }

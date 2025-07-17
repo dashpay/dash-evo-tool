@@ -8,22 +8,22 @@ rust-version = "1.88"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }
-bip39 = { version = "2.1.0", features = ["all-languages", "rand"] }
+bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
 derive_more = "2.0.1"
-egui = "0.31.1"
-egui_extras = "0.31.1"
-egui_commonmark = "0.20.0"
-rfd = "0.15.3"
+egui = "0.32.0"
+egui_extras = "0.32.0"
+egui_commonmark = "0.21.1"
+rfd = "0.15.4"
 qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
-eframe = { version = "0.31.1", features = ["persistence"] }
+eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "5f93c70720a1ea09f91c9142668e17f314986f03" }
 thiserror = "2.0.12"
 serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml = { version = "0.9.34-deprecated" }
-tokio = { version = "1.45.1", features = ["full"] }
+tokio = { version = "1.46.1", features = ["full"] }
 bincode = { version = "=2.0.0-rc.3", features = ["serde"] }
 hex = { version = "0.4.3" }
 itertools = "0.14.0"
@@ -36,15 +36,15 @@ envy = "0.4.2"
 chrono = "0.4.41"
 chrono-humanize = "0.2.3"
 sha2 = "0.10.9"
-arboard = { version = "3.5.0", default-features = false, features = [
+arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.36.0", features = ["functions"] }
-dark-light = "1.1.0"
+rusqlite = { version = "0.37.0", features = ["functions"] }
+dark-light = "2.0.0"
 image = { version = "0.25.6", default-features = false, features = ["png"] }
 bitflags = "2.9.1"
-libsqlite3-sys = { version = "0.34.0", features = ["bundled"] }
+libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
@@ -53,7 +53,7 @@ aes-gcm = "0.10.3" # For AES-256-GCM encryption
 crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
-which = { version = "7.0.3" }
+which = { version = "8.0.0" }
 tz-rs = { version = "0.7.0" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
@@ -69,7 +69,7 @@ raw-cpuid = "11.5.0"
 [dev-dependencies]
 
 tempfile = { version = "3.20.0" }
-egui_kittest = { version = "0.31.1", features = ["eframe"] }
+egui_kittest = { version = "0.32.0", features = ["eframe"] }
 
 [lints.clippy]
 uninlined_format_args = "allow"

@@ -623,7 +623,7 @@ impl TokensScreen {
                                 token_info.token_configuration.clone(),
                                 &self.app_context,
                             )));
-                            ui.close_menu();
+                           ui.close_kind(egui::UiKind::Menu);
                         }
                         Ok(None) => {
                             self.set_error_message(Some("Token contract not found".to_string()));
@@ -654,7 +654,7 @@ impl TokensScreen {
                         }
                     };
 
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -675,7 +675,7 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -696,7 +696,7 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -717,7 +717,7 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -738,7 +738,7 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -760,7 +760,7 @@ impl TokensScreen {
                                 self.set_error_message(Some(e));
                             }
                         };
-                        ui.close_menu();
+                       ui.close_kind(egui::UiKind::Menu);
                     }
                     pos += 1;
                 }
@@ -782,7 +782,7 @@ impl TokensScreen {
                                 self.set_error_message(Some(e));
                             }
                         };
-                        ui.close_menu();
+                       ui.close_kind(egui::UiKind::Menu);
                     }
                     pos += 1;
                 }
@@ -792,7 +792,7 @@ impl TokensScreen {
                     action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
                         ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
                     ));
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -813,7 +813,7 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
@@ -871,7 +871,7 @@ impl TokensScreen {
                                         self.set_error_message(Some(e));
                                     }
                                 };
-                                ui.close_menu();
+                               ui.close_kind(egui::UiKind::Menu);
                             }
                         } else {
                             // Disabled, grayed-out Purchase button
@@ -911,7 +911,7 @@ impl TokensScreen {
                         }
                     };
 
-                    ui.close_menu();
+                   ui.close_kind(egui::UiKind::Menu);
                 }
             }
         });

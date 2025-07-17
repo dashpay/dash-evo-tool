@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
+use crate::ui::components::styled::ClickableCollapsingHeader;
 use crate::ui::contracts_documents::contracts_documents_screen::DOCUMENT_PRIVATE_FIELDS;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -127,12 +128,17 @@ pub fn add_contract_chooser_panel(
                                             };
 
                                             // Expand/collapse the contract info
+                                            let contract_id = contract.contract.id().to_string(Encoding::Base58);
                                             let collapsing_response =
-                                                ui.collapsing(contract_header_text, |ui| {
+                                                ClickableCollapsingHeader::new(contract_header_text.text().to_string())
+                                                    .id_salt(format!("contract_{}", contract_id))
+                                                    .show(ui, |ui| {
                                                     //
                                                     // ===== Document Types Section =====
                                                     //
-                                                    ui.collapsing("Document Types", |ui| {
+                                                    ClickableCollapsingHeader::new("Document Types")
+                                                        .id_salt(format!("contract_{}_doc_types", contract_id))
+                                                        .show(ui, |ui| {
                                                         for (doc_name, doc_type) in
                                                             contract.contract.document_types()
                                                         {
@@ -151,7 +157,9 @@ pub fn add_contract_chooser_panel(
                                                                 };
 
                                                             let doc_resp =
-                                                ui.collapsing(doc_type_header_text, |ui| {
+                                                ClickableCollapsingHeader::new(doc_type_header_text.text().to_string())
+                                                    .id_salt(format!("contract_{}_doc_{}", contract_id, doc_name))
+                                                    .show(ui, |ui| {
                                                     // Show the indexes
                                                     if doc_type.indexes().is_empty() {
                                                         ui.label("No indexes defined");
@@ -178,9 +186,9 @@ pub fn add_contract_chooser_panel(
                                                                     ))
                                                                 };
 
-                                                            let index_resp = ui.collapsing(
-                                                                index_header_text,
-                                                                |ui| {
+                                                            let index_resp = ClickableCollapsingHeader::new(index_header_text.text().to_string())
+                                                                .id_salt(format!("contract_{}_doc_{}_index_{}", contract_id, doc_name, index_name))
+                                                                .show(ui, |ui| {
                                                                     // Show index properties if expanded
                                                                     for prop in &index.properties {
                                                                         ui.label(format!(
@@ -188,8 +196,7 @@ pub fn add_contract_chooser_panel(
                                                                             prop
                                                                         ));
                                                                     }
-                                                                },
-                                                            );
+                                                                });
 
                                                             // If index was just clicked (opened)
                                                             if index_resp.header_response.clicked()
@@ -335,7 +342,9 @@ pub fn add_contract_chooser_panel(
                                                     //
                                                     // ===== Tokens Section =====
                                                     //
-                                                    ui.collapsing("Tokens", |ui| {
+                                                    ClickableCollapsingHeader::new("Tokens")
+                                                        .id_salt(format!("contract_{}_tokens", contract_id))
+                                                        .show(ui, |ui| {
                                                         let tokens_map = contract.contract.tokens();
                                                         if tokens_map.is_empty() {
                                                             ui.label(
@@ -344,9 +353,9 @@ pub fn add_contract_chooser_panel(
                                                         } else {
                                                             for (token_name, token) in tokens_map {
                                                                 // Each token is its own collapsible
-                                                                ui.collapsing(
-                                                                    token_name.to_string(),
-                                                                    |ui| {
+                                                                ClickableCollapsingHeader::new(token_name.to_string())
+                                                                    .id_salt(format!("contract_{}_token_{}", contract_id, token_name))
+                                                                    .show(ui, |ui| {
                                                                         // Now you can display base supply, max supply, etc.
                                                                         ui.label(format!(
                                                                             "Base Supply: {}",
@@ -366,8 +375,7 @@ pub fn add_contract_chooser_panel(
                                                                         }
 
                                                                         // Add more details here
-                                                                    },
-                                                                );
+                                                                    });
                                                             }
                                                         }
                                                     });
@@ -375,7 +383,9 @@ pub fn add_contract_chooser_panel(
                                                     //
                                                     // ===== Entire Contract JSON =====
                                                     //
-                                                    ui.collapsing("Contract JSON", |ui| {
+                                                    ClickableCollapsingHeader::new("Contract JSON")
+                                                        .id_salt(format!("contract_{}_json", contract_id))
+                                                        .show(ui, |ui| {
                                                         match contract
                                                             .contract
                                                             .to_json(app_context.platform_version())

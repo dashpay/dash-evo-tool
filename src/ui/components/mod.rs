@@ -1,3 +1,4 @@
+pub mod clickable_collapsing_header;
 pub mod contract_chooser_panel;
 pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;

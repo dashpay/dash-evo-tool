@@ -15,7 +15,7 @@ use egui::{ComboBox, Context, RichText, TextEdit, Ui};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
-use crate::ui::components::styled::{StyledCheckbox};
+use crate::ui::components::styled::{StyledCheckbox, ClickableCollapsingHeader};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
@@ -292,23 +292,11 @@ impl TokensScreen {
                         ui.add_space(10.0);
 
                         // 5) Advanced settings toggle
-                        let mut advanced_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            ui.make_persistent_id("token_creator_advanced"),
-                            false,
-                        );
-
-                        // Force close if we need to reset
-                        if self.should_reset_collapsing_states {
-                            advanced_state.set_open(false);
-                        }
-
-                        advanced_state.store(ui.ctx());
-
-                        advanced_state.show_header(ui, |ui| {
-                            ui.label("Advanced");
-                        })
-                        .body(|ui| {
+                        ClickableCollapsingHeader::new("Advanced")
+                            .id_salt("token_creator_advanced")
+                            .default_open(false)
+                            .open(if self.should_reset_collapsing_states { Some(false) } else { None })
+                            .show(ui, |ui| {
                             ui.add_space(3.0);
 
                             // Use `Grid` to align labels and text edits
@@ -396,23 +384,11 @@ impl TokensScreen {
 
                         ui.add_space(5.0);
 
-                        let mut action_rules_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            ui.make_persistent_id("token_creator_action_rules"),
-                            false,
-                        );
-
-                        // Force close if we need to reset
-                        if self.should_reset_collapsing_states {
-                            action_rules_state.set_open(false);
-                        }
-
-                        action_rules_state.store(ui.ctx());
-
-                        action_rules_state.show_header(ui, |ui| {
-                            ui.label("Action Rules");
-                        })
-                        .body(|ui| {
+                        ClickableCollapsingHeader::new("Action Rules")
+                            .id_salt("token_creator_action_rules")
+                            .default_open(false)
+                            .open(if self.should_reset_collapsing_states { Some(false) } else { None })
+                            .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Preset:");
 
@@ -478,23 +454,11 @@ impl TokensScreen {
 
                             // Main control group change is slightly different so do this one manually.
                             ui.add_space(6.0);
-                            let mut main_control_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ui.ctx(),
-                                ui.make_persistent_id("token_creator_main_control_group"),
-                                false,
-                            );
-
-                            // Force close if we need to reset
-                            if self.should_reset_collapsing_states {
-                                main_control_state.set_open(false);
-                            }
-
-                            main_control_state.store(ui.ctx());
-
-                            main_control_state.show_header(ui, |ui| {
-                                ui.label("Main Control Group Change");
-                            })
-                            .body(|ui| {
+                            ClickableCollapsingHeader::new("Main Control Group Change")
+                                .id_salt("token_creator_main_control_group")
+                                .default_open(false)
+                                .open(if self.should_reset_collapsing_states { Some(false) } else { None })
+                                .show(ui, |ui| {
                                 ui.add_space(3.0);
 
                                 // A) authorized_to_make_change
@@ -1139,25 +1103,11 @@ impl TokensScreen {
     fn render_document_schemas(&mut self, ui: &mut Ui) {
         ui.add_space(5.0);
 
-        let mut document_schemas_state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                ui.make_persistent_id("token_creator_document_schemas"),
-                false,
-            );
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            document_schemas_state.set_open(false);
-        }
-
-        document_schemas_state.store(ui.ctx());
-
-        document_schemas_state
-            .show_header(ui, |ui| {
-                ui.label("Document Schemas");
-            })
-            .body(|ui| {
+        ClickableCollapsingHeader::new("Document Schemas")
+            .id_salt("token_creator_document_schemas")
+            .default_open(false)
+            .open(if self.should_reset_collapsing_states { Some(false) } else { None })
+            .show(ui, |ui| {
                 ui.add_space(3.0);
 
                 // Add link to dashpay.io

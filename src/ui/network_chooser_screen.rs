@@ -5,7 +5,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
+use crate::ui::components::styled::{
+    ClickableCollapsingHeader, StyledCard, StyledCheckbox, island_central_panel,
+};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
@@ -193,23 +195,15 @@ impl NetworkChooserScreen {
         ui.add_space(20.0);
 
         // Advanced Settings - Collapsible
-        let mut collapsing_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("advanced_settings_header"),
-            false,
-        );
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            collapsing_state.set_open(false);
-            self.should_reset_collapsing_states = false;
-        }
-
-        collapsing_state
-            .show_header(ui, |ui| {
-                ui.label("Advanced Settings");
+        ClickableCollapsingHeader::new("Advanced Settings")
+            .id_salt("advanced_settings_header")
+            .open(if self.should_reset_collapsing_states {
+                self.should_reset_collapsing_states = false;
+                Some(false)
+            } else {
+                None
             })
-            .body(|ui| {
+            .show(ui, |ui| {
                 // Advanced Settings Card Content
                 StyledCard::new().padding(20.0).show(ui, |ui| {
                     ui.vertical(|ui| {

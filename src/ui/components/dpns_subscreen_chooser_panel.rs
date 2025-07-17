@@ -17,7 +17,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
     ];
 
     let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.1 {
+        Ok(Some(settings)) => match settings.root_screen_type {
             ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
             ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
             ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,

@@ -8,6 +8,7 @@ use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
+use crate::model::settings::Settings;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::ui::RootScreenType;
@@ -37,7 +38,6 @@ use dash_sdk::query_types::IndexMap;
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -476,21 +476,10 @@ impl AppContext {
             .insert_or_update_settings(self.network, root_screen_type)
     }
 
-    /// Retrieves the current `RootScreenType` from the settings
-    #[allow(clippy::type_complexity)]
-    pub fn get_settings(
-        &self,
-    ) -> Result<
-        Option<(
-            Network,
-            RootScreenType,
-            Option<PasswordInfo>,
-            Option<PathBuf>,
-            bool,
-            crate::ui::theme::ThemeMode,
-        )>,
-    > {
-        self.db.get_settings()
+    /// Retrieves the current settings
+    pub fn get_settings(&self) -> Result<Option<Settings>> {
+        let settings = self.db.get_settings()?.map(Settings::from);
+        Ok(settings)
     }
 
     /// Retrieves all contracts from the database plus the system contracts from app context.

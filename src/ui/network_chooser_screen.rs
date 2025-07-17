@@ -44,7 +44,6 @@ impl NetworkChooserScreen {
         devnet_app_context: Option<&Arc<AppContext>>,
         local_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
-        custom_dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
     ) -> Self {
         let local_network_dashmate_password = if let Ok(config) = Config::load() {
@@ -66,13 +65,14 @@ impl NetworkChooserScreen {
         };
         let developer_mode = current_context.is_developer_mode();
 
-        // Load theme preference from settings
-        let theme_preference = current_context
+        // Load settings including theme preference and dash_qt_path
+        let settings = current_context
             .get_settings()
             .ok()
             .flatten()
-            .map(|(_, _, _, _, _, theme)| theme)
-            .unwrap_or(ThemeMode::System);
+            .unwrap_or_default();
+        let theme_preference = settings.theme_mode;
+        let custom_dash_qt_path = settings.dash_qt_path;
 
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
@@ -295,7 +295,7 @@ impl NetworkChooserScreen {
                                             )
                                             .clicked()
                                     {
-                                        self.custom_dash_qt_path = None;
+                                        self.custom_dash_qt_path = Some(PathBuf::new()); // Reset to empty to avoid auto-detection
                                         self.custom_dash_qt_error_message = None;
                                         self.save().expect("Expected to save db settings");
                                     }
@@ -570,12 +570,18 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
+        let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
+            !path.as_os_str().is_empty() && path.is_file()
+        } else {
+            false
+        };
+
         if network != Network::Regtest {
-            ui.add_enabled_ui(self.custom_dash_qt_path.is_some(), |ui| {
+            ui.add_enabled_ui(start_enabled, |ui| {
                 if ui
                     .button("Start")
                     .on_disabled_hover_text(
-                        "Configure dash-qt binary using Advanced Settings below",
+                        "Please select path to dash-qt binary in Advanced Settings",
                     )
                     .clicked()
                 {
@@ -672,12 +678,10 @@ impl ScreenLike for NetworkChooserScreen {
         self.should_reset_collapsing_states = true;
 
         // Reload settings from database to ensure we have the latest values
-        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf, theme_preference))) =
-            self.current_app_context().get_settings()
-        {
-            self.custom_dash_qt_path = custom_dash_qt_path;
-            self.overwrite_dash_conf = overwrite_dash_conf;
-            self.theme_preference = theme_preference;
+        if let Ok(Some(settings)) = self.current_app_context().get_settings() {
+            self.custom_dash_qt_path = settings.dash_qt_path;
+            self.overwrite_dash_conf = settings.overwrite_dash_conf;
+            self.theme_preference = settings.theme_mode;
         }
     }
 

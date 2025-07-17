@@ -15,7 +15,7 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
     ];
 
     let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.1 {
+        Ok(Some(settings)) => match settings.root_screen_type {
             ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
             ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
             ui::RootScreenType::RootScreenTokenCreator => TokensSubscreen::TokenCreator,

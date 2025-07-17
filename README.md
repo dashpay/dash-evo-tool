@@ -75,7 +75,63 @@ system, unzip, and install:
 
 ## Installation
 
-To install Dash Evo Tool:
+### Download Pre-built Packages (Recommended)
+
+The easiest way to get started is to download a pre-built package from the [latest release](https://github.com/dashpay/dash-evo-tool/releases/latest).
+
+#### Linux
+
+We provide multiple Linux packages to ensure compatibility:
+
+- **Standard builds** (`x86_64-linux`, `arm64-linux`): For modern systems with GLIBC 2.39+
+- **Compatible builds** (`x86_64-linux-compat`, `arm64-linux-compat`): For older systems with GLIBC 2.31+ (Ubuntu 20.04+, Debian 11+, etc.)
+- **AppImage** (`x86_64-linux-appimage`): Self-contained package that works on most Linux distributions
+
+**Installation steps:**
+
+1. Download the appropriate `.zip` file for your system
+2. Extract the archive:
+   ```shell
+   unzip dash-evo-tool-*.zip
+   cd dash-evo-tool
+   ```
+3. Make the binary executable:
+   ```shell
+   chmod +x dash-evo-tool
+   ```
+4. Run the application:
+   ```shell
+   ./dash-evo-tool
+   ```
+
+For the AppImage version:
+```shell
+unzip dash-evo-tool-x86_64-linux-appimage.zip
+chmod +x dash-evo-tool.AppImage
+./dash-evo-tool.AppImage
+```
+
+#### macOS
+
+1. Download the appropriate package:
+   - `x86_64-mac` for Intel Macs
+   - `arm64-mac` for Apple Silicon
+2. Extract and run:
+   ```shell
+   unzip dash-evo-tool-*.zip
+   cd dash-evo-tool
+   ./dash-evo-tool
+   ```
+
+#### Windows
+
+1. Download `dash-evo-tool-windows.zip`
+2. Extract the archive
+3. Run `dash-evo-tool.exe`
+
+### Build from Source
+
+To build from source:
 
 1. **Clone the repository**:
 
@@ -95,14 +151,26 @@ To install Dash Evo Tool:
    cargo build --release
    ```
 
+4. **Run the application**:
+
+   ``` shell
+   cargo run --release
+   ```
+
 ## Getting Started
 
 ### Start the App
 
-Run the application using:
+If you downloaded a pre-built package:
 
 ``` shell
-cargo run
+./dash-evo-tool
+```
+
+If you built from source:
+
+``` shell
+cargo run --release
 ```
 
 ### Application directory

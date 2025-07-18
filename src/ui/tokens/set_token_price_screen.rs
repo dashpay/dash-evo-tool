@@ -44,6 +44,24 @@ pub enum PricingType {
     RemovePricing,
 }
 
+impl From<TokenPricingSchedule> for PricingType {
+    fn from(schedule: TokenPricingSchedule) -> Self {
+        match schedule {
+            TokenPricingSchedule::SinglePrice(_) => PricingType::SinglePrice,
+            TokenPricingSchedule::SetPrices(_) => PricingType::TieredPricing,
+        }
+    }
+}
+
+impl From<Option<TokenPricingSchedule>> for PricingType {
+    fn from(schedule: Option<TokenPricingSchedule>) -> Self {
+        match schedule {
+            Some(schedule) => PricingType::from(schedule),
+            None => PricingType::RemovePricing,
+        }
+    }
+}
+
 /// Internal states for the mint process.
 #[derive(PartialEq)]
 pub enum SetTokenPriceStatus {
@@ -63,6 +81,7 @@ pub struct SetTokenPriceScreen {
     pub group_action_id: Option<Identifier>,
 
     pub token_pricing_schedule: String,
+    /// Token pricing schedule to use; if None, we will remove the pricing schedule
     pricing_type: PricingType,
     single_price: String,
     tiered_prices: Vec<(String, String)>,
@@ -81,14 +100,43 @@ pub struct SetTokenPriceScreen {
     show_password: bool,
 }
 
+/// 1 Dash = 100,000,000,000 credits
+const CREDITS_PER_DASH: Credits = 100_000_000_000;
+
 impl SetTokenPriceScreen {
     /// Converts Dash amount to credits (1 Dash = 100,000,000,000 credits)
+    ///
+    /// ## Panics
+    ///
+    /// This function will panic if the conversion fails, which should not happen under normal circumstances
     fn dash_to_credits(dash_amount: f64) -> Credits {
-        (dash_amount * 100_000_000_000.0) as Credits
+        let credits_f64 = dash_amount * CREDITS_PER_DASH as f64;
+
+        if credits_f64 < 0.0 || !credits_f64.is_finite() || credits_f64 > u64::MAX as f64 {
+            panic!(
+                "Dash amount {} after conversion to credits is not in a valid range: 0 <= {} <= {}",
+                dash_amount,
+                credits_f64,
+                u64::MAX
+            );
+        }
+
+        // Round to nearest integer to handle floating point precision issues
+        let credits_u64 = if credits_f64 > ((u64::MAX - 1) as f64) {
+            credits_f64.floor() as u64
+        } else {
+            credits_f64.round() as u64
+        };
+
+        credits_u64 as Credits
     }
 
-    pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let possible_key = identity_token_info
+    pub fn new(
+        identity_token_info: IdentityTokenInfo,
+        schedule: Option<TokenPricingSchedule>,
+        app_context: &Arc<AppContext>,
+    ) -> Self {
+        let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
             .identity
             .get_first_public_key_matching(
@@ -191,6 +239,28 @@ impl SetTokenPriceScreen {
             &mut error_message,
         );
 
+        let (single_price, tiered_prices) = match &schedule {
+            Some(TokenPricingSchedule::SinglePrice(price)) => (
+                // we store price as credits, so convert to Dash for processing
+                (*price as f64 / CREDITS_PER_DASH as f64).to_string(),
+                vec![("1".to_string(), "".to_string())],
+            ),
+            Some(TokenPricingSchedule::SetPrices(prices)) => {
+                let tiered_prices = prices
+                    .iter()
+                    .map(|(amount, price)| {
+                        (
+                            amount.to_string(),
+                            (*price as f64 / CREDITS_PER_DASH as f64).to_string(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                (String::new(), tiered_prices)
+            }
+            None => (String::new(), vec![("1".to_string(), String::new())]),
+        };
+
         Self {
             identity_token_info: identity_token_info.clone(),
             selected_key: possible_key.cloned(),
@@ -199,9 +269,9 @@ impl SetTokenPriceScreen {
             is_unilateral_group_member,
             group_action_id: None,
             token_pricing_schedule: "".to_string(),
-            pricing_type: PricingType::SinglePrice,
-            single_price: "".to_string(),
-            tiered_prices: vec![("1".to_string(), "".to_string())],
+            pricing_type: PricingType::from(schedule),
+            single_price,
+            tiered_prices,
             status: SetTokenPriceStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),

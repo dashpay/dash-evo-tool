@@ -29,23 +29,28 @@ jobs:
             runs-on: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux"
+            release-ext: "zip"
           - name: "linux-arm64"
             runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux"
+            release-ext: "zip"
           - name: "macos-x86_64"
             runs-on: "macos-13"
             target: "x86_64-apple-darwin"
             platform: "x86_64-mac"
+            release-ext: "dmg"
           - name: "macos-arm64"
             runs-on: "macos-latest"
             target: "aarch64-apple-darwin"
             platform: "arm64-mac"
+            release-ext: "dmg"
           - name: "Windows"
             runs-on: "ubuntu-22.04"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
             ext: ".exe"
+            release-ext: "zip"
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -114,6 +119,16 @@ jobs:
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
 
+      - name: Set VERSION
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
+          elif [ "${{ github.event_name }}" == "release" ]; then
+            echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Build project
         run: |
           cargo build --release --target ${{ matrix.target }}
@@ -123,20 +138,93 @@ jobs:
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
-      - name: Package release
+      # Install the Apple certificate
+      - name: Install the Apple certificate
+        if: contains(matrix.target, 'apple-darwin')
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
-          zip -r dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool/
+          # create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # import certificate from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+
+          # create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+
+          # List the keychains and set the temporary one as default
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+          security default-keychain -s $KEYCHAIN_PATH
+
+          # Set key partition list to allow codesign to access the key without prompting
+          CODE_SIGN_IDENTITY=$(security find-identity -v -p codesigning $KEYCHAIN_PATH | grep -oE '"(.*)"' | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Export CODE_SIGN_IDENTITY for use in subsequent steps
+          echo "CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY" >> $GITHUB_ENV
+
+      # Sign the binary for macOS
+      - name: Sign binary
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          codesign --strict --timestamp --options runtime --sign "$CODE_SIGN_IDENTITY" dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+
+      # Verify binary code signing
+      - name: Verify binary code signing
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          codesign --verify --strict --verbose=2 dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+
+      # Package release
+      - name: Package release
+        run: "${GITHUB_WORKSPACE}/scripts/pack.sh ${{ env.VERSION }} ${{ matrix.platform }} ${{ matrix.ext }}"
+
+      # Sign the .dmg for macOS
+      - name: Sign .dmg
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          codesign --strict --timestamp --options runtime --sign "$CODE_SIGN_IDENTITY" dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+
+      # Verify .dmg code signing
+      - name: Verify .dmg code signing
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          codesign --verify --strict --verbose=2 dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+
+      # Notarize MacOS Release Build using xcrun notarytool
+      - name: Notarize MacOS Release Build
+        if: contains(matrix.target, 'apple-darwin')
+        run: |
+          xcrun notarytool submit "dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait
+
+      # Staple Notarization Ticket
+      - name: Staple Notarization Ticket
+        if: contains(matrix.target, 'apple-darwin')
+        run: xcrun stapler staple "dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}"
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-${{ matrix.platform }}.zip'
+          subject-path: 'dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}'
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-${{ matrix.platform }}.zip
-          path: dash-evo-tool-${{ matrix.platform }}.zip
+          name: dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
+          path: dist/dash-evo-tool-${{ matrix.platform }}.${{ matrix.release-ext }}
 
   release:
     name: Create GitHub Release
@@ -154,11 +242,11 @@ jobs:
       - name: Download MacOS AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-x86_64-mac.zip
+          name: dash-evo-tool-x86_64-mac.dmg
       - name: Download MacOS ARM64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-arm64-mac.zip
+          name: dash-evo-tool-arm64-mac.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
@@ -173,8 +261,8 @@ jobs:
           files: |
             ./dash-evo-tool-x86_64-linux.zip
             ./dash-evo-tool-arm64-linux.zip
-            ./dash-evo-tool-x86_64-mac.zip
-            ./dash-evo-tool-arm64-mac.zip
+            ./dash-evo-tool-x86_64-mac.dmg
+            ./dash-evo-tool-arm64-mac.dmg
             ./dash-evo-tool-windows.zip
           draft: false
           prerelease: true

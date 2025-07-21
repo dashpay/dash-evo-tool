@@ -1,9 +1,11 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::system_task::SystemTask;
+use crate::backend_task::spv::{SpvTask, SpvTaskResult};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
+use crate::model::settings::ConnectionMode;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
@@ -12,7 +14,7 @@ use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Context, Ui, Color32};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -35,9 +37,152 @@ pub struct NetworkChooserScreen {
     developer_mode: bool,
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
+    connection_mode: ConnectionMode,
+    // SPV sync state
+    spv_is_syncing: bool,
+    spv_current_height: u32,
+    spv_target_height: u32,
+    spv_sync_progress: f32,
+    spv_last_error: Option<String>,
+    spv_is_initialized: bool,
 }
 
 impl NetworkChooserScreen {
+    fn render_connection_mode_section(&mut self, ui: &mut Ui, app_action: &mut AppAction) {
+        StyledCard::new().padding(20.0).show(ui, |ui| {
+            ui.heading("Connection Mode");
+            ui.separator();
+            
+            ui.horizontal(|ui| {
+                ui.label("Select connection method:");
+                
+                let mut mode_changed = false;
+                
+                // Core RPC option
+                if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Core, "Dash Core RPC").clicked() {
+                    mode_changed = true;
+                }
+                
+                ui.add_space(20.0);
+                
+                // SPV option
+                if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Spv, "SPV Client").clicked() {
+                    mode_changed = true;
+                }
+                
+                if mode_changed {
+                    // Update connection mode in context
+                    if let Err(e) = self.current_app_context().set_connection_mode(self.connection_mode) {
+                        self.spv_last_error = Some(format!("Failed to update connection mode: {}", e));
+                    }
+                    
+                    // Update all contexts
+                    self.mainnet_app_context.set_connection_mode(self.connection_mode).ok();
+                    if let Some(ref ctx) = self.testnet_app_context {
+                        ctx.set_connection_mode(self.connection_mode).ok();
+                    }
+                    if let Some(ref ctx) = self.devnet_app_context {
+                        ctx.set_connection_mode(self.connection_mode).ok();
+                    }
+                    if let Some(ref ctx) = self.local_app_context {
+                        ctx.set_connection_mode(self.connection_mode).ok();
+                    }
+                }
+            });
+            
+            ui.add_space(10.0);
+            
+            match self.connection_mode {
+                ConnectionMode::Core => {
+                    ui.label("Uses Dash Core's RPC interface for blockchain operations.");
+                    ui.label("Requires a running Dash Core node with proper configuration.");
+                }
+                ConnectionMode::Spv => {
+                    ui.label("SPV (Simplified Payment Verification) allows lightweight blockchain access.");
+                    ui.label("No full node required - connects directly to the Dash network.");
+                    
+                    ui.separator();
+                    
+                    // SPV sync controls
+                    self.render_spv_controls(ui, app_action);
+                }
+            }
+        });
+    }
+    
+    fn render_spv_controls(&mut self, ui: &mut Ui, action: &mut AppAction) {
+        ui.heading("SPV Sync Controls");
+        
+        ui.horizontal(|ui| {
+            if !self.spv_is_initialized || (!self.spv_is_syncing && self.spv_current_height == 0) {
+                // Use network-appropriate checkpoint height
+                // Start from genesis to avoid checkpoint validation issues
+                let checkpoint_height = match self.current_network {
+                    Network::Dash => 0, // Start from genesis due to checkpoint validation issues
+                    Network::Testnet => 0, // Start from genesis due to checkpoint validation issues
+                    Network::Devnet => 0, // Start from genesis for devnet
+                    Network::Regtest => 0, // Start from genesis for regtest
+                    _ => 0,
+                };
+                
+                if ui.button("Initialize & Sync").clicked() {
+                    *action = AppAction::BackendTask(BackendTask::SpvTask(
+                        SpvTask::InitializeAndSync { checkpoint_height }
+                    ));
+                }
+            } else if !self.spv_is_syncing {
+                // For resume, we'll use the current height as the checkpoint
+                let checkpoint_height = self.spv_current_height;
+                
+                if ui.button("Resume Sync").clicked() {
+                    *action = AppAction::BackendTask(BackendTask::SpvTask(
+                        SpvTask::InitializeAndSync { checkpoint_height }
+                    ));
+                }
+            } else {
+                ui.add_enabled(false, egui::Button::new("Syncing..."));
+            }
+            
+            if self.spv_is_syncing {
+                ui.spinner();
+            }
+        });
+        
+        if self.spv_is_syncing || self.spv_is_initialized {
+            ui.separator();
+            self.render_spv_sync_progress(ui);
+        }
+        
+        if let Some(error) = &self.spv_last_error {
+            ui.separator();
+            ui.colored_label(Color32::RED, format!("Error: {}", error));
+        }
+    }
+    
+    fn render_spv_sync_progress(&self, ui: &mut Ui) {
+        ui.label("Sync Progress");
+        
+        let progress_bar = egui::ProgressBar::new(self.spv_sync_progress / 100.0)
+            .text(format!("{:.1}%", self.spv_sync_progress))
+            .animate(self.spv_is_syncing);
+        ui.add(progress_bar);
+        
+        if self.spv_target_height > 0 {
+            ui.horizontal(|ui| {
+                ui.label("Progress:");
+                ui.label(format!("{} / {} blocks", self.spv_current_height, self.spv_target_height));
+            });
+            
+            if self.spv_is_syncing && self.spv_current_height > 0 && self.spv_target_height > self.spv_current_height {
+                let blocks_remaining = self.spv_target_height - self.spv_current_height;
+                ui.horizontal(|ui| {
+                    ui.label("Blocks Remaining:");
+                    ui.label(format!("{}", blocks_remaining));
+                });
+            }
+        }
+    }
+
     pub fn new(
         mainnet_app_context: &Arc<AppContext>,
         testnet_app_context: Option<&Arc<AppContext>>,
@@ -45,6 +190,7 @@ impl NetworkChooserScreen {
         local_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
         overwrite_dash_conf: bool,
+        connection_mode: ConnectionMode,
     ) -> Self {
         let local_network_dashmate_password = if let Ok(config) = Config::load() {
             if let Some(local_config) = config.config_for_network(Network::Regtest) {
@@ -73,6 +219,8 @@ impl NetworkChooserScreen {
             .unwrap_or_default();
         let theme_preference = settings.theme_mode;
         let custom_dash_qt_path = settings.dash_qt_path;
+        // Use the passed connection_mode parameter instead of reading from settings
+        // This ensures we use the value loaded at app startup
 
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
@@ -92,6 +240,13 @@ impl NetworkChooserScreen {
             developer_mode,
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
+            connection_mode,
+            spv_is_syncing: false,
+            spv_current_height: 0,
+            spv_target_height: 0,
+            spv_sync_progress: 0.0,
+            spv_last_error: None,
+            spv_is_initialized: false,
         }
     }
 
@@ -189,6 +344,11 @@ impl NetworkChooserScreen {
                 // Render Local Row
                 app_action |= self.render_network_row(ui, Network::Regtest, "Local");
             });
+
+        ui.add_space(20.0);
+
+        // Connection Mode Section
+        self.render_connection_mode_section(ui, &mut app_action);
 
         ui.add_space(20.0);
 
@@ -682,6 +842,7 @@ impl ScreenLike for NetworkChooserScreen {
             self.custom_dash_qt_path = settings.dash_qt_path;
             self.overwrite_dash_conf = settings.overwrite_dash_conf;
             self.theme_preference = settings.theme_mode;
+            self.connection_mode = settings.connection_mode;
         }
     }
 
@@ -696,29 +857,61 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-            mainnet_chainlock,
-            testnet_chainlock,
-            devnet_chainlock,
-            local_chainlock,
-        )) = backend_task_success_result
-        {
-            match mainnet_chainlock {
-                Some(_) => self.mainnet_core_status_online = true,
-                None => self.mainnet_core_status_online = false,
+        match backend_task_success_result {
+            BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+                mainnet_chainlock,
+                testnet_chainlock,
+                devnet_chainlock,
+                local_chainlock,
+            )) => {
+                match mainnet_chainlock {
+                    Some(_) => self.mainnet_core_status_online = true,
+                    None => self.mainnet_core_status_online = false,
+                }
+                match testnet_chainlock {
+                    Some(_) => self.testnet_core_status_online = true,
+                    None => self.testnet_core_status_online = false,
+                }
+                match devnet_chainlock {
+                    Some(_) => self.devnet_core_status_online = true,
+                    None => self.devnet_core_status_online = false,
+                }
+                match local_chainlock {
+                    Some(_) => self.local_core_status_online = true,
+                    None => self.local_core_status_online = false,
+                }
             }
-            match testnet_chainlock {
-                Some(_) => self.testnet_core_status_online = true,
-                None => self.testnet_core_status_online = false,
+            BackendTaskSuccessResult::SpvResult(spv_result) => {
+                match spv_result {
+                    SpvTaskResult::SyncProgress { current_height, target_height, progress_percent } => {
+                        self.spv_current_height = current_height;
+                        self.spv_target_height = target_height;
+                        self.spv_sync_progress = progress_percent;
+                        self.spv_is_syncing = true;
+                        self.spv_is_initialized = true;
+                        self.spv_last_error = None;
+                        
+                    }
+                    SpvTaskResult::SyncComplete { final_height } => {
+                        self.spv_current_height = final_height;
+                        self.spv_target_height = final_height;
+                        self.spv_sync_progress = 100.0;
+                        self.spv_is_syncing = false;
+                        self.spv_last_error = None;
+                    }
+                    SpvTaskResult::ProofVerificationResult { is_valid, details } => {
+                        // Handle proof verification results if needed
+                        if !is_valid {
+                            self.spv_last_error = Some(details);
+                        }
+                    }
+                    SpvTaskResult::Error(error) => {
+                        self.spv_last_error = Some(error);
+                        self.spv_is_syncing = false;
+                    }
+                }
             }
-            match devnet_chainlock {
-                Some(_) => self.devnet_core_status_online = true,
-                None => self.devnet_core_status_online = false,
-            }
-            match local_chainlock {
-                Some(_) => self.local_core_status_online = true,
-                None => self.local_core_status_online = false,
-            }
+            _ => {}
         }
     }
 
@@ -743,9 +936,13 @@ impl ScreenLike for NetworkChooserScreen {
                 .inner
         });
 
-        // Recheck both network status every 3 seconds
-        let recheck_time = Duration::from_secs(3);
-        if action == AppAction::None {
+        // Auto-refresh progress while SPV is syncing
+        if self.spv_is_syncing && self.connection_mode == ConnectionMode::Spv {
+            action = AppAction::BackendTask(BackendTask::SpvTask(SpvTask::GetSyncProgress));
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        } else if action == AppAction::None {
+            // Recheck both network status every 3 seconds
+            let recheck_time = Duration::from_secs(3);
             let current_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards");

@@ -155,14 +155,19 @@ impl AppState {
         let db = Arc::new(Database::new(&db_file_path).unwrap());
         db.initialize(&db_file_path).unwrap();
 
-        let settings = db
-            .get_settings()
-            .expect("expected to get settings")
-            .map(Settings::from)
-            .unwrap_or_default();
+        let settings = match db.get_settings() {
+            Ok(Some(settings)) => Settings::from(settings),
+            Ok(None) => Settings::default(),
+            Err(e) => {
+                eprintln!("Error reading settings from database: {:?}", e);
+                eprintln!("Using default settings. The database may need migration.");
+                Settings::default()
+            }
+        };
         let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
+        let connection_mode = settings.connection_mode;
 
         let subtasks = Arc::new(TaskManager::new());
         let mainnet_app_context = match AppContext::new(
@@ -233,6 +238,7 @@ impl AppState {
             local_app_context.as_ref(),
             Network::Dash,
             overwrite_dash_conf,
+            connection_mode,
         );
 
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
@@ -240,6 +246,18 @@ impl AppState {
         let selected_main_screen = settings.root_screen_type;
         let chosen_network = settings.network;
         network_chooser_screen.current_network = chosen_network;
+        
+        // Set connection mode in all app contexts
+        mainnet_app_context.set_connection_mode(connection_mode);
+        if let Some(ref ctx) = testnet_app_context {
+            ctx.set_connection_mode(connection_mode);
+        }
+        if let Some(ref ctx) = devnet_app_context {
+            ctx.set_connection_mode(connection_mode);
+        }
+        if let Some(ref ctx) = local_app_context {
+            ctx.set_connection_mode(connection_mode);
+        }
 
         if chosen_network == Network::Testnet && testnet_app_context.is_some() {
             let testnet_app_context = testnet_app_context.as_ref().unwrap();

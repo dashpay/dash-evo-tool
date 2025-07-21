@@ -4,6 +4,21 @@ use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
 
+/// Connection mode for the application
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionMode {
+    /// Connect through Dash Core RPC
+    Core,
+    /// Use SPV (Simplified Payment Verification) client
+    Spv,
+}
+
+impl Default for ConnectionMode {
+    fn default() -> Self {
+        ConnectionMode::Core
+    }
+}
+
 /// Application settings structure
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -15,6 +30,7 @@ pub struct Settings {
     pub dash_qt_path: Option<PathBuf>,
     pub overwrite_dash_conf: bool,
     pub theme_mode: ThemeMode,
+    pub connection_mode: ConnectionMode,
 }
 
 impl
@@ -25,6 +41,7 @@ impl
         Option<PathBuf>,
         bool,
         ThemeMode,
+        ConnectionMode,
     )> for Settings
 {
     /// Converts a tuple into a Settings instance
@@ -38,9 +55,10 @@ impl
             Option<PathBuf>,
             bool,
             ThemeMode,
+            ConnectionMode,
         ),
     ) -> Self {
-        Self::new(tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5)
+        Self::new(tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6)
     }
 }
 
@@ -54,6 +72,7 @@ impl Default for Settings {
             None, // autodetect
             true,
             ThemeMode::System,
+            ConnectionMode::default(),
         )
     }
 }
@@ -67,6 +86,7 @@ impl Settings {
         dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
         theme_mode: ThemeMode,
+        connection_mode: ConnectionMode,
     ) -> Self {
         Self {
             network,
@@ -75,6 +95,7 @@ impl Settings {
             dash_qt_path: dash_qt_path.or_else(detect_dash_qt_path),
             overwrite_dash_conf,
             theme_mode,
+            connection_mode,
         }
     }
 }

@@ -1,5 +1,6 @@
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
+use crate::backend_task::spv::SpvManager;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
@@ -40,6 +41,7 @@ use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use tokio::sync::RwLock as TokioRwLock;
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -72,6 +74,10 @@ pub struct AppContext {
     animate: AtomicBool,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
+    // SPV manager for SPV functionality
+    pub(crate) spv_manager: Arc<TokioRwLock<SpvManager>>,
+    // Connection mode (Core or SPV)
+    pub(crate) connection_mode: RwLock<crate::model::settings::ConnectionMode>,
 }
 
 impl AppContext {
@@ -156,6 +162,13 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
+        // Load connection mode from settings if available
+        let connection_mode = db.get_settings()
+            .ok()
+            .flatten()
+            .map(|settings| settings.6)
+            .unwrap_or(crate::model::settings::ConnectionMode::Core);
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
@@ -177,6 +190,8 @@ impl AppContext {
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             animate,
             subtasks,
+            spv_manager: Arc::new(TokioRwLock::new(SpvManager::new())),
+            connection_mode: RwLock::new(connection_mode),
         };
 
         let app_context = Arc::new(app_context);
@@ -200,6 +215,20 @@ impl AppContext {
 
     pub fn is_developer_mode(&self) -> bool {
         self.developer_mode.load(Ordering::Relaxed)
+    }
+
+    pub fn get_connection_mode(&self) -> crate::model::settings::ConnectionMode {
+        *self.connection_mode.read().unwrap()
+    }
+
+    pub fn set_connection_mode(&self, mode: crate::model::settings::ConnectionMode) -> Result<()> {
+        *self.connection_mode.write().unwrap() = mode;
+        self.db.update_connection_mode(mode)?;
+        Ok(())
+    }
+
+    pub fn is_spv_mode(&self) -> bool {
+        matches!(*self.connection_mode.read().unwrap(), crate::model::settings::ConnectionMode::Spv)
     }
 
     /// Repaints the UI if animations are enabled.

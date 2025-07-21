@@ -1,6 +1,7 @@
 use crate::database::Database;
 use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::model::password_info::PasswordInfo;
+use crate::model::settings::ConnectionMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
@@ -113,6 +114,24 @@ impl Database {
         Ok(())
     }
 
+    pub fn add_connection_mode_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // Check if connection_mode column exists
+        let connection_mode_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='connection_mode'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !connection_mode_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN connection_mode TEXT DEFAULT 'Core';",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
     pub fn update_theme_preference(&self, theme_preference: ThemeMode) -> Result<()> {
         let theme_str = match theme_preference {
             ThemeMode::Light => "Light",
@@ -125,6 +144,22 @@ impl Database {
             SET theme_preference = ?
             WHERE id = 1",
             rusqlite::params![theme_str],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn update_connection_mode(&self, connection_mode: ConnectionMode) -> Result<()> {
+        let mode_str = match connection_mode {
+            ConnectionMode::Core => "Core",
+            ConnectionMode::Spv => "Spv",
+        };
+
+        self.execute(
+            "UPDATE settings
+            SET connection_mode = ?
+            WHERE id = 1",
+            rusqlite::params![mode_str],
         )?;
 
         Ok(())
@@ -155,22 +190,94 @@ impl Database {
             Option<PathBuf>,
             bool,
             ThemeMode,
+            ConnectionMode,
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, theme_preference FROM settings WHERE id = 1")?;
+        
+        // First check if settings table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings')",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(false);
+        
+        if !table_exists {
+            return Ok(None);
+        }
+        
+        // Check if there are any rows
+        let has_rows: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM settings WHERE id = 1)",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(false);
+        
+        if !has_rows {
+            return Ok(None);
+        }
+        
+        // Check if connection_mode column exists
+        let connection_mode_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='connection_mode'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+        
+        // Build query dynamically based on available columns
+        let base_columns = "network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf";
+        
+        // Check if theme_preference column exists
+        let theme_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='theme_preference'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+        
+        let query = if connection_mode_exists && theme_exists {
+            format!("{}, theme_preference, connection_mode", base_columns)
+        } else if theme_exists {
+            format!("{}, theme_preference", base_columns)
+        } else {
+            base_columns.to_string()
+        };
+        
+        let query = format!("SELECT {} FROM settings WHERE id = 1", query);
+        let mut stmt = conn.prepare(&query)?;
 
-        let result = stmt.query_row([], |row| {
-            let network: String = row.get(0)?;
-            let start_root_screen: u32 = row.get(1)?;
-            let password_check: Option<Vec<u8>> = row.get(2)?;
-            let main_password_salt: Option<Vec<u8>> = row.get(3)?;
-            let main_password_nonce: Option<Vec<u8>> = row.get(4)?;
-            let custom_dash_qt_path: Option<String> = row.get(5)?;
-            let overwrite_dash_conf: Option<bool> = row.get(6)?;
-            let theme_preference: Option<String> = row.get(7)?;
+        let has_connection_mode = connection_mode_exists;
+        let has_theme = theme_exists;
+        let result = stmt.query_row([], move |row| {
+            let mut col_idx = 0;
+            let network: String = row.get(col_idx)?;
+            col_idx += 1;
+            let start_root_screen: u32 = row.get(col_idx)?;
+            col_idx += 1;
+            let password_check: Option<Vec<u8>> = row.get(col_idx)?;
+            col_idx += 1;
+            let main_password_salt: Option<Vec<u8>> = row.get(col_idx)?;
+            col_idx += 1;
+            let main_password_nonce: Option<Vec<u8>> = row.get(col_idx)?;
+            col_idx += 1;
+            let custom_dash_qt_path: Option<String> = row.get(col_idx)?;
+            col_idx += 1;
+            let overwrite_dash_conf: Option<bool> = row.get(col_idx)?;
+            col_idx += 1;
+            
+            let theme_preference: Option<String> = if has_theme {
+                let val = row.get(col_idx)?;
+                col_idx += 1;
+                val
+            } else {
+                None
+            };
+            
+            let connection_mode: Option<String> = if has_connection_mode {
+                row.get(col_idx)?
+            } else {
+                None
+            };
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -198,6 +305,13 @@ impl Database {
                 _ => ThemeMode::System,                     // Default to System for unknown values
             };
 
+            // Parse connection mode
+            let connection_mode = match connection_mode.as_deref() {
+                Some("Spv") => ConnectionMode::Spv,
+                Some("Core") | None => ConnectionMode::Core, // Default to Core if missing
+                _ => ConnectionMode::Core,                    // Default to Core for unknown values
+            };
+
             Ok((
                 parsed_network,
                 root_screen_type,
@@ -205,6 +319,7 @@ impl Database {
                 custom_dash_qt_path.map(PathBuf::from),
                 overwrite_dash_conf.unwrap_or(true),
                 theme_mode,
+                connection_mode,
             ))
         });
 

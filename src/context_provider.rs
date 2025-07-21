@@ -120,9 +120,62 @@ impl ContextProvider for Provider {
         quorum_hash: [u8; 32], // quorum hash is 32 bytes
         _core_chain_locked_height: u32,
     ) -> std::result::Result<[u8; 48], dash_sdk::error::ContextProviderError> {
-        let key = self.core.get_quorum_public_key(quorum_type, quorum_hash)?;
+        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx = app_ctx_guard
+            .as_ref()
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
 
-        Ok(key)
+        // Check if SPV mode is enabled and SPV client is initialized
+        let is_spv_active = app_ctx.is_spv_mode() && {
+            let spv_manager = futures::executor::block_on(app_ctx.spv_manager.read());
+            spv_manager.client.is_some() && spv_manager.is_initialized()
+        };
+
+        if is_spv_active {
+            // Get quorum public key from SPV client's MasternodeListEngine
+            let spv_manager = futures::executor::block_on(app_ctx.spv_manager.read());
+            
+            if let Some(client) = &spv_manager.client {
+                let client = futures::executor::block_on(client.lock());
+                
+                // Get the masternode list engine from the SPV client
+                if let Some(mn_list_engine) = client.masternode_list_engine() {
+                    // Find the quorum entry in the masternode lists
+                    use dashcore::QuorumHash;
+                    use dashcore::sml::llmq_type::LLMQType;
+                    use dashcore::hashes::Hash;
+                    
+                    let llmq_type = LLMQType::from(quorum_type as u8);
+                    let quorum_hash_typed = QuorumHash::from_slice(&quorum_hash).unwrap();
+                    
+                    for (_height, mn_list) in &mn_list_engine.masternode_lists {
+                        if let Some(quorums) = mn_list.quorums.get(&llmq_type) {
+                            if let Some(quorum_entry) = quorums.get(&quorum_hash_typed) {
+                                // Get the public key bytes
+                                let public_key_bytes: &[u8] = quorum_entry.quorum_entry.quorum_public_key.as_ref();
+                                if public_key_bytes.len() == 48 {
+                                    let mut key_array = [0u8; 48];
+                                    key_array.copy_from_slice(public_key_bytes);
+                                    return Ok(key_array);
+                                } else {
+                                    return Err(ContextProviderError::Generic("Invalid public key length".to_string()));
+                                }
+                            }
+                        }
+                    }
+                    
+                    return Err(ContextProviderError::Generic("Quorum not found in SPV masternode lists".to_string()));
+                } else {
+                    return Err(ContextProviderError::Generic("SPV masternode list engine not available".to_string()));
+                }
+            } else {
+                return Err(ContextProviderError::Generic("SPV client not initialized".to_string()));
+            }
+        } else {
+            // Use Core client when not in SPV mode
+            let key = self.core.get_quorum_public_key(quorum_type, quorum_hash)?;
+            Ok(key)
+        }
     }
 
     fn get_platform_activation_height(

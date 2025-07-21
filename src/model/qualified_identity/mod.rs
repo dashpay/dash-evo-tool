@@ -225,6 +225,12 @@ pub struct QualifiedIdentity {
     pub status: IdentityStatus,
 }
 
+impl AsRef<QualifiedIdentity> for QualifiedIdentity {
+    fn as_ref(&self) -> &QualifiedIdentity {
+        self
+    }
+}
+
 impl PartialEq for QualifiedIdentity {
     fn eq(&self, other: &Self) -> bool {
         self.identity == other.identity

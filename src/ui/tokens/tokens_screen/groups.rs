@@ -175,7 +175,7 @@ impl TokensScreen {
                                     Vec::new()
                                 };
 
-                                let identities = self.identities.values().cloned().collect::<Vec<QualifiedIdentity>>();
+                                let identities = self.identities.values().collect::<Vec<&QualifiedIdentity>>();
                                 // Use the reusable identity selector widget
                                 let _identity_response = ui.add(IdentitySelector::new(
                                     format!("member_identity_selector_{}", j),

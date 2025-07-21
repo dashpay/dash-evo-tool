@@ -213,7 +213,7 @@ impl UnfreezeTokensScreen {
                 &self.frozen_identities,
             )
             .width(300.0)
-            .label("Unfreeze Identity ID to unfreeze:"),
+            .label("Identity ID to unfreeze:"),
         );
     }
 

@@ -158,18 +158,13 @@ impl TransferTokensScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key, &mut error_message);
 
-        let receiver_identity_id = known_identities
-            .first()
-            .map(|identity| identity.identity.id().to_string(Encoding::Base58))
-            .unwrap_or_default();
-
         Self {
             identity,
             identity_token_balance,
             known_identities,
             selected_key: selected_key.cloned(),
             public_note: None,
-            receiver_identity_id,
+            receiver_identity_id: String::new(),
             amount: String::new(),
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,

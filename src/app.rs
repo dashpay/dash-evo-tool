@@ -646,8 +646,24 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
-                            self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                            // Special handling for SPV results - always route to NetworkChooser screen
+                            if matches!(unboxed_message, BackendTaskSuccessResult::SpvResult(_)) {
+                                tracing::info!("Routing SPV result to NetworkChooser screen. Current main screen: {:?}", 
+                                    self.selected_main_screen);
+                                
+                                // Get the NetworkChooser screen directly
+                                if let Some(Screen::NetworkChooserScreen(network_chooser)) = 
+                                    self.main_screens.get_mut(&RootScreenType::RootScreenNetworkChooser) {
+                                    network_chooser.display_task_result(unboxed_message);
+                                } else {
+                                    // Fallback to visible screen
+                                    self.visible_screen_mut()
+                                        .display_task_result(unboxed_message);
+                                }
+                            } else {
+                                self.visible_screen_mut()
+                                    .display_task_result(unboxed_message);
+                            }
                         }
                     }
                 }

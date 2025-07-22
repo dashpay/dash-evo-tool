@@ -57,6 +57,7 @@ regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "7.0.3" }
 tz-rs = { version = "0.7.0" }
+num-format = "0.4.4"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

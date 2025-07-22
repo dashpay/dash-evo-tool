@@ -1743,6 +1743,7 @@ dependencies = [
  "libsqlite3-sys",
  "native-dialog",
  "nix 0.30.1",
+ "num-format",
  "qrcode",
  "raw-cpuid",
  "regex",
@@ -1859,6 +1860,7 @@ dependencies = [
  "secp256k1",
  "serde",
  "thiserror 2.0.12",
+ "tracing",
 ]
 
 [[package]]
@@ -4686,6 +4688,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.103",
+]
+
+[[package]]
+name = "num-format"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a652d9771a63711fd3c3deb670acfbe5c30a4072e664d7a3bf5a9e1056ac72c3"
+dependencies = [
+ "arrayvec",
+ "itoa",
 ]
 
 [[package]]

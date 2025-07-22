@@ -178,7 +178,13 @@ impl AppContext {
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
             }
-            BackendTask::SpvTask(spv_task) => self.run_spv_task(spv_task).await,
+            BackendTask::SpvTask(spv_task) => {
+                let result = self.run_spv_task(spv_task).await;
+                if let Ok(BackendTaskSuccessResult::SpvResult(ref spv_result)) = result {
+                    tracing::info!("SPV task completed with result: {:?}", spv_result);
+                }
+                result
+            }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }

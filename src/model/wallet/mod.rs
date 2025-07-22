@@ -263,6 +263,7 @@ impl Wallet {
         !self.unused_asset_locks.is_empty()
     }
 
+    /// Returns the maximum balance of the wallet by summing up all UTXOs.
     pub fn max_balance(&self) -> u64 {
         self.utxos
             .values()

@@ -72,6 +72,7 @@ impl TopUpIdentityScreen {
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
                 if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                    let txid=tx.txid().to_hex();
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
@@ -81,7 +82,7 @@ impl TopUpIdentityScreen {
                             Box::new(tx),
                         ),
                     };
-
+                    tracing::debug!("Using asset lock for identity top-up: {:?}", txid);
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
@@ -163,73 +164,6 @@ impl TopUpIdentityScreen {
             }
             _ => AppAction::None,
         }
-    }
-
-    fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
-        // Ensure a wallet is selected
-        let Some(selected_wallet) = self.wallet.clone() else {
-            ui.label("No wallet selected.");
-            return;
-        };
-
-        // Read the wallet to access unused asset locks
-        let wallet = selected_wallet.read().unwrap();
-
-        if wallet.unused_asset_locks.is_empty() {
-            ui.label("No unused asset locks available.");
-            return;
-        }
-
-        ui.heading("Select an unused asset lock:");
-
-        // Track the index of the currently selected asset lock (if any)
-        let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
-            wallet
-                .unused_asset_locks
-                .iter()
-                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
-        });
-
-        // Display the asset locks in a scrollable area
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (index, (tx, address, amount, islock, proof)) in
-                wallet.unused_asset_locks.iter().enumerate()
-            {
-                ui.horizontal(|ui| {
-                    let tx_id = tx.txid().to_string();
-                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
-                    let is_locked = if islock.is_some() { "Yes" } else { "No" };
-
-                    // Display asset lock information with "Selected" if this one is selected
-                    let selected_text = if Some(index) == selected_index {
-                        " (Selected)"
-                    } else {
-                        ""
-                    };
-
-                    ui.label(format!(
-                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
-                        tx_id, address, lock_amount, is_locked, selected_text
-                    ));
-
-                    // Button to select this asset lock
-                    if ui.button("Select").clicked() {
-                        // Update the selected asset lock
-                        self.funding_asset_lock = Some((
-                            tx.clone(),
-                            proof.clone().expect("Asset lock proof is required"),
-                            address.clone(),
-                        ));
-
-                        // Update the step to ready to create identity
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
-                    }
-                });
-
-                ui.add_space(5.0); // Add space between each entry
-            }
-        });
     }
 }
 
@@ -437,6 +371,10 @@ impl ScreenLike for TopUpIdentityScreen {
                         self.funding_address = Some(address);
                     }
 
+                    if let Some(asset_lock) = response_data.asset_lock_selected {
+                        self.funding_asset_lock = Some(asset_lock);
+                    }
+
                     if let Some(error) = response_data.error {
                         self.error_message = Some(error);
                     }
@@ -444,15 +382,6 @@ impl ScreenLike for TopUpIdentityScreen {
                     // Get the current funding method from the widget
                     let funding_method = widget.funding_method();
                     
-                    // Additional UI for UseUnusedAssetLock method
-                    if funding_method == FundingMethod::UseUnusedAssetLock {
-                        ui.add_space(15.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        
-                        self.render_choose_funding_asset_lock(ui);
-                    }
-
                     // Show top-up button when ready
                     let can_top_up = match funding_method {
                         FundingMethod::UseUnusedAssetLock => {
@@ -461,17 +390,13 @@ impl ScreenLike for TopUpIdentityScreen {
                         }
                         FundingMethod::UseWalletBalance => {
                             // Check if amount is valid
-                            let has_amount = self.funding_amount_exact.is_some();
-                            let amount_valid = has_amount && self.funding_amount_exact.unwrap_or_default() > 0;
+                            let balance = self.wallet.as_ref().map(|w| {
+                                w.read().unwrap().max_balance()
+                            }).unwrap_or(0);
                             
-                            // Debug output
-                            if !has_amount {
-                                ui.label("Debug: No funding_amount_exact set");
-                            } else if !amount_valid {
-                                ui.label(format!("Debug: Amount not valid: {:?}", self.funding_amount_exact));
-                            }
-                            
-                            amount_valid
+                            balance > 0 && self.funding_amount_exact.is_some() && 
+                            self.funding_amount_exact.unwrap_or_default() > 0 &&
+                            self.funding_amount_exact.unwrap_or_default() <= balance
                         }
                         FundingMethod::AddressWithQRCode => {
                             // For QR code method, always show the button

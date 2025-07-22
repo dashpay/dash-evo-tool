@@ -4,6 +4,8 @@ use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::dashcore::Transaction;
+use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
 use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};
 use std::sync::{Arc, RwLock};
@@ -19,6 +21,8 @@ pub struct FundingWidgetResponse {
     pub amount_changed: Option<String>,
     /// Address generated or changed
     pub address_changed: Option<Address>,
+    /// Asset lock selected (Transaction, AssetLockProof, Address)
+    pub asset_lock_selected: Option<(Transaction, AssetLockProof, Address)>,
     /// Max button was clicked
     pub max_button_clicked: bool,
     /// Copy button was clicked
@@ -34,6 +38,7 @@ impl FundingWidgetResponse {
             || self.funding_method_changed.is_some()
             || self.amount_changed.is_some()
             || self.address_changed.is_some()
+            || self.asset_lock_selected.is_some()
             || self.max_button_clicked
             || self.copy_button_clicked
             || self.error.is_some()
@@ -58,6 +63,7 @@ pub struct FundingWidget {
     funding_method: FundingMethod,
     funding_amount: String,
     funding_address: Option<Address>,
+    selected_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     core_has_funding_address: Option<bool>,
     copied_to_clipboard: Option<Option<String>>,
 }
@@ -80,6 +86,7 @@ impl FundingWidget {
             funding_method: FundingMethod::NoSelection,
             funding_amount: default_amount,
             funding_address: None,
+            selected_asset_lock: None,
             core_has_funding_address: None,
             copied_to_clipboard: None,
         }
@@ -153,6 +160,11 @@ impl FundingWidget {
         self.funding_address.as_ref()
     }
 
+    /// Get the currently selected asset lock
+    pub fn selected_asset_lock(&self) -> Option<&(Transaction, AssetLockProof, Address)> {
+        self.selected_asset_lock.as_ref()
+    }
+
     fn render_wallet_selection(
         &mut self,
         ui: &mut Ui,
@@ -182,6 +194,7 @@ impl FundingWidget {
                     drop(wallets);
                     self.selected_wallet = Some(wallet_clone.clone());
                     self.funding_method = FundingMethod::NoSelection; // Reset funding method
+                    self.selected_asset_lock = None; // Reset asset lock
                     response.wallet_changed = Some(wallet_clone);
                     response.funding_method_changed = Some(FundingMethod::NoSelection);
                 }
@@ -228,8 +241,9 @@ impl FundingWidget {
             if self.predefined_address.is_none() {
                 self.funding_address = None;
             }
-            // Reset funding method when wallet changes
+            // Reset funding method and asset lock when wallet changes
             self.funding_method = FundingMethod::NoSelection;
+            self.selected_asset_lock = None;
             response.wallet_changed = Some(wallet);
             response.funding_method_changed = Some(FundingMethod::NoSelection);
         }
@@ -323,6 +337,8 @@ impl FundingWidget {
 
         if let Some(new_method) = method_changed {
             self.funding_method = new_method;
+            // Reset asset lock when method changes
+            self.selected_asset_lock = None;
             // Only set max amount when switching to wallet balance if using default amount
             if new_method == FundingMethod::UseWalletBalance {
                 if let Some(wallet) = &self.selected_wallet {
@@ -500,6 +516,73 @@ impl FundingWidget {
         });
         Ok(())
     }
+
+    fn render_asset_lock_selection(
+        &mut self,
+        ui: &mut Ui,
+        response: &mut FundingWidgetResponse,
+    ) {
+        let Some(selected_wallet) = self.selected_wallet.clone() else {
+            ui.label("No wallet selected.");
+            return;
+        };
+
+        let wallet = selected_wallet.read().unwrap();
+
+        if wallet.unused_asset_locks.is_empty() {
+            ui.label("No unused asset locks available.");
+            return;
+        }
+
+        ui.heading("Select an unused asset lock:");
+
+        // Track the index of the currently selected asset lock (if any)
+        let selected_index = self.selected_asset_lock.as_ref().and_then(|(_, proof, _)| {
+            wallet
+                .unused_asset_locks
+                .iter()
+                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
+        });
+
+        // Display the asset locks in a scrollable area
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, (tx, address, amount, islock, proof)) in
+                wallet.unused_asset_locks.iter().enumerate()
+            {
+                ui.horizontal(|ui| {
+                    let tx_id = tx.txid().to_string();
+                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
+                    let is_locked = if islock.is_some() { "Yes" } else { "No" };
+
+                    // Display asset lock information with "Selected" if this one is selected
+                    let selected_text = if Some(index) == selected_index {
+                        " (Selected)"
+                    } else {
+                        ""
+                    };
+
+                    ui.label(format!(
+                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
+                        tx_id, address, lock_amount, is_locked, selected_text
+                    ));
+
+                    // Button to select this asset lock
+                    if ui.button("Select").clicked() {
+                        // Update the selected asset lock
+                        let selected_lock = (
+                            tx.clone(),
+                            proof.clone().expect("Asset lock proof is required"),
+                            address.clone(),
+                        );
+                        self.selected_asset_lock = Some(selected_lock.clone());
+                        response.asset_lock_selected = Some(selected_lock);
+                    }
+                });
+
+                ui.add_space(5.0); // Add space between each entry
+            }
+        });
+    }
 }
 
 impl FundingWidget {
@@ -523,6 +606,12 @@ impl FundingWidget {
                 if self.funding_method != FundingMethod::NoSelection {
                     self.render_amount_input(ui, &mut response);
                     ui.add_space(10.0);
+
+                    // Asset lock selection for UseUnusedAssetLock method
+                    if self.funding_method == FundingMethod::UseUnusedAssetLock {
+                        self.render_asset_lock_selection(ui, &mut response);
+                        ui.add_space(10.0);
+                    }
 
                     // QR code for address-based funding
                     if self.funding_method == FundingMethod::AddressWithQRCode {

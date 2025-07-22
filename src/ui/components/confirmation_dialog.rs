@@ -49,15 +49,13 @@ pub enum ConfirmationDialogResponse {
 ///     .show(ui);
 /// # }
 /// ```
-pub struct ConfirmationDialog<F = fn(), G = fn()> {
+pub struct ConfirmationDialog {
     title: String,
     message: String,
     confirm_text: String,
     cancel_text: String,
     danger_mode: bool,
     is_open: bool,
-    on_confirm: Option<F>,
-    on_cancel: Option<G>,
 }
 
 impl ConfirmationDialog {
@@ -70,8 +68,6 @@ impl ConfirmationDialog {
             cancel_text: "Cancel".to_string(),
             danger_mode: false,
             is_open: true,
-            on_confirm: None,
-            on_cancel: None,
         }
     }
 
@@ -100,50 +96,10 @@ impl ConfirmationDialog {
     }
 }
 
-impl<F, G> ConfirmationDialog<F, G>
-where
-    F: FnOnce(),
-    G: FnOnce(),
-{
-    /// Set a callback to execute when the user clicks the confirm button
-    pub fn on_confirm<F2>(self, callback: F2) -> ConfirmationDialog<F2, G>
-    where
-        F2: FnOnce(),
-    {
-        ConfirmationDialog {
-            title: self.title,
-            message: self.message,
-            confirm_text: self.confirm_text,
-            cancel_text: self.cancel_text,
-            danger_mode: self.danger_mode,
-            is_open: self.is_open,
-            on_confirm: Some(callback),
-            on_cancel: self.on_cancel,
-        }
-    }
-
-    /// Set a callback to execute when the user clicks the cancel button or closes the dialog
-    pub fn on_cancel<G2>(self, callback: G2) -> ConfirmationDialog<F, G2>
-    where
-        G2: FnOnce(),
-    {
-        ConfirmationDialog {
-            title: self.title,
-            message: self.message,
-            confirm_text: self.confirm_text,
-            cancel_text: self.cancel_text,
-            danger_mode: self.danger_mode,
-            is_open: self.is_open,
-            on_confirm: self.on_confirm,
-            on_cancel: Some(callback),
-        }
-    }
-
+impl ConfirmationDialog {
     /// Show the dialog and return the user's response
     pub fn show(self, ui: &mut Ui) -> InnerResponse<ConfirmationDialogResponse> {
         let mut is_open = self.is_open;
-        let mut on_ok = self.on_confirm;
-        let mut on_cancel = self.on_cancel;
 
         if !is_open {
             return InnerResponse::new(
@@ -185,9 +141,6 @@ where
 
                         if ui.add(confirm_button).clicked() {
                             final_response = ConfirmationDialogResponse::Confirmed;
-                            if let Some(callback) = on_ok.take() {
-                                callback();
-                            }
                         }
 
                         ui.add_space(10.0);
@@ -198,9 +151,6 @@ where
 
                         if ui.add(cancel_button).clicked() {
                             final_response = ConfirmationDialogResponse::Canceled;
-                            if let Some(callback) = on_cancel.take() {
-                                callback();
-                            }
                         }
                     });
                 });
@@ -211,9 +161,6 @@ where
         // Handle window being closed via X button - treat as cancel
         if !is_open && matches!(final_response, ConfirmationDialogResponse::None) {
             final_response = ConfirmationDialogResponse::Canceled;
-            if let Some(callback) = on_cancel.take() {
-                callback();
-            }
         }
 
         if let Some(window_response) = window_response {
@@ -227,11 +174,7 @@ where
     }
 }
 
-impl<F, G> Widget for ConfirmationDialog<F, G>
-where
-    F: FnOnce(),
-    G: FnOnce(),
-{
+impl Widget for ConfirmationDialog {
     fn ui(self, ui: &mut Ui) -> egui::Response {
         let inner_response = self.show(ui);
         inner_response.response
@@ -241,7 +184,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_confirmation_dialog_creation() {
@@ -256,27 +198,5 @@ mod tests {
         assert_eq!(dialog.cancel_text, "No");
         assert!(dialog.danger_mode);
         assert!(dialog.is_open);
-    }
-
-    #[test]
-    fn test_confirmation_dialog_with_callbacks() {
-        let ok_called = Arc::new(Mutex::new(false));
-        let ok_called_clone = ok_called.clone();
-
-        let cancel_called = Arc::new(Mutex::new(false));
-        let cancel_called_clone = cancel_called.clone();
-
-        let _dialog = ConfirmationDialog::new("Test", "Test message")
-            .on_confirm(move || {
-                *ok_called_clone.lock().unwrap() = true;
-            })
-            .on_cancel(move || {
-                *cancel_called_clone.lock().unwrap() = true;
-            });
-
-        // Test that the dialog can be created with callbacks
-        // (We can't easily test the actual callback execution without a UI context)
-        assert!(!*ok_called.lock().unwrap());
-        assert!(!*cancel_called.lock().unwrap());
     }
 }

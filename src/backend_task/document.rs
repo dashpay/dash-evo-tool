@@ -97,7 +97,7 @@ impl AppContext {
                 tracing::info!("Starting document fetch with query: {:?}", document_query);
                 tracing::info!("SPV mode active: {}", self.is_spv_mode());
                 tracing::info!("SDK network: {:?}", sdk.network);
-                
+
                 let result = Document::fetch_many(sdk, document_query)
                     .await
                     .map(BackendTaskSuccessResult::Documents)
@@ -105,17 +105,17 @@ impl AppContext {
                         tracing::error!("Document fetch failed: {:?}", e);
                         format!("Error fetching documents: {}", e)
                     });
-                
+
                 if result.is_ok() {
                     tracing::info!("Document fetch completed successfully");
                 }
-                
+
                 result
             }
             DocumentTask::FetchDocumentsPage(mut document_query) => {
                 // Set the limit for each page
                 document_query.limit = 100;
-                
+
                 tracing::info!("Starting paginated document fetch");
                 tracing::info!("SPV mode active: {}", self.is_spv_mode());
                 tracing::info!("SDK network: {:?}", sdk.network);
@@ -125,12 +125,13 @@ impl AppContext {
 
                 // Fetch a single page
                 tracing::info!("Fetching documents with query");
-                let docs_batch_result = Document::fetch_many(sdk, document_query)
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("Paginated document fetch failed: {:?}", e);
-                        format!("Error fetching documents: {}", e)
-                    })?;
+                let docs_batch_result =
+                    Document::fetch_many(sdk, document_query)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Paginated document fetch failed: {:?}", e);
+                            format!("Error fetching documents: {}", e)
+                        })?;
                 tracing::info!("Got document query result");
 
                 let batch_len = docs_batch_result.len();

@@ -14,7 +14,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     // Setup Platform SDK
     let address_list = config.dapi_address_list();
     tracing::info!("Initializing SDK with DAPI addresses: {:?}", address_list);
-    
+
     let request_settings = RequestSettings {
         connect_timeout: Some(Duration::from_secs(1)),
         timeout: Some(Duration::from_secs(10)),
@@ -22,7 +22,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         ban_failed_address: Some(true),
     };
     tracing::info!("SDK request settings: {:?}", request_settings);
-    
+
     let platform_version = default_platform_version(&network);
 
     let sdk = SdkBuilder::new(address_list)

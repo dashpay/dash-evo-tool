@@ -58,7 +58,9 @@ impl
             ConnectionMode,
         ),
     ) -> Self {
-        Self::new(tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6)
+        Self::new(
+            tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6,
+        )
     }
 }
 

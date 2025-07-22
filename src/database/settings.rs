@@ -195,46 +195,50 @@ impl Database {
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
-        
+
         // First check if settings table exists
-        let table_exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings')",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(false);
-        
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
         if !table_exists {
             return Ok(None);
         }
-        
+
         // Check if there are any rows
-        let has_rows: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM settings WHERE id = 1)",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(false);
-        
+        let has_rows: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM settings WHERE id = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
         if !has_rows {
             return Ok(None);
         }
-        
+
         // Check if connection_mode column exists
         let connection_mode_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='connection_mode'",
             [],
             |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
-        
+
         // Build query dynamically based on available columns
         let base_columns = "network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf";
-        
+
         // Check if theme_preference column exists
         let theme_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='theme_preference'",
             [],
             |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
-        
+
         let query = if connection_mode_exists && theme_exists {
             format!("{}, theme_preference, connection_mode", base_columns)
         } else if theme_exists {
@@ -242,7 +246,7 @@ impl Database {
         } else {
             base_columns.to_string()
         };
-        
+
         let query = format!("SELECT {} FROM settings WHERE id = 1", query);
         let mut stmt = conn.prepare(&query)?;
 
@@ -264,7 +268,7 @@ impl Database {
             col_idx += 1;
             let overwrite_dash_conf: Option<bool> = row.get(col_idx)?;
             col_idx += 1;
-            
+
             let theme_preference: Option<String> = if has_theme {
                 let val = row.get(col_idx)?;
                 col_idx += 1;
@@ -272,7 +276,7 @@ impl Database {
             } else {
                 None
             };
-            
+
             let connection_mode: Option<String> = if has_connection_mode {
                 row.get(col_idx)?
             } else {
@@ -309,7 +313,7 @@ impl Database {
             let connection_mode = match connection_mode.as_deref() {
                 Some("Spv") => ConnectionMode::Spv,
                 Some("Core") | None => ConnectionMode::Core, // Default to Core if missing
-                _ => ConnectionMode::Core,                    // Default to Core for unknown values
+                _ => ConnectionMode::Core,                   // Default to Core for unknown values
             };
 
             Ok((

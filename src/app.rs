@@ -246,7 +246,7 @@ impl AppState {
         let selected_main_screen = settings.root_screen_type;
         let chosen_network = settings.network;
         network_chooser_screen.current_network = chosen_network;
-        
+
         // Set connection mode in all app contexts
         mainnet_app_context.set_connection_mode(connection_mode);
         if let Some(ref ctx) = testnet_app_context {
@@ -648,12 +648,16 @@ impl App for AppState {
                         _ => {
                             // Special handling for SPV results - always route to NetworkChooser screen
                             if matches!(unboxed_message, BackendTaskSuccessResult::SpvResult(_)) {
-                                tracing::info!("Routing SPV result to NetworkChooser screen. Current main screen: {:?}", 
-                                    self.selected_main_screen);
-                                
+                                tracing::info!(
+                                    "Routing SPV result to NetworkChooser screen. Current main screen: {:?}",
+                                    self.selected_main_screen
+                                );
+
                                 // Get the NetworkChooser screen directly
-                                if let Some(Screen::NetworkChooserScreen(network_chooser)) = 
-                                    self.main_screens.get_mut(&RootScreenType::RootScreenNetworkChooser) {
+                                if let Some(Screen::NetworkChooserScreen(network_chooser)) = self
+                                    .main_screens
+                                    .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                                {
                                     network_chooser.display_task_result(unboxed_message);
                                 } else {
                                     // Fallback to visible screen

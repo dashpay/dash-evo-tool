@@ -163,7 +163,8 @@ impl AppContext {
         };
 
         // Load connection mode from settings if available
-        let connection_mode = db.get_settings()
+        let connection_mode = db
+            .get_settings()
             .ok()
             .flatten()
             .map(|settings| settings.6)
@@ -228,7 +229,10 @@ impl AppContext {
     }
 
     pub fn is_spv_mode(&self) -> bool {
-        matches!(*self.connection_mode.read().unwrap(), crate::model::settings::ConnectionMode::Spv)
+        matches!(
+            *self.connection_mode.read().unwrap(),
+            crate::model::settings::ConnectionMode::Spv
+        )
     }
 
     /// Repaints the UI if animations are enabled.

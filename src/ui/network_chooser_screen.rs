@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::spv::{SpvTask, SpvTaskResult};
+use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
@@ -14,7 +14,7 @@ use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Context, Ui, Color32};
+use eframe::egui::{self, Color32, Context, Ui};
 use num_format::{Locale, ToFormattedString};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,30 +54,30 @@ impl NetworkChooserScreen {
         StyledCard::new().padding(20.0).show(ui, |ui| {
             ui.heading("Connection Mode");
             ui.separator();
-            
+
             ui.horizontal(|ui| {
                 ui.label("Select connection method:");
-                
+
                 let mut mode_changed = false;
-                
+
                 // Core RPC option
                 if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Core, "Dash Core RPC").clicked() {
                     mode_changed = true;
                 }
-                
+
                 ui.add_space(20.0);
-                
+
                 // SPV option
                 if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Spv, "SPV Client").clicked() {
                     mode_changed = true;
                 }
-                
+
                 if mode_changed {
                     // Update connection mode in context
                     if let Err(e) = self.current_app_context().set_connection_mode(self.connection_mode) {
                         self.spv_last_error = Some(format!("Failed to update connection mode: {}", e));
                     }
-                    
+
                     // Update all contexts
                     self.mainnet_app_context.set_connection_mode(self.connection_mode).ok();
                     if let Some(ref ctx) = self.testnet_app_context {
@@ -91,9 +91,9 @@ impl NetworkChooserScreen {
                     }
                 }
             });
-            
+
             ui.add_space(10.0);
-            
+
             match self.connection_mode {
                 ConnectionMode::Core => {
                     ui.label("Uses Dash Core's RPC interface for blockchain operations.");
@@ -102,35 +102,36 @@ impl NetworkChooserScreen {
                 ConnectionMode::Spv => {
                     ui.label("SPV (Simplified Payment Verification) allows lightweight blockchain access.");
                     ui.label("No full node required - connects directly to the Dash network.");
-                    
+
                     ui.separator();
-                    
+
                     // SPV sync controls
                     self.render_spv_controls(ui, app_action);
                 }
             }
         });
     }
-    
+
     fn render_spv_controls(&mut self, ui: &mut Ui, action: &mut AppAction) {
         ui.heading("SPV Sync Controls");
-        
+
         ui.horizontal(|ui| {
             if !self.spv_is_initialized || (!self.spv_is_syncing && self.spv_current_height == 0) {
                 // Use network-appropriate checkpoint height
                 // Start from genesis to avoid checkpoint validation issues
                 let checkpoint_height = match self.current_network {
-                    Network::Dash => 0, // Start from genesis due to checkpoint validation issues
+                    Network::Dash => 0,    // Start from genesis due to checkpoint validation issues
                     Network::Testnet => 0, // Start from genesis due to checkpoint validation issues
-                    Network::Devnet => 0, // Start from genesis for devnet
+                    Network::Devnet => 0,  // Start from genesis for devnet
                     Network::Regtest => 0, // Start from genesis for regtest
                     _ => 0,
                 };
-                
+
                 if ui.button("Initialize & Sync").clicked() {
-                    *action = AppAction::BackendTask(BackendTask::SpvTask(
-                        SpvTask::InitializeAndSync { checkpoint_height }
-                    ));
+                    *action =
+                        AppAction::BackendTask(BackendTask::SpvTask(SpvTask::InitializeAndSync {
+                            checkpoint_height,
+                        }));
                     // Set syncing state immediately for UI feedback
                     self.spv_is_syncing = true;
                     self.spv_last_error = None;
@@ -138,11 +139,12 @@ impl NetworkChooserScreen {
             } else if !self.spv_is_syncing {
                 // For resume, we'll use the current height as the checkpoint
                 let checkpoint_height = self.spv_current_height;
-                
+
                 if ui.button("Resume Sync").clicked() {
-                    *action = AppAction::BackendTask(BackendTask::SpvTask(
-                        SpvTask::InitializeAndSync { checkpoint_height }
-                    ));
+                    *action =
+                        AppAction::BackendTask(BackendTask::SpvTask(SpvTask::InitializeAndSync {
+                            checkpoint_height,
+                        }));
                     // Set syncing state immediately for UI feedback
                     self.spv_is_syncing = true;
                     self.spv_last_error = None;
@@ -150,7 +152,7 @@ impl NetworkChooserScreen {
             } else {
                 ui.add_enabled(false, egui::Button::new("Syncing..."));
             }
-            
+
             // Add a button to manually update quorum cache (for debugging)
             if self.spv_is_initialized {
                 if ui.button("Update Quorum Cache").clicked() {
@@ -180,7 +182,7 @@ impl NetworkChooserScreen {
                         }
                         _ => return,
                     };
-                    
+
                     // Update cache in a non-blocking way
                     let app_ctx_clone = app_context.clone();
                     tokio::spawn(async move {
@@ -197,52 +199,60 @@ impl NetworkChooserScreen {
                 }
             }
         });
-        
+
         if self.spv_is_syncing || self.spv_is_initialized {
             ui.separator();
             self.render_spv_sync_progress(ui);
         }
-        
+
         if let Some(error) = &self.spv_last_error {
             ui.separator();
             ui.colored_label(Color32::RED, format!("Error: {}", error));
         }
     }
-    
+
     fn render_spv_sync_progress(&self, ui: &mut Ui) {
         ui.label("Sync Progress");
-        
+
         // Show spinner on the same line as the label if syncing
         if self.spv_is_syncing {
             ui.spinner();
         }
-        
+
         // Add progress bar with proper width constraints
         ui.add_sized(
             [ui.available_width(), 20.0],
             egui::ProgressBar::new(self.spv_sync_progress / 100.0)
                 .text(format!("{:.2}%", self.spv_sync_progress))
-                .animate(self.spv_is_syncing)
+                .animate(self.spv_is_syncing),
         );
-        
+
         if self.spv_target_height > 0 {
             ui.horizontal(|ui| {
                 ui.label("Progress:");
-                ui.label(format!("{} / {} blocks", 
-                    self.spv_current_height.to_formatted_string(&Locale::en), 
+                ui.label(format!(
+                    "{} / {} blocks",
+                    self.spv_current_height.to_formatted_string(&Locale::en),
                     self.spv_target_height.to_formatted_string(&Locale::en)
                 ));
-                
+
                 // Calculate and show actual percentage based on displayed values
-                let calc_percent = (self.spv_current_height as f32 / self.spv_target_height as f32) * 100.0;
+                let calc_percent =
+                    (self.spv_current_height as f32 / self.spv_target_height as f32) * 100.0;
                 ui.label(format!("(calculated: {:.2}%)", calc_percent));
             });
-            
-            if self.spv_is_syncing && self.spv_current_height > 0 && self.spv_target_height > self.spv_current_height {
+
+            if self.spv_is_syncing
+                && self.spv_current_height > 0
+                && self.spv_target_height > self.spv_current_height
+            {
                 let blocks_remaining = self.spv_target_height - self.spv_current_height;
                 ui.horizontal(|ui| {
                     ui.label("Blocks Remaining:");
-                    ui.label(format!("{}", blocks_remaining.to_formatted_string(&Locale::en)));
+                    ui.label(format!(
+                        "{}",
+                        blocks_remaining.to_formatted_string(&Locale::en)
+                    ));
                 });
             }
         }
@@ -949,25 +959,40 @@ impl ScreenLike for NetworkChooserScreen {
             }
             BackendTaskSuccessResult::SpvResult(spv_result) => {
                 match spv_result {
-                    SpvTaskResult::SyncProgress { current_height, target_height, progress_percent } => {
+                    SpvTaskResult::SyncProgress {
+                        current_height,
+                        target_height,
+                        progress_percent,
+                    } => {
                         // Always log to info level so we can see it
-                        tracing::info!("UI received SPV progress: current={}, target={}, percent={:.2}%", 
-                            current_height, target_height, progress_percent);
-                        
+                        tracing::info!(
+                            "UI received SPV progress: current={}, target={}, percent={:.2}%",
+                            current_height,
+                            target_height,
+                            progress_percent
+                        );
+
                         // Debug log the before/after state
-                        tracing::debug!("UI SPV state before update: current={}, target={}, progress={:.2}%",
-                            self.spv_current_height, self.spv_target_height, self.spv_sync_progress);
-                        
+                        tracing::debug!(
+                            "UI SPV state before update: current={}, target={}, progress={:.2}%",
+                            self.spv_current_height,
+                            self.spv_target_height,
+                            self.spv_sync_progress
+                        );
+
                         self.spv_current_height = current_height;
                         self.spv_target_height = target_height;
                         self.spv_sync_progress = progress_percent;
                         self.spv_is_syncing = true;
                         self.spv_is_initialized = true;
                         self.spv_last_error = None;
-                        
-                        tracing::debug!("UI SPV state after update: current={}, target={}, progress={:.2}%",
-                            self.spv_current_height, self.spv_target_height, self.spv_sync_progress);
-                        
+
+                        tracing::debug!(
+                            "UI SPV state after update: current={}, target={}, progress={:.2}%",
+                            self.spv_current_height,
+                            self.spv_target_height,
+                            self.spv_sync_progress
+                        );
                     }
                     SpvTaskResult::SyncComplete { final_height } => {
                         self.spv_current_height = final_height;
@@ -1019,7 +1044,7 @@ impl ScreenLike for NetworkChooserScreen {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as TimestampMillis;
-            
+
             // Only check progress once per second
             if current_time >= self.spv_last_progress_check + 1000 {
                 self.spv_last_progress_check = current_time;

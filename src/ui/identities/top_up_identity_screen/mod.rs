@@ -1,6 +1,3 @@
-mod by_using_unused_asset_lock;
-mod by_using_unused_balance;
-mod by_wallet_qr_code;
 mod success_screen;
 
 use crate::app::AppAction;
@@ -14,6 +11,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::funding_widget::FundingWidget;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
@@ -25,12 +23,8 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
-use egui::{ComboBox, ScrollArea, Ui};
-use std::sync::atomic::Ordering;
+use egui::{Color32, ScrollArea};
 use std::sync::{Arc, RwLock};
-
-const WALLET_SELECTION_TOOLTIP: &str = "This wallet will provide the address for receiving funds \
-and create the asset lock transaction to top up your identity.";
 
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
@@ -42,12 +36,12 @@ pub struct TopUpIdentityScreen {
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
-    copied_to_clipboard: Option<Option<String>>,
     error_message: Option<String>,
     show_password: bool,
     wallet_password: String,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
+    funding_widget: Option<FundingWidget>,
 }
 
 impl TopUpIdentityScreen {
@@ -62,183 +56,13 @@ impl TopUpIdentityScreen {
             funding_amount: "".to_string(),
             funding_amount_exact: None,
             funding_utxo: None,
-            copied_to_clipboard: None,
             error_message: None,
             show_password: false,
             wallet_password: "".to_string(),
             show_pop_up_info: None,
             app_context: app_context.clone(),
+            funding_widget: None,
         }
-    }
-
-    fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
-        if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = self.app_context.wallets.read().unwrap();
-            if wallets.len() > 1 {
-                // Get the current funding method
-                let funding_method = *self.funding_method.read().unwrap();
-
-                // Retrieve the alias of the currently selected wallet, if any
-                let selected_wallet_alias = self
-                    .wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
-
-                // Display the ComboBox for wallet selection
-                ComboBox::from_id_salt("select_wallet")
-                    .selected_text(selected_wallet_alias)
-                    .show_ui(ui, |ui| {
-                        for wallet in wallets.values() {
-                            let (wallet_alias, has_required_resources) = {
-                                let wallet_read = wallet.read().unwrap();
-                                let alias = wallet_read
-                                    .alias
-                                    .clone()
-                                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
-
-                                let has_resources = match funding_method {
-                                    FundingMethod::UseWalletBalance => wallet_read.has_balance(),
-                                    FundingMethod::UseUnusedAssetLock => {
-                                        wallet_read.has_unused_asset_lock()
-                                    }
-                                    _ => true,
-                                };
-
-                                (alias, has_resources)
-                            };
-
-                            let is_selected = self
-                                .wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            ui.add_enabled_ui(has_required_resources, |ui| {
-                                if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                    // Update the selected wallet from app_context
-                                    self.wallet = Some(wallet.clone());
-                                    // Reset the funding address
-                                    self.funding_address = None;
-                                    // Reset the funding asset lock
-                                    self.funding_asset_lock = None;
-                                    // Reset the funding UTXO
-                                    self.funding_utxo = None;
-                                    // Reset the copied to clipboard state
-                                    self.copied_to_clipboard = None;
-                                    // Reset the step to choose funding method
-                                    let mut step = self.step.write().unwrap();
-                                    *step = WalletFundedScreenStep::ChooseFundingMethod;
-                                }
-                            });
-                        }
-                    });
-                true
-            } else if let Some(wallet) = wallets.values().next() {
-                if self.wallet.is_none() {
-                    // Get the current funding method
-                    let funding_method = *self.funding_method.read().unwrap();
-
-                    // Check if the wallet has the required resources
-                    let has_required_resources = {
-                        let wallet_read = wallet.read().unwrap();
-                        match funding_method {
-                            FundingMethod::UseWalletBalance => wallet_read.has_balance(),
-                            FundingMethod::UseUnusedAssetLock => {
-                                wallet_read.has_unused_asset_lock()
-                            }
-                            _ => true,
-                        }
-                    };
-
-                    if has_required_resources {
-                        // Automatically select the only available wallet from app_context
-                        self.wallet = Some(wallet.clone());
-                    }
-                }
-                false
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }
-
-    fn render_funding_method(&mut self, ui: &mut egui::Ui) {
-        let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap();
-
-        // Check if any wallet has unused asset locks or balance
-        let (has_any_unused_asset_lock, has_any_balance) = {
-            let wallets = self.app_context.wallets.read().unwrap();
-            let mut has_unused_asset_lock = false;
-            let mut has_balance = false;
-
-            for wallet in wallets.values() {
-                let wallet = wallet.read().unwrap();
-                if wallet.has_unused_asset_lock() {
-                    has_unused_asset_lock = true;
-                }
-                if wallet.has_balance() {
-                    has_balance = true;
-                }
-                if has_unused_asset_lock && has_balance {
-                    break; // No need to check further
-                }
-            }
-
-            (has_unused_asset_lock, has_balance)
-        };
-
-        ComboBox::from_id_salt("funding_method")
-            .selected_text(format!("{}", *funding_method))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut *funding_method,
-                    FundingMethod::NoSelection,
-                    "Please select funding method",
-                );
-
-                ui.add_enabled_ui(has_any_unused_asset_lock, |ui| {
-                    if ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Asset Locks",
-                        )
-                        .changed()
-                    {
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
-                    }
-                });
-
-                ui.add_enabled_ui(has_any_balance, |ui| {
-                    if ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
-                        )
-                        .changed()
-                    {
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
-                    }
-                });
-
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::AddressWithQRCode,
-                        "Address with QR Code",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingOnFunds;
-                }
-            });
     }
 
     fn top_up_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
@@ -301,34 +125,111 @@ impl TopUpIdentityScreen {
                     identity_input,
                 )))
             }
+            FundingMethod::AddressWithQRCode => {
+                // For address with QR code, we need to wait for funds to arrive
+                // This is similar to UseWalletBalance but uses external funding
+                let Some(funding_utxo) = &self.funding_utxo else {
+                    // Start waiting for funds
+                    let mut step = self.step.write().unwrap();
+                    *step = WalletFundedScreenStep::WaitingOnFunds;
+                    return AppAction::None;
+                };
+
+                let (outpoint, tx_out, address) = funding_utxo.clone();
+                let identity_input = IdentityTopUpInfo {
+                    qualified_identity: self.identity.clone(),
+                    wallet: Arc::clone(selected_wallet),
+                    identity_funding_method: TopUpIdentityFundingMethod::FundWithUtxo(
+                        outpoint,
+                        tx_out,
+                        address,
+                        self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
+                        self.identity
+                            .top_ups
+                            .keys()
+                            .max()
+                            .cloned()
+                            .map(|i| i + 1)
+                            .unwrap_or_default(),
+                    ),
+                };
+
+                let mut step = self.step.write().unwrap();
+                *step = WalletFundedScreenStep::WaitingForAssetLock;
+
+                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
+                    identity_input,
+                )))
+            }
             _ => AppAction::None,
         }
     }
 
-    fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount (DASH):");
+    fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
+        // Ensure a wallet is selected
+        let Some(selected_wallet) = self.wallet.clone() else {
+            ui.label("No wallet selected.");
+            return;
+        };
 
-            // Render the text input field for the funding amount
-            let amount_input = ui
-                .add(egui::TextEdit::singleline(&mut self.funding_amount).desired_width(100.0))
-                .lost_focus();
+        // Read the wallet to access unused asset locks
+        let wallet = selected_wallet.read().unwrap();
 
-            self.funding_amount_exact = self.funding_amount.parse::<f64>().ok().map(|f| {
-                (f * 1e8) as u64 // Convert the amount to Duffs
-            });
+        if wallet.unused_asset_locks.is_empty() {
+            ui.label("No unused asset locks available.");
+            return;
+        }
 
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.heading("Select an unused asset lock:");
 
-            if amount_input && enter_pressed {
-                // Optional: Validate the input when Enter is pressed
-                if self.funding_amount.parse::<f64>().is_err() {
-                    ui.label("Invalid amount. Please enter a valid number.");
-                }
-            }
+        // Track the index of the currently selected asset lock (if any)
+        let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
+            wallet
+                .unused_asset_locks
+                .iter()
+                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
         });
 
-        ui.add_space(10.0);
+        // Display the asset locks in a scrollable area
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, (tx, address, amount, islock, proof)) in
+                wallet.unused_asset_locks.iter().enumerate()
+            {
+                ui.horizontal(|ui| {
+                    let tx_id = tx.txid().to_string();
+                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
+                    let is_locked = if islock.is_some() { "Yes" } else { "No" };
+
+                    // Display asset lock information with "Selected" if this one is selected
+                    let selected_text = if Some(index) == selected_index {
+                        " (Selected)"
+                    } else {
+                        ""
+                    };
+
+                    ui.label(format!(
+                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
+                        tx_id, address, lock_amount, is_locked, selected_text
+                    ));
+
+                    // Button to select this asset lock
+                    if ui.button("Select").clicked() {
+                        // Update the selected asset lock
+                        self.funding_asset_lock = Some((
+                            tx.clone(),
+                            proof.clone().expect("Asset lock proof is required"),
+                            address.clone(),
+                        ));
+
+                        // Update the step to ready to create identity
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
+                });
+
+                ui.add_space(5.0); // Add space between each entry
+            }
+        });
     }
 }
 
@@ -483,69 +384,143 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.heading("Follow these steps to top up your identity:");
                 ui.add_space(15.0);
 
-                let mut step_number = 1;
-                ui.heading(format!("{}. Choose your funding method.", step_number).as_str());
-                step_number += 1;
-                ui.add_space(10.0);
+                let step_number = 1;
+                
+                // Initialize funding widget if needed
+                if self.funding_widget.is_none() {
+                    let mut widget = FundingWidget::new(self.app_context.clone())
+                        .with_amount_label("Top-up Amount (DASH):")
+                        .with_default_amount("0.5");
 
-                self.render_funding_method(ui);
+                    // Set wallet if already selected
+                    if let Some(wallet) = &self.wallet {
+                        widget = widget.with_wallet(wallet.clone());
+                    }
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
-                if funding_method == FundingMethod::NoSelection {
-                    return;
+                    self.funding_widget = Some(widget);
+                    
+                    // Initialize funding_amount_exact with the default amount
+                    self.funding_amount = "0.5".to_string();
+                    self.funding_amount_exact = Some((0.5 * 1e8) as u64);
                 }
 
-                if funding_method == FundingMethod::UseWalletBalance
-                    || funding_method == FundingMethod::UseUnusedAssetLock
-                    || funding_method == FundingMethod::AddressWithQRCode
-                {
-                    ui.horizontal(|ui| {
-                        ui.heading(format!(
-                            "{}. Choose the wallet to use to top up this identity.",
-                            step_number
-                        ));
-                        ui.add_space(10.0);
-
-                        // Add info icon with hover tooltip
-                        crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP);
-                    });
-                    step_number += 1;
-
+                // Render the funding widget
+                if let Some(ref mut widget) = self.funding_widget {
+                    ui.heading(format!("{}. Configure your top-up", step_number));
                     ui.add_space(10.0);
 
-                    self.render_wallet_selection(ui);
+                    let widget_response = widget.show(ui);
+                    let response_data = widget_response.inner;
 
-                    if self.wallet.is_none() {
-                        return;
+                    // Handle widget responses
+                    if let Some(wallet) = response_data.wallet_changed {
+                        self.wallet = Some(wallet);
+                        // Clear funding asset lock when wallet changes
+                        self.funding_asset_lock = None;
+                    }
+
+                    if let Some(method) = response_data.funding_method_changed {
+                        let mut funding_method_guard = self.funding_method.write().unwrap();
+                        *funding_method_guard = method;
+                        // Clear funding asset lock when method changes
+                        self.funding_asset_lock = None;
+                    }
+
+                    if let Some(amount) = response_data.amount_changed {
+                        self.funding_amount = amount.clone();
+                        self.funding_amount_exact = amount.parse::<f64>().ok().map(|f| {
+                            (f * 1e8) as u64 // Convert to Duffs
+                        });
+                    }
+
+                    if let Some(address) = response_data.address_changed {
+                        self.funding_address = Some(address);
+                    }
+
+                    if let Some(error) = response_data.error {
+                        self.error_message = Some(error);
+                    }
+
+                    // Get the current funding method from the widget
+                    let funding_method = widget.funding_method();
+                    
+                    // Additional UI for UseUnusedAssetLock method
+                    if funding_method == FundingMethod::UseUnusedAssetLock {
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        
+                        self.render_choose_funding_asset_lock(ui);
+                    }
+
+                    // Show top-up button when ready
+                    let can_top_up = match funding_method {
+                        FundingMethod::UseUnusedAssetLock => {
+                            // Check if we have a funding asset lock selected
+                            self.funding_asset_lock.is_some()
+                        }
+                        FundingMethod::UseWalletBalance => {
+                            // Check if amount is valid
+                            let has_amount = self.funding_amount_exact.is_some();
+                            let amount_valid = has_amount && self.funding_amount_exact.unwrap_or_default() > 0;
+                            
+                            // Debug output
+                            if !has_amount {
+                                ui.label("Debug: No funding_amount_exact set");
+                            } else if !amount_valid {
+                                ui.label(format!("Debug: Amount not valid: {:?}", self.funding_amount_exact));
+                            }
+                            
+                            amount_valid
+                        }
+                        FundingMethod::AddressWithQRCode => {
+                            // For QR code method, always show the button
+                            // The backend will handle the fund waiting logic
+                            self.funding_address.is_some() &&
+                            self.funding_amount_exact.is_some() && 
+                            self.funding_amount_exact.unwrap() > 0
+                        }
+                        FundingMethod::NoSelection => false,
                     };
 
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+                    if can_top_up {
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(10.0);
 
-                    if needed_unlock && !just_unlocked {
-                        return;
+                        if ui.button("Top Up Identity").clicked() {
+                            inner_action |= self.top_up_identity_clicked(funding_method);
+                        }
                     }
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                }
+                    // Show error message if any
+                    if let Some(error_message) = self.error_message.as_ref() {
+                        ui.add_space(10.0);
+                        ui.colored_label(Color32::DARK_RED, error_message);
+                    }
 
-                match funding_method {
-                    FundingMethod::NoSelection => (),
-                    FundingMethod::UseUnusedAssetLock => {
-                        inner_action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
-                    }
-                    FundingMethod::UseWalletBalance => {
-                        inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
-                    }
-                    FundingMethod::AddressWithQRCode => {
-                        inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
-                    }
+                    // Show step status
+                    let step = *self.step.read().unwrap();
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| match step {
+                        WalletFundedScreenStep::WaitingOnFunds => {
+                            ui.heading("=> Waiting for funds <=");
+                            ui.add_space(10.0);
+                            ui.label("Send the specified amount to the address above.");
+                        }
+                        WalletFundedScreenStep::WaitingForAssetLock => {
+                            ui.heading("=> Creating asset lock transaction <=");
+                        }
+                        WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                            ui.heading("=> Waiting for Platform acknowledgement <=");
+                            ui.add_space(10.0);
+                            ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+                        }
+                        WalletFundedScreenStep::Success => {
+                            ui.heading("...Success...");
+                        }
+                        _ => {}
+                    });
                 }
             });
 

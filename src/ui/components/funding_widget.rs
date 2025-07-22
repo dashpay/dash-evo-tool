@@ -181,7 +181,9 @@ impl FundingWidget {
                     // Drop wallets before modifying self
                     drop(wallets);
                     self.selected_wallet = Some(wallet_clone.clone());
+                    self.funding_method = FundingMethod::NoSelection; // Reset funding method
                     response.wallet_changed = Some(wallet_clone);
+                    response.funding_method_changed = Some(FundingMethod::NoSelection);
                 }
             }
             return false;
@@ -226,7 +228,10 @@ impl FundingWidget {
             if self.predefined_address.is_none() {
                 self.funding_address = None;
             }
+            // Reset funding method when wallet changes
+            self.funding_method = FundingMethod::NoSelection;
             response.wallet_changed = Some(wallet);
+            response.funding_method_changed = Some(FundingMethod::NoSelection);
         }
 
         true
@@ -271,30 +276,39 @@ impl FundingWidget {
                     (wallet.has_unused_asset_lock(), wallet.has_balance())
                 };
 
-                if has_unused_asset_lock
-                    && ui
-                        .selectable_value(
-                            &mut temp_method,
-                            FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Asset Lock (recommended)",
-                        )
-                        .changed()
-                {
-                    method_changed = Some(temp_method);
-                }
+                // Use Unused Asset Lock option
+                ui.add_enabled_ui(has_unused_asset_lock, |ui| {
+                    let response = ui.selectable_value(
+                        &mut temp_method,
+                        FundingMethod::UseUnusedAssetLock,
+                        "Use Unused Asset Lock (recommended)",
+                    );
+                    if response.changed() {
+                        method_changed = Some(temp_method);
+                    }
+                    if !has_unused_asset_lock {
+                        response.on_disabled_hover_text(
+                            "This wallet has no unused asset locks available",
+                        );
+                    }
+                });
 
-                if has_balance
-                    && ui
-                        .selectable_value(
-                            &mut temp_method,
-                            FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
-                        )
-                        .changed()
-                {
-                    method_changed = Some(temp_method);
-                }
+                // Use Wallet Balance option
+                ui.add_enabled_ui(has_balance, |ui| {
+                    let response = ui.selectable_value(
+                        &mut temp_method,
+                        FundingMethod::UseWalletBalance,
+                        "Use Wallet Balance",
+                    );
+                    if response.changed() {
+                        method_changed = Some(temp_method);
+                    }
+                    if !has_balance {
+                        response.on_disabled_hover_text("This wallet has no available balance");
+                    }
+                });
 
+                // Address with QR Code option (always available)
                 if ui
                     .selectable_value(
                         &mut temp_method,
@@ -309,7 +323,7 @@ impl FundingWidget {
 
         if let Some(new_method) = method_changed {
             self.funding_method = new_method;
-            // Set max amount when switching to wallet balance
+            // Only set max amount when switching to wallet balance if using default amount
             if new_method == FundingMethod::UseWalletBalance {
                 if let Some(wallet) = &self.selected_wallet {
                     let wallet = wallet.read().unwrap();
@@ -325,22 +339,16 @@ impl FundingWidget {
         ui.horizontal(|ui| {
             ui.label(&self.amount_label);
 
-            let mut temp_amount = self.funding_amount.clone();
             let amount_input = ui
                 .add(
-                    egui::TextEdit::singleline(&mut temp_amount)
+                    egui::TextEdit::singleline(&mut self.funding_amount)
                         .hint_text("Enter amount (e.g., 0.1234)")
                         .desired_width(100.0),
                 )
                 .lost_focus();
 
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if temp_amount != self.funding_amount {
-                self.funding_amount = temp_amount;
-                if amount_input && enter_pressed {
-                    response.amount_changed = Some(self.funding_amount.clone());
-                }
+            if amount_input {
+                response.amount_changed = Some(self.funding_amount.clone());
             }
 
             // Show Max button if using wallet balance and it's enabled in config

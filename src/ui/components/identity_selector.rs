@@ -235,7 +235,6 @@ impl<'a> Widget for IdentitySelector<'a> {
                             .selectable_label(checked, qualified_identity.display_string())
                             .clicked()
                         {
-                            // combo_changed = *self.identity_str != id_str;
                             combo_changed = true;
                             *self.identity_str = id_str;
                         }

@@ -112,6 +112,7 @@ pub struct FundingWidget {
     amount_label: String,
     show_qr_code: bool,
     show_copy_button: bool,
+    validation_hints: bool,
 
     // Current state
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -137,6 +138,7 @@ impl FundingWidget {
             amount_label: "Amount (DASH):".to_string(),
             show_qr_code: true,
             show_copy_button: true,
+            validation_hints: true,
             selected_wallet: None,
             funding_method: FundingMethod::NoSelection,
             funding_amount: default_amount,
@@ -193,6 +195,23 @@ impl FundingWidget {
     pub fn with_copy_button(mut self, show: bool) -> Self {
         self.show_copy_button = show;
         self
+    }
+
+    /// Control whether to show validation hints to the user (like, not enough funds).
+    /// Usually used to disable hints when an operation is in progress.
+    ///
+    /// Defaults to 'true'
+    pub fn with_validation_hints(mut self, enabled: bool) -> Self {
+        self.validation_hints = enabled;
+        self
+    }
+
+    /// Control whether to show validation hints to the user (like, not enough funds).
+    /// Usually used to disable hints when an operation is in progress.
+    ///
+    /// Defaults to 'true'.
+    pub fn set_validation_hints(&mut self, enabled: bool) {
+        self.validation_hints = enabled;
     }
 
     /// Get the current selected wallet
@@ -582,6 +601,10 @@ impl FundingWidget {
     }
 
     fn render_funding_status_hints(&self, ui: &mut Ui) {
+        if !self.validation_hints {
+            return;
+        }
+
         // Only show hints if we have a valid amount and a funding method selected
         let Ok(amount) = self.funding_amount.parse::<f64>() else {
             return;

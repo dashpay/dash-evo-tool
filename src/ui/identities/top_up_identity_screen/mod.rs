@@ -292,6 +292,10 @@ impl ScreenLike for TopUpIdentityScreen {
 
                 // Render the funding widget
                 if let Some(ref mut widget) = self.funding_widget {
+                    // Disable balance checks if operation is in progress
+                    let step = {*self.step.read().unwrap()};
+                    widget.set_validation_hints(!step.is_processing());
+                    
                     ui.heading(format!("{}. Configure your top-up", step_number));
                     ui.add_space(10.0);
 

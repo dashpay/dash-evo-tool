@@ -739,6 +739,10 @@ impl ScreenLike for AddNewIdentityScreen {
 
                 // Render the funding widget first - it handles wallet selection
                 if let Some(ref mut widget) = self.funding_widget {
+                    // Disable balance checks if operation is in progress
+                    let step = {*self.step.read().unwrap()};
+                    widget.set_validation_hints(!step.is_processing());
+                    
                     let widget_response = widget.show(ui);
                     let response_data = widget_response.inner;
 

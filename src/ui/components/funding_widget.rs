@@ -27,6 +27,8 @@ pub struct FundingWidgetResponse {
     pub max_button_clicked: bool,
     /// Copy button was clicked
     pub copy_button_clicked: bool,
+    /// New address button was clicked
+    pub new_address_clicked: bool,
     /// Error occurred
     pub error: Option<String>,
 }
@@ -41,6 +43,7 @@ impl FundingWidgetResponse {
             || self.asset_lock_selected.is_some()
             || self.max_button_clicked
             || self.copy_button_clicked
+            || self.new_address_clicked
             || self.error.is_some()
     }
 }
@@ -165,6 +168,24 @@ impl FundingWidget {
         self.selected_asset_lock.as_ref()
     }
 
+    /// Reset wallet-dependent settings when wallet changes
+    fn reset_wallet_dependent_settings(&mut self, response: &mut FundingWidgetResponse) {
+        // Only reset if address is not predefined
+        if self.predefined_address.is_none() {
+            self.funding_address = None;
+            response.address_changed = None; // Clear any previous address
+        }
+
+        self.funding_method = FundingMethod::NoSelection;
+        self.selected_asset_lock = None;
+        self.core_has_funding_address = None;
+        self.copied_to_clipboard = None;
+
+        // Set response fields to notify about the resets
+        response.funding_method_changed = Some(FundingMethod::NoSelection);
+        response.asset_lock_selected = None; // Clear any previous asset lock selection
+    }
+
     fn render_wallet_selection(
         &mut self,
         ui: &mut Ui,
@@ -193,10 +214,8 @@ impl FundingWidget {
                     // Drop wallets before modifying self
                     drop(wallets);
                     self.selected_wallet = Some(wallet_clone.clone());
-                    self.funding_method = FundingMethod::NoSelection; // Reset funding method
-                    self.selected_asset_lock = None; // Reset asset lock
+                    self.reset_wallet_dependent_settings(response);
                     response.wallet_changed = Some(wallet_clone);
-                    response.funding_method_changed = Some(FundingMethod::NoSelection);
                 }
             }
             return false;
@@ -206,7 +225,15 @@ impl FundingWidget {
         let selected_wallet_alias = self
             .selected_wallet
             .as_ref()
-            .and_then(|wallet| wallet.read().ok()?.alias.clone())
+            .and_then(|wallet| {
+                let wallet_guard = wallet.read().ok()?;
+                let alias = wallet_guard
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                let balance = wallet_guard.max_balance() as f64 * 1e-8; // Convert to DASH
+                Some(format!("{} ({:.8} DASH)", alias, balance))
+            })
             .unwrap_or_else(|| "Select Wallet".to_string());
 
         ui.label("Select Wallet:");
@@ -216,18 +243,28 @@ impl FundingWidget {
             .selected_text(selected_wallet_alias)
             .show_ui(ui, |ui| {
                 for wallet in wallets.values() {
-                    let wallet_alias = wallet
-                        .read()
-                        .ok()
-                        .and_then(|w| w.alias.clone())
-                        .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                    let wallet_guard = wallet.read().ok();
+                    let (wallet_alias, wallet_balance_dash) =
+                        if let Some(wallet_guard) = wallet_guard {
+                            let alias = wallet_guard
+                                .alias
+                                .clone()
+                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                            let balance_dash = wallet_guard.max_balance() as f64 * 1e-8;
+                            (alias, balance_dash)
+                        } else {
+                            ("Unnamed Wallet".to_string(), 0.0)
+                        };
+
+                    let display_text =
+                        format!("{} ({:.4} DASH)", wallet_alias, wallet_balance_dash);
 
                     let is_selected = self
                         .selected_wallet
                         .as_ref()
                         .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
-                    if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                    if ui.selectable_label(is_selected, display_text).clicked() {
                         wallet_selected = Some(wallet.clone());
                     }
                 }
@@ -237,15 +274,8 @@ impl FundingWidget {
 
         if let Some(wallet) = wallet_selected {
             self.selected_wallet = Some(wallet.clone());
-            // Reset address when wallet changes
-            if self.predefined_address.is_none() {
-                self.funding_address = None;
-            }
-            // Reset funding method and asset lock when wallet changes
-            self.funding_method = FundingMethod::NoSelection;
-            self.selected_asset_lock = None;
+            self.reset_wallet_dependent_settings(response);
             response.wallet_changed = Some(wallet);
-            response.funding_method_changed = Some(FundingMethod::NoSelection);
         }
 
         true
@@ -394,21 +424,29 @@ impl FundingWidget {
     fn ensure_funding_address(
         &mut self,
         response: &mut FundingWidgetResponse,
+        force_new: bool,
     ) -> Result<Address, String> {
-        // Use predefined address if available
+        // Use predefined address if available and not forcing new
         if let Some(address) = &self.predefined_address {
-            return Ok(address.clone());
+            if !force_new {
+                return Ok(address.clone());
+            }
         }
 
-        // Generate new address if needed
-        if self.funding_address.is_none() {
+        // Generate new address if needed or forced
+        if self.funding_address.is_none() || force_new {
             let Some(wallet_guard) = self.selected_wallet.as_ref() else {
                 return Err("No wallet selected".to_string());
             };
 
             let receive_address = {
                 let mut wallet = wallet_guard.write().unwrap();
-                wallet.receive_address(self.app_context.network, false, Some(&self.app_context))?
+                // Always generate a new address when force_new is true
+                wallet.receive_address(
+                    self.app_context.network,
+                    force_new,
+                    Some(&self.app_context),
+                )?
             };
 
             // Import address to Core if needed
@@ -474,7 +512,7 @@ impl FundingWidget {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        let address = self.ensure_funding_address(response)?;
+        let address = self.ensure_funding_address(response, false)?;
         let pay_uri = format!("{}?amount={:.4}", address.to_qr_uri(), amount);
 
         // Generate the QR code image
@@ -497,31 +535,67 @@ impl FundingWidget {
         ui.vertical_centered(|ui| {
             ui.label(&pay_uri);
 
-            if self.show_copy_button {
-                ui.add_space(5.0);
-                if ui.button("Copy Address").clicked() {
-                    self.copied_to_clipboard = Some(copy_to_clipboard(&pay_uri).err());
-                    response.copy_button_clicked = true;
-                }
+            // Show buttons if needed
+            let show_copy = self.show_copy_button;
+            let show_new_address = self.predefined_address.is_none(); // Hide when address is predefined
 
-                if let Some(error) = &self.copied_to_clipboard {
-                    ui.add_space(5.0);
-                    if let Some(error) = error {
-                        ui.label(format!("Failed to copy to clipboard: {}", error));
+            if show_copy || show_new_address {
+                ui.add_space(5.0);
+
+                // Use horizontal layout with manual centering for proper alignment
+                ui.horizontal(|ui| {
+                    // Calculate available width and center the buttons manually
+                    let available_width = ui.available_width();
+
+                    // Estimate button widths (approximate values for centering calculation)
+                    let copy_button_width = if show_copy { 100.0 } else { 0.0 };
+                    let new_address_button_width = if show_new_address { 100.0 } else { 0.0 };
+                    let spacing_width = if show_copy && show_new_address {
+                        10.0
                     } else {
-                        ui.label("Address copied to clipboard.");
+                        0.0
+                    };
+                    let total_content_width =
+                        copy_button_width + new_address_button_width + spacing_width;
+
+                    // Add left padding to center the content
+                    let left_padding = (available_width - total_content_width).max(0.0) / 2.0;
+                    ui.add_space(left_padding);
+
+                    if show_copy && ui.button("Copy Address").clicked() {
+                        self.copied_to_clipboard = Some(copy_to_clipboard(&pay_uri).err());
+                        response.copy_button_clicked = true;
                     }
+
+                    if show_copy && show_new_address {
+                        ui.add_space(10.0);
+                    }
+
+                    if show_new_address && ui.button("New Address").clicked() {
+                        // Generate a new address
+                        if let Ok(_new_address) = self.ensure_funding_address(response, true) {
+                            // The address has been updated, no additional action needed
+                            response.new_address_clicked = true;
+                        } else {
+                            response.error = Some("Failed to generate new address".to_string());
+                        }
+                    }
+                });
+            }
+
+            if let Some(error) = &self.copied_to_clipboard {
+                ui.add_space(5.0);
+                if let Some(error) = error {
+                    ui.label(format!("Failed to copy to clipboard: {}", error));
+                } else {
+                    ui.label("Address copied to clipboard.");
                 }
             }
         });
         Ok(())
     }
 
-    fn render_asset_lock_selection(
-        &mut self,
-        ui: &mut Ui,
-        response: &mut FundingWidgetResponse,
-    ) {
+    fn render_asset_lock_selection(&mut self, ui: &mut Ui, response: &mut FundingWidgetResponse) {
         let Some(selected_wallet) = self.selected_wallet.clone() else {
             ui.label("No wallet selected.");
             return;

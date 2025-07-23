@@ -484,7 +484,7 @@ impl AddNewIdentityScreen {
         };
 
         // Use the funding method from the widget response
-        if let Some(funding_method) = &funding_widget_response.funding_method_ready {
+        if let Some(funding_method) = &funding_widget_response.funding_secured {
             let identity_funding_method = funding_method
                 .clone()
                 .to_register_identity_funding_method(self.identity_id_number);
@@ -783,7 +783,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
 
                     // Get funding readiness from the widget response
-                    funding_ready = response_data.funding_method_ready.is_some() || step.is_processing();
+                    funding_ready = response_data.funding_secured.is_some() || step.is_processing();
                 }
 
                 // Don't proceed if funding is not ready

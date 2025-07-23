@@ -46,10 +46,8 @@ pub struct WalletsBalancesScreen {
     refreshing: bool,
     show_rename_dialog: bool,
     rename_input: String,
-    // Demo funding widget
+    // Funding widget for top-up
     funding_widget: Option<FundingWidget>,
-    // Address-specific top-up
-    topup_address: Option<Address>,
 }
 
 pub trait DerivationPathHelpers {
@@ -140,7 +138,6 @@ impl WalletsBalancesScreen {
             show_rename_dialog: false,
             rename_input: String::new(),
             funding_widget: None,
-            topup_address: None,
         }
     }
 
@@ -562,12 +559,12 @@ impl WalletsBalancesScreen {
                                             .clicked()
                                     {
                                         // Set up funding widget for this specific address
-                                        self.topup_address = Some(data.address.clone());
+                                        let topup_address = data.address.clone();
 
                                         // Create funding widget with predefined address and QR code only
                                         let mut widget =
                                             FundingWidget::new(self.app_context.clone())
-                                                .with_address(data.address.clone())
+                                                .with_address(topup_address)
                                                 .with_default_amount("0.1")
                                                 .with_amount_label("Top-up Amount (DASH):")
                                                 .with_qr_code(true)
@@ -578,6 +575,7 @@ impl WalletsBalancesScreen {
                                             widget = widget.with_wallet(wallet.clone());
                                         }
 
+                                        // Rendered in separate function
                                         self.funding_widget = Some(widget);
                                     }
                                 });
@@ -758,6 +756,65 @@ impl WalletsBalancesScreen {
             });
     }
 
+    fn render_top_up_modal(&mut self, ui: &mut Ui) {
+        if self.funding_widget.is_none() {
+            return;
+        };
+
+        let ctx = ui.ctx();
+        let screen_rect = ctx.screen_rect();
+        let max_height = screen_rect.height() * 0.9; // 70% of screen height
+
+        let mut open = true;
+
+        egui::Window::new("💰 Top-up Address")
+            .collapsible(false)
+            .resizable(true)
+            .max_height(max_height)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([true; 2])
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            // Render the widget and get response
+                            let funding_widget =
+                                self.funding_widget.as_mut().expect("Checked above");
+                            let response_data = funding_widget.show(ui).inner.on_funded(|_| {
+                                self.funding_widget = None;
+                            });
+
+                            if let Some(e) = response_data.error {
+                                self.display_message(
+                                    &format!("Funding widget error: {}", e),
+                                    MessageType::Error,
+                                );
+                            }
+
+                            ui.add_space(15.0);
+                            ui.separator();
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button(RichText::new("Close").size(14.0)).clicked() {
+                                            self.funding_widget = None;
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                    });
+            });
+
+        // Handle close button click
+        if !open {
+            self.funding_widget = None;
+        }
+    }
+
     fn dismiss_message(&mut self) {
         self.message = None;
     }
@@ -903,6 +960,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
                         self.render_bottom_options(ui);
+                        self.render_top_up_modal(ui);
                     } else {
                         ui.vertical_centered(|ui| {
                             ui.add_space(50.0);
@@ -991,64 +1049,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         });
                     });
                 });
-        }
-
-        // Top-up Address popup
-        if self.topup_address.is_some() {
-            let screen_rect = ctx.screen_rect();
-            let max_height = screen_rect.height() * 0.9; // 70% of screen height
-
-            let mut open = true;
-            egui::Window::new("💰 Top-up Address")
-                .collapsible(false)
-                .resizable(true)
-                .max_height(max_height)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([true; 2])
-                        .show(ui, |ui| {
-                            ui.vertical(|ui| {
-                                if let Some(ref mut widget) = self.funding_widget {
-                                    // Render the widget and get response
-                                    let widget_response = widget.show(ui);
-                                    let response_data = widget_response.inner;
-
-                                    if let Some(e) = response_data.error {
-                                        self.display_message(
-                                            &format!("Funding widget error: {}", e),
-                                            MessageType::Error,
-                                        );
-                                    }
-                                }
-
-                                ui.add_space(15.0);
-                                ui.separator();
-                                ui.add_space(10.0);
-                                ui.horizontal(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button(RichText::new("Close").size(14.0))
-                                                .clicked()
-                                            {
-                                                self.funding_widget = None;
-                                                self.topup_address = None;
-                                            }
-                                        },
-                                    );
-                                });
-                            });
-                        });
-                });
-
-            // Handle close button click
-            if !open {
-                self.funding_widget = None;
-                self.topup_address = None;
-            }
         }
 
         if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) =

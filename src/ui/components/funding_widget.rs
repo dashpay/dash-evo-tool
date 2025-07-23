@@ -68,7 +68,7 @@ pub struct FundingWidgetResponse {
     /// Error occurred
     pub error: Option<String>,
     /// Whether the currently selected funding method has sufficient funds
-    pub funding_method_ready: Option<FundingWidgetMethod>,
+    pub funding_secured: Option<FundingWidgetMethod>,
 }
 
 impl FundingWidgetResponse {
@@ -83,17 +83,17 @@ impl FundingWidgetResponse {
             || self.copy_button_clicked
             || self.new_address_clicked
             || self.error.is_some()
-            || self.funding_method_ready.is_some()
+            || self.funding_secured.is_some()
     }
 
-    /// Check if the funding method is ready (is selected and has sufficient funds)
-    pub fn ready(&self) -> bool {
-        self.funding_method_ready.is_some()
+    /// Return true when the funding has been secured (funding method is selected and has sufficient funds)
+    pub fn funded(&self) -> bool {
+        self.funding_secured.is_some()
     }
 
-    /// Call a function when the widget is ready
-    pub fn on_ready(self, f: fn(&FundingWidgetResponse)) -> Self {
-        if self.ready() {
+    /// Call a function when the funding has been secured
+    pub fn on_funded(self, mut f: impl FnMut(&FundingWidgetResponse)) -> Self {
+        if self.funded() {
             f(&self)
         };
         self
@@ -703,7 +703,7 @@ impl FundingWidget {
                         };
 
                         ui.add_space(5.0);
-                        if current_balance > 0.0 {
+                        if current_balance < amount {
                             ui.colored_label(
                                 Color32::from_rgb(255, 165, 0), // Orange color
                                 format!(
@@ -969,7 +969,7 @@ impl FundingWidget {
                         response.amount_changed = Some(self.funding_amount.clone());
 
                         // Update readiness status immediately after selection
-                        response.funding_method_ready = self.check_funding_method_readiness();
+                        response.funding_secured = self.check_funding_method_readiness();
 
                         // Request repaint to update hints immediately
                         ui.ctx().request_repaint();
@@ -1037,7 +1037,7 @@ impl FundingWidget {
             }
 
             // Check if the current funding method is ready (has sufficient funds)
-            response.funding_method_ready = self.check_funding_method_readiness();
+            response.funding_secured = self.check_funding_method_readiness();
         });
 
         InnerResponse::new(response, ui_response.response)

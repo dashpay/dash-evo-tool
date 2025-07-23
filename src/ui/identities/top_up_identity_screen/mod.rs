@@ -309,7 +309,7 @@ impl ScreenLike for TopUpIdentityScreen {
                         self.funding = None;
                     }
 
-                    if let Some(method) = &response_data.funding_method_ready {
+                    if let Some(method) = &response_data.funding_secured {
                         self.funding = Some(method.clone());
                     }                    
 
@@ -322,7 +322,7 @@ impl ScreenLike for TopUpIdentityScreen {
                     }
 
 
-                    let funding_secured = response_data.ready() || step.is_processing();
+                    let funding_secured = response_data.funded() || step.is_processing();
 
                   
                     if funding_secured{

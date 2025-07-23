@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
 use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// Funding method for the funding widget - doesn't require identity indices
@@ -113,6 +114,7 @@ pub struct FundingWidget {
     show_qr_code: bool,
     show_copy_button: bool,
     validation_hints: bool,
+    ignore_existing_utxos: bool,
 
     // Current state
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -122,6 +124,9 @@ pub struct FundingWidget {
     selected_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     core_has_funding_address: Option<bool>,
     copied_to_clipboard: Option<Option<String>>,
+    /// Track existing UTXOs at the time the address was set up
+    /// This is used when ignore_existing_utxos is true to filter out pre-existing UTXOs
+    existing_utxos_snapshot: Option<HashMap<OutPoint, TxOut>>,
 }
 
 impl FundingWidget {
@@ -139,6 +144,7 @@ impl FundingWidget {
             show_qr_code: true,
             show_copy_button: true,
             validation_hints: true,
+            ignore_existing_utxos: true,
             selected_wallet: None,
             funding_method: FundingMethod::NoSelection,
             funding_amount: default_amount,
@@ -146,6 +152,7 @@ impl FundingWidget {
             selected_asset_lock: None,
             core_has_funding_address: None,
             copied_to_clipboard: None,
+            existing_utxos_snapshot: None,
         }
     }
 
@@ -214,6 +221,14 @@ impl FundingWidget {
         self.validation_hints = enabled;
     }
 
+    /// Set whether to ignore existing UTXOs when using QR code method.
+    /// This is useful for wallet top-up scenarios where the user wants to send NEW funds
+    /// even if there are already sufficient funds at the address.
+    pub fn with_ignore_existing_utxos(mut self, ignore: bool) -> Self {
+        self.ignore_existing_utxos = ignore;
+        self
+    }
+
     /// Get the current selected wallet
     pub fn selected_wallet(&self) -> Option<&Arc<RwLock<Wallet>>> {
         self.selected_wallet.as_ref()
@@ -251,10 +266,12 @@ impl FundingWidget {
         self.selected_asset_lock = None;
         self.core_has_funding_address = None;
         self.copied_to_clipboard = None;
+        self.existing_utxos_snapshot = None;
 
         // Set response fields to notify about the resets
         response.funding_method_changed = Some(FundingMethod::NoSelection);
         response.asset_lock_selected = None; // Clear any previous asset lock selection
+        response.funding_secured = None; // Clear any previous funding method readiness
     }
 
     /// Check if the currently selected funding method has sufficient funds for the specified amount
@@ -311,14 +328,10 @@ impl FundingWidget {
                 }
             }
             FundingMethod::AddressWithQRCode => {
-                if let Some(address) = &self.funding_address {
-                    if self.check_address_balance_sufficient(address, amount) {
-                        // Try to get UTXO information
-                        if let Some((outpoint, tx_out, addr)) = self.get_funding_utxo() {
-                            Some(FundingWidgetMethod::FundWithUtxo(outpoint, tx_out, addr))
-                        } else {
-                            None
-                        }
+                if self.funding_address.is_some() {
+                    // Try to get UTXO information
+                    if let Some((outpoint, tx_out, addr)) = self.get_funding_utxo() {
+                        Some(FundingWidgetMethod::FundWithUtxo(outpoint, tx_out, addr))
                     } else {
                         None
                     }
@@ -330,7 +343,7 @@ impl FundingWidget {
         }
     }
 
-    /// Check if the wallet balance is sufficient for the specified amount
+    /// Check if the wallet balance has an UTXO that is sufficient for the specified amount
     fn check_wallet_balance_sufficient(&self, required_amount_dash: f64) -> bool {
         let Some(wallet_guard) = &self.selected_wallet else {
             return false;
@@ -341,27 +354,6 @@ impl FundingWidget {
         let required_amount_duffs = (required_amount_dash * 1e8) as u64;
 
         max_balance_duffs >= required_amount_duffs
-    }
-
-    /// Check if the funding address has sufficient balance for the specified amount
-    fn check_address_balance_sufficient(
-        &self,
-        funding_address: &Address,
-        required_amount_dash: f64,
-    ) -> bool {
-        let Some(wallet_guard) = &self.selected_wallet else {
-            return false;
-        };
-
-        let wallet = wallet_guard.read().unwrap();
-        let current_balance_duffs = wallet
-            .address_balances
-            .get(funding_address)
-            .copied()
-            .unwrap_or(0);
-        let required_amount_duffs = (required_amount_dash * 1e8) as u64;
-
-        current_balance_duffs >= required_amount_duffs
     }
 
     fn render_wallet_selection(
@@ -547,6 +539,11 @@ impl FundingWidget {
             self.funding_method = new_method;
             // Reset asset lock when method changes
             self.selected_asset_lock = None;
+
+            // Clear existing UTXOs snapshot; even if we switch to QR code method,
+            // we want to capture the current state of UTXOs for future checks
+            self.existing_utxos_snapshot = None;
+
             // Only set max amount when switching to wallet balance if using default amount
             if new_method == FundingMethod::UseWalletBalance {
                 if let Some(wallet) = &self.selected_wallet {
@@ -590,13 +587,6 @@ impl FundingWidget {
                     }
                 }
             }
-
-            // Validate amount
-            if self.funding_amount.parse::<f64>().is_err()
-                || self.funding_amount.parse::<f64>().unwrap_or_default() <= 0.0
-            {
-                ui.colored_label(Color32::DARK_RED, "Invalid amount");
-            }
         });
     }
 
@@ -604,13 +594,33 @@ impl FundingWidget {
         if !self.validation_hints {
             return;
         }
-
-        // Only show hints if we have a valid amount and a funding method selected
-        let Ok(amount) = self.funding_amount.parse::<f64>() else {
+        if self.funding_method == FundingMethod::NoSelection {
             return;
         };
 
-        if amount <= 0.0 || self.funding_method == FundingMethod::NoSelection {
+        // Only show hints if we have a valid amount and a funding method selected
+        let Ok(amount) = self.funding_amount.parse::<f64>() else {
+            // display error if amount is invalid
+            ui.add_space(5.0);
+            ui.colored_label(
+                Color32::from_rgb(255, 165, 0), // Orange color
+                format!(
+                    "⚠ Invalid funding amount: '{}'. Please enter a valid number.",
+                    self.funding_amount
+                ),
+            );
+            return;
+        };
+
+        if amount <= 0.0 {
+            ui.add_space(5.0);
+            ui.colored_label(
+                Color32::from_rgb(255, 165, 0), // Orange color
+                format!(
+                    "⚠ Funding amount must be greater than zero. Current value: '{}'",
+                    self.funding_amount
+                ),
+            );
             return;
         }
 
@@ -693,34 +703,18 @@ impl FundingWidget {
                     }
                 }
                 FundingMethod::AddressWithQRCode => {
-                    if let Some(address) = &self.funding_address {
-                        // Get current balance for this address
-                        let current_balance = if let Some(wallet) = &self.selected_wallet {
-                            let wallet = wallet.read().unwrap();
-                            wallet.address_balances.get(address).copied().unwrap_or(0) as f64 * 1e-8
-                        } else {
-                            0.0
-                        };
+                    // Check if we have a UTXO for this address
+                    let utxo = self.get_funding_utxo();
 
+                    if utxo.is_none() {
                         ui.add_space(5.0);
-                        if current_balance < amount {
-                            ui.colored_label(
-                                Color32::from_rgb(255, 165, 0), // Orange color
-                                format!(
-                                    "⚠ Insufficient funds at address. Available: {:.8} DASH, Required: {:.8} DASH",
-                                    current_balance, amount
-                                )
-                            );
-                        } else {
-                            ui.colored_label(
-                                Color32::from_rgb(100, 149, 237), // Cornflower blue
-                                format!(
-                                    "ℹ Waiting for {:.8} DASH to be sent to the address above",
-                                    amount
-                                ),
-                            );
-                        }
-
+                        ui.colored_label(
+                            Color32::from_rgb(100, 149, 237), // Cornflower blue
+                            format!(
+                                "ℹ Waiting for {:.8} DASH to be sent to the address above",
+                                amount
+                            ),
+                        );
                         ui.add_space(3.0);
                         ui.colored_label(
                             Color32::from_rgb(100, 149, 237), // Cornflower blue
@@ -801,10 +795,47 @@ impl FundingWidget {
 
             // Store the address and emit event
             self.funding_address = Some(receive_address.clone());
-            response.address_changed = Some(receive_address);
+            response.address_changed = Some(receive_address.clone());
+
+            // If ignore_existing_utxos is enabled, capture current UTXOs as "existing"
+            // so we can filter them out later when checking for new funds
+            if self.ignore_existing_utxos {
+                self.capture_existing_utxos(&receive_address);
+            }
         }
 
         Ok(self.funding_address.as_ref().unwrap().clone())
+    }
+
+    /// Capture existing UTXOs for the given address to track what was already there
+    /// before we started waiting for new funds
+    fn capture_existing_utxos(&mut self, address: &Address) {
+        if let Some(wallet_guard) = &self.selected_wallet {
+            let wallet = wallet_guard.read().unwrap();
+            if let Some(utxos) = wallet.utxos.get(address) {
+                // Store a snapshot of existing UTXOs
+                self.existing_utxos_snapshot = Some(utxos.clone());
+            } else {
+                // No existing UTXOs for this address
+                self.existing_utxos_snapshot = Some(HashMap::new());
+            }
+        }
+    }
+
+    /// Ensure existing UTXOs are captured when we have both wallet and address available
+    /// and ignore_existing_utxos is enabled
+    fn ensure_existing_utxos_captured(&mut self) {
+        if !self.ignore_existing_utxos
+            || self.funding_method != FundingMethod::AddressWithQRCode
+            || self.selected_wallet.is_none()
+            || self.funding_address.is_none()
+            || self.existing_utxos_snapshot.is_some()
+        {
+            return;
+        }
+
+        let address = self.funding_address.as_ref().unwrap().clone();
+        self.capture_existing_utxos(&address);
     }
 
     fn render_qr_code(
@@ -816,12 +847,11 @@ impl FundingWidget {
             return Ok(());
         }
 
-        let Ok(amount) = self.funding_amount.parse::<f64>() else {
-            return Err("Invalid amount".to_string());
-        };
-
+        // error displayed in `render_funding_status_hints`
+        let amount = self.funding_amount.parse::<f64>().unwrap_or_default();
         if amount <= 0.0 {
-            return Err("Amount must be greater than 0".to_string());
+            self.render_funding_status_hints(ui);
+            return Ok(());
         }
 
         let address = self.ensure_funding_address(response, false)?;
@@ -998,6 +1028,10 @@ impl FundingWidget {
 
             // Only show funding options if wallet is selected
             if self.selected_wallet.is_some() {
+                // Ensure existing UTXOs are captured when we have both wallet and address
+                // and ignore_existing_utxos is enabled
+                self.ensure_existing_utxos_captured();
+
                 // Funding method selection
                 self.render_funding_method_selection(ui, &mut response);
                 ui.add_space(10.0);
@@ -1045,6 +1079,15 @@ impl FundingWidget {
 
     /// Get UTXO information for AddressWithQRCode funding method
     /// Returns (OutPoint, TxOut, Address) if a suitable UTXO is found
+    ///
+    /// Returns None if:
+    /// - Funding method is not AddressWithQRCode
+    /// - Funding address is not set
+    /// - Funding amount is invalid or <= 0
+    /// - No suitable UTXO found that meets the required amount
+    /// - No wallet is selected
+    /// - No UTXOs available for the funding address
+    /// - Existing UTXOs snapshot contains the UTXO already
     pub fn get_funding_utxo(&self) -> Option<(OutPoint, TxOut, Address)> {
         if self.funding_method != FundingMethod::AddressWithQRCode {
             return None;
@@ -1061,17 +1104,21 @@ impl FundingWidget {
         let wallet = wallet_guard.read().unwrap();
         let required_amount_duffs = (amount_dash * 1e8) as u64;
 
+        // we don't use existing UTXOs snapshot if ignore_existing_utxos is enabled; when it's disabled, existing_utxos will be None
+        let existing_utxos = self.existing_utxos_snapshot.as_ref();
+
         // Get UTXOs for the address
         if let Some(utxos) = wallet.utxos.get(funding_address) {
-            // Find the first UTXO that has enough funds
-            for (outpoint, tx_out) in utxos {
-                if tx_out.value >= required_amount_duffs {
-                    return Some((*outpoint, tx_out.clone(), funding_address.clone()));
-                }
-            }
+            utxos
+                .iter()
+                .find(|utxo| {
+                    !existing_utxos.is_some_and(|snapshot| snapshot.contains_key(utxo.0))
+                        && utxo.1.value >= required_amount_duffs
+                })
+                .map(|utxo| (*utxo.0, utxo.1.clone(), funding_address.clone()))
+        } else {
+            None
         }
-
-        None
     }
 }
 

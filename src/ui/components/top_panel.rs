@@ -60,13 +60,13 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
         // Apply negative vertical offset to move text up
         let offset = egui::vec2(0.0, -7.0);
 
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
                 ui.cursor().min + offset,
                 ui.available_size(),
             )),
             |ui| {
-                egui::menu::bar(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
                     ui.horizontal(|ui| {
                         let len = location.len();
                         for (idx, (text, loc_action)) in location.into_iter().enumerate() {
@@ -122,7 +122,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
     // Wrap in a container that can be positioned vertically
     ui.allocate_ui(ui.available_size(), |ui| {
-        ui.allocate_new_ui(
+        ui.scope_builder(
             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
                 ui.cursor().min,
                 ui.available_size(),
@@ -327,29 +327,28 @@ pub fn add_top_panel(
                                     .stroke(Stroke::NONE)
                                     .min_size(egui::vec2(100.0, 30.0));
 
-                                    // a unique ID for the popup
-                                    let popup_id = ui.auto_id_with("documents_popup");
                                     let resp = ui.add(docs_btn);
-                                    if resp.clicked() {
-                                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                                    }
+                                    let popup_id = ui.make_persistent_id("docs_popup");
 
-                                    // open the popup directly below the button
-                                    egui::popup::popup_below_widget(
-                                        ui,
+                                    egui::Popup::new(
                                         popup_id,
+                                        ui.ctx().clone(),
                                         &resp,
-                                        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-                                        |ui| {
-                                            ui.set_min_width(150.0);
-                                            for (text, da) in doc_actions {
-                                                if ui.button(text).clicked() {
-                                                    action = da.create_action(app_context);
-                                                    ui.close_menu();
-                                                }
+                                        resp.layer_id,
+                                    )
+                                    .open_memory(
+                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                    )
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, da) in doc_actions {
+                                            if ui.button(text).clicked() {
+                                                action = da.create_action(app_context);
+                                                // ui.close();
                                             }
-                                        },
-                                    );
+                                        }
+                                    });
                                 }
 
                                 // Grouped Contracts menu
@@ -367,25 +366,26 @@ pub fn add_top_panel(
 
                                     let popup_id = ui.auto_id_with("contracts_popup");
                                     let resp = ui.add(contracts_btn);
-                                    if resp.clicked() {
-                                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                                    }
 
-                                    egui::popup::popup_below_widget(
-                                        ui,
+                                    egui::Popup::new(
                                         popup_id,
+                                        ui.ctx().clone(),
                                         &resp,
-                                        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-                                        |ui| {
-                                            ui.set_min_width(150.0);
-                                            for (text, ca) in contract_actions {
-                                                if ui.button(text).clicked() {
-                                                    action = ca.create_action(app_context);
-                                                    ui.close_menu();
-                                                }
+                                        resp.layer_id,
+                                    )
+                                    .open_memory(
+                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                    )
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, ca) in contract_actions {
+                                            if ui.button(text).clicked() {
+                                                action = ca.create_action(app_context);
+                                                ui.close();
                                             }
-                                        },
-                                    );
+                                        }
+                                    });
                                 }
 
                                 // Render other buttons normally

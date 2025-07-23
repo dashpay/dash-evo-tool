@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use arboard::Clipboard;
 use eframe::epaint::{Color32, ColorImage};
 use egui::Vec2;
@@ -13,6 +15,22 @@ pub enum WalletFundedScreenStep {
     WaitingForAssetLock,
     WaitingForPlatformAcceptance,
     Success,
+}
+
+impl Display for WalletFundedScreenStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WalletFundedScreenStep::ChooseFundingMethod => write!(f, "Choose Funding Method"),
+            WalletFundedScreenStep::WaitingOnFunds => write!(f, "Waiting on Funds"),
+            WalletFundedScreenStep::FundsReceived => write!(f, "Funds Received"),
+            WalletFundedScreenStep::ReadyToCreate => write!(f, "Ready to Create"),
+            WalletFundedScreenStep::WaitingForAssetLock => write!(f, "Waiting for Asset Lock"),
+            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                write!(f, "Waiting for Platform Acceptance")
+            }
+            WalletFundedScreenStep::Success => write!(f, "Success"),
+        }
+    }
 }
 
 // Function to generate a QR code image from the address

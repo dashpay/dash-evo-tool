@@ -3,19 +3,55 @@ use crate::model::wallet::Wallet;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
-use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
+use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
 use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};
 use std::sync::{Arc, RwLock};
 
+/// Funding method for the funding widget - doesn't require identity indices
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FundingWidgetMethod {
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
+    FundWithUtxo(OutPoint, TxOut, Address),
+    FundWithWallet(Duffs),
+}
+
+impl FundingWidgetMethod {
+    /// Convert to RegisterIdentityFundingMethod with the provided identity_index
+    pub fn to_register_identity_funding_method(
+        self,
+        identity_index: u32,
+    ) -> crate::backend_task::identity::RegisterIdentityFundingMethod {
+        use crate::backend_task::identity::RegisterIdentityFundingMethod;
+
+        match self {
+            FundingWidgetMethod::UseAssetLock(address, proof, transaction) => {
+                RegisterIdentityFundingMethod::UseAssetLock(address, proof, transaction)
+            }
+            FundingWidgetMethod::FundWithUtxo(outpoint, tx_out, address) => {
+                RegisterIdentityFundingMethod::FundWithUtxo(
+                    outpoint,
+                    tx_out,
+                    address,
+                    identity_index,
+                )
+            }
+            FundingWidgetMethod::FundWithWallet(amount) => {
+                RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index)
+            }
+        }
+    }
+}
+
 /// Response from the funding widget containing all state changes and actions
 #[derive(Debug, Clone, Default)]
 pub struct FundingWidgetResponse {
     /// Wallet selection changed
     pub wallet_changed: Option<Arc<RwLock<Wallet>>>,
-    /// Funding method changed
+    /// Funding method changed and has sufficient funds
     pub funding_method_changed: Option<FundingMethod>,
     /// Funding amount changed
     pub amount_changed: Option<String>,
@@ -31,6 +67,8 @@ pub struct FundingWidgetResponse {
     pub new_address_clicked: bool,
     /// Error occurred
     pub error: Option<String>,
+    /// Whether the currently selected funding method has sufficient funds
+    pub funding_method_ready: Option<FundingWidgetMethod>,
 }
 
 impl FundingWidgetResponse {
@@ -45,6 +83,20 @@ impl FundingWidgetResponse {
             || self.copy_button_clicked
             || self.new_address_clicked
             || self.error.is_some()
+            || self.funding_method_ready.is_some()
+    }
+
+    /// Check if the funding method is ready (is selected and has sufficient funds)
+    pub fn ready(&self) -> bool {
+        self.funding_method_ready.is_some()
+    }
+
+    /// Call a function when the widget is ready
+    pub fn on_ready(self, f: fn(&FundingWidgetResponse)) -> Self {
+        if self.ready() {
+            f(&self)
+        };
+        self
     }
 }
 
@@ -184,6 +236,113 @@ impl FundingWidget {
         // Set response fields to notify about the resets
         response.funding_method_changed = Some(FundingMethod::NoSelection);
         response.asset_lock_selected = None; // Clear any previous asset lock selection
+    }
+
+    /// Check if the currently selected funding method has sufficient funds for the specified amount
+    /// Returns Some(FundingWidgetMethod) if ready, None if not ready
+    fn check_funding_method_readiness(&self) -> Option<FundingWidgetMethod> {
+        let Some(wallet) = &self.selected_wallet else {
+            return None;
+        };
+
+        let amount = self.funding_amount.parse::<f64>().unwrap_or(0.0);
+        if amount <= 0.0 {
+            return None;
+        }
+
+        match self.funding_method {
+            FundingMethod::UseUnusedAssetLock => {
+                let wallet = wallet.read().unwrap();
+                if wallet.has_unused_asset_lock() && self.selected_asset_lock.is_some() {
+                    if let Some((transaction, asset_lock_proof, address)) =
+                        &self.selected_asset_lock
+                    {
+                        // Check if the selected asset lock has sufficient funds
+                        if let Some((_, _, lock_amount, _, _)) = wallet
+                            .unused_asset_locks
+                            .iter()
+                            .find(|(_, addr, _, _, _)| addr == address)
+                        {
+                            let available_amount_dash = *lock_amount as f64 * 1e-8;
+                            if available_amount_dash >= amount {
+                                Some(FundingWidgetMethod::UseAssetLock(
+                                    address.clone(),
+                                    Box::new(asset_lock_proof.clone()),
+                                    Box::new(transaction.clone()),
+                                ))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            FundingMethod::UseWalletBalance => {
+                if self.check_wallet_balance_sufficient(amount) {
+                    let amount_duffs = (amount * 1e8) as u64;
+                    Some(FundingWidgetMethod::FundWithWallet(amount_duffs))
+                } else {
+                    None
+                }
+            }
+            FundingMethod::AddressWithQRCode => {
+                if let Some(address) = &self.funding_address {
+                    if self.check_address_balance_sufficient(address, amount) {
+                        // Try to get UTXO information
+                        if let Some((outpoint, tx_out, addr)) = self.get_funding_utxo() {
+                            Some(FundingWidgetMethod::FundWithUtxo(outpoint, tx_out, addr))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            FundingMethod::NoSelection => None,
+        }
+    }
+
+    /// Check if the wallet balance is sufficient for the specified amount
+    fn check_wallet_balance_sufficient(&self, required_amount_dash: f64) -> bool {
+        let Some(wallet_guard) = &self.selected_wallet else {
+            return false;
+        };
+
+        let wallet = wallet_guard.read().unwrap();
+        let max_balance_duffs = wallet.max_balance();
+        let required_amount_duffs = (required_amount_dash * 1e8) as u64;
+
+        max_balance_duffs >= required_amount_duffs
+    }
+
+    /// Check if the funding address has sufficient balance for the specified amount
+    fn check_address_balance_sufficient(
+        &self,
+        funding_address: &Address,
+        required_amount_dash: f64,
+    ) -> bool {
+        let Some(wallet_guard) = &self.selected_wallet else {
+            return false;
+        };
+
+        let wallet = wallet_guard.read().unwrap();
+        let current_balance_duffs = wallet
+            .address_balances
+            .get(funding_address)
+            .copied()
+            .unwrap_or(0);
+        let required_amount_duffs = (required_amount_dash * 1e8) as u64;
+
+        current_balance_duffs >= required_amount_duffs
     }
 
     fn render_wallet_selection(
@@ -377,6 +536,7 @@ impl FundingWidget {
                     self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                 }
             }
+            // Always report the method change, readiness will be checked separately
             response.funding_method_changed = Some(new_method);
         }
     }
@@ -419,6 +579,135 @@ impl FundingWidget {
                 ui.colored_label(Color32::DARK_RED, "Invalid amount");
             }
         });
+    }
+
+    fn render_funding_status_hints(&self, ui: &mut Ui) {
+        // Only show hints if we have a valid amount and a funding method selected
+        let Ok(amount) = self.funding_amount.parse::<f64>() else {
+            return;
+        };
+
+        if amount <= 0.0 || self.funding_method == FundingMethod::NoSelection {
+            return;
+        }
+
+        // Use the centralized readiness check to determine if we should show hints
+        let is_ready = self.check_funding_method_readiness().is_some();
+
+        if is_ready {
+            // Show positive feedback when funding method is ready
+            ui.add_space(5.0);
+            ui.colored_label(
+                Color32::from_rgb(34, 139, 34), // Forest green
+                match self.funding_method {
+                    FundingMethod::UseUnusedAssetLock => {
+                        "✅ Selected asset lock has sufficient funds and is ready to use"
+                    }
+                    FundingMethod::UseWalletBalance => {
+                        "✅ Wallet has sufficient balance for this transaction"
+                    }
+                    FundingMethod::AddressWithQRCode => {
+                        "✅ Address has received sufficient funds and is ready to use"
+                    }
+                    FundingMethod::NoSelection => "", // This shouldn't happen when is_ready is true
+                },
+            );
+        } else if !is_ready {
+            match self.funding_method {
+                FundingMethod::UseWalletBalance => {
+                    if let Some(wallet) = &self.selected_wallet {
+                        let wallet = wallet.read().unwrap();
+                        let available_balance = wallet.max_balance() as f64 * 1e-8;
+                        ui.add_space(5.0);
+                        ui.colored_label(
+                            Color32::from_rgb(255, 165, 0), // Orange color
+                            format!(
+                                "⚠ Insufficient wallet balance. Available: {:.8} DASH, Required: {:.8} DASH",
+                                available_balance, amount
+                            )
+                        );
+                    }
+                }
+                FundingMethod::UseUnusedAssetLock => {
+                    if let Some(wallet) = &self.selected_wallet {
+                        let wallet = wallet.read().unwrap();
+                        if !wallet.has_unused_asset_lock() {
+                            ui.add_space(5.0);
+                            ui.colored_label(
+                                Color32::from_rgb(255, 165, 0), // Orange color
+                                "⚠ No unused asset locks available in this wallet",
+                            );
+                        } else if self.selected_asset_lock.is_none() {
+                            ui.add_space(5.0);
+                            ui.colored_label(
+                                Color32::from_rgb(100, 149, 237), // Cornflower blue
+                                "ℹ Please select an asset lock from the list",
+                            );
+                        } else {
+                            // Asset lock is selected but funding method is not ready,
+                            // so the selected asset lock must have insufficient funds
+                            if let Some((transaction, _proof, address)) = &self.selected_asset_lock
+                            {
+                                if let Some((_, _, lock_amount, _, _)) = wallet
+                                    .unused_asset_locks
+                                    .iter()
+                                    .find(|(tx, addr, _, _, _)| {
+                                        addr == address && tx == transaction
+                                    })
+                                {
+                                    let available_amount = *lock_amount as f64 * 1e-8;
+                                    ui.add_space(5.0);
+                                    ui.colored_label(
+                                        Color32::from_rgb(255, 165, 0), // Orange color
+                                        format!(
+                                            "⚠ Selected asset lock has insufficient funds. Available: {:.8} DASH, Required: {:.8} DASH",
+                                            available_amount, amount
+                                        )
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                FundingMethod::AddressWithQRCode => {
+                    if let Some(address) = &self.funding_address {
+                        // Get current balance for this address
+                        let current_balance = if let Some(wallet) = &self.selected_wallet {
+                            let wallet = wallet.read().unwrap();
+                            wallet.address_balances.get(address).copied().unwrap_or(0) as f64 * 1e-8
+                        } else {
+                            0.0
+                        };
+
+                        ui.add_space(5.0);
+                        if current_balance > 0.0 {
+                            ui.colored_label(
+                                Color32::from_rgb(255, 165, 0), // Orange color
+                                format!(
+                                    "⚠ Insufficient funds at address. Available: {:.8} DASH, Required: {:.8} DASH",
+                                    current_balance, amount
+                                )
+                            );
+                        } else {
+                            ui.colored_label(
+                                Color32::from_rgb(100, 149, 237), // Cornflower blue
+                                format!(
+                                    "ℹ Waiting for {:.8} DASH to be sent to the address above",
+                                    amount
+                                ),
+                            );
+                        }
+
+                        ui.add_space(3.0);
+                        ui.colored_label(
+                            Color32::from_rgb(100, 149, 237), // Cornflower blue
+                            "💡 Important: The funds must be sent in a single transaction",
+                        );
+                    }
+                }
+                FundingMethod::NoSelection => {}
+            }
+        }
     }
 
     fn ensure_funding_address(
@@ -591,6 +880,9 @@ impl FundingWidget {
                     ui.label("Address copied to clipboard.");
                 }
             }
+
+            // Show funding status for QR code method
+            self.render_funding_status_hints(ui);
         });
         Ok(())
     }
@@ -650,12 +942,23 @@ impl FundingWidget {
                         );
                         self.selected_asset_lock = Some(selected_lock.clone());
                         response.asset_lock_selected = Some(selected_lock);
+                        self.funding_amount = format!("{:.8}", lock_amount);
+                        response.amount_changed = Some(self.funding_amount.clone());
+
+                        // Update readiness status immediately after selection
+                        response.funding_method_ready = self.check_funding_method_readiness();
+
+                        // Request repaint to update hints immediately
+                        ui.ctx().request_repaint();
                     }
                 });
 
                 ui.add_space(5.0); // Add space between each entry
             }
         });
+
+        // Show validation message for selected asset lock
+        self.render_funding_status_hints(ui);
     }
 }
 
@@ -678,28 +981,74 @@ impl FundingWidget {
 
                 // Amount input
                 if self.funding_method != FundingMethod::NoSelection {
-                    self.render_amount_input(ui, &mut response);
-                    ui.add_space(10.0);
-
-                    // Asset lock selection for UseUnusedAssetLock method
-                    if self.funding_method == FundingMethod::UseUnusedAssetLock {
-                        self.render_asset_lock_selection(ui, &mut response);
+                    // for asset locks, we just use asset lock amount
+                    if self.funding_method != FundingMethod::UseUnusedAssetLock {
+                        self.render_amount_input(ui, &mut response);
                         ui.add_space(10.0);
                     }
 
-                    // QR code for address-based funding
-                    if self.funding_method == FundingMethod::AddressWithQRCode {
-                        if let Err(e) = self.render_qr_code(ui, &mut response) {
-                            response.error = Some(e);
+                    // Asset lock selection for UseUnusedAssetLock method
+                    match self.funding_method {
+                        FundingMethod::UseUnusedAssetLock => {
+                            self.render_asset_lock_selection(ui, &mut response);
+                            ui.add_space(10.0);
+                        }
+
+                        // QR code for address-based funding
+                        FundingMethod::AddressWithQRCode => {
+                            if let Err(e) = self.render_qr_code(ui, &mut response) {
+                                response.error = Some(e);
+                            }
+                        }
+                        FundingMethod::UseWalletBalance => {
+                            // No additional UI for UseWalletBalance, just show hints
+                            self.render_funding_status_hints(ui);
+                        }
+                        FundingMethod::NoSelection => {
+                            ui.label("Please select a funding method.");
                         }
                     }
                 }
             } else if self.predefined_wallet.is_none() {
                 ui.label("Please select a wallet to continue.");
             }
+
+            // Check if the current funding method is ready (has sufficient funds)
+            response.funding_method_ready = self.check_funding_method_readiness();
         });
 
         InnerResponse::new(response, ui_response.response)
+    }
+
+    /// Get UTXO information for AddressWithQRCode funding method
+    /// Returns (OutPoint, TxOut, Address) if a suitable UTXO is found
+    pub fn get_funding_utxo(&self) -> Option<(OutPoint, TxOut, Address)> {
+        if self.funding_method != FundingMethod::AddressWithQRCode {
+            return None;
+        }
+
+        let funding_address = self.funding_address.as_ref()?;
+        let amount_dash = self.funding_amount.parse::<f64>().ok()?;
+
+        if amount_dash <= 0.0 {
+            return None;
+        }
+
+        let wallet_guard = self.selected_wallet.as_ref()?;
+        let wallet = wallet_guard.read().unwrap();
+        let required_amount_duffs = (amount_dash * 1e8) as u64;
+
+        // Get UTXOs for the address
+        if let Some(utxos) = wallet.utxos.get(funding_address) {
+            // Find the first UTXO that has enough funds
+            for (outpoint, tx_out) in utxos {
+                if tx_out.value >= required_amount_duffs {
+                    return Some((*outpoint, tx_out.clone(), funding_address.clone()));
+                }
+            }
+        }
+
+        None
     }
 }
 

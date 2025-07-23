@@ -1,6 +1,3 @@
-mod by_using_unused_asset_lock;
-mod by_using_unused_balance;
-mod by_wallet_qr_code;
 mod success_screen;
 
 use crate::app::AppAction;
@@ -15,6 +12,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::funding_widget::FundingWidget;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -59,7 +57,6 @@ pub struct AddNewIdentityScreen {
     step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
@@ -75,6 +72,7 @@ pub struct AddNewIdentityScreen {
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
     successful_qualified_identity_id: Option<Identifier>,
+    funding_widget: Option<FundingWidget>,
 }
 
 impl AddNewIdentityScreen {
@@ -94,7 +92,6 @@ impl AddNewIdentityScreen {
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
-            core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "0.5".to_string(),
@@ -115,6 +112,7 @@ impl AddNewIdentityScreen {
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
             successful_qualified_identity_id: None,
+            funding_widget: None,
         };
 
         if let Some(wallet) = selected_wallet {
@@ -441,81 +439,6 @@ impl AddNewIdentityScreen {
             .unwrap_or_default()
     }
 
-    fn render_funding_method(&mut self, ui: &mut egui::Ui) {
-        let Some(selected_wallet) = self.selected_wallet.clone() else {
-            return;
-        };
-        let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
-
-        ComboBox::from_id_salt("funding_method")
-            .selected_text(format!("{}", *funding_method))
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::NoSelection,
-                        "Please select funding method",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ChooseFundingMethod;
-                    self.funding_amount = "0.5".to_string();
-                }
-
-                let (has_unused_asset_lock, has_balance) = {
-                    let wallet = selected_wallet.read().unwrap();
-                    (wallet.has_unused_asset_lock(), wallet.has_balance())
-                };
-
-                if has_unused_asset_lock
-                    && ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Evo Funding Locks (recommended)",
-                        )
-                        .changed()
-                {
-                    self.ensure_correct_identity_keys()
-                        .expect("failed to initialize keys");
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
-                    self.funding_amount = "0.5".to_string();
-                }
-                if has_balance
-                    && ui
-                        .selectable_value(
-                            &mut *funding_method,
-                            FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
-                        )
-                        .changed()
-                {
-                    if let Some(wallet) = &self.selected_wallet {
-                        let wallet = wallet.read().unwrap();
-                        let max_amount = wallet.max_balance();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                    }
-                    let mut step = self.step.write().unwrap(); // Write lock on step
-                    *step = WalletFundedScreenStep::ReadyToCreate;
-                }
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::AddressWithQRCode,
-                        "Address with QR Code",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingOnFunds;
-                    self.funding_amount = "0.5".to_string();
-                }
-            });
-    }
-
     // Function to render the key selection mode (Default or Advanced)
     fn render_key_selection(&mut self, ui: &mut egui::Ui) {
         // Provide the selection toggle for Default or Advanced mode
@@ -638,7 +561,7 @@ impl AddNewIdentityScreen {
         }
     }
 
-    fn register_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
+    fn register_identity_clicked(&mut self, funding_method: FundingMethod, funding_amount_str: String, selected_asset_lock: Option<(Transaction, AssetLockProof, Address)>) -> AppAction {
         let Some(selected_wallet) = &self.selected_wallet else {
             return AppAction::None;
         };
@@ -647,7 +570,7 @@ impl AddNewIdentityScreen {
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some((tx, funding_asset_lock, address)) = selected_asset_lock {
                     let identity_input = IdentityRegistrationInfo {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
@@ -671,10 +594,8 @@ impl AddNewIdentityScreen {
                 }
             }
             FundingMethod::UseWalletBalance => {
-                // Parse the funding amount or fall back to the default value
-                let amount = self.funding_amount_exact.unwrap_or_else(|| {
-                    (self.funding_amount.parse::<f64>().unwrap_or(0.0) * 1e8) as u64
-                });
+                // Parse the funding amount from the widget
+                let amount = (funding_amount_str.parse::<f64>().unwrap_or(0.0) * 1e8) as u64;
 
                 if amount == 0 {
                     return AppAction::None;
@@ -705,52 +626,7 @@ impl AddNewIdentityScreen {
         }
     }
 
-    fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = self.funding_method.read().unwrap();
 
-        ui.horizontal(|ui| {
-            ui.label("Amount (DASH):");
-
-            // Render the text input field for the funding amount
-            let amount_input = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.funding_amount)
-                        .hint_text("Enter amount (e.g., 0.1234)")
-                        .desired_width(100.0),
-                )
-                .lost_focus();
-
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if amount_input && enter_pressed {
-                // Optional: Validate the input when Enter is pressed
-                if self.funding_amount.parse::<f64>().is_err() {
-                    ui.label("Invalid amount. Please enter a valid number.");
-                }
-            }
-
-            // Check if the funding method is `UseWalletBalance`
-            if *funding_method == FundingMethod::UseWalletBalance {
-                // Safely access the selected wallet
-                if let Some(wallet) = &self.selected_wallet {
-                    let wallet = wallet.read().unwrap(); // Read lock on the wallet
-                    if ui.button("Max").clicked() {
-                        let max_amount = wallet.max_balance();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        self.funding_amount_exact = Some(max_amount);
-                    }
-                }
-            }
-
-            if self.funding_amount.parse::<f64>().is_err()
-                || self.funding_amount.parse::<f64>().unwrap_or_default() <= 0.0
-            {
-                ui.colored_label(Color32::DARK_RED, "Invalid amount");
-            }
-        });
-
-        ui.add_space(10.0);
-    }
 
     /// Update existing identity keys based on the current wallet and identity index.
     ///
@@ -1064,34 +940,135 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                ui.heading(
-                    format!("{}. Choose your funding method.", step_number).as_str()
-                );
-                step_number += 1;
+                // Initialize funding widget if needed
+                if self.funding_widget.is_none() {
+                    let mut widget = FundingWidget::new(self.app_context.clone())
+                        .with_amount_label("Registration Amount (DASH):")
+                        .with_default_amount("0.5");
 
-                ui.add_space(10.0);
-                self.render_funding_method(ui);
-                ui.add_space(10.0);
-                ui.separator();
+                    // Set wallet if already selected
+                    if let Some(wallet) = &self.selected_wallet {
+                        widget = widget.with_wallet(wallet.clone());
+                    }
 
-                // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
-
-                if funding_method == FundingMethod::NoSelection {
-                    return;
+                    self.funding_widget = Some(widget);
                 }
 
-                match funding_method {
-                    FundingMethod::NoSelection => (),
-                    FundingMethod::UseUnusedAssetLock => {
-                        inner_action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
-                    },
-                    FundingMethod::UseWalletBalance => {
-                        inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
-                    },
-                    FundingMethod::AddressWithQRCode => {
-                        inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
-                    },
+                // Render the funding widget
+                if let Some(ref mut widget) = self.funding_widget {
+                    ui.heading(format!("{}. Configure your identity registration", step_number));
+                    ui.add_space(10.0);
+
+                    let widget_response = widget.show(ui);
+                    let response_data = widget_response.inner;
+
+                    // Handle widget responses
+                    if let Some(wallet) = response_data.wallet_changed {
+                        self.selected_wallet = Some(wallet);
+                        // Clear funding asset lock when wallet changes
+                        self.funding_asset_lock = None;
+                    }
+
+                    if let Some(method) = response_data.funding_method_changed {
+                        let mut funding_method_guard = self.funding_method.write().unwrap();
+                        *funding_method_guard = method;
+                        // Clear funding asset lock when method changes
+                        self.funding_asset_lock = None;
+                    }
+
+                    if let Some(amount) = response_data.amount_changed {
+                        self.funding_amount = amount.clone();
+                        self.funding_amount_exact = amount.parse::<f64>().ok().map(|f| {
+                            (f * 1e8) as u64 // Convert to Duffs
+                        });
+                    }
+
+                    if let Some(address) = response_data.address_changed {
+                        self.funding_address = Some(address);
+                    }
+
+                    if let Some(asset_lock) = response_data.asset_lock_selected {
+                        self.funding_asset_lock = Some(asset_lock);
+                    }
+
+                    if let Some(error) = response_data.error {
+                        self.error_message = Some(error);
+                    }
+
+                    // Get the current funding method from the widget
+                    let funding_method = widget.funding_method();
+                    let funding_amount_str = widget.funding_amount().to_string();
+                    let selected_asset_lock = widget.selected_asset_lock().cloned();
+                    
+                    // Add alias input
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Identity Alias (Optional):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.alias_input)
+                                .hint_text("Enter a friendly name for this identity")
+                                .desired_width(200.0),
+                        );
+                    });
+
+                    // Show register button when ready
+                    let can_register = match funding_method {
+                        FundingMethod::UseUnusedAssetLock => {
+                            // Check if we have a funding asset lock selected
+                            selected_asset_lock.is_some()
+                        }
+                        FundingMethod::UseWalletBalance => {
+                            // Check if amount is valid
+                            !funding_amount_str.is_empty() && 
+                            funding_amount_str.parse::<f64>().unwrap_or(0.0) > 0.0
+                        }
+                        FundingMethod::AddressWithQRCode => {
+                            // For QR code method, check if we have address and amount
+                            widget.funding_address().is_some() &&
+                            !funding_amount_str.is_empty() && 
+                            funding_amount_str.parse::<f64>().unwrap_or(0.0) > 0.0
+                        }
+                        FundingMethod::NoSelection => false,
+                    };
+
+                    if can_register {
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        if ui.button("Register Identity").clicked() {
+                            inner_action |= self.register_identity_clicked(funding_method, funding_amount_str, selected_asset_lock);
+                        }
+                    }
+
+                    // Show error message if any
+                    if let Some(error_message) = self.error_message.as_ref() {
+                        ui.add_space(10.0);
+                        ui.colored_label(Color32::DARK_RED, error_message);
+                    }
+
+                    // Show step status
+                    let step = *self.step.read().unwrap();
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| match step {
+                        WalletFundedScreenStep::WaitingOnFunds => {
+                            ui.heading("=> Waiting for funds <=");
+                            ui.add_space(10.0);
+                            ui.label("Send the specified amount to the address above.");
+                        }
+                        WalletFundedScreenStep::WaitingForAssetLock => {
+                            ui.heading("=> Creating asset lock transaction <=");
+                        }
+                        WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                            ui.heading("=> Waiting for Platform acknowledgement <=");
+                            ui.add_space(10.0);
+                            ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector to change the method and use those funds to complete the process.");
+                        }
+                        WalletFundedScreenStep::Success => {
+                            ui.heading("...Success...");
+                        }
+                        _ => {}
+                    });
                 }
             });
             inner_action

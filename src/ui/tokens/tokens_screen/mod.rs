@@ -18,7 +18,6 @@ use serde_json;
 
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -2469,25 +2468,21 @@ impl ScreenLike for TokensScreen {
         self.check_error_expiration();
 
         // Build top-right buttons
-        let right_buttons = if self.app_context.network != Network::Dash {
-            match self.tokens_subscreen {
-                TokensSubscreen::MyTokens => vec![
-                    (
-                        "Add Token",
-                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddTokenById)),
-                    ),
-                    (
-                        "Refresh",
-                        DesiredAppAction::BackendTask(Box::new(BackendTask::TokenTask(Box::new(
-                            TokenTask::QueryMyTokenBalances,
-                        )))),
-                    ),
-                ],
-                TokensSubscreen::SearchTokens => vec![],
-                TokensSubscreen::TokenCreator => vec![],
-            }
-        } else {
-            vec![]
+        let right_buttons = match self.tokens_subscreen {
+            TokensSubscreen::MyTokens => vec![
+                (
+                    "Add Token",
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::AddTokenById)),
+                ),
+                (
+                    "Refresh",
+                    DesiredAppAction::BackendTask(Box::new(BackendTask::TokenTask(Box::new(
+                        TokenTask::QueryMyTokenBalances,
+                    )))),
+                ),
+            ],
+            TokensSubscreen::SearchTokens => vec![],
+            TokensSubscreen::TokenCreator => vec![],
         };
 
         // Top panel
@@ -2571,17 +2566,6 @@ impl ScreenLike for TokensScreen {
             egui::ScrollArea::vertical()
                 .show(ui, |ui| {
                     let mut inner_action = AppAction::None;
-
-                    if self.app_context.network == Network::Dash {
-                        ui.add_space(50.0);
-                        ui.vertical_centered(|ui| {
-                            ui.heading(
-                                RichText::new("Tokens not supported on Mainnet yet. Testnet only.")
-                                    .strong(),
-                            );
-                        });
-                        return inner_action;
-                    }
 
                     match self.tokens_subscreen {
                         TokensSubscreen::MyTokens => {

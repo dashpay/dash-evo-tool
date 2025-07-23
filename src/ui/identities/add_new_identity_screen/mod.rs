@@ -373,6 +373,17 @@ impl AddNewIdentityScreen {
                             if ui.selectable_label(is_selected, wallet_alias).clicked() {
                                 // Update the selected wallet
                                 selected_wallet = Some(wallet.clone());
+                                // Reset the funding address
+                                self.funding_address = None;
+                                // Reset the funding asset lock
+                                self.funding_asset_lock = None;
+                                // Reset the funding UTXO
+                                self.funding_utxo = None;
+                                // Reset the copied to clipboard state
+                                self.copied_to_clipboard = None;
+                                // Reset the step to choose funding method
+                                let mut step = self.step.write().unwrap();
+                                *step = WalletFundedScreenStep::ChooseFundingMethod;
                             }
                         }
                     });

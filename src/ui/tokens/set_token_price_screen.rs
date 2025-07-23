@@ -5,7 +5,9 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{island_central_panel, ConfirmationDialog, ConfirmationDialogResponse};
+use crate::ui::components::styled::{
+    ConfirmationDialog, ConfirmationDialogResponse, island_central_panel,
+};
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -985,7 +987,7 @@ impl ScreenLike for SetTokenPriceScreen {
                     .corner_radius(3.0);
 
                 let button_response = ui.add_enabled(validation_result.is_ok(), button);
-                
+
 
                 if let Err(hover_message) = validation_result {
                                     button_response.on_disabled_hover_text(hover_message);

@@ -11,17 +11,13 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::components::funding_widget::FundingWidget;
-use crate::ui::identities::add_new_identity_screen::FundingMethod;
+use crate::ui::components::funding_widget::{FundingWidget, FundingWidgetMethod};
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::balances::credits::Duffs;
-use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
 use egui::{Color32, ScrollArea};
 use std::sync::{Arc, RwLock};
@@ -29,19 +25,15 @@ use std::sync::{Arc, RwLock};
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
     step: Arc<RwLock<WalletFundedScreenStep>>,
-    funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     wallet: Option<Arc<RwLock<Wallet>>>,
-    funding_address: Option<Address>,
-    funding_method: Arc<RwLock<FundingMethod>>,
-    funding_amount: String,
-    funding_amount_exact: Option<Duffs>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     error_message: Option<String>,
     show_password: bool,
     wallet_password: String,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
     funding_widget: Option<FundingWidget>,
+    funding_amount: String,
+    funding: Option<FundingWidgetMethod>,
 }
 
 impl TopUpIdentityScreen {
@@ -49,13 +41,9 @@ impl TopUpIdentityScreen {
         Self {
             identity: qualified_identity,
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
-            funding_asset_lock: None,
             wallet: None,
-            funding_address: None,
-            funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "".to_string(),
-            funding_amount_exact: None,
-            funding_utxo: None,
+            funding: None,
             error_message: None,
             show_password: false,
             wallet_password: "".to_string(),
@@ -65,21 +53,21 @@ impl TopUpIdentityScreen {
         }
     }
 
-    fn top_up_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
+    fn top_up_identity_clicked(&mut self, funding_method: FundingWidgetMethod) -> AppAction {
         let Some(selected_wallet) = &self.wallet else {
             return AppAction::None;
         };
         match funding_method {
-            FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+            FundingWidgetMethod:: UseAssetLock(address, funding_asset_lock,tx)=> {
+                
                     let txid=tx.txid().to_hex();
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
                         identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
                             address,
-                            Box::new(funding_asset_lock),
-                            Box::new(tx),
+                            funding_asset_lock,
+                            tx,
                         ),
                     };
                     tracing::debug!("Using asset lock for identity top-up: {:?}", txid);
@@ -89,16 +77,8 @@ impl TopUpIdentityScreen {
                     AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
                         identity_input,
                     )))
-                } else {
-                    AppAction::None
-                }
             }
-            FundingMethod::UseWalletBalance => {
-                // Parse the funding amount or fall back to the default value
-                let amount = self.funding_amount_exact.unwrap_or_else(|| {
-                    (self.funding_amount.parse::<f64>().unwrap_or(0.0) * 1e8) as u64
-                });
-
+            FundingWidgetMethod::FundWithWallet(amount) => {
                 if amount == 0 {
                     return AppAction::None;
                 }
@@ -126,17 +106,8 @@ impl TopUpIdentityScreen {
                     identity_input,
                 )))
             }
-            FundingMethod::AddressWithQRCode => {
-                // For address with QR code, we need to wait for funds to arrive
-                // This is similar to UseWalletBalance but uses external funding
-                let Some(funding_utxo) = &self.funding_utxo else {
-                    // Start waiting for funds
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingOnFunds;
-                    return AppAction::None;
-                };
+            FundingWidgetMethod::FundWithUtxo(outpoint, tx_out, address) => {
 
-                let (outpoint, tx_out, address) = funding_utxo.clone();
                 let identity_input = IdentityTopUpInfo {
                     qualified_identity: self.identity.clone(),
                     wallet: Arc::clone(selected_wallet),
@@ -162,7 +133,6 @@ impl TopUpIdentityScreen {
                     identity_input,
                 )))
             }
-            _ => AppAction::None,
         }
     }
 }
@@ -209,23 +179,7 @@ impl ScreenLike for TopUpIdentityScreen {
         let mut step = self.step.write().unwrap();
         match *step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
-            WalletFundedScreenStep::WaitingOnFunds => {
-                if let Some(funding_address) = self.funding_address.as_ref() {
-                    if let BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                    ) = backend_task_success_result
-                    {
-                        for (outpoint, tx_out, address) in outpoints_with_addresses {
-                            if funding_address == &address {
-                                *step = WalletFundedScreenStep::FundsReceived;
-                                self.funding_utxo = Some((outpoint, tx_out, address))
-                            }
-                        }
-                    }
-                }
-            }
             WalletFundedScreenStep::FundsReceived => {}
-            WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
                 if let BackendTaskSuccessResult::CoreItem(
                     CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
@@ -335,7 +289,6 @@ impl ScreenLike for TopUpIdentityScreen {
                     
                     // Initialize funding_amount_exact with the default amount
                     self.funding_amount = "0.5".to_string();
-                    self.funding_amount_exact = Some((0.5 * 1e8) as u64);
                 }
 
                 // Render the funding widget
@@ -347,74 +300,39 @@ impl ScreenLike for TopUpIdentityScreen {
                     let response_data = widget_response.inner;
 
                     // Handle widget responses
-                    if let Some(wallet) = response_data.wallet_changed {
-                        self.wallet = Some(wallet);
+                    if let Some(wallet) = &response_data.wallet_changed {
+                        self.wallet = Some(wallet.clone());
                         // Clear funding asset lock when wallet changes
-                        self.funding_asset_lock = None;
+                        self.funding = None;
                     }
 
-                    if let Some(method) = response_data.funding_method_changed {
-                        let mut funding_method_guard = self.funding_method.write().unwrap();
-                        *funding_method_guard = method;
-                        // Clear funding asset lock when method changes
-                        self.funding_asset_lock = None;
+                    if let Some(method) = &response_data.funding_method_ready {
+                        self.funding = Some(method.clone());
+                    }                    
+
+                    if let Some(amount) = &response_data.amount_changed {
+                        self.funding_amount = amount.clone();                       
                     }
 
-                    if let Some(amount) = response_data.amount_changed {
-                        self.funding_amount = amount.clone();
-                        self.funding_amount_exact = amount.parse::<f64>().ok().map(|f| {
-                            (f * 1e8) as u64 // Convert to Duffs
-                        });
+                    if let Some(error) = &response_data.error {
+                        self.error_message = Some(error.clone());
                     }
 
-                    if let Some(address) = response_data.address_changed {
-                        self.funding_address = Some(address);
-                    }
 
-                    if let Some(asset_lock) = response_data.asset_lock_selected {
-                        self.funding_asset_lock = Some(asset_lock);
-                    }
+                    let funding_secured = response_data.ready() || step.is_processing();
 
-                    if let Some(error) = response_data.error {
-                        self.error_message = Some(error);
-                    }
-
-                    // Get the current funding method from the widget
-                    let funding_method = widget.funding_method();
-                    
-                    // Show top-up button when ready
-                    let can_top_up = match funding_method {
-                        FundingMethod::UseUnusedAssetLock => {
-                            // Check if we have a funding asset lock selected
-                            self.funding_asset_lock.is_some()
-                        }
-                        FundingMethod::UseWalletBalance => {
-                            // Check if amount is valid
-                            let balance = self.wallet.as_ref().map(|w| {
-                                w.read().unwrap().max_balance()
-                            }).unwrap_or(0);
-                            
-                            balance > 0 && self.funding_amount_exact.is_some() && 
-                            self.funding_amount_exact.unwrap_or_default() > 0 &&
-                            self.funding_amount_exact.unwrap_or_default() <= balance
-                        }
-                        FundingMethod::AddressWithQRCode => {
-                            // For QR code method, always show the button
-                            // The backend will handle the fund waiting logic
-                            self.funding_address.is_some() &&
-                            self.funding_amount_exact.is_some() && 
-                            self.funding_amount_exact.unwrap() > 0
-                        }
-                        FundingMethod::NoSelection => false,
-                    };
-
-                    if can_top_up {
+                  
+                    if funding_secured{
                         ui.add_space(15.0);
                         ui.separator();
                         ui.add_space(10.0);
 
                         if ui.button("Top Up Identity").clicked() {
-                            inner_action |= self.top_up_identity_clicked(funding_method);
+                            if let Some(funding_method) = self.funding.clone() {
+                                inner_action |= self.top_up_identity_clicked(funding_method);
+                            } else {
+                                self.error_message = Some("Please select a funding method.".to_string());
+                            }                            
                         }
                     }
 
@@ -428,11 +346,6 @@ impl ScreenLike for TopUpIdentityScreen {
                     let step = *self.step.read().unwrap();
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| match step {
-                        WalletFundedScreenStep::WaitingOnFunds => {
-                            ui.heading("=> Waiting for funds <=");
-                            ui.add_space(10.0);
-                            ui.label("Send the specified amount to the address above.");
-                        }
                         WalletFundedScreenStep::WaitingForAssetLock => {
                             ui.heading("=> Creating asset lock transaction <=");
                         }

@@ -798,12 +798,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
 
                     // Get funding readiness from the widget response
-                    funding_ready = response_data.funding_method_ready.is_some() || matches!(step,
-                        WalletFundedScreenStep::WaitingOnFunds |
-                        WalletFundedScreenStep::WaitingForAssetLock |
-                        WalletFundedScreenStep::WaitingForPlatformAcceptance |
-                        WalletFundedScreenStep::FundsReceived
-                    );
+                    funding_ready = response_data.funding_method_ready.is_some() || step.is_processing();
                 }
 
                 // Don't proceed if funding is not ready

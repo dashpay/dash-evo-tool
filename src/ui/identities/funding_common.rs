@@ -9,21 +9,29 @@ use qrcode::QrCode;
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
-    WaitingOnFunds,
     FundsReceived,
-    ReadyToCreate,
     WaitingForAssetLock,
     WaitingForPlatformAcceptance,
     Success,
+}
+
+impl WalletFundedScreenStep {
+    /// Returns true if the step indicates that the wallet is in progress of identity creation
+    pub fn is_processing(&self) -> bool {
+        matches!(
+            self,
+            WalletFundedScreenStep::WaitingForAssetLock
+                | WalletFundedScreenStep::WaitingForPlatformAcceptance
+                | WalletFundedScreenStep::FundsReceived
+        )
+    }
 }
 
 impl Display for WalletFundedScreenStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WalletFundedScreenStep::ChooseFundingMethod => write!(f, "Choose Funding Method"),
-            WalletFundedScreenStep::WaitingOnFunds => write!(f, "Waiting on Funds"),
             WalletFundedScreenStep::FundsReceived => write!(f, "Funds Received"),
-            WalletFundedScreenStep::ReadyToCreate => write!(f, "Ready to Create"),
             WalletFundedScreenStep::WaitingForAssetLock => write!(f, "Waiting for Asset Lock"),
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 write!(f, "Waiting for Platform Acceptance")

@@ -82,9 +82,9 @@ pub struct SetTokenPriceScreen {
 
     pub token_pricing_schedule: String,
     /// Token pricing schedule to use; if None, we will remove the pricing schedule
-    pricing_type: PricingType,
-    single_price: String,
-    tiered_prices: Vec<(String, String)>,
+    pub pricing_type: PricingType,
+    pub single_price: String,
+    pub tiered_prices: Vec<(String, String)>,
     status: SetTokenPriceStatus,
     error_message: Option<String>,
 
@@ -101,7 +101,7 @@ pub struct SetTokenPriceScreen {
 }
 
 /// 1 Dash = 100,000,000,000 credits
-const CREDITS_PER_DASH: Credits = 100_000_000_000;
+pub const CREDITS_PER_DASH: Credits = 100_000_000_000;
 
 impl SetTokenPriceScreen {
     /// Converts Dash amount to credits (1 Dash = 100,000,000,000 credits)
@@ -131,11 +131,7 @@ impl SetTokenPriceScreen {
         credits_u64 as Credits
     }
 
-    pub fn new(
-        identity_token_info: IdentityTokenInfo,
-        schedule: Option<TokenPricingSchedule>,
-        app_context: &Arc<AppContext>,
-    ) -> Self {
+    pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
             .identity
@@ -239,7 +235,29 @@ impl SetTokenPriceScreen {
             &mut error_message,
         );
 
-        let (single_price, tiered_prices) = match &schedule {
+        Self {
+            identity_token_info: identity_token_info.clone(),
+            selected_key: possible_key.cloned(),
+            public_note: None,
+            group,
+            is_unilateral_group_member,
+            group_action_id: None,
+            token_pricing_schedule: "".to_string(),
+            pricing_type: PricingType::RemovePricing,
+            single_price: "".to_string(),
+            tiered_prices: vec![("1".to_string(), "".to_string())],
+            status: SetTokenPriceStatus::NotStarted,
+            error_message: None,
+            app_context: app_context.clone(),
+            show_confirmation_popup: false,
+            selected_wallet,
+            wallet_password: String::new(),
+            show_password: false,
+        }
+    }
+
+    pub fn with_schedule(self, token_pricing_schedule: Option<TokenPricingSchedule>) -> Self {
+        let (single_price, tiered_prices) = match &token_pricing_schedule {
             Some(TokenPricingSchedule::SinglePrice(price)) => (
                 // we store price as credits, so convert to Dash for processing
                 (*price as f64 / CREDITS_PER_DASH as f64).to_string(),
@@ -260,25 +278,11 @@ impl SetTokenPriceScreen {
             }
             None => (String::new(), vec![("1".to_string(), String::new())]),
         };
-
         Self {
-            identity_token_info: identity_token_info.clone(),
-            selected_key: possible_key.cloned(),
-            public_note: None,
-            group,
-            is_unilateral_group_member,
-            group_action_id: None,
-            token_pricing_schedule: "".to_string(),
-            pricing_type: PricingType::from(schedule),
+            pricing_type: PricingType::from(token_pricing_schedule),
             single_price,
             tiered_prices,
-            status: SetTokenPriceStatus::NotStarted,
-            error_message: None,
-            app_context: app_context.clone(),
-            show_confirmation_popup: false,
-            selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            ..self
         }
     }
 

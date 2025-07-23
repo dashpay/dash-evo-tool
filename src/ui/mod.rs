@@ -411,7 +411,7 @@ impl ScreenType {
                 PurchaseTokenScreen::new(identity_token_info.clone(), app_context),
             ),
             ScreenType::SetTokenPriceScreen(identity_token_info) => Screen::SetTokenPriceScreen(
-                SetTokenPriceScreen::new(identity_token_info.clone(), None, app_context),
+                SetTokenPriceScreen::new(identity_token_info.clone(), app_context),
             ),
         }
     }

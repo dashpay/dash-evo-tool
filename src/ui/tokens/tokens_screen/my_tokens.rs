@@ -901,7 +901,6 @@ impl TokensScreen {
                                 Screen::SetTokenPriceScreen(
                                     SetTokenPriceScreen::new(
                                         info,
-                                        None,
                                         &self.app_context,
                                     ),
                                 ),

@@ -5,6 +5,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -64,6 +65,10 @@ pub struct DestroyFrozenFundsScreen {
     /// The user must specify the identity ID whose frozen funds are to be destroyed
     /// Typically some Identity that has been frozen by the system or a group
     pub frozen_identity_id: String,
+
+    /// All frozen identities that can be selected
+    /// TODO: We should filter them by frozen status, right now we just show all known identities
+    pub frozen_identities: Vec<QualifiedIdentity>,
 
     status: DestroyFrozenFundsStatus,
     error_message: Option<String>,
@@ -183,9 +188,14 @@ impl DestroyFrozenFundsScreen {
             &mut error_message,
         );
 
+        let all_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         Self {
             identity: identity_token_info.identity.clone(),
             frozen_identity_id: String::new(),
+            frozen_identities: all_identities,
             identity_token_info,
             selected_key: possible_key,
             group,
@@ -204,10 +214,14 @@ impl DestroyFrozenFundsScreen {
 
     /// Renders the text input for specifying the “frozen identity”
     fn render_frozen_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Frozen Identity ID:");
-            ui.text_edit_singleline(&mut self.frozen_identity_id);
-        });
+        ui.add(
+            IdentitySelector::new(
+                "frozen_identity_selector",
+                &mut self.frozen_identity_id,
+                &self.frozen_identities,
+            )
+            .label("Frozen Identity ID:"),
+        );
     }
 
     /// Confirmation popup

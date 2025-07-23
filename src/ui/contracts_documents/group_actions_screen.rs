@@ -14,11 +14,11 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
-use crate::ui::helpers::render_identity_selector;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
@@ -78,6 +78,7 @@ pub struct GroupActionsScreen {
     qualified_identities: Vec<QualifiedIdentity>,
     identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     selected_identity: Option<QualifiedIdentity>,
+    selected_identity_str: String,
 
     // Backend task status
     fetch_group_actions_status: FetchGroupActionsStatus,
@@ -142,6 +143,7 @@ impl GroupActionsScreen {
             qualified_identities,
             identity_token_balances,
             selected_identity: None,
+            selected_identity_str: String::new(),
 
             // Backend task status
             fetch_group_actions_status: FetchGroupActionsStatus::NotStarted,
@@ -523,8 +525,19 @@ impl ScreenLike for GroupActionsScreen {
             ui.heading("2. Select an identity:");
 
             ui.add_space(10.0);
-            self.selected_identity =
-                render_identity_selector(ui, &self.qualified_identities, &self.selected_identity);
+
+            ui.add(
+                IdentitySelector::new(
+                    "group_actions_identity_selector",
+                    &mut self.selected_identity_str,
+                    &self.qualified_identities,
+                )
+                .selected_identity(&mut self.selected_identity)
+                .expect("Failed to create identity selector")
+                .other_option(false)
+                .width(250.0)
+                .label("Identity:"),
+            );
 
             let mut fetch_clicked = false;
             if self.selected_contract.is_some() && self.selected_identity.is_some() {

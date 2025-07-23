@@ -17,7 +17,7 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
-use dash_sdk::dpp::dashcore::{ PrivateKey, Transaction, };
+use dash_sdk::dpp::dashcore::{PrivateKey, Transaction};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -742,7 +742,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     // Disable balance checks if operation is in progress
                     let step = {*self.step.read().unwrap()};
                     widget.set_validation_hints(!step.is_processing());
-                    
+
                     let widget_response = widget.show(ui);
                     let response_data = widget_response.inner;
 
@@ -902,7 +902,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 // Show step status
                 let step = *self.step.read().unwrap();
                 ui.add_space(20.0);
-                ui.vertical_centered(|ui| match step {                   
+                ui.vertical_centered(|ui| match step {
                     WalletFundedScreenStep::WaitingForAssetLock => {
                         ui.heading("=> Creating asset lock transaction <=");
                     }

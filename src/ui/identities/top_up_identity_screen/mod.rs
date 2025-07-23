@@ -179,7 +179,6 @@ impl ScreenLike for TopUpIdentityScreen {
         let mut step = self.step.write().unwrap();
         match *step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
-            WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
                 if let BackendTaskSuccessResult::CoreItem(
                     CoreItem::ReceivedAvailableUTXOTransaction(tx, _),

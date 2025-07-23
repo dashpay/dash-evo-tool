@@ -17,7 +17,7 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
-use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::{ PrivateKey, Transaction, };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -58,7 +58,6 @@ pub struct AddNewIdentityScreen {
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     alias_input: String,
     identity_keys: IdentityKeys,
     error_message: Option<String>,
@@ -87,7 +86,6 @@ impl AddNewIdentityScreen {
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "0.5".to_string(),
             funding_amount_exact: None,
-            funding_utxo: None,
             alias_input: String::new(),
             identity_keys: IdentityKeys {
                 master_private_key: None,
@@ -664,23 +662,6 @@ impl ScreenLike for AddNewIdentityScreen {
         let mut step = self.step.write().unwrap();
         match *step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
-            WalletFundedScreenStep::WaitingOnFunds => {
-                if let Some(funding_address) = self.funding_address.as_ref() {
-                    if let BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                    ) = backend_task_success_result
-                    {
-                        for (outpoint, tx_out, address) in outpoints_with_addresses {
-                            if funding_address == &address {
-                                *step = WalletFundedScreenStep::FundsReceived;
-                                self.funding_utxo = Some((outpoint, tx_out, address))
-                            }
-                        }
-                    }
-                }
-            }
-            WalletFundedScreenStep::FundsReceived => {}
-            WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
                 if let BackendTaskSuccessResult::CoreItem(
                     CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
@@ -898,8 +879,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
                         let enabled= !matches!(step,
                             WalletFundedScreenStep::WaitingForAssetLock |
-                            WalletFundedScreenStep::WaitingForPlatformAcceptance |
-                            WalletFundedScreenStep::WaitingOnFunds | WalletFundedScreenStep::FundsReceived);
+                            WalletFundedScreenStep::WaitingForPlatformAcceptance);
 
                         ui.add_enabled_ui(enabled,|ui|{
                             if ui.button("Register Identity").clicked() {
@@ -918,12 +898,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 // Show step status
                 let step = *self.step.read().unwrap();
                 ui.add_space(20.0);
-                ui.vertical_centered(|ui| match step {
-                    WalletFundedScreenStep::WaitingOnFunds => {
-                        ui.heading("=> Waiting for funds <=");
-                        ui.add_space(10.0);
-                        ui.label("Send the specified amount to the address above.");
-                    }
+                ui.vertical_centered(|ui| match step {                   
                     WalletFundedScreenStep::WaitingForAssetLock => {
                         ui.heading("=> Creating asset lock transaction <=");
                     }

@@ -9,7 +9,6 @@ use qrcode::QrCode;
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
-    FundsReceived,
     WaitingForAssetLock,
     WaitingForPlatformAcceptance,
     Success,
@@ -22,7 +21,6 @@ impl WalletFundedScreenStep {
             self,
             WalletFundedScreenStep::WaitingForAssetLock
                 | WalletFundedScreenStep::WaitingForPlatformAcceptance
-                | WalletFundedScreenStep::FundsReceived
         )
     }
 }
@@ -31,7 +29,6 @@ impl Display for WalletFundedScreenStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WalletFundedScreenStep::ChooseFundingMethod => write!(f, "Choose Funding Method"),
-            WalletFundedScreenStep::FundsReceived => write!(f, "Funds Received"),
             WalletFundedScreenStep::WaitingForAssetLock => write!(f, "Waiting for Asset Lock"),
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 write!(f, "Waiting for Platform Acceptance")

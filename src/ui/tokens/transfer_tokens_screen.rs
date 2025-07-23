@@ -4,6 +4,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -117,8 +118,7 @@ pub enum TransferTokensStatus {
 pub struct TransferTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
-    friend_identities: Vec<(String, Identifier)>,
-    selected_friend_index: Option<usize>,
+    known_identities: Vec<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     pub public_note: Option<String>,
     pub receiver_identity_id: String,
@@ -137,23 +137,11 @@ impl TransferTokensScreen {
         identity_token_balance: IdentityTokenBalance,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        let all_identities = app_context
+        let known_identities = app_context
             .load_local_qualified_identities()
             .expect("Identities not loaded");
 
-        let friend_identities: Vec<(String, Identifier)> = all_identities
-            .iter()
-            .filter(|id| id.identity.id() != identity_token_balance.identity_id)
-            .map(|id| {
-                let alias = id
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| id.identity.id().to_string(Encoding::Base58));
-                (alias, id.identity.id())
-            })
-            .collect();
-
-        let identity = all_identities
+        let identity = known_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
             .expect("Identity not found")
@@ -170,20 +158,13 @@ impl TransferTokensScreen {
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key, &mut error_message);
 
-        let (selected_friend_index, receiver_identity_id) =
-            if let Some((_first, identifier)) = friend_identities.first() {
-                (Some(0), identifier.to_string(Encoding::Base58))
-            } else {
-                (None, String::new())
-            };
         Self {
             identity,
             identity_token_balance,
-            friend_identities,
-            selected_friend_index,
+            known_identities,
             selected_key: selected_key.cloned(),
             public_note: None,
-            receiver_identity_id,
+            receiver_identity_id: String::new(),
             amount: String::new(),
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,
@@ -213,41 +194,16 @@ impl TransferTokensScreen {
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            // Dropdown
-            egui::ComboBox::from_id_salt("friend_selector")
-                .selected_text(
-                    self.selected_friend_index
-                        .and_then(|i| self.friend_identities.get(i).map(|(name, _)| name.clone()))
-                        .unwrap_or_else(|| "Other".to_string()),
-                )
-                .show_ui(ui, |ui| {
-                    for (i, (alias, _)) in self.friend_identities.iter().enumerate() {
-                        if ui
-                            .selectable_value(&mut self.selected_friend_index, Some(i), alias)
-                            .clicked()
-                        {
-                            self.receiver_identity_id =
-                                self.friend_identities[i].1.to_string(Encoding::Base58);
-                        }
-                    }
-
-                    if ui
-                        .selectable_value(&mut self.selected_friend_index, None, "Other")
-                        .clicked()
-                    {
-                        // Clear the text box to avoid confusion
-                        self.receiver_identity_id.clear();
-                    }
-                });
-
-            // Text box
-            let prev_text = self.receiver_identity_id.clone();
-            ui.text_edit_singleline(&mut self.receiver_identity_id);
-            if self.receiver_identity_id != prev_text {
-                self.selected_friend_index = None;
-            }
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "transfer_recipient_selector",
+                &mut self.receiver_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Recipient:")
+            .exclude(&[self.identity.identity.id()]),
+        );
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {

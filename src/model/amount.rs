@@ -4,7 +4,7 @@ use bincode::{Decode, Encode};
 use dash_sdk::dpp::{balances::credits::TokenAmount, fee::Credits};
 use serde::{Deserialize, Serialize};
 
-pub const DUFF_DECIMAL_PLACES: u8 = 11;
+pub const DASH_DECIMAL_PLACES: u8 = 11;
 
 #[derive(Serialize, Deserialize, Encode, Decode, Clone, PartialEq, Eq)]
 pub struct Amount {
@@ -219,17 +219,17 @@ impl Amount {
 impl Amount {
     /// Creates a new Dash amount
     pub fn dash(credits: Credits) -> Self {
-        Self::new_with_unit(credits, DUFF_DECIMAL_PLACES, "DASH".to_string())
+        Self::new_with_unit(credits, DASH_DECIMAL_PLACES, "DASH".to_string())
     }
 
     /// Creates a Dash amount from a duff string.
     pub fn parse_dash(input: &str) -> Result<Self, String> {
-        Self::parse_with_decimals_and_unit(input, DUFF_DECIMAL_PLACES, "DASH".to_string())
+        Self::parse_with_decimals_and_unit(input, DASH_DECIMAL_PLACES, "DASH".to_string())
     }
 
     /// Formats a duff amount as Dash.
     pub fn format_dash(duffs: u64) -> String {
-        Self::format_amount(duffs, DUFF_DECIMAL_PLACES)
+        Self::format_amount(duffs, DASH_DECIMAL_PLACES)
     }
 }
 
@@ -281,8 +281,8 @@ mod tests {
 
         // Test Dash parsing
         let dash_amount = Amount::parse_dash("1.5").unwrap();
-        assert_eq!(dash_amount.value(), 150_000_000);
-        assert_eq!(dash_amount.decimal_places(), DUFF_DECIMAL_PLACES);
+        assert_eq!(dash_amount.value(), 150_000_000_000);
+        assert_eq!(dash_amount.decimal_places(), DASH_DECIMAL_PLACES);
     }
 
     #[test]
@@ -290,7 +290,7 @@ mod tests {
         let amount = Amount::new(12_345, 2);
         assert_eq!(format!("{}", amount), "123.45");
 
-        let dash_amount = Amount::dash(150_000_000);
+        let dash_amount = Amount::dash(150_000_000_000);
         assert_eq!(format!("{}", dash_amount), "1.5 DASH");
 
         // Test amount with custom unit name

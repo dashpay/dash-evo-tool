@@ -2,9 +2,11 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -41,7 +43,7 @@ pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
     withdrawal_address: String,
-    withdrawal_amount: String,
+    withdrawal_amount: Amount,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
@@ -69,7 +71,7 @@ impl WithdrawalScreen {
             identity,
             selected_key: selected_key.cloned(),
             withdrawal_address: String::new(),
-            withdrawal_amount: String::new(),
+            withdrawal_amount: Amount::dash(0),
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
@@ -94,21 +96,18 @@ impl WithdrawalScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount (dash):");
+        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
+        let max_amount_duffs = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-            ui.text_edit_singleline(&mut self.withdrawal_amount);
+        let amount_input = AmountInput::new(&mut self.withdrawal_amount)
+            .label("Amount:")
+            .max_amount(Some(max_amount_duffs))
+            .show_max_button(true)
+            .show(ui);
 
-            if ui.button("Max").clicked() {
-                let expected_max_amount = self.max_amount.saturating_sub(500000000) as f64 * 1e-11;
-
-                // Use flooring and format the result with 4 decimal places
-                let floored_amount = (expected_max_amount * 10_000.0).floor() / 10_000.0;
-
-                // Set the withdrawal amount to the floored value formatted as a string
-                self.withdrawal_amount = format!("{:.4}", floored_amount);
-            }
-        });
+        if let Some(error) = &amount_input.inner.error_message {
+            ui.colored_label(egui::Color32::DARK_RED, error);
+        }
     }
 
     fn render_address_input(&mut self, ui: &mut Ui) {
@@ -182,27 +181,12 @@ impl WithdrawalScreen {
                 };
 
                 ui.label(format!(
-                    "Are you sure you want to withdraw {} Dash to {}",
+                    "Are you sure you want to withdraw {} to {}",
                     self.withdrawal_amount, message_address
                 ));
-                let parts: Vec<&str> = self.withdrawal_amount.split('.').collect();
-                let mut credits: u128 = 0;
 
-                // Process the whole number part if it exists.
-                if let Some(whole) = parts.first() {
-                    if let Ok(whole_number) = whole.parse::<u128>() {
-                        credits += whole_number * 100_000_000_000; // Whole Dash amount to credits
-                    }
-                }
-
-                // Process the fractional part if it exists.
-                if let Some(fraction) = parts.get(1) {
-                    let fraction_length = fraction.len();
-                    let fraction_number = fraction.parse::<u128>().unwrap_or(0);
-                    // Calculate the multiplier based on the number of digits in the fraction.
-                    let multiplier = 10u128.pow(11 - fraction_length as u32);
-                    credits += fraction_number * multiplier; // Fractional Dash to credits
-                }
+                // Use the amount directly since it's already an Amount struct
+                let credits = self.withdrawal_amount.value() as u128;
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;

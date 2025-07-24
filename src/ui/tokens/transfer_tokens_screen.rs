@@ -2,8 +2,10 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -32,81 +34,6 @@ use super::tokens_screen::IdentityTokenBalance;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 
-fn format_token_amount(amount: u64, decimals: u8) -> String {
-    if decimals == 0 {
-        return amount.to_string();
-    }
-
-    let divisor = 10u64.pow(decimals as u32);
-    let whole = amount / divisor;
-    let fraction = amount % divisor;
-
-    if fraction == 0 {
-        whole.to_string()
-    } else {
-        // Format with the appropriate number of decimal places, removing trailing zeros
-        let fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
-        let trimmed = fraction_str.trim_end_matches('0');
-        format!("{}.{}", whole, trimmed)
-    }
-}
-
-fn parse_token_amount(input: &str, decimals: u8) -> Result<u64, String> {
-    if decimals == 0 {
-        return input
-            .parse::<u64>()
-            .map_err(|_| "Invalid amount: must be a whole number".to_string());
-    }
-
-    let parts: Vec<&str> = input.split('.').collect();
-    match parts.len() {
-        1 => {
-            // No decimal point, parse as whole number
-            let whole = parts[0]
-                .parse::<u64>()
-                .map_err(|_| "Invalid amount: must be a number".to_string())?;
-            let multiplier = 10u64.pow(decimals as u32);
-            whole
-                .checked_mul(multiplier)
-                .ok_or_else(|| "Amount too large".to_string())
-        }
-        2 => {
-            // Has decimal point
-            let whole = if parts[0].is_empty() {
-                0
-            } else {
-                parts[0]
-                    .parse::<u64>()
-                    .map_err(|_| "Invalid amount: whole part must be a number".to_string())?
-            };
-
-            let fraction_str = parts[1];
-            if fraction_str.len() > decimals as usize {
-                return Err(format!(
-                    "Too many decimal places. Maximum allowed: {}",
-                    decimals
-                ));
-            }
-
-            // Pad with zeros if needed
-            let padded_fraction = format!("{:0<width$}", fraction_str, width = decimals as usize);
-            let fraction = padded_fraction
-                .parse::<u64>()
-                .map_err(|_| "Invalid amount: decimal part must be a number".to_string())?;
-
-            let multiplier = 10u64.pow(decimals as u32);
-            let whole_part = whole
-                .checked_mul(multiplier)
-                .ok_or_else(|| "Amount too large".to_string())?;
-
-            whole_part
-                .checked_add(fraction)
-                .ok_or_else(|| "Amount too large".to_string())
-        }
-        _ => Err("Invalid amount: too many decimal points".to_string()),
-    }
-}
-
 #[derive(PartialEq)]
 pub enum TransferTokensStatus {
     NotStarted,
@@ -122,7 +49,7 @@ pub struct TransferTokensScreen {
     selected_key: Option<IdentityPublicKey>,
     pub public_note: Option<String>,
     pub receiver_identity_id: String,
-    pub amount: String,
+    pub amount: Amount,
     transfer_tokens_status: TransferTokensStatus,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
@@ -165,7 +92,7 @@ impl TransferTokensScreen {
             selected_key: selected_key.cloned(),
             public_note: None,
             receiver_identity_id: String::new(),
-            amount: String::new(),
+            amount: Amount::new(0, 0),
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,
             app_context: app_context.clone(),
@@ -177,20 +104,42 @@ impl TransferTokensScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount:");
+        let decimals = self
+            .identity_token_balance
+            .token_config
+            .conventions()
+            .decimals();
 
-            ui.text_edit_singleline(&mut self.amount);
+        // Ensure the amount has the correct decimals and unit name
+        if self.amount.decimal_places() != decimals {
+            self.amount = self.amount.clone().recalculate_decimal_places(decimals);
+        }
+        if self.amount.unit_name() != Some(&self.identity_token_balance.token_alias) {
+            self.amount = self
+                .amount
+                .clone()
+                .with_unit_name(self.identity_token_balance.token_alias.clone());
+        }
 
-            if ui.button("Max").clicked() {
-                let decimals = self
-                    .identity_token_balance
-                    .token_config
-                    .conventions()
-                    .decimals();
-                self.amount = format_token_amount(self.max_amount, decimals);
-            }
-        });
+        let formatted_balance = Amount::format_amount(self.max_amount, decimals);
+        ui.label(format!(
+            "Available balance: {} {}",
+            formatted_balance, self.identity_token_balance.token_alias
+        ));
+        ui.add_space(5.0);
+
+        let amount_input = AmountInput::new(&mut self.amount)
+            .label("Amount:")
+            .max_amount(Some(self.max_amount))
+            .show_max_button(true)
+            .show(ui);
+
+        if let Some(error) = &amount_input.inner.error_message {
+            ui.colored_label(
+                DashColors::error_color(ui.ctx().style().visuals.dark_mode),
+                error,
+            );
+        }
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
@@ -267,13 +216,8 @@ impl TransferTokensScreen {
                                 sending_identity: self.identity.clone(),
                                 recipient_id: identifier,
                                 amount: {
-                                    let decimals = self
-                                        .identity_token_balance
-                                        .token_config
-                                        .conventions()
-                                        .decimals();
-                                    parse_token_amount(&self.amount, decimals)
-                                        .expect("Amount should be valid at this point")
+                                    // Use the amount value directly
+                                    self.amount.value()
                                 },
                                 data_contract,
                                 token_position: self.identity_token_balance.token_position,
@@ -471,19 +415,6 @@ impl ScreenLike for TransferTokensScreen {
                 ui.heading("2. Input the amount to transfer");
                 ui.add_space(5.0);
 
-                // Show available balance
-                let decimals = self
-                    .identity_token_balance
-                    .token_config
-                    .conventions()
-                    .decimals();
-                let formatted_balance = format_token_amount(self.max_amount, decimals);
-                ui.label(format!(
-                    "Available balance: {} {}",
-                    formatted_balance, self.identity_token_balance.token_alias
-                ));
-                ui.add_space(5.0);
-
                 self.render_amount_input(ui);
 
                 ui.add_space(10.0);
@@ -527,28 +458,18 @@ impl ScreenLike for TransferTokensScreen {
                     .frame(true)
                     .corner_radius(3.0);
                 if ui.add(button).clicked() {
-                    let decimals = self
-                        .identity_token_balance
-                        .token_config
-                        .conventions()
-                        .decimals();
-                    match parse_token_amount(&self.amount, decimals) {
-                        Ok(parsed_amount) => {
-                            if parsed_amount > self.max_amount {
-                                self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                                    "Amount exceeds available balance".to_string(),
-                                );
-                            } else if parsed_amount == 0 {
-                                self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                                    "Amount must be greater than zero".to_string(),
-                                );
-                            } else {
-                                self.confirmation_popup = true;
-                            }
-                        }
-                        Err(e) => {
-                            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(e);
-                        }
+                    // Use the amount value directly since it's already parsed
+                    let amount_value = self.amount.value();
+                    if amount_value > self.max_amount {
+                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
+                            "Amount exceeds available balance".to_string(),
+                        );
+                    } else if amount_value == 0 {
+                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
+                            "Amount must be greater than zero".to_string(),
+                        );
+                    } else {
+                        self.confirmation_popup = true;
                     }
                 }
 

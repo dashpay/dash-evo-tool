@@ -31,8 +31,7 @@ pub enum ConfirmationDialogResponse {
 /// match response.inner {
 ///      ConfirmationDialogResponse::Confirmed => println!("User confirmed"),
 ///      ConfirmationDialogResponse::Canceled => println!("User canceled"),
-///      ConfirmationDialogResponse::None => println!("Dialog still open"),
-///      _ => {}
+///      ConfirmationDialogResponse::None => println!("Dialog still open")
 /// };
 /// # }
 /// ```

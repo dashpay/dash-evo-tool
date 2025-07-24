@@ -1,6 +1,8 @@
 use std::fmt::Display;
 
 use bincode::{Decode, Encode};
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::{balances::credits::TokenAmount, fee::Credits};
 use serde::{Deserialize, Serialize};
 
@@ -231,6 +233,55 @@ impl Amount {
     /// Formats a duff amount as Dash.
     pub fn format_dash(credits: Credits) -> String {
         Self::format_amount(credits, DASH_DECIMAL_PLACES)
+    }
+}
+
+/// Conversion implementations for token types
+impl From<&crate::ui::tokens::tokens_screen::IdentityTokenBalance> for Amount {
+    /// Converts an IdentityTokenBalance to an Amount.
+    ///
+    /// The decimal places are automatically determined from the token configuration,
+    /// and the token alias is used as the unit name.
+    fn from(token_balance: &crate::ui::tokens::tokens_screen::IdentityTokenBalance) -> Self {
+        let decimal_places = token_balance.token_config.conventions().decimals();
+        Self::new_with_unit(
+            token_balance.balance,
+            decimal_places,
+            token_balance.token_alias.clone(),
+        )
+    }
+}
+
+impl From<crate::ui::tokens::tokens_screen::IdentityTokenBalance> for Amount {
+    /// Converts an owned IdentityTokenBalance to an Amount.
+    fn from(token_balance: crate::ui::tokens::tokens_screen::IdentityTokenBalance) -> Self {
+        Self::from(&token_balance)
+    }
+}
+
+impl From<&crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> for Amount {
+    /// Converts an IdentityTokenBalanceWithActions to an Amount.
+    ///
+    /// The decimal places are automatically determined from the token configuration,
+    /// and the token alias is used as the unit name.
+    fn from(
+        token_balance: &crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions,
+    ) -> Self {
+        let decimal_places = token_balance.token_config.conventions().decimals();
+        Self::new_with_unit(
+            token_balance.balance,
+            decimal_places,
+            token_balance.token_alias.clone(),
+        )
+    }
+}
+
+impl From<crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> for Amount {
+    /// Converts an owned IdentityTokenBalanceWithActions to an Amount.
+    fn from(
+        token_balance: crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions,
+    ) -> Self {
+        Self::from(&token_balance)
     }
 }
 

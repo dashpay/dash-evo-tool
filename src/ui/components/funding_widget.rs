@@ -6,6 +6,7 @@ use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::Transaction;
+use dash_sdk::dpp::data_contract::conversion::value;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
 use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};
@@ -746,7 +747,7 @@ impl FundingWidget {
             };
 
             let receive_address = {
-                let mut wallet = wallet_guard.write().unwrap();
+                let mut wallet = wallet_guard.write().map_err(|e| e.to_string())?;
                 // Always generate a new address when force_new is true
                 wallet.receive_address(
                     self.app_context.network,
@@ -804,7 +805,11 @@ impl FundingWidget {
             }
         }
 
-        Ok(self.funding_address.as_ref().unwrap().clone())
+        Ok(self
+            .funding_address
+            .as_ref()
+            .ok_or_else(|| "No funding address available".to_string())?
+            .clone())
     }
 
     /// Capture existing UTXOs for the given address to track what was already there

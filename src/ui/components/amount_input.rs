@@ -34,6 +34,7 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 /// - Automatic unit name display from Amount objects
 /// - Proper layout alignment when buttons are present
 /// - Self-contained state management
+/// - Enable/disable functionality to prevent changes during operations
 ///
 /// # Example
 /// ```rust
@@ -44,12 +45,14 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 /// // Store Option<AmountInput> for lazy initialization
 /// struct MyScreen {
 ///     amount_input: Option<AmountInput>,
+///     operation_in_progress: bool,
 /// }
 ///
 /// impl MyScreen {
 ///     fn new() -> Self {
 ///         Self {
 ///             amount_input: None, // Lazy initialization
+///             operation_in_progress: false,
 ///         }
 ///     }
 ///
@@ -61,8 +64,15 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///                 .hint_text("Enter amount")
 ///                 .max_amount(Some(1000000))
 ///                 .min_amount(Some(1000))
-///                 .show_max_button(true)
+///                 .max_button(true)
 ///         });
+///
+///         // Disable input during operations to prevent changes
+///         if self.operation_in_progress {
+///             amount_input.enabled(false);
+///         } else {
+///             amount_input.enabled(true);
+///         }
 ///
 ///         let response = amount_input.show(ui);
 ///
@@ -81,6 +91,8 @@ pub struct AmountInput {
     min_amount: Option<Credits>,
     show_max_button: bool,
     desired_width: Option<f32>,
+    /// Whether the input is enabled (editable) - when false, prevents changes during operations
+    enabled: bool,
     /// Function to execute when correct amount is entered
     pub on_success_fn: Option<CallbackFn>,
     /// Function to execute when invalid amount is entered
@@ -112,6 +124,7 @@ impl AmountInput {
             min_amount: Some(1), // Default minimum is 1 (greater than zero)
             show_max_button: false,
             desired_width: None,
+            enabled: true,
             on_success_fn: None,
             on_error_fn: None,
         }
@@ -220,6 +233,22 @@ impl AmountInput {
         self
     }
 
+    /// Sets whether the input is enabled (editable). When disabled, the input becomes read-only.
+    pub fn set_enabled(&mut self, enabled: bool) -> &mut Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.set_enabled(enabled);
+        self
+    }
+
+    /// Returns whether the input is currently enabled (editable).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Standard show method for backwards compatibility
     pub fn show(&mut self, ui: &mut Ui) -> InnerResponse<AmountInputResponse> {
         let result = self.show_internal(ui);
@@ -239,6 +268,40 @@ impl AmountInput {
         }
 
         result
+    }
+
+    /// Validates the current amount string and returns validation results.
+    fn validate_amount(&self) -> (Option<String>, Option<Amount>) {
+        if self.amount_str.trim().is_empty() {
+            return (None, None);
+        }
+
+        match Amount::parse_with_decimals(&self.amount_str, self.decimal_places) {
+            Ok(amount) => {
+                // Check if amount exceeds maximum
+                if let Some(max_amount) = self.max_amount {
+                    if amount.value() > max_amount {
+                        return (Some("Amount exceeds maximum allowed".to_string()), None);
+                    }
+                }
+
+                // Check if amount is below minimum
+                if let Some(min_amount) = self.min_amount {
+                    if amount.value() < min_amount {
+                        return (
+                            Some(format!(
+                                "Amount must be at least {}",
+                                Amount::format_amount(min_amount, self.decimal_places)
+                            )),
+                            None,
+                        );
+                    }
+                }
+
+                (None, Some(amount))
+            }
+            Err(error) => (Some(error), None),
+        }
     }
 
     /// Renders the amount input widget and returns an `InnerResponse` for use with `show()`.
@@ -265,60 +328,20 @@ impl AmountInput {
                 text_edit = text_edit.desired_width(width);
             }
 
-            let text_response = ui.add(text_edit);
-            let changed = text_response.changed();
+            // Disable text edit if not enabled
+            if !self.enabled {
+                text_edit = text_edit.interactive(false);
+            }
 
-            // Parse the amount and validate
-            let (error_message, parsed_amount) = if self.amount_str.trim().is_empty() {
-                (None, None)
-            } else {
-                match Amount::parse_with_decimals(&self.amount_str, self.decimal_places) {
-                    Ok(amount) => {
-                        // Check if amount exceeds maximum
-                        if let Some(max_amount) = self.max_amount {
-                            if amount.value() > max_amount {
-                                (Some("Amount exceeds maximum allowed".to_string()), None)
-                            } else if let Some(min_amount) = self.min_amount {
-                                if amount.value() < min_amount {
-                                    (
-                                        Some(format!(
-                                            "Amount must be at least {}",
-                                            Amount::format_amount(
-                                                min_amount,
-                                                amount.decimal_places()
-                                            )
-                                        )),
-                                        None,
-                                    )
-                                } else {
-                                    (None, Some(amount))
-                                }
-                            } else {
-                                (None, Some(amount))
-                            }
-                        } else if let Some(min_amount) = self.min_amount {
-                            if amount.value() < min_amount {
-                                (
-                                    Some(format!(
-                                        "Amount must be at least {}",
-                                        Amount::format_amount(min_amount, self.decimal_places)
-                                    )),
-                                    None,
-                                )
-                            } else {
-                                (None, Some(amount))
-                            }
-                        } else {
-                            (None, Some(amount))
-                        }
-                    }
-                    Err(error) => (Some(error), None),
-                }
-            };
+            let text_response = ui.add(text_edit);
+            let changed = text_response.changed() && self.enabled;
+
+            // Validate the amount
+            let (error_message, parsed_amount) = self.validate_amount();
 
             // Show max button if enabled and max amount is available
             let mut max_clicked = false;
-            if self.show_max_button {
+            if self.show_max_button && self.enabled {
                 if let Some(max_amount) = self.max_amount {
                     if ui.button("Max").clicked() {
                         self.amount_str = Amount::format_amount(max_amount, self.decimal_places);
@@ -328,6 +351,9 @@ impl AmountInput {
                     // Max button clicked but no max amount set - still report the click
                     max_clicked = true;
                 }
+            } else if self.show_max_button && !self.enabled {
+                // Show disabled Max button when not enabled
+                ui.add_enabled(false, egui::Button::new("Max"));
             }
 
             AmountInputResponse {
@@ -394,5 +420,35 @@ mod tests {
         // No minimum
         let input = AmountInput::new(Amount::new(0, 8)).min_amount(None);
         assert_eq!(input.min_amount, None);
+    }
+
+    #[test]
+    fn test_enable_disable_functionality() {
+        let amount = Amount::new(0, 8);
+        let mut input = AmountInput::new(amount);
+
+        // Initially enabled
+        assert!(input.is_enabled());
+
+        // Test disable
+        input.set_enabled(false);
+        assert!(!input.is_enabled());
+
+        // Test enable
+        input.set_enabled(true);
+        assert!(input.is_enabled());
+    }
+
+    #[test]
+    fn test_enabled_builder_method() {
+        let amount = Amount::new(0, 8);
+
+        // Test creating disabled input
+        let input = AmountInput::new(amount).enabled(false);
+        assert!(!input.is_enabled());
+
+        // Test creating enabled input
+        let input = AmountInput::new(Amount::new(0, 8)).enabled(true);
+        assert!(input.is_enabled());
     }
 }

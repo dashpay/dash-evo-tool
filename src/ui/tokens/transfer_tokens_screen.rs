@@ -146,7 +146,19 @@ impl TransferTokensScreen {
         }
 
         let amount_input = self.amount_input.as_mut().unwrap();
-        let response = amount_input.set_max_amount(Some(self.max_amount)).show(ui);
+
+        // Disable the input when operation is in progress
+        match self.transfer_tokens_status {
+            TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => {
+                amount_input.set_enabled(false)
+            }
+            TransferTokensStatus::NotStarted | TransferTokensStatus::ErrorMessage(_) => {
+                amount_input.set_max_amount(Some(self.max_amount));
+                amount_input.set_enabled(true)
+            }
+        };
+
+        let response = amount_input.show(ui);
 
         // Update the amount if parsing was successful
         if let Some(parsed_amount) = response.inner.parsed_amount {

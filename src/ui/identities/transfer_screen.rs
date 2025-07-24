@@ -110,18 +110,28 @@ impl TransferScreen {
 
         // Calculate max amount minus fee for the "Max" button
         let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
-        let max_amount_duffs = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-        // Lazy initialization with basic configuration
+        // Update max amount dynamically (since it can change)
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::dash(0))
                 .label("Amount:")
                 .max_button(true)
-                .max_amount(Some(max_amount_duffs))
+                .max_amount(Some(max_amount_credits))
         });
 
-        // Update max amount dynamically (since it can change)
-        let response = amount_input.set_max_amount(Some(max_amount_duffs)).show(ui);
+        // Disable the input when operation is in progress
+        match self.transfer_credits_status {
+            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => {
+                amount_input.set_enabled(false);
+            }
+            TransferCreditsStatus::NotStarted | TransferCreditsStatus::ErrorMessage(_) => {
+                amount_input.set_enabled(true);
+                amount_input.set_max_amount(Some(max_amount_credits));
+            }
+        }
+
+        let response = amount_input.show(ui);
 
         // Update the amount if it was changed
         if let Some(parsed_amount) = response.inner.parsed_amount {

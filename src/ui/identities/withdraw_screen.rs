@@ -108,10 +108,18 @@ impl WithdrawalScreen {
                 .max_button(true)
         });
 
-        // Update max amount dynamically and show
-        let response = amount_input
-            .set_max_amount(Some(max_amount_credits))
-            .show(ui);
+        // Disable the input when operation is in progress
+        match self.withdraw_from_identity_status {
+            WithdrawFromIdentityStatus::WaitingForResult(_)
+            | WithdrawFromIdentityStatus::Complete => amount_input.set_enabled(false),
+            WithdrawFromIdentityStatus::NotStarted
+            | WithdrawFromIdentityStatus::ErrorMessage(_) => {
+                amount_input.set_max_amount(Some(max_amount_credits));
+                amount_input.set_enabled(true)
+            }
+        };
+
+        let response = amount_input.show(ui);
 
         // Update the withdrawal amount if it was changed
         if let Some(parsed_amount) = response.inner.parsed_amount {

@@ -319,9 +319,8 @@ impl ScreenLike for TopUpIdentityScreen {
                         self.error_message = Some(error.clone());
                     }
 
-
                     let funding_secured = response_data.funded() || step.is_processing();
-                  
+
                     if funding_secured {
                         // for wallet funding, we need a button to top up the identity
                         // others can be done automatically

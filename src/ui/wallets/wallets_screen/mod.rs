@@ -558,25 +558,7 @@ impl WalletsBalancesScreen {
                                             .on_hover_text("Top-up this address")
                                             .clicked()
                                     {
-                                        // Set up funding widget for this specific address
-                                        let topup_address = data.address.clone();
-
-                                        // Create funding widget with predefined address and QR code only
-                                        let mut widget =
-                                            FundingWidget::new(self.app_context.clone())
-                                                .with_address(topup_address)
-                                                .with_default_amount("0.1")
-                                                .with_amount_label("Top-up Amount (DASH):")
-                                                .with_qr_code(true)
-                                                .with_copy_button(true)
-                                                .with_max_button(false); // Disable max button for address top-up
-
-                                        if let Some(wallet) = &self.selected_wallet {
-                                            widget = widget.with_wallet(wallet.clone());
-                                        }
-
-                                        // Rendered in separate function
-                                        self.funding_widget = Some(widget);
+                                        self.init_address_topup_widget(data.address.clone());
                                     }
                                 });
                             });
@@ -763,7 +745,7 @@ impl WalletsBalancesScreen {
 
         let ctx = ui.ctx();
         let screen_rect = ctx.screen_rect();
-        let max_height = screen_rect.height() * 0.9; // 70% of screen height
+        let max_height = screen_rect.height() * 0.9; // 90% of screen height
 
         let mut open = true;
 
@@ -774,45 +756,69 @@ impl WalletsBalancesScreen {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .open(&mut open)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([true; 2])
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            // Render the widget and get response
-                            let funding_widget =
-                                self.funding_widget.as_mut().expect("Checked above");
-                            let response_data = funding_widget.show(ui).inner.on_funded(|_| {
-                                self.funding_widget = None;
-                            });
-
-                            if let Some(e) = response_data.error {
-                                self.display_message(
-                                    &format!("Funding widget error: {}", e),
-                                    MessageType::Error,
-                                );
-                            }
-
-                            ui.add_space(15.0);
-                            ui.separator();
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.button(RichText::new("Close").size(14.0)).clicked() {
-                                            self.funding_widget = None;
-                                        }
-                                    },
-                                );
-                            });
-                        });
-                    });
+                self.render_modal_content(ui);
             });
 
         // Handle close button click
         if !open {
-            self.funding_widget = None;
+            self.close_funding_modal();
         }
+    }
+
+    /// Render the content inside the top-up modal
+    fn render_modal_content(&mut self, ui: &mut Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([true; 2])
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    // Render the widget and get response
+                    let funding_widget = self.funding_widget.as_mut().expect("Checked above");
+                    let response_data = funding_widget.show(ui).inner.on_funded(|_| {
+                        self.close_funding_modal();
+                    });
+
+                    if let Some(e) = response_data.error {
+                        self.display_message(
+                            &format!("Funding widget error: {}", e),
+                            MessageType::Error,
+                        );
+                    }
+
+                    ui.add_space(15.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(RichText::new("Close").size(14.0)).clicked() {
+                                self.close_funding_modal();
+                            }
+                        });
+                    });
+                });
+            });
+    }
+
+    /// Initialize funding widget for address top-up
+    fn init_address_topup_widget(&mut self, address: Address) {
+        let mut widget = FundingWidget::new(self.app_context.clone())
+            .with_address(address)
+            .with_default_amount("0.1")
+            .with_amount_label("Top-up Amount (DASH):")
+            .with_qr_code(true)
+            .with_copy_button(true)
+            .with_max_button(false) // Disable max button for address top-up
+            .with_ignore_existing_utxos(true); // Enable ignore existing UTXOs for top-up
+
+        if let Some(wallet) = &self.selected_wallet {
+            widget = widget.with_wallet(wallet.clone());
+        }
+
+        self.funding_widget = Some(widget);
+    }
+
+    /// Close the funding modal and reset state
+    fn close_funding_modal(&mut self) {
+        self.funding_widget = None;
     }
 
     fn dismiss_message(&mut self) {

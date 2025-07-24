@@ -44,6 +44,7 @@ pub struct TransferScreen {
     known_identities: Vec<QualifiedIdentity>,
     receiver_identity_id: String,
     amount: Amount,
+    amount_input: Option<AmountInput>,
     transfer_credits_status: TransferCreditsStatus,
     error_message: Option<String>,
     max_amount: u64,
@@ -77,6 +78,7 @@ impl TransferScreen {
             known_identities,
             receiver_identity_id: String::new(),
             amount: Amount::dash(0),
+            amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
             max_amount,
@@ -110,13 +112,23 @@ impl TransferScreen {
         let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
         let max_amount_duffs = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-        let amount_input = AmountInput::new(&mut self.amount)
-            .label("Amount:")
-            .max_amount(Some(max_amount_duffs))
-            .show_max_button(true)
-            .show(ui);
+        // Lazy initialization with basic configuration
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::dash(0))
+                .label("Amount:")
+                .max_button(true)
+                .max_amount(Some(max_amount_duffs))
+        });
 
-        if let Some(error) = &amount_input.inner.error_message {
+        // Update max amount dynamically (since it can change)
+        let response = amount_input.set_max_amount(Some(max_amount_duffs)).show(ui);
+
+        // Update the amount if it was changed
+        if let Some(parsed_amount) = response.inner.parsed_amount {
+            self.amount = parsed_amount.with_unit_name("DASH".to_string());
+        }
+
+        if let Some(error) = &response.inner.error_message {
             ui.colored_label(egui::Color32::DARK_RED, error);
         }
     }

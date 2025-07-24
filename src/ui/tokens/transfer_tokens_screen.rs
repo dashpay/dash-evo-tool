@@ -50,6 +50,7 @@ pub struct TransferTokensScreen {
     pub public_note: Option<String>,
     pub receiver_identity_id: String,
     pub amount: Amount,
+    pub amount_input: Option<AmountInput>,
     transfer_tokens_status: TransferTokensStatus,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
@@ -93,6 +94,7 @@ impl TransferTokensScreen {
             public_note: None,
             receiver_identity_id: String::new(),
             amount: Amount::new(0, 0),
+            amount_input: None,
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,
             app_context: app_context.clone(),
@@ -128,13 +130,31 @@ impl TransferTokensScreen {
         ));
         ui.add_space(5.0);
 
-        let amount_input = AmountInput::new(&mut self.amount)
-            .label("Amount:")
-            .max_amount(Some(self.max_amount))
-            .show_max_button(true)
-            .show(ui);
+        // Lazy initialization with proper decimal places
+        let needs_recreation = self
+            .amount_input
+            .as_ref()
+            .map(|input| input.decimal_places() != decimals)
+            .unwrap_or(true);
 
-        if let Some(error) = &amount_input.inner.error_message {
+        if needs_recreation {
+            self.amount_input = Some(
+                AmountInput::new(Amount::new(0, decimals))
+                    .label("Amount:")
+                    .max_button(true),
+            );
+        }
+
+        let amount_input = self.amount_input.as_mut().unwrap();
+        let response = amount_input.set_max_amount(Some(self.max_amount)).show(ui);
+
+        // Update the amount if parsing was successful
+        if let Some(parsed_amount) = response.inner.parsed_amount {
+            self.amount =
+                parsed_amount.with_unit_name(self.identity_token_balance.token_alias.clone());
+        }
+
+        if let Some(error) = &response.inner.error_message {
             ui.colored_label(
                 DashColors::error_color(ui.ctx().style().visuals.dark_mode),
                 error,

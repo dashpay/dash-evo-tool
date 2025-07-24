@@ -44,6 +44,7 @@ pub struct WithdrawalScreen {
     selected_key: Option<IdentityPublicKey>,
     withdrawal_address: String,
     withdrawal_amount: Amount,
+    withdrawal_amount_input: Option<AmountInput>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
@@ -72,6 +73,7 @@ impl WithdrawalScreen {
             selected_key: selected_key.cloned(),
             withdrawal_address: String::new(),
             withdrawal_amount: Amount::dash(0),
+            withdrawal_amount_input: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
@@ -97,15 +99,26 @@ impl WithdrawalScreen {
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
         let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
-        let max_amount_duffs = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-        let amount_input = AmountInput::new(&mut self.withdrawal_amount)
-            .label("Amount:")
-            .max_amount(Some(max_amount_duffs))
-            .show_max_button(true)
+        // Lazy initialization with basic configuration
+        let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::dash(0))
+                .label("Amount:")
+                .max_button(true)
+        });
+
+        // Update max amount dynamically and show
+        let response = amount_input
+            .set_max_amount(Some(max_amount_credits))
             .show(ui);
 
-        if let Some(error) = &amount_input.inner.error_message {
+        // Update the withdrawal amount if it was changed
+        if let Some(parsed_amount) = response.inner.parsed_amount {
+            self.withdrawal_amount = parsed_amount;
+        }
+
+        if let Some(error) = &response.inner.error_message {
             ui.colored_label(egui::Color32::DARK_RED, error);
         }
     }
@@ -185,7 +198,7 @@ impl WithdrawalScreen {
                     self.withdrawal_amount, message_address
                 ));
 
-                // Use the amount directly since it's already an Amount struct
+                // Use the amount directly from the stored amount
                 let credits = self.withdrawal_amount.value() as u128;
 
                 if ui.button("Confirm").clicked() {

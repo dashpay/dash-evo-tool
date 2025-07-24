@@ -6,7 +6,6 @@ use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::Transaction;
-use dash_sdk::dpp::data_contract::conversion::value;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
 use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};

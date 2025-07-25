@@ -648,10 +648,6 @@ impl App for AppState {
                         _ => {
                             // Special handling for SPV results - always route to NetworkChooser screen
                             if matches!(unboxed_message, BackendTaskSuccessResult::SpvResult(_)) {
-                                tracing::info!(
-                                    "Routing SPV result to NetworkChooser screen. Current main screen: {:?}",
-                                    self.selected_main_screen
-                                );
 
                                 // Get the NetworkChooser screen directly
                                 if let Some(Screen::NetworkChooserScreen(network_chooser)) = self

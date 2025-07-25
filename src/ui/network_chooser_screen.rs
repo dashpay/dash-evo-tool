@@ -153,51 +153,6 @@ impl NetworkChooserScreen {
                 ui.add_enabled(false, egui::Button::new("Syncing..."));
             }
 
-            // Add a button to manually update quorum cache (for debugging)
-            if self.spv_is_initialized {
-                if ui.button("Update Quorum Cache").clicked() {
-                    // Get app context based on current network
-                    let app_context = match self.current_network {
-                        Network::Dash => &self.mainnet_app_context,
-                        Network::Testnet => {
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx
-                            } else {
-                                return;
-                            }
-                        }
-                        Network::Devnet => {
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx
-                            } else {
-                                return;
-                            }
-                        }
-                        Network::Regtest => {
-                            if let Some(ref ctx) = self.local_app_context {
-                                ctx
-                            } else {
-                                return;
-                            }
-                        }
-                        _ => return,
-                    };
-
-                    // Update cache in a non-blocking way
-                    let app_ctx_clone = app_context.clone();
-                    tokio::spawn(async move {
-                        let spv_manager = app_ctx_clone.spv_manager.read().await;
-                        match spv_manager.update_cache().await {
-                            Ok(size) => {
-                                tracing::info!("Updated quorum cache: {} entries", size);
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to update cache: {}", e);
-                            }
-                        }
-                    });
-                }
-            }
         });
 
         if self.spv_is_syncing || self.spv_is_initialized {
@@ -235,11 +190,6 @@ impl NetworkChooserScreen {
                     self.spv_current_height.to_formatted_string(&Locale::en),
                     self.spv_target_height.to_formatted_string(&Locale::en)
                 ));
-
-                // Calculate and show actual percentage based on displayed values
-                let calc_percent =
-                    (self.spv_current_height as f32 / self.spv_target_height as f32) * 100.0;
-                ui.label(format!("(calculated: {:.2}%)", calc_percent));
             });
 
             if self.spv_is_syncing
@@ -964,21 +914,18 @@ impl ScreenLike for NetworkChooserScreen {
                         target_height,
                         progress_percent,
                     } => {
-                        // Always log to info level so we can see it
-                        tracing::info!(
-                            "UI received SPV progress: current={}, target={}, percent={:.2}%",
-                            current_height,
-                            target_height,
-                            progress_percent
-                        );
-
-                        // Debug log the before/after state
-                        tracing::debug!(
-                            "UI SPV state before update: current={}, target={}, progress={:.2}%",
-                            self.spv_current_height,
-                            self.spv_target_height,
-                            self.spv_sync_progress
-                        );
+                        // Only log significant changes
+                        let height_changed = current_height != self.spv_current_height;
+                        let progress_changed = (progress_percent - self.spv_sync_progress).abs() > 1.0;
+                        
+                        if height_changed || progress_changed {
+                            tracing::info!(
+                                "SPV progress: {} / {} blocks ({:.1}%)",
+                                current_height,
+                                target_height,
+                                progress_percent
+                            );
+                        }
 
                         self.spv_current_height = current_height;
                         self.spv_target_height = target_height;
@@ -986,13 +933,6 @@ impl ScreenLike for NetworkChooserScreen {
                         self.spv_is_syncing = true;
                         self.spv_is_initialized = true;
                         self.spv_last_error = None;
-
-                        tracing::debug!(
-                            "UI SPV state after update: current={}, target={}, progress={:.2}%",
-                            self.spv_current_height,
-                            self.spv_target_height,
-                            self.spv_sync_progress
-                        );
                     }
                     SpvTaskResult::SyncComplete { final_height } => {
                         self.spv_current_height = final_height;
@@ -1045,10 +985,9 @@ impl ScreenLike for NetworkChooserScreen {
                 .unwrap()
                 .as_millis() as TimestampMillis;
 
-            // Only check progress once per second
-            if current_time >= self.spv_last_progress_check + 1000 {
+            // Only check progress once per 3 seconds
+            if current_time >= self.spv_last_progress_check + 3000 {
                 self.spv_last_progress_check = current_time;
-                tracing::debug!("Triggering SPV progress check");
                 action = AppAction::BackendTask(BackendTask::SpvTask(SpvTask::GetSyncProgress));
             }
             ctx.request_repaint_after(std::time::Duration::from_secs(1));

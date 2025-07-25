@@ -121,14 +121,11 @@ impl ContextProvider for Provider {
         _core_chain_locked_height: u32,
     ) -> std::result::Result<[u8; 48], dash_sdk::error::ContextProviderError> {
         tracing::debug!(
-            "get_quorum_public_key called - type: {}, hash: {:?}",
+            "get_quorum_public_key called with quorum_type: {}, quorum_hash: {:?}",
             quorum_type,
-            hex::encode(&quorum_hash)
+            quorum_hash
         );
-
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
-        tracing::debug!("Acquired app context lock");
-
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -136,34 +133,33 @@ impl ContextProvider for Provider {
 
         // Check if SPV mode is enabled
         let is_spv_mode = app_ctx.is_spv_mode();
-        tracing::debug!("SPV mode enabled: {}", is_spv_mode);
 
         if is_spv_mode {
-            tracing::debug!("In SPV mode - attempting to get quorum key from SPV client");
-
             // Try to get SPV manager
+            tracing::debug!("SPV mode is enabled, trying to access SPV manager");
             match app_ctx.spv_manager.try_read() {
                 Ok(spv_manager_guard) => {
+                    tracing::debug!("SPV manager acquired");
                     if !spv_manager_guard.is_initialized() {
                         return Err(ContextProviderError::Generic(
                             "SPV client not initialized".to_string(),
                         ));
                     }
 
-                    // Try to get the quorum key (this will check MasternodeListEngine first, then cache)
-                    match spv_manager_guard
-                        .try_get_quorum_public_key_blocking(quorum_type as u8, &quorum_hash)
-                    {
+                    // Use blocking executor to call async method
+                    tracing::debug!("Calling get_quorum_public_key on SPV manager");
+                    let result = futures::executor::block_on(
+                        spv_manager_guard.get_quorum_public_key(quorum_type as u8, &quorum_hash)
+                    );
+                    tracing::debug!("get_quorum_public_key call completed");
+
+                    match result {
                         Some(key_array) => {
-                            tracing::debug!("Successfully retrieved quorum key from SPV");
+                            tracing::debug!("Quorum public key retrieved successfully");
                             return Ok(key_array);
                         }
                         None => {
-                            tracing::warn!(
-                                "Quorum key not found - type: {}, hash: {:?}",
-                                quorum_type,
-                                hex::encode(&quorum_hash)
-                            );
+                            tracing::debug!("Quorum not found in SPV manager");
                             return Err(ContextProviderError::Generic(
                                 "Quorum not found. MasternodeListEngine may need more time to sync.".to_string()
                             ));
@@ -171,7 +167,7 @@ impl ContextProvider for Provider {
                     }
                 }
                 Err(_) => {
-                    tracing::warn!("SPV manager is locked, cannot provide quorum key");
+                    tracing::debug!("Failed to acquire SPV manager lock");
                     return Err(ContextProviderError::Generic(
                         "SPV manager is busy".to_string(),
                     ));
@@ -179,7 +175,6 @@ impl ContextProvider for Provider {
             }
         } else {
             // Only use Core client when NOT in SPV mode
-            tracing::debug!("Not in SPV mode - using Core client to get quorum key");
             let key = self.core.get_quorum_public_key(quorum_type, quorum_hash)?;
             Ok(key)
         }

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::spv::{SpvTask, SpvTaskResult};
+use crate::backend_task::spv::{SpvTask, SpvTaskResult, SyncPhaseInfo};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
@@ -47,6 +47,7 @@ pub struct NetworkChooserScreen {
     spv_last_error: Option<String>,
     spv_is_initialized: bool,
     spv_last_progress_check: TimestampMillis,
+    spv_phase_info: Option<SyncPhaseInfo>,
 }
 
 impl NetworkChooserScreen {
@@ -167,11 +168,21 @@ impl NetworkChooserScreen {
     }
 
     fn render_spv_sync_progress(&self, ui: &mut Ui) {
-        ui.label("Sync Progress");
-
-        // Show spinner on the same line as the label if syncing
-        if self.spv_is_syncing {
-            ui.spinner();
+        // Display phase name or generic label
+        if let Some(ref phase_info) = self.spv_phase_info {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&phase_info.phase_name).strong());
+                if self.spv_is_syncing {
+                    ui.spinner();
+                }
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label("Sync Progress");
+                if self.spv_is_syncing {
+                    ui.spinner();
+                }
+            });
         }
 
         // Add progress bar with proper width constraints
@@ -182,7 +193,50 @@ impl NetworkChooserScreen {
                 .animate(self.spv_is_syncing),
         );
 
-        if self.spv_target_height > 0 {
+        // Display phase-specific information
+        if let Some(ref phase_info) = self.spv_phase_info {
+            ui.horizontal(|ui| {
+                ui.label("Progress:");
+                if let Some(total) = phase_info.items_total {
+                    ui.label(format!(
+                        "{} / {} items",
+                        phase_info.items_completed.to_formatted_string(&Locale::en),
+                        total.to_formatted_string(&Locale::en)
+                    ));
+                } else {
+                    ui.label(format!(
+                        "{} items",
+                        phase_info.items_completed.to_formatted_string(&Locale::en)
+                    ));
+                }
+                
+                if phase_info.rate > 0.0 {
+                    ui.label(format!(" @ {:.1} items/sec", phase_info.rate));
+                }
+            });
+
+            // Display ETA if available
+            if let Some(eta) = phase_info.eta_seconds {
+                ui.horizontal(|ui| {
+                    ui.label("ETA:");
+                    let eta_text = if eta < 60 {
+                        format!("{} seconds", eta)
+                    } else if eta < 3600 {
+                        format!("{:.1} minutes", eta as f64 / 60.0)
+                    } else {
+                        format!("{:.1} hours", eta as f64 / 3600.0)
+                    };
+                    ui.label(eta_text);
+                });
+            }
+
+            // Display phase details if available
+            if let Some(ref details) = phase_info.details {
+                ui.add_space(5.0);
+                ui.label(egui::RichText::new(details).small().color(Color32::GRAY));
+            }
+        } else if self.spv_target_height > 0 {
+            // Fallback to basic height display
             ui.horizontal(|ui| {
                 ui.label("Progress:");
                 ui.label(format!(
@@ -273,6 +327,7 @@ impl NetworkChooserScreen {
             spv_last_error: None,
             spv_is_initialized: false,
             spv_last_progress_check: 0,
+            spv_phase_info: None,
         }
     }
 
@@ -913,18 +968,48 @@ impl ScreenLike for NetworkChooserScreen {
                         current_height,
                         target_height,
                         progress_percent,
+                        phase_info,
                     } => {
+                        // Check if phase has changed
+                        let phase_changed = match (&self.spv_phase_info, &phase_info) {
+                            (None, Some(_)) => true,
+                            (Some(_), None) => true,
+                            (Some(old), Some(new)) => old.phase_name != new.phase_name,
+                            _ => false,
+                        };
+                        
                         // Only log significant changes
                         let height_changed = current_height != self.spv_current_height;
                         let progress_changed = (progress_percent - self.spv_sync_progress).abs() > 1.0;
                         
-                        if height_changed || progress_changed {
-                            tracing::info!(
-                                "SPV progress: {} / {} blocks ({:.1}%)",
-                                current_height,
-                                target_height,
-                                progress_percent
-                            );
+                        if phase_changed {
+                            if let Some(ref phase) = phase_info {
+                                tracing::info!(
+                                    "🔄 Phase Change: {}",
+                                    phase.phase_name
+                                );
+                                if let Some(ref details) = phase.details {
+                                    tracing::info!("{}: {} ({:.1}%)", phase.phase_name, details, phase.progress_percentage);
+                                }
+                            }
+                        } else if height_changed || progress_changed {
+                            if let Some(ref phase) = phase_info {
+                                tracing::debug!(
+                                    "{}: {}/{:?} items ({:.1}%) @ {:.1}/sec",
+                                    phase.phase_name,
+                                    phase.items_completed,
+                                    phase.items_total,
+                                    phase.progress_percentage,
+                                    phase.rate
+                                );
+                            } else {
+                                tracing::info!(
+                                    "SPV progress: {} / {} blocks ({:.1}%)",
+                                    current_height,
+                                    target_height,
+                                    progress_percent
+                                );
+                            }
                         }
 
                         self.spv_current_height = current_height;
@@ -933,6 +1018,7 @@ impl ScreenLike for NetworkChooserScreen {
                         self.spv_is_syncing = true;
                         self.spv_is_initialized = true;
                         self.spv_last_error = None;
+                        self.spv_phase_info = phase_info;
                     }
                     SpvTaskResult::SyncComplete { final_height } => {
                         self.spv_current_height = final_height;

@@ -44,11 +44,24 @@ struct SpvState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SyncPhaseInfo {
+    pub phase_name: String,
+    pub progress_percentage: f64,
+    pub items_completed: u32,
+    pub items_total: Option<u32>,
+    pub rate: f64,
+    pub eta_seconds: Option<u64>,
+    pub elapsed_seconds: u64,
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SpvTaskResult {
     SyncProgress {
         current_height: u32,
         target_height: u32,
         progress_percent: f32,
+        phase_info: Option<SyncPhaseInfo>,
     },
     SyncComplete {
         final_height: u32,
@@ -149,13 +162,15 @@ impl SpvManager {
         // Spawn the SPV task that owns the client
         tokio::spawn(async move {
             // Create SPV client
-            let mut client = match DashSpvClient::new(config).await {
+            let mut client = match DashSpvClient::new_with_storage_service(config).await {
                 Ok(client) => client,
                 Err(e) => {
                     tracing::error!("Failed to create SPV client: {:?}", e);
                     return;
                 }
             };
+
+            tracing::info!("✅ Created SPV client with storage service (deadlock-free mode)");
 
             // Start the client
             if let Err(e) = client.start().await {
@@ -249,7 +264,9 @@ impl SpvManager {
                             let _ = response.send(result);
                         }
                         SpvCommand::GetQuorumKey { quorum_type, quorum_hash, response } => {
+                            tracing::debug!("SPV task loop: Received GetQuorumKey command for type: {}, hash: {:?}", quorum_type, quorum_hash);
                             let result = Self::get_quorum_key_from_client(&client, quorum_type, &quorum_hash);
+                            tracing::debug!("SPV task loop: GetQuorumKey result: {:?}", result.is_some());
                             let _ = response.send(result);
                         }
                         SpvCommand::Stop { response } => {
@@ -382,7 +399,9 @@ impl SpvManager {
         quorum_type: u8,
         quorum_hash: &[u8; 32],
     ) -> Option<[u8; 48]> {
+        tracing::debug!("get_quorum_key_from_client: Starting lookup for quorum_type: {}, quorum_hash: {:?}", quorum_type, quorum_hash);
         let mn_list_engine = client.masternode_list_engine()?;
+        tracing::debug!("get_quorum_key_from_client: MasternodeListEngine accessed successfully");
         let llmq_type = LLMQType::from(quorum_type);
         
         // Try both reversed and unreversed hash
@@ -391,11 +410,23 @@ impl SpvManager {
         let quorum_hash_typed = QuorumHash::from_slice(&reversed_hash).ok()?;
         let quorum_hash_original = QuorumHash::from_slice(quorum_hash).ok()?;
         
+        tracing::debug!("get_quorum_key_from_client: Original hash: {}, Reversed hash: {}", 
+            quorum_hash_original, quorum_hash_typed);
+        
         // Search through masternode lists
+        tracing::debug!("get_quorum_key_from_client: Searching through {} masternode lists", mn_list_engine.masternode_lists.len());
         for (_height, mn_list) in &mn_list_engine.masternode_lists {
             if let Some(quorums) = mn_list.quorums.get(&llmq_type) {
+                tracing::debug!("get_quorum_key_from_client: Found {} quorums for type {:?}", quorums.len(), llmq_type);
+                
+                // Log first few quorum hashes for debugging
+                for (i, (hash, _)) in quorums.iter().enumerate().take(3) {
+                    tracing::debug!("  Quorum {}: {}", i, hash);
+                }
+                
                 // Try reversed hash first
                 if let Some(entry) = quorums.get(&quorum_hash_typed) {
+                    tracing::debug!("get_quorum_key_from_client: Found with reversed hash!");
                     let public_key_bytes: &[u8] = entry.quorum_entry.quorum_public_key.as_ref();
                     if public_key_bytes.len() == 48 {
                         let mut key_array = [0u8; 48];
@@ -406,6 +437,7 @@ impl SpvManager {
                 
                 // Try original hash
                 if let Some(entry) = quorums.get(&quorum_hash_original) {
+                    tracing::debug!("get_quorum_key_from_client: Found with original hash!");
                     let public_key_bytes: &[u8] = entry.quorum_entry.quorum_public_key.as_ref();
                     if public_key_bytes.len() == 48 {
                         let mut key_array = [0u8; 48];
@@ -416,6 +448,7 @@ impl SpvManager {
             }
         }
         
+        tracing::debug!("get_quorum_key_from_client: Quorum not found");
         None
     }
 
@@ -429,6 +462,11 @@ impl SpvManager {
     }
 
     pub async fn get_sync_progress(&mut self) -> Result<(u32, u32, f32), String> {
+        let (current, target, percent, _) = self.get_sync_progress_with_phase().await?;
+        Ok((current, target, percent))
+    }
+
+    pub async fn get_sync_progress_with_phase(&mut self) -> Result<(u32, u32, f32, Option<SyncPhaseInfo>), String> {
         if let Some(tx) = &self.command_tx {
             let (response_tx, response_rx) = oneshot::channel();
 
@@ -444,12 +482,34 @@ impl SpvManager {
 
             self.current_height = progress.header_height;
 
-            // Update target height based on current sync state
-            if self.target_height == 0 || self.current_height > 1_200_000 {
+            // Extract phase info if available
+            let phase_info = progress.current_phase.map(|phase| {
+                SyncPhaseInfo {
+                    phase_name: phase.phase_name.clone(),
+                    progress_percentage: phase.progress_percentage,
+                    items_completed: phase.items_completed,
+                    items_total: phase.items_total,
+                    rate: phase.rate,
+                    eta_seconds: phase.eta_seconds,
+                    elapsed_seconds: phase.elapsed_seconds,
+                    details: phase.details.clone(),
+                }
+            });
+
+            // Update target height based on phase info or current sync state
+            if let Some(ref phase) = phase_info {
+                if let Some(total) = phase.items_total {
+                    if phase.phase_name.contains("Headers") {
+                        self.target_height = total;
+                    }
+                }
+            } else if self.target_height == 0 || self.current_height > 1_200_000 {
                 self.target_height = self.current_height + 50;
             }
 
-            let progress_percent = if self.target_height > 0 {
+            let progress_percent = if let Some(ref phase) = phase_info {
+                phase.progress_percentage as f32
+            } else if self.target_height > 0 {
                 (self.current_height as f32 / self.target_height as f32) * 100.0
             } else {
                 0.0
@@ -459,10 +519,10 @@ impl SpvManager {
             if progress.headers_synced && progress.header_height > 1_200_000 {
                 self.target_height = self.current_height;
                 self.is_syncing = false;
-                return Ok((self.current_height, self.target_height, 100.0));
+                return Ok((self.current_height, self.target_height, 100.0, phase_info));
             }
 
-            Ok((self.current_height, self.target_height, progress_percent))
+            Ok((self.current_height, self.target_height, progress_percent, phase_info))
         } else {
             Err("SPV client not initialized".to_string())
         }
@@ -555,11 +615,12 @@ impl AppContext {
                         current_height: checkpoint_height,
                         target_height: checkpoint_height + 1000,
                         progress_percent: 0.0,
+                        phase_info: None,
                     },
                 ))
             }
             SpvTask::GetSyncProgress => {
-                let (current, target, percent) = spv_manager.get_sync_progress().await?;
+                let (current, target, percent, phase_info) = spv_manager.get_sync_progress_with_phase().await?;
 
                 if percent >= 100.0 {
                     Ok(BackendTaskSuccessResult::SpvResult(
@@ -573,6 +634,7 @@ impl AppContext {
                             current_height: current,
                             target_height: target,
                             progress_percent: percent,
+                            phase_info,
                         },
                     ))
                 }

@@ -148,9 +148,16 @@ impl ContextProvider for Provider {
 
                     // Use blocking executor to call async method
                     tracing::debug!("Calling get_quorum_public_key on SPV manager");
-                    let result = futures::executor::block_on(
-                        spv_manager_guard.get_quorum_public_key(quorum_type as u8, &quorum_hash)
-                    );
+                    tracing::debug!("Using tokio::task::block_in_place to avoid deadlock with storage service");
+                    
+                    // Use block_in_place to safely block in async context
+                    let result = tokio::task::block_in_place(|| {
+                        let handle = tokio::runtime::Handle::current();
+                        handle.block_on(async {
+                            spv_manager_guard.get_quorum_public_key(quorum_type as u8, &quorum_hash).await
+                        })
+                    });
+                    
                     tracing::debug!("get_quorum_public_key call completed");
 
                     match result {

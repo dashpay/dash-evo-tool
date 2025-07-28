@@ -2,8 +2,10 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -41,7 +43,8 @@ pub struct TransferScreen {
     selected_key: Option<IdentityPublicKey>,
     known_identities: Vec<QualifiedIdentity>,
     receiver_identity_id: String,
-    amount: String,
+    amount: Option<Amount>,
+    amount_input: Option<AmountInput>,
     transfer_credits_status: TransferCreditsStatus,
     error_message: Option<String>,
     max_amount: u64,
@@ -74,7 +77,8 @@ impl TransferScreen {
             selected_key: selected_key.cloned(),
             known_identities,
             receiver_identity_id: String::new(),
-            amount: String::new(),
+            amount: Some(Amount::dash(0)),
+            amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
             max_amount,
@@ -99,16 +103,40 @@ impl TransferScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount in Dash:");
+        // Show available balance
+        let balance_in_dash = self.max_amount as f64 / 100_000_000_000.0;
+        ui.label(format!("Available balance: {:.8} DASH", balance_in_dash));
+        ui.add_space(5.0);
 
-            ui.text_edit_singleline(&mut self.amount);
+        // Calculate max amount minus fee for the "Max" button
+        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
+        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-            if ui.button("Max").clicked() {
-                let amount_in_dash = self.max_amount as f64 / 100_000_000_000.0 - 0.0001; // Subtract a small amount to cover gas fee which is usually around 0.00002 Dash
-                self.amount = format!("{:.8}", amount_in_dash);
-            }
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::dash(0))
+                .label("Amount:")
+                .max_button(true)
+                .max_amount(Some(max_amount_credits))
         });
+
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.transfer_credits_status {
+            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => false,
+            TransferCreditsStatus::NotStarted | TransferCreditsStatus::ErrorMessage(_) => {
+                amount_input.set_max_amount(Some(max_amount_credits));
+                true
+            }
+        };
+
+        let response = ui.add_enabled_ui(enabled, |ui| {
+            amount_input.show(ui)
+        }).inner;
+
+        response.inner.update(&mut self.amount);
+
+        if let Some(error) = &response.inner.error_message {
+            ui.colored_label(egui::Color32::DARK_RED, error);
+        }
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
@@ -163,27 +191,13 @@ impl TransferScreen {
                 };
 
                 ui.label(format!(
-                    "Are you sure you want to transfer {} Dash to {}",
-                    self.amount, self.receiver_identity_id
+                    "Are you sure you want to transfer {} to {}",
+                    self.amount.as_ref().expect("Amount should be present"),
+                    self.receiver_identity_id
                 ));
-                let parts: Vec<&str> = self.amount.split('.').collect();
-                let mut credits: u128 = 0;
 
-                // Process the whole number part if it exists.
-                if let Some(whole) = parts.first() {
-                    if let Ok(whole_number) = whole.parse::<u128>() {
-                        credits += whole_number * 100_000_000_000; // Whole Dash amount to credits
-                    }
-                }
-
-                // Process the fractional part if it exists.
-                if let Some(fraction) = parts.get(1) {
-                    let fraction_length = fraction.len();
-                    let fraction_number = fraction.parse::<u128>().unwrap_or(0);
-                    // Calculate the multiplier based on the number of digits in the fraction.
-                    let multiplier = 10u128.pow(11 - fraction_length as u32);
-                    credits += fraction_number * multiplier; // Fractional Dash to credits
-                }
+                // Use the amount directly since it's already an Amount struct
+                let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
@@ -381,6 +395,9 @@ impl ScreenLike for TransferScreen {
                 ui.add_space(10.0);
 
                 // Transfer button
+                let ready = self.amount.is_some()
+                    && !self.receiver_identity_id.is_empty()
+                    && self.selected_key.is_some();
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
@@ -388,7 +405,11 @@ impl ScreenLike for TransferScreen {
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
                     .corner_radius(3.0);
-                if ui.add(button).clicked() {
+                if ui
+                    .add_enabled(ready, button)
+                    .on_disabled_hover_text("Please ensure all fields are filled correctly")
+                    .clicked()
+                {
                     self.confirmation_popup = true;
                 }
 

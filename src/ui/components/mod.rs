@@ -1,3 +1,4 @@
+pub mod amount_input;
 pub mod component_trait;
 pub mod contract_chooser_panel;
 pub mod dpns_subscreen_chooser_panel;

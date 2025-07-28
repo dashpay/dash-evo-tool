@@ -7,7 +7,7 @@ use std::path::Path;
 /// - Otherwise, it displays the full path
 ///
 /// # Examples
-/// ```
+/// ```no_run
 /// "/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt" -> "Dash-Qt.app"
 /// "/usr/local/bin/dash-qt" -> "/usr/local/bin/dash-qt"
 /// ```

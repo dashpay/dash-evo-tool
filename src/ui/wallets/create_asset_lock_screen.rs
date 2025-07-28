@@ -147,9 +147,7 @@ impl CreateAssetLockScreen {
 
     fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), String> {
         if self.funding_address.is_none() {
-            if let Err(e) = self.generate_funding_address() {
-                return Err(e);
-            }
+            self.generate_funding_address()?
         }
 
         let address = self.funding_address.as_ref().unwrap();

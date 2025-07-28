@@ -53,6 +53,7 @@ impl AssetLockDetailScreen {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn get_asset_lock_data(
         &self,
     ) -> Option<(

@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use bincode::{Decode, Encode};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Duffs, TokenAmount};
@@ -48,6 +48,17 @@ impl Display for Amount {
             Some(unit) => write!(f, "{} {}", amount_str, unit),
             None => write!(f, "{}", amount_str),
         }
+    }
+}
+
+impl Debug for Amount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Amount")
+            .field("value", &self.value)
+            .field("decimal_places", &self.decimal_places)
+            .field("unit_name", &self.unit_name)
+            .field("formatted", &self.to_string_without_unit())
+            .finish()
     }
 }
 

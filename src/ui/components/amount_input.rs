@@ -364,7 +364,14 @@ impl AmountInput {
                 // Check if amount exceeds maximum
                 if let Some(max_amount) = self.max_amount {
                     if amount.value() > max_amount {
-                        return (Some("Amount exceeds maximum allowed".to_string()), None);
+                        return (
+                            Some(format!(
+                                "Amount {} exceeds allowed maximum {}",
+                                amount,
+                                Amount::new(max_amount, self.decimal_places)
+                            )),
+                            None,
+                        );
                     }
                 }
 

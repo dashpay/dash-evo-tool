@@ -5,6 +5,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -56,6 +57,7 @@ pub struct BurnTokensScreen {
     // The user chooses how many tokens to burn
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
+    pub max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
     pub public_note: Option<String>,
 
     status: BurnTokensStatus,
@@ -75,6 +77,18 @@ pub struct BurnTokensScreen {
 
 impl BurnTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let token_balance = match app_context.identity_token_balances() {
+            Ok(identity_token_balances) => {
+                let itb = identity_token_balances;
+                let key = IdentityTokenIdentifier {
+                    identity_id: identity_token_info.identity.identity.id(),
+                    token_id: identity_token_info.token_id,
+                };
+                itb.get(&key).map(|itb| itb.balance)
+            }
+            Err(_) => None,
+        };
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -184,6 +198,7 @@ impl BurnTokensScreen {
             group_action_id: None,
             amount: None,
             amount_input: None,
+            max_amount: token_balance,
             public_note: None,
             status: BurnTokensStatus::NotStarted,
             error_message,
@@ -197,15 +212,27 @@ impl BurnTokensScreen {
 
     /// Renders a text input for the user to specify an amount to burn
     fn render_amount_input(&mut self, ui: &mut egui::Ui) {
-        ui.label("Amount:");
-        if self.amount_input.is_none() {
+        let amount_input = self.amount_input.get_or_insert_with(|| {
             let token_amount = Amount::new_for_token(0, &self.identity_token_info);
-            self.amount_input = Some(AmountInput::new(token_amount).max_button(true));
-        }
+            let mut input = AmountInput::new(token_amount).label("Amount:");
 
-        if let Some(amount_input) = &mut self.amount_input {
-            amount_input.show(ui);
-            self.amount = amount_input.get_current_amount();
+            if self.max_amount.is_some() {
+                input.set_show_max_button(self.max_amount.is_some());
+                input.set_max_amount(self.max_amount);
+            }
+
+            input
+        });
+
+        let amount_response = amount_input.show(ui).inner;
+        amount_response.update(&mut self.amount);
+
+        if let Some(err) = amount_response.error_message {
+            self.error_message = Some(format!("Invalid amount: {}", err));
+            self.status = BurnTokensStatus::ErrorMessage(format!("Invalid amount: {}", err));
+        } else if matches!(&self.status, BurnTokensStatus::ErrorMessage(msg) if msg.contains("Invalid amount"))
+        {
+            self.status = BurnTokensStatus::NotStarted; // Reset status if we had an error
         }
     }
 

@@ -129,18 +129,16 @@ impl TransferTokensScreen {
             }
         };
 
-        // Disable the input when operation is in progress
-        match self.transfer_tokens_status {
-            TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => {
-                amount_input.set_enabled(false)
-            }
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.transfer_tokens_status {
+            TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => false,
             TransferTokensStatus::NotStarted | TransferTokensStatus::ErrorMessage(_) => {
-                amount_input.set_max_amount(Some(&self.max_amount));
-                amount_input.set_enabled(true)
+                amount_input.set_max_amount(Some(self.max_amount.value()));
+                true
             }
         };
 
-        let response = amount_input.show(ui);
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.amount);
 

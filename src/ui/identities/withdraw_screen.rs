@@ -108,18 +108,20 @@ impl WithdrawalScreen {
                 .max_button(true)
         });
 
-        // Disable the input when operation is in progress
-        match self.withdraw_from_identity_status {
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.withdraw_from_identity_status {
             WithdrawFromIdentityStatus::WaitingForResult(_)
-            | WithdrawFromIdentityStatus::Complete => amount_input.set_enabled(false),
+            | WithdrawFromIdentityStatus::Complete => false,
             WithdrawFromIdentityStatus::NotStarted
             | WithdrawFromIdentityStatus::ErrorMessage(_) => {
                 amount_input.set_max_amount(Some(max_amount_credits));
-                amount_input.set_enabled(true)
+                true
             }
         };
 
-        let response = amount_input.show(ui);
+        let response = ui.add_enabled_ui(enabled, |ui| {
+            amount_input.show(ui)
+        }).inner;
 
         response.inner.update(&mut self.withdrawal_amount);
         if let Some(error) = &response.inner.error_message {

@@ -119,18 +119,18 @@ impl TransferScreen {
                 .max_amount(Some(max_amount_credits))
         });
 
-        // Disable the input when operation is in progress
-        match self.transfer_credits_status {
-            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => {
-                amount_input.set_enabled(false);
-            }
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.transfer_credits_status {
+            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => false,
             TransferCreditsStatus::NotStarted | TransferCreditsStatus::ErrorMessage(_) => {
-                amount_input.set_enabled(true);
                 amount_input.set_max_amount(Some(max_amount_credits));
+                true
             }
-        }
+        };
 
-        let response = amount_input.show(ui);
+        let response = ui.add_enabled_ui(enabled, |ui| {
+            amount_input.show(ui)
+        }).inner;
 
         response.inner.update(&mut self.amount);
 

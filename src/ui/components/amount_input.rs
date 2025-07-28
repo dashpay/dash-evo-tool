@@ -121,14 +121,10 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///                 .max_button(true)
 ///         });
 ///
-///         // Disable input during operations to prevent changes
-///         if self.operation_in_progress {
-///             amount_input.set_enabled(false);
-///         } else {
-///             amount_input.set_enabled(true);
-///         }
-///
-///         let response = amount_input.show(ui);
+///         // Use egui's enabled state to disable input during operations
+///         let response = ui.add_enabled_ui(!self.operation_in_progress, |ui| {
+///             amount_input.show(ui)
+///         }).inner;
 ///
 ///         // Simple, correct handling using the helper method
 ///         // Unit names are automatically preserved by AmountInput
@@ -160,8 +156,6 @@ pub struct AmountInput {
     min_amount: Option<Credits>,
     show_max_button: bool,
     desired_width: Option<f32>,
-    /// Whether the input is enabled (editable) - when false, prevents changes during operations
-    enabled: bool,
     /// Function to execute when correct amount is entered
     pub on_success_fn: Option<CallbackFn>,
     /// Function to execute when invalid amount is entered
@@ -195,7 +189,6 @@ impl AmountInput {
             min_amount: Some(1), // Default minimum is 1 (greater than zero)
             show_max_button: false,
             desired_width: None,
-            enabled: true,
             on_success_fn: None,
             on_error_fn: None,
         }
@@ -264,8 +257,8 @@ impl AmountInput {
 
     /// Sets the maximum amount allowed (mutable reference version).
     /// Use this for dynamic configuration when the max amount changes at runtime (e.g., balance updates).
-    pub fn set_max_amount<T: Into<Credits>>(&mut self, max_amount: Option<T>) -> &mut Self {
-        self.max_amount = max_amount.map(Into::into);
+    pub fn set_max_amount(&mut self, max_amount: Option<Credits>) -> &mut Self {
+        self.max_amount = max_amount;
         self
     }
 
@@ -316,22 +309,6 @@ impl AmountInput {
     pub fn on_error(mut self, on_error_fn: impl FnMut(&ShowResponse) + 'static) -> Self {
         self.on_error_fn = Some(Box::new(on_error_fn));
         self
-    }
-
-    /// Sets whether the input is enabled (editable). When disabled, the input becomes read-only.
-    pub fn set_enabled(&mut self, enabled: bool) -> &mut Self {
-        self.enabled = enabled;
-        self
-    }
-
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.set_enabled(enabled);
-        self
-    }
-
-    /// Returns whether the input is currently enabled (editable).
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
     }
 
     /// Standard show method for backwards compatibility
@@ -418,20 +395,15 @@ impl AmountInput {
                 text_edit = text_edit.desired_width(width);
             }
 
-            // Disable text edit if not enabled
-            if !self.enabled {
-                text_edit = text_edit.interactive(false);
-            }
-
             let text_response = ui.add(text_edit);
-            let changed = text_response.changed() && self.enabled;
+            let changed = text_response.changed() && ui.is_enabled();
 
             // Validate the amount
             let (error_message, parsed_amount) = self.validate_amount();
 
-            // Show max button if enabled and max amount is available
+            // Show max button if max amount is available
             let mut max_clicked = false;
-            if self.show_max_button && self.enabled {
+            if self.show_max_button {
                 if let Some(max_amount) = self.max_amount {
                     if ui.button("Max").clicked() {
                         self.amount_str = Amount::format_amount(max_amount, self.decimal_places);
@@ -441,9 +413,6 @@ impl AmountInput {
                     // Max button clicked but no max amount set - still report the click
                     max_clicked = true;
                 }
-            } else if self.show_max_button && !self.enabled {
-                // Show disabled Max button when not enabled
-                ui.add_enabled(false, egui::Button::new("Max"));
             }
 
             AmountInputResponse {
@@ -473,14 +442,6 @@ impl Component for AmountInput {
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         AmountInput::show(self, ui)
-    }
-
-    fn is_enabled(&self) -> bool {
-        AmountInput::is_enabled(self)
-    }
-
-    fn set_enabled(&mut self, enabled: bool) -> &mut Self {
-        AmountInput::set_enabled(self, enabled)
     }
 }
 
@@ -550,36 +511,6 @@ mod tests {
         // No minimum
         let input = AmountInput::new(Amount::new(0, 8)).min_amount(None);
         assert_eq!(input.min_amount, None);
-    }
-
-    #[test]
-    fn test_enable_disable_functionality() {
-        let amount = Amount::new(0, 8);
-        let mut input = AmountInput::new(amount);
-
-        // Initially enabled
-        assert!(input.is_enabled());
-
-        // Test disable
-        input.set_enabled(false);
-        assert!(!input.is_enabled());
-
-        // Test enable
-        input.set_enabled(true);
-        assert!(input.is_enabled());
-    }
-
-    #[test]
-    fn test_enabled_builder_method() {
-        let amount = Amount::new(0, 8);
-
-        // Test creating disabled input
-        let input = AmountInput::new(amount).enabled(false);
-        assert!(!input.is_enabled());
-
-        // Test creating enabled input
-        let input = AmountInput::new(Amount::new(0, 8)).enabled(true);
-        assert!(input.is_enabled());
     }
 
     #[test]

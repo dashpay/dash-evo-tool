@@ -1,9 +1,9 @@
 use std::fmt::Display;
 
 use bincode::{Decode, Encode};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
-use dash_sdk::dpp::{balances::credits::TokenAmount, fee::Credits};
 use serde::{Deserialize, Serialize};
 
 pub const DASH_DECIMAL_PLACES: u8 = 11;
@@ -159,11 +159,6 @@ impl Amount {
         (self.value as f64) / 10u64.pow(self.decimal_places as u32) as f64
     }
 
-    /// Returns the internal TokenAmount representation.
-    pub fn as_token_amount(&self) -> TokenAmount {
-        self.value
-    }
-
     /// Returns the number of decimal places.
     pub fn decimal_places(&self) -> u8 {
         self.decimal_places
@@ -315,24 +310,6 @@ impl From<crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> for
         token_balance: crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions,
     ) -> Self {
         Self::from(&token_balance)
-    }
-}
-
-impl From<Amount> for Credits {
-    /// Converts an Amount to Credits.
-    ///
-    /// This is useful for passing amounts to functions that expect Credits.
-    fn from(amount: Amount) -> Self {
-        amount.value
-    }
-}
-
-impl From<&Amount> for Credits {
-    /// Converts an Amount to Credits.
-    ///
-    /// This is useful for passing amounts to functions that expect Credits.
-    fn from(amount: &Amount) -> Self {
-        amount.value
     }
 }
 

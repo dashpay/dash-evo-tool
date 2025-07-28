@@ -1,3 +1,4 @@
+mod create_asset_lock;
 mod refresh_wallet_info;
 mod start_dash_qt;
 
@@ -19,6 +20,7 @@ pub enum CoreTask {
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, PathBuf, bool),
+    CreateAssetLock(Arc<RwLock<Wallet>>, u64), // wallet, amount in credits
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -33,6 +35,10 @@ impl PartialEq for CoreTask {
                 | (
                     CoreTask::StartDashQT(_, _, _),
                     CoreTask::StartDashQT(_, _, _)
+                )
+                | (
+                    CoreTask::CreateAssetLock(_, _),
+                    CoreTask::CreateAssetLock(_, _)
                 )
         )
     }
@@ -113,6 +119,9 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
+            CoreTask::CreateAssetLock(wallet, amount) => self
+                .create_asset_lock(wallet, amount)
+                .map_err(|e| format!("Error creating asset lock: {}", e)),
         }
     }
 

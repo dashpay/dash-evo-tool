@@ -577,7 +577,16 @@ impl WalletsBalancesScreen {
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .show(ui, |ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
+                    ui.horizontal(|ui| {
+                        ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(RichText::new("Create Asset Lock").size(14.0)).clicked() {
+                                app_action = AppAction::AddScreen(
+                                    ScreenType::CreateAssetLock(arc_wallet.clone()).create_screen(&self.app_context)
+                                );
+                            }
+                        });
+                    });
                     ui.add_space(10.0);
 
                     if wallet.unused_asset_locks.is_empty() {
@@ -607,6 +616,7 @@ impl WalletsBalancesScreen {
                         .column(Column::initial(100.0)) // Amount (Duffs)
                         .column(Column::initial(100.0)) // InstantLock status
                         .column(Column::initial(100.0)) // Usable status
+                        .column(Column::initial(120.0)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 ui.label("Transaction ID");
@@ -623,9 +633,12 @@ impl WalletsBalancesScreen {
                             header.col(|ui| {
                                 ui.label("Usable");
                             });
+                            header.col(|ui| {
+                                ui.label("Actions");
+                            });
                         })
                         .body(|mut body| {
-                            for (tx, address, amount, islock, proof) in &wallet.unused_asset_locks {
+                            for (index, (tx, address, amount, islock, proof)) in wallet.unused_asset_locks.iter().enumerate() {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         ui.label(tx.txid().to_string());
@@ -643,6 +656,16 @@ impl WalletsBalancesScreen {
                                     row.col(|ui| {
                                         let status = if proof.is_some() { "Yes" } else { "No" };
                                         ui.label(status);
+                                    });
+                                    row.col(|ui| {
+                                        if ui.button("View Full Info").clicked() {
+                                            app_action = AppAction::AddScreen(
+                                                ScreenType::AssetLockDetail(
+                                                    wallet.seed_hash(),
+                                                    index
+                                                ).create_screen(&self.app_context)
+                                            );
+                                        }
                                     });
                                 });
                             }

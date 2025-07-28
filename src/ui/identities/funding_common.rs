@@ -4,7 +4,7 @@ use egui::Vec2;
 use image::Luma;
 use qrcode::QrCode;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
     WaitingOnFunds,

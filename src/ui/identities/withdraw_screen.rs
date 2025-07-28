@@ -31,6 +31,9 @@ use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
 use super::keys::key_info_screen::KeyInfoScreen;
 
+/// Fee in credits for the withdrawal transaction
+const WITHDRAWAL_FEE_IN_CREDITS: Credits = 1_000_000_000;
+
 #[derive(PartialEq)]
 pub enum WithdrawFromIdentityStatus {
     NotStarted,
@@ -45,7 +48,7 @@ pub struct WithdrawalScreen {
     withdrawal_address: String,
     withdrawal_amount: Option<Amount>,
     withdrawal_amount_input: Option<AmountInput>,
-    max_amount: u64,
+    max_amount_credits: Credits,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
     withdraw_from_identity_status: WithdrawFromIdentityStatus,
@@ -74,7 +77,7 @@ impl WithdrawalScreen {
             withdrawal_address: String::new(),
             withdrawal_amount: None,
             withdrawal_amount_input: None,
-            max_amount,
+            max_amount_credits: max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
@@ -98,12 +101,13 @@ impl WithdrawalScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let max_amount_credits = self
+            .max_amount_credits
+            .saturating_sub(WITHDRAWAL_FEE_IN_CREDITS);
 
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {
-            AmountInput::new(Amount::dash(0))
+            AmountInput::new(Amount::dash(0.0))
                 .label("Amount:")
                 .max_button(true)
         });
@@ -112,6 +116,7 @@ impl WithdrawalScreen {
         let enabled = match self.withdraw_from_identity_status {
             WithdrawFromIdentityStatus::WaitingForResult(_)
             | WithdrawFromIdentityStatus::Complete => false,
+
             WithdrawFromIdentityStatus::NotStarted
             | WithdrawFromIdentityStatus::ErrorMessage(_) => {
                 amount_input.set_max_amount(Some(max_amount_credits));
@@ -119,9 +124,7 @@ impl WithdrawalScreen {
             }
         };
 
-        let response = ui.add_enabled_ui(enabled, |ui| {
-            amount_input.show(ui)
-        }).inner;
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.withdrawal_amount);
         if let Some(error) = &response.inner.error_message {
@@ -290,7 +293,7 @@ impl ScreenLike for WithdrawalScreen {
             .into_iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
             .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        self.max_amount_credits = self.identity.identity.balance();
     }
 
     /// Renders the UI components for the withdrawal screen

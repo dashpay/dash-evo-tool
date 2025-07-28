@@ -1,11 +1,13 @@
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::{Component, ComponentResponse, UpdatableComponent};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
-use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
@@ -13,12 +15,15 @@ use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+/// We assume a standard fee for funding transactions
+pub const FEE_DUFFS: u64 = 10_000;
+
 /// Funding method for the funding widget - doesn't require identity indices
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FundingWidgetMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address),
-    FundWithWallet(Duffs),
+    FundWithWallet(Amount),
 }
 
 impl FundingWidgetMethod {
@@ -136,9 +141,7 @@ pub struct FundingWidget {
     // Configuration
     predefined_wallet: Option<Arc<RwLock<Wallet>>>,
     predefined_address: Option<Address>,
-    default_amount: String,
     show_max_button: bool,
-    amount_label: String,
     show_qr_code: bool,
     show_copy_button: bool,
     ignore_existing_utxos: bool,
@@ -146,7 +149,8 @@ pub struct FundingWidget {
     // Internal state (private, managed by component)
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     funding_method: FundingMethod,
-    funding_amount: String,
+    amount_input: Option<AmountInput>,
+    current_funding_amount: Option<Amount>,
     funding_address: Option<Address>,
     selected_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     core_has_funding_address: Option<bool>,
@@ -159,21 +163,20 @@ pub struct FundingWidget {
 impl FundingWidget {
     /// Create a new FundingWidget with default configuration
     pub fn new(app_context: Arc<AppContext>) -> Self {
-        let default_amount = "0.5".to_string();
+        let default_amount = Amount::dash(0.5); // 0.5 DASH
 
         Self {
             app_context,
             predefined_wallet: None,
             predefined_address: None,
-            default_amount: default_amount.clone(),
             show_max_button: true,
-            amount_label: "Amount (DASH):".to_string(),
             show_qr_code: true,
             show_copy_button: true,
             ignore_existing_utxos: true,
             selected_wallet: None,
             funding_method: FundingMethod::NoSelection,
-            funding_amount: default_amount,
+            amount_input: None,
+            current_funding_amount: Some(default_amount),
             funding_address: None,
             selected_asset_lock: None,
             core_has_funding_address: None,
@@ -199,22 +202,16 @@ impl FundingWidget {
     }
 
     /// Set the default funding amount
-    pub fn with_default_amount<S: Into<String>>(mut self, amount: S) -> Self {
-        let amount_str = amount.into();
-        self.default_amount = amount_str.clone();
-        self.funding_amount = amount_str;
+    pub fn with_default_amount(mut self, amount: Amount) -> Self {
+        self.current_funding_amount = Some(amount);
+        // Reset amount_input to ensure it gets recreated with new amount
+        self.amount_input = None;
         self
     }
 
     /// Set whether to show the "Max" button for wallet balance funding
     pub fn with_max_button(mut self, show: bool) -> Self {
         self.show_max_button = show;
-        self
-    }
-
-    /// Set the label for the funding amount input
-    pub fn with_amount_label<S: Into<String>>(mut self, label: S) -> Self {
-        self.amount_label = label.into();
         self
     }
 
@@ -238,6 +235,20 @@ impl FundingWidget {
         self
     }
 
+    /// Set the default funding amount (mutable reference version)
+    pub fn set_default_amount(&mut self, amount: Amount) -> &mut Self {
+        self.current_funding_amount = Some(amount);
+        // Reset amount_input to ensure it gets recreated with new amount
+        self.amount_input = None;
+        self
+    }
+
+    /// Set whether to show the "Max" button (mutable reference version)
+    pub fn set_show_max_button(&mut self, show: bool) -> &mut Self {
+        self.show_max_button = show;
+        self
+    }
+
     /// Get the current selected wallet
     pub fn selected_wallet(&self) -> Option<&Arc<RwLock<Wallet>>> {
         self.selected_wallet.as_ref()
@@ -249,8 +260,8 @@ impl FundingWidget {
     }
 
     /// Get the current funding amount
-    pub fn funding_amount(&self) -> &str {
-        &self.funding_amount
+    pub fn funding_amount(&self) -> Option<&Amount> {
+        self.current_funding_amount.as_ref()
     }
 
     /// Get the current funding address
@@ -290,8 +301,11 @@ impl FundingWidget {
             return None;
         };
 
-        let amount = self.funding_amount.parse::<f64>().unwrap_or(0.0);
-        if amount <= 0.0 {
+        let Some(amount) = &self.current_funding_amount else {
+            return None;
+        };
+
+        if amount.value() == 0 {
             return None;
         }
 
@@ -308,8 +322,7 @@ impl FundingWidget {
                             .iter()
                             .find(|(_, addr, _, _, _)| addr == address)
                         {
-                            let available_amount_dash = *lock_amount as f64 * 1e-8;
-                            if available_amount_dash >= amount {
+                            if *lock_amount >= amount.to_duffs() {
                                 Some(FundingWidgetMethod::UseAssetLock(
                                     address.clone(),
                                     Box::new(asset_lock_proof.clone()),
@@ -330,8 +343,7 @@ impl FundingWidget {
             }
             FundingMethod::UseWalletBalance => {
                 if self.check_wallet_balance_sufficient(amount) {
-                    let amount_duffs = (amount * 1e8) as u64;
-                    Some(FundingWidgetMethod::FundWithWallet(amount_duffs))
+                    Some(FundingWidgetMethod::FundWithWallet(amount.clone()))
                 } else {
                     None
                 }
@@ -353,16 +365,15 @@ impl FundingWidget {
     }
 
     /// Check if the wallet balance has an UTXO that is sufficient for the specified amount
-    fn check_wallet_balance_sufficient(&self, required_amount_dash: f64) -> bool {
+    fn check_wallet_balance_sufficient(&self, required_amount: &Amount) -> bool {
         let Some(wallet_guard) = &self.selected_wallet else {
             return false;
         };
 
         let wallet = wallet_guard.read().unwrap();
         let max_balance_duffs = wallet.max_balance();
-        let required_amount_duffs = (required_amount_dash * 1e8) as u64;
 
-        max_balance_duffs >= required_amount_duffs
+        max_balance_duffs >= required_amount.to_duffs() + FEE_DUFFS
     }
 
     fn render_wallet_selection(
@@ -553,49 +564,78 @@ impl FundingWidget {
             // we want to capture the current state of UTXOs for future checks
             self.existing_utxos_snapshot = None;
 
-            // Only set max amount when switching to wallet balance if using default amount
-            if new_method == FundingMethod::UseWalletBalance {
+            // Only set max amount when switching to wallet balance
+            if new_method == FundingMethod::UseWalletBalance
+                && self.current_funding_amount.is_none()
+            {
                 if let Some(wallet) = &self.selected_wallet {
                     let wallet = wallet.read().unwrap();
-                    let max_amount = wallet.max_balance();
-                    self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
+
+                    let max_amount_duffs = wallet.max_balance().saturating_sub(FEE_DUFFS);
+                    self.current_funding_amount = Some(Amount::duffs(max_amount_duffs));
                 }
-            }
+            };
+
+            // Reset amount_input to recreate it when needed
+            self.amount_input = None;
+
             // Always report the method change, readiness will be checked separately
             response.funding_method_changed = Some(new_method);
         }
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui, response: &mut FundingWidgetResponse) {
-        ui.horizontal(|ui| {
-            ui.label(&self.amount_label);
+        // Initialize the AmountInput component if not already created
+        let default_amount = self
+            .current_funding_amount
+            .clone()
+            .unwrap_or_else(|| Amount::dash(0.5)); // 0.5 DASH default
 
-            let amount_input = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.funding_amount)
-                        .hint_text("Enter amount (e.g., 0.1234)")
-                        .desired_width(100.0),
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            AmountInput::new(default_amount)
+                .label("Amount:")
+                .hint_text("Enter amount (e.g., 0.1234)")
+                .max_button(
+                    self.show_max_button && self.funding_method == FundingMethod::UseWalletBalance,
                 )
-                .lost_focus();
-
-            if amount_input {
-                response.amount_changed = Some(self.funding_amount.clone());
-            }
-
-            // Show Max button if using wallet balance and it's enabled in config
-            if self.show_max_button && self.funding_method == FundingMethod::UseWalletBalance {
-                if let Some(wallet) = &self.selected_wallet {
-                    let max_amount = {
-                        let wallet = wallet.read().unwrap();
-                        wallet.max_balance()
-                    };
-                    if ui.button("Max").clicked() {
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        response.amount_changed = Some(self.funding_amount.clone());
-                    }
-                }
-            }
         });
+
+        // Update max amount for wallet balance method
+        if self.show_max_button && self.funding_method == FundingMethod::UseWalletBalance {
+            if let Some(wallet) = &self.selected_wallet {
+                let wallet = wallet.read().unwrap();
+                let wallet_balance = wallet.max_balance();
+
+                let max_amount = if wallet_balance > FEE_DUFFS {
+                    Some((wallet.max_balance() - FEE_DUFFS) * CREDITS_PER_DUFF)
+                } else {
+                    None
+                };
+                amount_input.set_max_amount(max_amount);
+            }
+        } else {
+            amount_input.set_max_amount(None);
+        }
+
+        // Show the AmountInput component
+        let amount_response = amount_input.show(ui);
+
+        // Handle the response
+        if amount_response
+            .inner
+            .update(&mut self.current_funding_amount)
+        {
+            if let Some(amount) = &self.current_funding_amount {
+                response.amount_changed = Some(amount.to_string());
+            } else {
+                response.amount_changed = Some("".to_string());
+            }
+        }
+
+        // Show errors if present
+        if let Some(error) = &amount_response.inner.error_message {
+            ui.colored_label(Color32::RED, error);
+        }
     }
 
     fn render_funding_status_hints(&self, ui: &mut Ui) {
@@ -607,27 +647,21 @@ impl FundingWidget {
         };
 
         // Only show hints if we have a valid amount and a funding method selected
-        let Ok(amount) = self.funding_amount.parse::<f64>() else {
+        let Some(amount) = &self.current_funding_amount else {
             // display error if amount is invalid
             ui.add_space(5.0);
             ui.colored_label(
                 Color32::from_rgb(255, 165, 0), // Orange color
-                format!(
-                    "⚠ Invalid funding amount: '{}'. Please enter a valid number.",
-                    self.funding_amount
-                ),
+                "⚠ Invalid funding amount. Please enter a valid number.",
             );
             return;
         };
 
-        if amount <= 0.0 {
+        if amount.value() == 0 {
             ui.add_space(5.0);
             ui.colored_label(
                 Color32::from_rgb(255, 165, 0), // Orange color
-                format!(
-                    "⚠ Funding amount must be greater than zero. Current value: '{}'",
-                    self.funding_amount
-                ),
+                "⚠ Funding amount must be greater than zero.",
             );
             return;
         }
@@ -663,7 +697,7 @@ impl FundingWidget {
                         ui.colored_label(
                             Color32::from_rgb(255, 165, 0), // Orange color
                             format!(
-                                "⚠ Insufficient wallet balance. Available: {:.8} DASH, Required: {:.8} DASH",
+                                "⚠ Insufficient wallet balance. Available: {:.8} DASH, Required: {}",
                                 available_balance, amount
                             )
                         );
@@ -701,7 +735,7 @@ impl FundingWidget {
                                     ui.colored_label(
                                         Color32::from_rgb(255, 165, 0), // Orange color
                                         format!(
-                                            "⚠ Selected asset lock has insufficient funds. Available: {:.8} DASH, Required: {:.8} DASH",
+                                            "⚠ Selected asset lock has insufficient funds. Available: {:.8} DASH, Required: {:.8}",
                                             available_amount, amount
                                         )
                                     );
@@ -718,10 +752,7 @@ impl FundingWidget {
                         ui.add_space(5.0);
                         ui.colored_label(
                             Color32::from_rgb(100, 149, 237), // Cornflower blue
-                            format!(
-                                "ℹ Waiting for {:.8} DASH to be sent to the address above",
-                                amount
-                            ),
+                            format!("ℹ Waiting for {} to be sent to the address above", amount),
                         );
                         ui.add_space(3.0);
                         ui.colored_label(
@@ -860,14 +891,19 @@ impl FundingWidget {
         }
 
         // error displayed in `render_funding_status_hints`
-        let amount = self.funding_amount.parse::<f64>().unwrap_or_default();
-        if amount <= 0.0 {
+        let amount = if let Some(amount) = &self.current_funding_amount {
+            if amount.value() == 0 {
+                self.render_funding_status_hints(ui);
+                return Ok(());
+            }
+            amount.clone()
+        } else {
             self.render_funding_status_hints(ui);
             return Ok(());
-        }
+        };
 
         let address = self.ensure_funding_address(response, false)?;
-        let pay_uri = format!("{}?amount={:.4}", address.to_qr_uri(), amount);
+        let pay_uri = format!("{}?amount={}", address.to_qr_uri(), amount.to_f64());
 
         // Generate the QR code image
         if let Ok(qr_image) = generate_qr_code_image(&pay_uri) {
@@ -975,12 +1011,12 @@ impl FundingWidget {
 
         // Display the asset locks in a scrollable area
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (index, (tx, address, amount, islock, proof)) in
+            for (index, (tx, address, amount_duffs, islock, proof)) in
                 wallet.unused_asset_locks.iter().enumerate()
             {
                 ui.horizontal(|ui| {
                     let tx_id = tx.txid().to_string();
-                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
+                    let lock_amount = Amount::duffs(*amount_duffs);
                     let is_locked = if islock.is_some() { "Yes" } else { "No" };
 
                     // Display asset lock information with "Selected" if this one is selected
@@ -991,7 +1027,7 @@ impl FundingWidget {
                     };
 
                     ui.label(format!(
-                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
+                        "TxID: {}, Address: {}, Amount: {}, InstantLock: {}{}",
                         tx_id, address, lock_amount, is_locked, selected_text
                     ));
 
@@ -1005,8 +1041,13 @@ impl FundingWidget {
                         );
                         self.selected_asset_lock = Some(selected_lock.clone());
                         response.asset_lock_selected = Some(selected_lock);
-                        self.funding_amount = format!("{:.8}", lock_amount);
-                        response.amount_changed = Some(self.funding_amount.clone());
+
+                        // Update amount with asset lock amount
+                        self.current_funding_amount = Some(lock_amount);
+                        // Reset amount_input to recreate it with the asset lock amount
+                        self.amount_input = None;
+                        response.amount_changed =
+                            self.current_funding_amount.as_ref().map(|a| a.to_string());
 
                         // Update readiness status immediately after selection
                         response.funding_secured = self.check_funding_method_readiness();
@@ -1108,15 +1149,15 @@ impl FundingWidget {
         }
 
         let funding_address = self.funding_address.as_ref()?;
-        let amount_dash = self.funding_amount.parse::<f64>().ok()?;
+        let amount = self.current_funding_amount.as_ref()?;
 
-        if amount_dash <= 0.0 {
+        if amount.value() == 0 {
             return None;
         }
 
         let wallet_guard = self.selected_wallet.as_ref()?;
         let wallet = wallet_guard.read().unwrap();
-        let required_amount_duffs = (amount_dash * 1e8) as u64;
+        let required_amount_duffs = amount.to_duffs();
 
         // we don't use existing UTXOs snapshot if ignore_existing_utxos is enabled; when it's disabled, existing_utxos will be None
         let existing_utxos = self.existing_utxos_snapshot.as_ref();

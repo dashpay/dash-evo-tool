@@ -20,7 +20,7 @@ use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::Transact
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::Context;
-use egui::{Color32, ScrollArea};
+use egui::{Button, Color32, ScrollArea};
 use std::sync::{Arc, RwLock};
 
 pub struct TopUpIdentityScreen {
@@ -275,8 +275,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 // Initialize funding widget if needed
                 if self.funding_widget.is_none() {
                     let mut widget = FundingWidget::new(self.app_context.clone())
-                        .with_amount_label("Top-up Amount (DASH):")
-                        .with_default_amount("0.5");
+                        .with_default_amount(crate::model::amount::Amount::dash(0.5)); // 0.5 DASH
 
                     // Set wallet if already selected
                     if let Some(wallet) = &self.wallet {
@@ -324,18 +323,20 @@ impl ScreenLike for TopUpIdentityScreen {
                     let funding_secured = response_data.funded() || step.is_processing();
 
                     if funding_secured {
-                        // for wallet funding, we need a button to top up the identity
-                        // others can be done automatically
                         if let Some(funding_method) = self.funding.clone() {
-                            if matches!(funding_method, FundingWidgetMethod::FundWithWallet(_)) {
+                        // for FundWithUtxo (eg. qr code scan), we don't need to show the confirmation
+                        // button, as the funding is already secured.                            
+                            if !step.is_processing() && matches!(funding_method, FundingWidgetMethod::FundWithUtxo(_, _, _)) {
+                                inner_action |= self.top_up_identity_clicked(funding_method);
+                            } else {
                                 ui.add_space(15.0);
                                 ui.separator();
                                 ui.add_space(10.0);
-                                if ui.button("Top Up Identity").clicked() {
+                                
+                                let btn = Button::new("Top Up Identity");
+                                if ui.add_enabled(!step.is_processing(), btn).clicked() {
                                     inner_action |= self.top_up_identity_clicked(funding_method);
                                 }
-                            } else if !step.is_processing() {
-                                inner_action |= self.top_up_identity_clicked(funding_method);
                             }
                         }
                     }

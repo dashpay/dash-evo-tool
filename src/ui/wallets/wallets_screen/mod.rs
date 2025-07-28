@@ -803,8 +803,7 @@ impl WalletsBalancesScreen {
     fn init_address_topup_widget(&mut self, address: Address) {
         let mut widget = FundingWidget::new(self.app_context.clone())
             .with_address(address)
-            .with_default_amount("0.1")
-            .with_amount_label("Top-up Amount (DASH):")
+            .with_default_amount(crate::model::amount::Amount::dash(0.1)) // 0.1 DASH
             .with_qr_code(true)
             .with_copy_button(true)
             .with_max_button(false) // Disable max button for address top-up

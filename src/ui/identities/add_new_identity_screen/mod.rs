@@ -75,8 +75,7 @@ impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         // Initialize funding widget immediately
         let funding_widget = FundingWidget::new(app_context.clone())
-            .with_amount_label("Registration Amount (DASH):")
-            .with_default_amount("0.5");
+            .with_default_amount(crate::model::amount::Amount::dash(0.5)); // 0.5 DASH
 
         Self {
             identity_id_number: 0, // updated later when wallet is selected

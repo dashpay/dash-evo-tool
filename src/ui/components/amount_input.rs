@@ -10,7 +10,7 @@ use egui::{InnerResponse, Response, TextEdit, Ui, Widget, WidgetText};
 pub struct AmountInputResponse {
     /// The response from the text edit widget
     pub response: Response,
-    /// Whether the input text has changed
+    /// Whether the parsed_amount has changed
     pub changed: bool,
     /// The error message if the input is invalid
     pub error_message: Option<String>,
@@ -401,10 +401,9 @@ impl AmountInput {
             }
 
             let text_response = ui.add(text_edit);
-            let changed = text_response.changed() && ui.is_enabled();
 
-            // Validate the amount
-            let (error_message, parsed_amount) = self.validate_amount();
+            // note we might notify changed even if actual text didn't change, but this is fine
+            let mut changed = text_response.changed() && ui.is_enabled();
 
             // Show max button if max amount is available
             let mut max_clicked = false;
@@ -413,12 +412,16 @@ impl AmountInput {
                     if ui.button("Max").clicked() {
                         self.amount_str = Amount::format_amount(max_amount, self.decimal_places);
                         max_clicked = true;
+                        changed = true;
                     }
                 } else if ui.button("Max").clicked() {
                     // Max button clicked but no max amount set - still report the click
                     max_clicked = true;
                 }
             }
+
+            // Validate the amount
+            let (error_message, parsed_amount) = self.validate_amount();
 
             AmountInputResponse {
                 response: text_response,

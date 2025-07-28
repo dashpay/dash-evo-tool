@@ -12,6 +12,7 @@ use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -355,14 +356,16 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, _identifier, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.group_action_id = Some(action_id);
-                mint_screen.amount_to_mint = amount.to_string();
+                // Convert amount to Amount struct using the token configuration
+                mint_screen.amount = Some(Amount::new_for_token(*amount, &mint_screen.identity_token_info));
                 mint_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::MintTokensScreen(mint_screen));
             }
             TokenEvent::Burn(amount, _burn_from, note_opt) => {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
                 burn_screen.group_action_id = Some(action_id);
-                burn_screen.amount_to_burn = amount.to_string();
+                // Convert amount to Amount struct using the token configuration
+                burn_screen.amount = Some(Amount::new_for_token(*amount, &burn_screen.identity_token_info));
                 burn_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::BurnTokensScreen(burn_screen));
             }

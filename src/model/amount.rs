@@ -81,6 +81,18 @@ impl Amount {
         }
     }
 
+    /// Creates a new Amount configured for a specific token.
+    ///
+    /// This extracts the decimal places and token alias from the token configuration
+    /// and creates an Amount with the specified value.
+    pub fn new_for_token(
+        value: TokenAmount,
+        token_info: &crate::ui::tokens::tokens_screen::IdentityTokenInfo,
+    ) -> Self {
+        let decimal_places = token_info.token_config.conventions().decimals();
+        Self::new_with_unit(value, decimal_places, token_info.token_alias.clone())
+    }
+
     /// Creates a new Amount from a string input with specified decimal places.
     /// If the input string contains a unit suffix (e.g., "123.45 USD"), the unit name will be preserved.
     pub fn parse_with_decimals(input: &str, decimal_places: u8) -> Result<Self, String> {
@@ -130,7 +142,7 @@ impl Amount {
         if decimal_places == 0 {
             return numeric_part
                 .parse::<u64>()
-                .map_err(|_| "Invalid amount: must be a whole number".to_string());
+                .map_err(|e| format!("Invalid amount: {}", e));
         }
 
         let parts: Vec<&str> = numeric_part.split('.').collect();

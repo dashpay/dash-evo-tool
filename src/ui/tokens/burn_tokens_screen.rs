@@ -1,3 +1,4 @@
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -25,6 +26,7 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -52,7 +54,8 @@ pub struct BurnTokensScreen {
     pub group_action_id: Option<Identifier>,
 
     // The user chooses how many tokens to burn
-    pub amount_to_burn: String,
+    pub amount: Option<Amount>,
+    pub amount_input: Option<AmountInput>,
     pub public_note: Option<String>,
 
     status: BurnTokensStatus,
@@ -179,7 +182,8 @@ impl BurnTokensScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
-            amount_to_burn: String::new(),
+            amount: None,
+            amount_input: None,
             public_note: None,
             status: BurnTokensStatus::NotStarted,
             error_message,
@@ -192,11 +196,17 @@ impl BurnTokensScreen {
     }
 
     /// Renders a text input for the user to specify an amount to burn
-    fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount to Burn:");
-            ui.text_edit_singleline(&mut self.amount_to_burn);
-        });
+    fn render_amount_input(&mut self, ui: &mut egui::Ui) {
+        ui.label("Amount:");
+        if self.amount_input.is_none() {
+            let token_amount = Amount::new_for_token(0, &self.identity_token_info);
+            self.amount_input = Some(AmountInput::new(token_amount).max_button(true));
+        }
+
+        if let Some(amount_input) = &mut self.amount_input {
+            amount_input.show(ui);
+            self.amount = amount_input.get_current_amount();
+        }
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -208,9 +218,15 @@ impl BurnTokensScreen {
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount_to_burn.parse::<u64>().ok();
+                let amount_ok = self.amount.as_ref().and_then(|a| {
+                    if a.value() > 0 {
+                        Some(a.value())
+                    } else {
+                        None
+                    }
+                });
                 if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid integer amount.".into());
+                    self.error_message = Some("Please enter a valid amount greater than 0.".into());
                     self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
                     self.show_confirmation_popup = false;
                     return;
@@ -218,7 +234,10 @@ impl BurnTokensScreen {
 
                 ui.label(format!(
                     "Are you sure you want to burn {} tokens?",
-                    self.amount_to_burn
+                    self.amount
+                        .as_ref()
+                        .map(|a| a.to_string())
+                        .unwrap_or_default()
                 ));
 
                 ui.add_space(10.0);
@@ -504,7 +523,12 @@ impl ScreenLike for BurnTokensScreen {
                         "You are signing an existing group Burn so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!("Amount: {}", self.amount_to_burn));
+                    ui.label(format!("Amount: {}", 
+                        self.amount
+                            .as_ref()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default()
+                    ));
                 } else {
                     self.render_amount_input(ui);
                 }

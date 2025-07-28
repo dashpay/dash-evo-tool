@@ -77,7 +77,7 @@ impl TransferScreen {
             selected_key: selected_key.cloned(),
             known_identities,
             receiver_identity_id: String::new(),
-            amount: Some(Amount::dash(0)),
+            amount: Some(Amount::dash(0.0)),
             amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
@@ -113,7 +113,7 @@ impl TransferScreen {
         let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
-            AmountInput::new(Amount::dash(0))
+            AmountInput::new(Amount::dash(0.0))
                 .label("Amount:")
                 .max_button(true)
                 .max_amount(Some(max_amount_credits))

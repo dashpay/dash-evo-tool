@@ -103,7 +103,7 @@ impl WithdrawalScreen {
 
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {
-            AmountInput::new(Amount::dash(0))
+            AmountInput::new(Amount::dash(0.0))
                 .label("Amount:")
                 .max_button(true)
         });

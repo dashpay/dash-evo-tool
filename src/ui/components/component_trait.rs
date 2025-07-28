@@ -5,11 +5,22 @@ use egui::{InnerResponse, Ui};
 /// All component responses should implement this trait to provide consistent
 /// access to basic response properties.
 pub trait ComponentResponse: Clone {
+    /// The domain object type that this response represents.
+    /// This type represents the data this component is designed to handle,
+    /// such as Amount, Identity, etc.
+    ///
+    /// It must be equal to the `DomainType` of the component that produced this response.
+    type DomainType;
+
     /// Returns whether the component input/state has changed
     fn has_changed(&self) -> bool;
 
     /// Returns whether the component is in a valid state (no error)
     fn is_valid(&self) -> bool;
+
+    /// Returns the changed value of the component, if any; otherwise, `None`.
+    /// It is Some() only if `has_changed()` is true.
+    fn changed(&self) -> &Option<Self::DomainType>;
 
     /// Returns any error message from the component
     fn error_message(&self) -> Option<&str>;
@@ -23,7 +34,8 @@ pub trait ComponentResponse: Clone {
 ///
 /// # Type Parameters
 ///
-/// * `DomainType` - The domain object type that the component works with (e.g., Amount, Identity)
+/// * `DomainType` - The domain object type that this component is designed to handle.
+///   This represents the conceptual data type the component works with (e.g., Amount, Identity).
 /// * `Response` - The specific response type returned by the component's `show()` method
 ///
 /// # Design Pattern Implementation
@@ -32,9 +44,9 @@ pub trait ComponentResponse: Clone {
 ///
 /// 1. **Self-Contained State Management**: Manage internal state privately
 /// 2. **Lazy Initialization**: Created only when first needed via `Option<Component>`
-/// 3. **Dual Builder API**: Provide both owned (`config()`) and mutable (`set_config()`) methods
+/// 3. **Builder API**: Provide fluent configuration methods like `new().with_config().with_label()`
 /// 4. **Response-Based Communication**: Return structured response objects from `show()`
-/// 5. **Type-Driven Configuration**: Derive behavior from domain objects, not manual config
+/// 5. **Dual Configuration API**: Provide both owned (`config()`) and mutable (`set_config()`) methods
 ///
 /// # Example Implementation
 ///
@@ -64,22 +76,19 @@ pub trait ComponentResponse: Clone {
 /// }
 ///
 /// impl ComponentResponse for MyInputResponse {
+///     type DomainType = String;
+///     
 ///     fn has_changed(&self) -> bool { self.changed }
 ///     fn is_valid(&self) -> bool { self.error_message.is_none() }
+///     fn changed(&self) -> Option<Self::DomainType> {
+///         self.parsed_data.clone()
+///     }
 ///     fn error_message(&self) -> Option<&str> { self.error_message.as_deref() }
 /// }
 ///
 /// impl Component for MyInputComponent {
 ///     type DomainType = ValidationRules;
 ///     type Response = MyInputResponse;
-///     
-///     fn new(domain_object: Self::DomainType) -> Self {
-///         Self {
-///             internal_state: String::new(),
-///             domain_data: domain_object,
-///             label: None,
-///         }
-///     }
 ///     
 ///     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
 ///         ui.horizontal(|ui| {
@@ -94,9 +103,20 @@ pub trait ComponentResponse: Clone {
 ///     }
 /// }
 ///
+/// // Constructor implemented as regular method
+/// impl MyInputComponent {
+///     pub fn new(domain_object: ValidationRules) -> Self {
+///         Self {
+///             internal_state: String::new(),
+///             domain_data: domain_object,
+///             label: None,
+///         }
+///     }
+/// }
+///
 /// // Owned configuration methods (for builder pattern during lazy initialization)
 /// impl MyInputComponent {
-///     pub fn label<T: Into<WidgetText>>(mut self, label: T) -> Self {
+///     pub fn with_label<T: Into<WidgetText>>(mut self, label: T) -> Self {
 ///         self.label = Some(label.into());
 ///         self
 ///     }
@@ -129,7 +149,7 @@ pub trait ComponentResponse: Clone {
 ///                 min_length: 1,
 ///                 max_length: 100
 ///             })
-///             .label("My Label:")
+///             .with_label("My Label:")
 ///         });
 ///         
 ///         // Use egui's built-in enabled state for dynamic control
@@ -137,17 +157,12 @@ pub trait ComponentResponse: Clone {
 ///             component.show(ui)
 ///         }).inner;
 ///         
-///         // Handle response
-///         if response.inner.has_changed() {
-///             if response.inner.is_valid() {
-///                 // Use valid data
-///                 if let Some(ref data) = response.inner.parsed_data {
-///                     self.handle_valid_input(data.clone());
-///                 }
-///             } else {
-///                 // Clear stale data on invalid input
-///                 self.clear_data();
-///             }
+///         // Handle response using the changed() method
+///         if let Some(new_data) = response.inner.changed() {
+///             self.handle_valid_input(new_data);
+///         } else if response.inner.has_changed() {
+///             // Input changed but no valid data - clear stale data
+///             self.clear_data();
 ///         }
 ///         
 ///         // Show errors
@@ -166,27 +181,15 @@ pub trait ComponentResponse: Clone {
 /// }
 /// ```
 pub trait Component {
-    /// The domain object type that this component works with.
-    /// This type should contain all the information needed to configure
-    /// the component's behavior (e.g., decimal places, unit names, validation rules).
+    /// The domain object type that this component is designed to handle.
+    /// This type represents the data this component is designed to handle,
+    /// such as Amount, Identity, etc.
     type DomainType;
 
     /// The response type returned by the component's `show()` method.
     /// This type should implement `ComponentResponse` and contain all
     /// information about the component's current state and any changes.
-    type Response: ComponentResponse;
-
-    /// Creates a new component instance from a domain object.
-    ///
-    /// The domain object should contain all the information needed to
-    /// properly configure the component's behavior. This follows the
-    /// "Type-Driven Configuration" principle where component behavior
-    /// is determined by the data types it works with.
-    ///
-    /// # Arguments
-    ///
-    /// * `domain_object` - The domain object that configures this component's behavior
-    fn new(domain_object: Self::DomainType) -> Self;
+    type Response: ComponentResponse<DomainType = Self::DomainType>;
 
     /// Renders the component and returns a response with interaction results.
     ///

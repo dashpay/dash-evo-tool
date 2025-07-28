@@ -56,8 +56,13 @@ impl AmountInputResponse {
 }
 
 impl ComponentResponse for AmountInputResponse {
+    type DomainType = Amount;
     fn has_changed(&self) -> bool {
         self.changed
+    }
+
+    fn changed(&self) -> &Option<Self::DomainType> {
+        &self.parsed_amount
     }
 
     fn is_valid(&self) -> bool {
@@ -435,10 +440,6 @@ impl Widget for AmountInput {
 impl Component for AmountInput {
     type DomainType = Amount;
     type Response = AmountInputResponse;
-
-    fn new(domain_object: Self::DomainType) -> Self {
-        AmountInput::new(domain_object)
-    }
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         AmountInput::show(self, ui)

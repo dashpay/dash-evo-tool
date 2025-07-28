@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the design pattern used for UI components in the Dash Evo Tool project, exemplified by the `AmountInput` component. This pattern provides efficient, maintainable, and user-friendly components that work well with egui's immediate mode GUI paradigm.
+This document describes the design pattern used for UI components in the Dash Evo Tool project. This pattern provides efficient, maintainable, and user-friendly components that work well with egui's immediate mode GUI paradigm. Components following this pattern implement the `Component` trait defined in `src/ui/components/component_trait.rs`.
 
 ## Core Principles
 
@@ -10,10 +10,10 @@ This document describes the design pattern used for UI components in the Dash Ev
 Components manage their own internal state and expose only what's necessary through responses.
 
 ```rust
-pub struct AmountInput {
+pub struct MyInputComponent {
     // Private internal state
-    amount_str: String,
-    decimal_places: u8,
+    internal_value: String,
+    domain_config: DomainType,
     label: Option<WidgetText>,
     // ... other private fields
 }
@@ -29,20 +29,20 @@ Components are created only when first needed, reducing memory usage and initial
 
 ```rust
 struct MyScreen {
-    amount_input: Option<AmountInput>,  // Lazy initialization
+    input_component: Option<MyInputComponent>,  // Lazy initialization
 }
 
 impl MyScreen {
     fn show(&mut self, ui: &mut Ui) {
         // Create component only when first needed
-        let amount_input = self.amount_input.get_or_insert_with(|| {
-            AmountInput::new(Amount::dash(0))
-                .label("Amount:")
-                .max_amount(Some(1000000))
-                .show_max_button(true)
+        let input_component = self.input_component.get_or_insert_with(|| {
+            MyInputComponent::new(domain_object)
+                .label("Input:")
+                .max_value(Some(1000000))
+                .show_action_button(true)
         });
         
-        let response = amount_input.show(ui);
+        let response = input_component.show(ui);
         // Handle response...
     }
 }
@@ -57,7 +57,7 @@ impl MyScreen {
 Provide both owned (consuming) and mutable reference versions of configuration methods.
 
 ```rust
-impl AmountInput {
+impl MyInputComponent {
     // Owned version - for initial configuration
     pub fn label<T: Into<WidgetText>>(mut self, label: T) -> Self {
         self.label = Some(label.into());
@@ -80,12 +80,12 @@ impl AmountInput {
 Components primarily communicate state changes through structured response objects, with optional callback support for specialized use cases.
 
 ```rust
-pub struct AmountInputResponse {
+pub struct MyInputResponse {
     pub response: Response,
     pub changed: bool,
     pub error_message: Option<String>,
-    pub max_clicked: bool,
-    pub parsed_amount: Option<Amount>,
+    pub action_clicked: bool,
+    pub parsed_data: Option<ParsedResult>,
 }
 ```
 
@@ -128,29 +128,180 @@ impl MyComponent {
 Component behavior is determined by the data types it works with, not manual configuration.
 
 ```rust
-// ✅ Decimal places and unit names determined by Amount object
-let amount_input = AmountInput::new(Amount::new_with_unit(0, token_decimals, token_name));
+// ✅ Configuration determined by domain object
+let input_component = MyInputComponent::new(domain_object_with_metadata);
 
 // ❌ Manual configuration would be error-prone
-// amount_input.set_decimal_places(token_decimals);
-// amount_input.set_unit_name(token_name);
+// input_component.set_validation_rules(rules);
+// input_component.set_format_options(options);
 ```
 
 **Benefits:**
 - Single source of truth for all type-specific behavior
 - Type safety prevents inconsistent states
-- Unit names are automatically preserved throughout the component lifecycle
+- Domain-specific properties are automatically preserved throughout the component lifecycle
 - Clear relationship between data and presentation
+
+## Component Trait System
+
+The `Component` trait system provides a standardized interface for all UI components following this design pattern. Components should implement the appropriate traits from `src/ui/components/component_trait.rs`:
+
+### Core Traits
+
+- **`ComponentResponse`**: Implemented by response types to provide consistent access to basic properties
+- **`Component`**: Core trait for all components, defines the main interface
+- **`ComponentWithCallbacks`**: Optional trait for components supporting callback functions  
+- **`UpdatableComponent`**: Utility trait for components that manage optional values
+
+### Implementing a New Component
+
+Here's a step-by-step guide to implementing a new component:
+
+```rust
+use crate::ui::components::{Component, ComponentResponse};
+use egui::{InnerResponse, Response, Ui, WidgetText};
+
+// 1. Define the response struct
+#[derive(Clone)]
+pub struct TextInputResponse {
+    pub response: Response,
+    pub changed: bool,
+    pub error_message: Option<String>,
+    pub validated_text: Option<String>,
+}
+
+// 2. Implement ComponentResponse for the response
+impl ComponentResponse for TextInputResponse {
+    fn has_changed(&self) -> bool { self.changed }
+    fn is_valid(&self) -> bool { self.error_message.is_none() }
+    fn error_message(&self) -> Option<&str> { self.error_message.as_deref() }
+}
+
+// 3. Define the component struct
+pub struct TextInputComponent {
+    current_text: String,
+    validation_rules: ValidationRules, // From domain object
+    label: Option<WidgetText>,
+    enabled: bool,
+}
+
+// 4. Implement the Component trait
+impl Component for TextInputComponent {
+    type DomainType = ValidationRules;
+    type Response = TextInputResponse;
+    
+    fn new(domain_object: Self::DomainType) -> Self {
+        Self {
+            current_text: String::new(),
+            validation_rules: domain_object,
+            label: None,
+            enabled: true,
+        }
+    }
+    
+    fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
+        ui.horizontal(|ui| {
+            if let Some(label) = &self.label {
+                ui.label(label.clone());
+            }
+            
+            let response = ui.add_enabled(
+                self.enabled,
+                egui::TextEdit::singleline(&mut self.current_text)
+            );
+            
+            let changed = response.changed();
+            let (error_message, validated_text) = if changed {
+                self.validate_text()
+            } else {
+                (None, None)
+            };
+            
+            TextInputResponse {
+                response,
+                changed,
+                error_message,
+                validated_text,
+            }
+        })
+    }
+    
+    fn is_enabled(&self) -> bool { self.enabled }
+    fn set_enabled(&mut self, enabled: bool) -> &mut Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+// 5. Add builder methods following the dual API pattern
+impl TextInputComponent {
+    // Owned methods for static configuration
+    pub fn label<T: Into<WidgetText>>(mut self, label: T) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    
+    // Mutable reference methods for dynamic configuration
+    pub fn set_label<T: Into<WidgetText>>(&mut self, label: T) -> &mut Self {
+        self.label = Some(label.into());
+        self
+    }
+    
+    fn validate_text(&self) -> (Option<String>, Option<String>) {
+        // Validation logic based on self.validation_rules
+        // Return (error_message, validated_text)
+    }
+}
+```
+
+### Usage in Screens
+
+```rust
+struct MyScreen {
+    text_input: Option<TextInputComponent>,
+    current_text: Option<String>,
+}
+
+impl MyScreen {
+    fn render_text_input(&mut self, ui: &mut Ui) {
+        let component = self.text_input.get_or_insert_with(|| {
+            TextInputComponent::new(validation_rules)
+                .label("Enter text:")
+        });
+        
+        component.set_enabled(!operation_in_progress);
+        
+        let response = component.show(ui);
+        
+        // Handle state changes correctly
+        if response.inner.has_changed() {
+            if response.inner.is_valid() {
+                self.current_text = response.inner.validated_text;
+            } else {
+                self.current_text = None; // Clear on invalid input
+            }
+        }
+        
+        // Show errors
+        if let Some(error) = response.inner.error_message() {
+            ui.colored_label(egui::Color32::RED, error);
+        }
+    }
+}
+```
 
 ## Implementation Guidelines
 
 ### Component Structure
 
 ```rust
+use crate::ui::components::{Component, ComponentResponse};
+
 #[derive(Clone)]  // Note: May need custom Clone implementation if using callbacks
-pub struct MyComponent {
+pub struct MyInputComponent {
     // Private fields for internal state
     internal_state: String,
+    domain_data: DomainType,
     config_field: Option<Value>,
     // Optional callback functions
     on_success_fn: Option<Box<dyn FnMut(&ShowResponse)>>,
@@ -158,7 +309,8 @@ pub struct MyComponent {
     // ... other private fields
 }
 
-pub struct MyComponentResponse {
+#[derive(Clone)]
+pub struct MyInputResponse {
     pub response: Response,
     pub changed: bool,
     pub data: Option<ProcessedData>,
@@ -166,28 +318,27 @@ pub struct MyComponentResponse {
     // ... other response fields
 }
 
-pub type ShowResponse = InnerResponse<MyComponentResponse>;
+impl ComponentResponse for MyInputResponse {
+    fn has_changed(&self) -> bool { self.changed }
+    fn is_valid(&self) -> bool { self.error_message.is_none() }
+    fn error_message(&self) -> Option<&str> { self.error_message.as_deref() }
+}
+
+pub type ShowResponse = InnerResponse<MyInputResponse>;
 ```
 
 ### Required Methods
 
 ```rust
-impl MyComponent {
+impl Component for MyInputComponent {
+    type DomainType = DomainType;
+    type Response = MyInputResponse;
+    
     // Constructor from domain object
-    pub fn new(domain_object: DomainType) -> Self { /* ... */ }
-    
-    // Owned configuration methods
-    pub fn config_option(mut self, value: T) -> Self { /* ... */ }
-    
-    // Mutable reference configuration methods
-    pub fn set_config_option(&mut self, value: T) -> &mut Self { /* ... */ }
-    
-    // Optional callback configuration
-    pub fn on_success(mut self, callback: impl FnMut(&ShowResponse) + 'static) -> Self { /* ... */ }
-    pub fn on_error(mut self, callback: impl FnMut(&ShowResponse) + 'static) -> Self { /* ... */ }
+    fn new(domain_object: Self::DomainType) -> Self { /* ... */ }
     
     // Main render method that handles both responses and callbacks
-    pub fn show(&mut self, ui: &mut Ui) -> InnerResponse<MyComponentResponse> {
+    fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         let result = self.show_internal(ui);
         
         // Trigger callbacks when relevant changes occur
@@ -208,8 +359,27 @@ impl MyComponent {
         result
     }
     
+    fn is_enabled(&self) -> bool { self.enabled }
+    fn set_enabled(&mut self, enabled: bool) -> &mut Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+// Additional configuration methods
+impl MyInputComponent {
+    // Owned configuration methods
+    pub fn config_option(mut self, value: T) -> Self { /* ... */ }
+    
+    // Mutable reference configuration methods
+    pub fn set_config_option(&mut self, value: T) -> &mut Self { /* ... */ }
+    
+    // Optional callback configuration
+    pub fn on_success(mut self, callback: impl FnMut(&ShowResponse) + 'static) -> Self { /* ... */ }
+    pub fn on_error(mut self, callback: impl FnMut(&ShowResponse) + 'static) -> Self { /* ... */ }
+    
     // Internal rendering logic
-    fn show_internal(&mut self, ui: &mut Ui) -> InnerResponse<MyComponentResponse> { /* ... */ }
+    fn show_internal(&mut self, ui: &mut Ui) -> InnerResponse<MyInputResponse> { /* ... */ }
 }
 ```
 
@@ -217,7 +387,7 @@ impl MyComponent {
 
 ```rust
 pub struct MyScreen {
-    my_component: Option<MyComponent>,
+    my_component: Option<MyInputComponent>,
     // ... other screen state
 }
 
@@ -225,7 +395,7 @@ impl MyScreen {
     fn render_my_component(&mut self, ui: &mut Ui) {
         // Static configuration during lazy initialization
         let component = self.my_component.get_or_insert_with(|| {
-            MyComponent::new(domain_object)
+            MyInputComponent::new(domain_object)
                 .static_config("value")
                 .another_static_config(true)
                 // Optional: Configure callbacks for immediate response
@@ -258,7 +428,7 @@ impl MyScreen {
 
 ## Critical: Handling Invalid Input States
 
-When using input components like `AmountInput`, it's crucial to properly handle transitions between valid and invalid states. **Failure to do this correctly will cause your screen to retain stale data when the user enters invalid input.**
+When using input components, it's crucial to properly handle transitions between valid and invalid states. **Failure to do this correctly will cause your screen to retain stale data when the user enters invalid input.**
 
 ### The Problem
 
@@ -266,34 +436,34 @@ Consider this incorrect pattern that leads to bugs:
 
 ```rust
 // ❌ INCORRECT - Only updates on valid input, retains stale data on invalid input
-let response = amount_input.show(ui);
-if let Some(parsed_amount) = response.inner.parsed_amount {
-    self.current_amount = Some(parsed_amount); // Only updates when valid
+let response = input_component.show(ui);
+if let Some(parsed_data) = response.inner.parsed_data {
+    self.current_data = Some(parsed_data); // Only updates when valid
 }
-// BUG: If user enters valid amount then invalid amount, 
-// self.current_amount still holds the old valid value!
+// BUG: If user enters valid data then invalid data, 
+// self.current_data still holds the old valid value!
 ```
 
 ### The Solution
 
-Always handle input state changes to prevent retaining stale data. The `AmountInputResponse` provides a helper method to make this easy:
+Always handle input state changes to prevent retaining stale data. For components that implement the `UpdatableComponent` trait, you can use the helper method:
 
 ```rust
-// ✅ CORRECT - Use the helper method for Option<Amount> fields
-let response = amount_input.show(ui);
-if response.inner.update(&mut self.current_amount) {
-    println!("Amount changed: {:?}", self.current_amount);
+// ✅ CORRECT - Use the helper method for Option<T> fields
+let response = input_component.show(ui);
+if response.inner.update(&mut self.current_data) {
+    println!("Data changed: {:?}", self.current_data);
 }
 
-// ✅ CORRECT - For Amount fields (not Option<Amount>), use a temporary variable
-let response = amount_input.show(ui);
-let mut temp_amount: Option<Amount> = Some(self.amount.clone());
-if response.inner.update(&mut temp_amount) {
-    if let Some(amount) = temp_amount {
-        self.amount = amount;
+// ✅ CORRECT - For non-Option fields, use a temporary variable
+let response = input_component.show(ui);
+let mut temp_data: Option<DataType> = Some(self.data.clone());
+if response.inner.update(&mut temp_data) {
+    if let Some(data) = temp_data {
+        self.data = data;
     } else {
-        // No valid amount - set to appropriate default
-        self.amount = Amount::dash(0); // or appropriate default
+        // No valid data - set to appropriate default
+        self.data = DataType::default(); // or appropriate default
     }
 }
 ```
@@ -302,43 +472,43 @@ You can also handle it manually if you need custom logic:
 
 ```rust
 // ✅ CORRECT - Manual handling for custom logic
-let response = amount_input.show(ui);
+let response = input_component.show(ui);
 if response.inner.changed {
     if response.inner.error_message.is_none() {
         // Input is valid - update our data (could be None for empty input)
-        self.current_amount = response.inner.parsed_amount;
+        self.current_data = response.inner.parsed_data;
     } else {
         // Input is invalid - clear our data to prevent using stale values
-        self.current_amount = None;
+        self.current_data = None;
     }
 }
 ```
 
 ### Pattern for Different Component Types
 
-This pattern applies to all input components. For `AmountInput`, use the convenient helper method:
+This pattern applies to all input components. For components with helper methods:
 
 ```rust
-// For Option<Amount> fields - simplest case
-let response = amount_input.show(ui);
-if response.inner.update(&mut self.amount_option) {
-    // Amount was updated (or cleared if invalid)
-    // Unit names are automatically preserved by AmountInput
+// For Option<T> fields - simplest case
+let response = input_component.show(ui);
+if response.inner.update(&mut self.data_option) {
+    // Data was updated (or cleared if invalid)
+    // Type-specific properties are automatically preserved by the component
 }
 
-// For Amount fields (not Option), use a temporary variable
-let response = amount_input.show(ui);
-let mut temp_amount = Some(self.amount.clone());
-if response.inner.update(&mut temp_amount) {
-    if let Some(amount) = temp_amount {
-        self.amount = amount; // Unit name automatically preserved
+// For non-Option fields, use a temporary variable
+let response = input_component.show(ui);
+let mut temp_data = Some(self.data.clone());
+if response.inner.update(&mut temp_data) {
+    if let Some(data) = temp_data {
+        self.data = data; // Type-specific properties automatically preserved
     } else {
         // Set appropriate default for invalid/empty input
-        self.amount = Amount::new_with_unit(0, 8, "TOKEN".to_string());
+        self.data = DataType::default();
     }
 }
 
-// For other input components with validation
+// For components without helper methods with validation
 if response.inner.changed {
     if response.inner.error_message.is_none() {
         // Input is valid - use the parsed data
@@ -366,7 +536,7 @@ if let Some(error) = &response.inner.error_message {
 ## When to Recreate Components
 
 Recreate components when:
-- Core configuration changes (e.g., decimal places for amounts)
+- Core configuration changes (e.g., data type structure changes)
 - The component type fundamentally changes
 - You need to reset all internal state
 
@@ -379,7 +549,7 @@ let needs_recreation = self.component
     
 if needs_recreation {
     self.component = Some(
-        MyComponent::new(new_domain_object)
+        MyInputComponent::new(new_domain_object)
             .with_static_config()
     );
 }
@@ -395,7 +565,7 @@ mod tests {
     #[test]
     fn test_component_initialization() {
         let domain_object = DomainType::new(test_data);
-        let component = MyComponent::new(domain_object);
+        let component = MyInputComponent::new(domain_object);
         
         // Test initial state
         assert_eq!(component.some_property(), expected_value);
@@ -403,11 +573,21 @@ mod tests {
     
     #[test]
     fn test_configuration_methods() {
-        let component = MyComponent::new(test_domain_object)
+        let component = MyInputComponent::new(test_domain_object)
             .config_option(test_value);
             
         // Test configuration was applied
         assert_eq!(component.internal_config, test_value);
+    }
+    
+    #[test]
+    fn test_component_trait_implementation() {
+        let mut component = MyInputComponent::new(test_domain_object);
+        
+        // Test Component trait methods
+        assert!(component.is_enabled());
+        component.set_enabled(false);
+        assert!(!component.is_enabled());
     }
 }
 ```
@@ -426,16 +606,17 @@ mod tests {
 ## Anti-Patterns to Avoid
 
 - ❌ Public mutable fields (breaks encapsulation)
-- ❌ Manual configuration of derived properties (e.g., decimal places)
+- ❌ Manual configuration of derived properties (derive from domain objects instead)
 - ❌ Callback-only APIs without response objects (prefer hybrid approach)
 - ❌ Required callbacks (always make them optional)
 - ❌ Eager initialization of all components (use lazy initialization)
 - ❌ Mixing static and dynamic configuration inappropriately
 - ❌ Complex callback chains (keep callbacks simple and focused)
+- ❌ Not implementing the Component trait when following this pattern
 
 ## Example: AmountInput Implementation
 
-The `AmountInput` component exemplifies this pattern:
+The `AmountInput` component exemplifies this pattern and implements the `Component` trait:
 
 - **Self-contained**: Manages its own string state and validation
 - **Lazy initialization**: Created only when first displayed
@@ -443,5 +624,6 @@ The `AmountInput` component exemplifies this pattern:
 - **Hybrid communication**: Returns `AmountInputResponse` with optional callbacks
 - **Type-driven**: Decimal places determined by `Amount` object
 - **Optional callbacks**: Supports `on_success()` and `on_error()` for immediate response
+- **Trait implementation**: Implements `Component`, `ComponentWithCallbacks`, and `UpdatableComponent`
 
-This pattern has proven effective for creating maintainable, performant UI components that integrate well with egui's immediate mode paradigm while providing excellent developer experience and flexible communication options.
+This pattern and trait system has proven effective for creating maintainable, performant UI components that integrate well with egui's immediate mode paradigm while providing excellent developer experience and flexible communication options.

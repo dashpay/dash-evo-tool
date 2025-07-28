@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn test_initialization_with_non_zero_amount_and_unit() {
         // Test that AmountInput correctly initializes from an existing amount
-        let amount = Amount::dash(150_000_000_000); // 1.5 DASH with 11 decimal places
+        let amount = Amount::dash(1.5); // 1.5 DASH 
 
         assert_eq!(amount.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", amount), "1.5 DASH");
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn test_initialization_with_zero_amount() {
         // Test that zero amounts initialize with empty string
-        let amount = Amount::dash(0);
+        let amount = Amount::dash(0.0);
         let amount_input = AmountInput::new(amount);
         assert_eq!(amount_input.amount_str, "");
         assert_eq!(amount_input.decimal_places, 11);

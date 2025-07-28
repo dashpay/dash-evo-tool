@@ -435,7 +435,7 @@ impl TokensScreen {
                                                             ui.horizontal(|ui| {
                                                                 // Create an amount for rewards using the token's decimal places and alias
                                                                 let decimals = itb.token_config.conventions().decimals();
-                                                                let rewards_amount = Amount::new_with_unit(known_rewards, decimals, itb.token_alias.clone());
+                                                                let rewards_amount = Amount::new(known_rewards, decimals);
                                                                 ui.label(rewards_amount.to_string());
 
                                                                 // Info button to show explanation

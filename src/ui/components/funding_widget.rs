@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::{Component, ComponentResponse, UpdatableComponent};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -60,12 +61,6 @@ pub struct FundingWidgetResponse {
     pub address_changed: Option<Address>,
     /// Asset lock selected (Transaction, AssetLockProof, Address)
     pub asset_lock_selected: Option<(Transaction, AssetLockProof, Address)>,
-    /// Max button was clicked
-    pub max_button_clicked: bool,
-    /// Copy button was clicked
-    pub copy_button_clicked: bool,
-    /// New address button was clicked
-    pub new_address_clicked: bool,
     /// Error occurred
     pub error: Option<String>,
     /// Whether the currently selected funding method has sufficient funds
@@ -80,9 +75,6 @@ impl FundingWidgetResponse {
             || self.amount_changed.is_some()
             || self.address_changed.is_some()
             || self.asset_lock_selected.is_some()
-            || self.max_button_clicked
-            || self.copy_button_clicked
-            || self.new_address_clicked
             || self.error.is_some()
             || self.funding_secured.is_some()
     }
@@ -101,6 +93,42 @@ impl FundingWidgetResponse {
     }
 }
 
+impl ComponentResponse for FundingWidgetResponse {
+    type DomainType = FundingWidgetMethod;
+
+    fn has_changed(&self) -> bool {
+        self.has_changes()
+    }
+
+    fn is_valid(&self) -> bool {
+        self.error.is_none()
+    }
+
+    fn changed(&self) -> &Option<Self::DomainType> {
+        &self.funding_secured
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+impl UpdatableComponent<FundingWidgetMethod> for FundingWidgetResponse {
+    fn update(&self, value: &mut Option<FundingWidgetMethod>) -> bool {
+        if self.has_changed() {
+            if let Some(new_method) = &self.funding_secured {
+                *value = Some(new_method.clone());
+                true
+            } else {
+                *value = None;
+                true
+            }
+        } else {
+            false
+        }
+    }
+}
+
 /// Funding widget state
 pub struct FundingWidget {
     app_context: Arc<AppContext>,
@@ -113,10 +141,9 @@ pub struct FundingWidget {
     amount_label: String,
     show_qr_code: bool,
     show_copy_button: bool,
-    validation_hints: bool,
     ignore_existing_utxos: bool,
 
-    // Current state
+    // Internal state (private, managed by component)
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     funding_method: FundingMethod,
     funding_amount: String,
@@ -143,7 +170,6 @@ impl FundingWidget {
             amount_label: "Amount (DASH):".to_string(),
             show_qr_code: true,
             show_copy_button: true,
-            validation_hints: true,
             ignore_existing_utxos: true,
             selected_wallet: None,
             funding_method: FundingMethod::NoSelection,
@@ -202,23 +228,6 @@ impl FundingWidget {
     pub fn with_copy_button(mut self, show: bool) -> Self {
         self.show_copy_button = show;
         self
-    }
-
-    /// Control whether to show validation hints to the user (like, not enough funds).
-    /// Usually used to disable hints when an operation is in progress.
-    ///
-    /// Defaults to 'true'
-    pub fn with_validation_hints(mut self, enabled: bool) -> Self {
-        self.validation_hints = enabled;
-        self
-    }
-
-    /// Control whether to show validation hints to the user (like, not enough funds).
-    /// Usually used to disable hints when an operation is in progress.
-    ///
-    /// Defaults to 'true'.
-    pub fn set_validation_hints(&mut self, enabled: bool) {
-        self.validation_hints = enabled;
     }
 
     /// Set whether to ignore existing UTXOs when using QR code method.
@@ -582,7 +591,6 @@ impl FundingWidget {
                     };
                     if ui.button("Max").clicked() {
                         self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        response.max_button_clicked = true;
                         response.amount_changed = Some(self.funding_amount.clone());
                     }
                 }
@@ -591,7 +599,7 @@ impl FundingWidget {
     }
 
     fn render_funding_status_hints(&self, ui: &mut Ui) {
-        if !self.validation_hints {
+        if !ui.is_enabled() {
             return;
         }
         if self.funding_method == FundingMethod::NoSelection {
@@ -910,7 +918,6 @@ impl FundingWidget {
 
                     if show_copy && ui.button("Copy Address").clicked() {
                         self.copied_to_clipboard = Some(copy_to_clipboard(&pay_uri).err());
-                        response.copy_button_clicked = true;
                     }
 
                     if show_copy && show_new_address {
@@ -921,7 +928,6 @@ impl FundingWidget {
                         // Generate a new address
                         if let Ok(_new_address) = self.ensure_funding_address(response, true) {
                             // The address has been updated, no additional action needed
-                            response.new_address_clicked = true;
                         } else {
                             response.error = Some("Failed to generate new address".to_string());
                         }
@@ -1019,9 +1025,11 @@ impl FundingWidget {
     }
 }
 
-impl FundingWidget {
-    /// Render the funding widget and return response with all changes
-    pub fn show(&mut self, ui: &mut Ui) -> InnerResponse<FundingWidgetResponse> {
+impl Component for FundingWidget {
+    type DomainType = FundingWidgetMethod;
+    type Response = FundingWidgetResponse;
+
+    fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         let mut response = FundingWidgetResponse::default();
 
         let ui_response = ui.vertical(|ui| {
@@ -1080,7 +1088,9 @@ impl FundingWidget {
 
         InnerResponse::new(response, ui_response.response)
     }
+}
 
+impl FundingWidget {
     /// Get UTXO information for AddressWithQRCode funding method
     /// Returns (OutPoint, TxOut, Address) if a suitable UTXO is found
     ///

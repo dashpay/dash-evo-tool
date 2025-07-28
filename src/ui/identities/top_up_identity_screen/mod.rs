@@ -7,6 +7,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
 use crate::ui::components::funding_widget::{FundingWidget, FundingWidgetMethod};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -292,13 +293,14 @@ impl ScreenLike for TopUpIdentityScreen {
                 if let Some(ref mut widget) = self.funding_widget {
                     // Disable balance checks if operation is in progress
                     let step = {*self.step.read().unwrap()};
-                    widget.set_validation_hints(!step.is_processing());
+                    let enabled = !step.is_processing();
 
                     ui.heading(format!("{}. Configure your top-up", step_number));
                     ui.add_space(10.0);
 
-                    let widget_response = widget.show(ui);
-                    let response_data = widget_response.inner;
+                    let response_data = ui.add_enabled_ui(enabled, |ui| {
+                        widget.show(ui).inner
+                    }).inner;
 
                     // Handle widget responses
                     if let Some(wallet) = &response_data.wallet_changed {

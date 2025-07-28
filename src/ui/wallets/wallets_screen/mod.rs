@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
 use crate::ui::components::funding_widget::FundingWidget;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;

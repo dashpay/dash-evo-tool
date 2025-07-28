@@ -43,7 +43,7 @@ pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
     withdrawal_address: String,
-    withdrawal_amount: Amount,
+    withdrawal_amount: Option<Amount>,
     withdrawal_amount_input: Option<AmountInput>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
@@ -72,7 +72,7 @@ impl WithdrawalScreen {
             identity,
             selected_key: selected_key.cloned(),
             withdrawal_address: String::new(),
-            withdrawal_amount: Amount::dash(0),
+            withdrawal_amount: None,
             withdrawal_amount_input: None,
             max_amount,
             app_context: app_context.clone(),
@@ -121,11 +121,7 @@ impl WithdrawalScreen {
 
         let response = amount_input.show(ui);
 
-        // Update the withdrawal amount if it was changed
-        if let Some(parsed_amount) = response.inner.parsed_amount {
-            self.withdrawal_amount = parsed_amount;
-        }
-
+        response.inner.update(&mut self.withdrawal_amount);
         if let Some(error) = &response.inner.error_message {
             ui.colored_label(egui::Color32::DARK_RED, error);
         }
@@ -203,11 +199,18 @@ impl WithdrawalScreen {
 
                 ui.label(format!(
                     "Are you sure you want to withdraw {} to {}",
-                    self.withdrawal_amount, message_address
+                    self.withdrawal_amount
+                        .as_ref()
+                        .expect("Withdrawal amount should be present"),
+                    message_address
                 ));
 
                 // Use the amount directly from the stored amount
-                let credits = self.withdrawal_amount.value() as u128;
+                let credits = self
+                    .withdrawal_amount
+                    .as_ref()
+                    .expect("Withdrawal amount should be present")
+                    .value() as u128;
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
@@ -454,13 +457,20 @@ impl ScreenLike for WithdrawalScreen {
                 ui.add_space(10.0);
 
                 // Withdraw button
+
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
                     .corner_radius(3.0)
                     .min_size(egui::vec2(60.0, 30.0));
 
-                if ui.add(button).clicked() {
+                let ready = self.withdrawal_amount.as_ref().is_some();
+
+                if ui
+                    .add_enabled(ready, button)
+                    .on_disabled_hover_text("Please enter a valid amount to withdraw")
+                    .clicked()
+                {
                     self.confirmation_popup = true;
                 }
 

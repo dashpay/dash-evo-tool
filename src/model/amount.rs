@@ -8,11 +8,29 @@ use serde::{Deserialize, Serialize};
 
 pub const DASH_DECIMAL_PLACES: u8 = 11;
 
-#[derive(Serialize, Deserialize, Encode, Decode, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Encode, Decode, Clone, PartialEq, Eq, Default)]
 pub struct Amount {
     value: TokenAmount,
     decimal_places: u8,
     unit_name: Option<String>,
+}
+
+impl PartialOrd for Amount {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.value.cmp(&other.value))
+    }
+}
+
+impl PartialEq<TokenAmount> for Amount {
+    fn eq(&self, other: &TokenAmount) -> bool {
+        self.value == *other
+    }
+}
+
+impl PartialEq<TokenAmount> for &Amount {
+    fn eq(&self, other: &TokenAmount) -> bool {
+        self.value == *other
+    }
 }
 
 impl Display for Amount {
@@ -195,8 +213,8 @@ impl Amount {
         }
     }
 
-    /// Creates a new Amount with the specified value in credits.
-    pub fn with_value(mut self, value: Credits) -> Self {
+    /// Creates a new Amount with the specified value in TokenAmount.
+    pub fn with_value(mut self, value: TokenAmount) -> Self {
         self.value = value;
         self
     }
@@ -233,8 +251,8 @@ impl Amount {
 /// Dash-specific amount handling
 impl Amount {
     /// Creates a new Dash amount
-    pub fn dash(credits: Credits) -> Self {
-        Self::new_with_unit(credits, DASH_DECIMAL_PLACES, "DASH".to_string())
+    pub fn dash(value: TokenAmount) -> Self {
+        Self::new_with_unit(value, DASH_DECIMAL_PLACES, "DASH".to_string())
     }
 
     /// Creates a Dash amount from a duff string.
@@ -242,10 +260,12 @@ impl Amount {
         Self::parse_with_decimals(input, DASH_DECIMAL_PLACES)
             .map(|amount| amount.with_unit_name("DASH".to_string()))
     }
+}
 
-    /// Formats a duff amount as Dash.
-    pub fn format_dash(credits: Credits) -> String {
-        Self::format_amount(credits, DASH_DECIMAL_PLACES)
+impl AsRef<Amount> for Amount {
+    /// Returns a reference to the Amount.
+    fn as_ref(&self) -> &Self {
+        self
     }
 }
 
@@ -295,6 +315,24 @@ impl From<crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> for
         token_balance: crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions,
     ) -> Self {
         Self::from(&token_balance)
+    }
+}
+
+impl From<Amount> for Credits {
+    /// Converts an Amount to Credits.
+    ///
+    /// This is useful for passing amounts to functions that expect Credits.
+    fn from(amount: Amount) -> Self {
+        amount.value
+    }
+}
+
+impl From<&Amount> for Credits {
+    /// Converts an Amount to Credits.
+    ///
+    /// This is useful for passing amounts to functions that expect Credits.
+    fn from(amount: &Amount) -> Self {
+        amount.value
     }
 }
 
@@ -352,11 +390,6 @@ mod tests {
 
     #[test]
     fn test_dash_amounts() {
-        // Test Dash formatting (8 decimal places)
-        assert_eq!(Amount::format_dash(100_000_000_000_000), "1000");
-        assert_eq!(Amount::format_dash(150_000_000_000), "1.5");
-        assert_eq!(Amount::format_dash(12_345_678_901), "0.12345678901");
-
         // Test Dash parsing
         let dash_amount = Amount::parse_dash("1.5").unwrap();
         assert_eq!(dash_amount.value(), 150_000_000_000);

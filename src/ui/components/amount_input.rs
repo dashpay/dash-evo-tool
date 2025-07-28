@@ -17,6 +17,41 @@ pub struct AmountInputResponse {
     pub parsed_amount: Option<Amount>,
 }
 
+impl AmountInputResponse {
+    /// Returns whether the input is valid (no error message)
+    pub fn is_valid(&self) -> bool {
+        self.error_message.is_none()
+    }
+
+    /// Returns whether the input has changed
+    pub fn has_changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Update amount if it [has_changed](Self::has_changed).
+    ///
+    /// Once input has changed, it changes provided value to the parsed amount if valid, or `None` it if invalid.
+    /// If the input has not changed, the value remains unchanged.
+    ///
+    /// This function can be used to link the input widget to a mutable `Option<Amount>` value in your screen state.
+    /// Any changes to the input will be reflected in the provided value.
+    ///
+    /// Returns true if the value was updated (including change to `None`), false if it was not changed.
+    pub fn update(&self, value: &mut Option<Amount>) -> bool {
+        if self.has_changed() {
+            if let Some(amount) = &self.parsed_amount {
+                value.replace(amount.clone());
+                true
+            } else {
+                value.take(); // Clear the value if input is invalid
+                true
+            }
+        } else {
+            false
+        }
+    }
+}
+
 type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 
 /// A reusable amount input widget that handles decimal parsing and validation.
@@ -24,14 +59,14 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///
 /// The widget validates the input in real-time and shows error messages when
 /// the input is invalid. It properly handles decimal places according to the
-/// configured number of decimals. When an amount is successfully parsed, it can
-/// include a unit name that will be displayed in the UI.
+/// configured number of decimals. Unit names from the initial Amount are
+/// automatically preserved and applied to all parsed amounts.
 ///
 /// # Features
 /// - Real-time validation with error messages
 /// - Configurable minimum and maximum amounts
 /// - Optional "Max" button for quick maximum input
-/// - Automatic unit name display from Amount objects
+/// - Automatic unit name preservation from initial Amount objects
 /// - Proper layout alignment when buttons are present
 /// - Self-contained state management
 /// - Enable/disable functionality to prevent changes during operations
@@ -45,6 +80,7 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 /// // Store Option<AmountInput> for lazy initialization
 /// struct MyScreen {
 ///     amount_input: Option<AmountInput>,
+///     current_amount: Amount, // Track the current amount with unit name
 ///     operation_in_progress: bool,
 /// }
 ///
@@ -52,14 +88,15 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///     fn new() -> Self {
 ///         Self {
 ///             amount_input: None, // Lazy initialization
+///             current_amount: Amount::dash(0), // Zero DASH initially
 ///             operation_in_progress: false,
 ///         }
 ///     }
 ///
 ///     fn show(&mut self, ui: &mut Ui) {
-///         // All configuration happens during initialization
+///         // Initialize AmountInput with the current amount (preserves unit name)
 ///         let amount_input = self.amount_input.get_or_insert_with(|| {
-///             AmountInput::new(Amount::dash(0))
+///             AmountInput::new(self.current_amount.clone())
 ///                 .label("Amount:")
 ///                 .hint_text("Enter amount")
 ///                 .max_amount(Some(1000000))
@@ -69,15 +106,29 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///
 ///         // Disable input during operations to prevent changes
 ///         if self.operation_in_progress {
-///             amount_input.enabled(false);
+///             amount_input.set_enabled(false);
 ///         } else {
-///             amount_input.enabled(true);
+///             amount_input.set_enabled(true);
 ///         }
 ///
 ///         let response = amount_input.show(ui);
 ///
-///         if let Some(amount) = response.inner.parsed_amount {
-///             println!("Amount changed: {}", amount);
+///         // Simple, correct handling using the helper method
+///         // Unit names are automatically preserved by AmountInput
+///         let mut temp_amount = Some(self.current_amount.clone());
+///         if response.inner.update(&mut temp_amount) {
+///             if let Some(amount) = temp_amount {
+///                 self.current_amount = amount; // Unit name is preserved
+///                 println!("Amount changed: {}", self.current_amount);
+///             } else {
+///                 self.current_amount = Amount::dash(0); // Fallback to zero
+///                 println!("Amount cleared");
+///             }
+///         }
+///
+///         // Show errors if present
+///         if let Some(error) = &response.inner.error_message {
+///             ui.colored_label(egui::Color32::RED, error);
 ///         }
 ///     }
 /// }
@@ -85,6 +136,7 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 pub struct AmountInput {
     amount_str: String,
     decimal_places: u8,
+    unit_name: Option<String>,
     label: Option<WidgetText>,
     hint_text: Option<WidgetText>,
     max_amount: Option<Credits>,
@@ -109,7 +161,8 @@ impl AmountInput {
     ///
     /// The decimal places are automatically set based on the Amount object.
     /// Amount entered by the user will be available through [`AmountInputResponse`].
-    pub fn new(amount: Amount) -> Self {
+    pub fn new<T: AsRef<Amount>>(amount: T) -> Self {
+        let amount = amount.as_ref();
         let amount_str = if amount.value() == 0 {
             String::new()
         } else {
@@ -118,6 +171,7 @@ impl AmountInput {
         Self {
             amount_str,
             decimal_places: amount.decimal_places(),
+            unit_name: amount.unit_name().map(|s| s.to_string()),
             label: None,
             hint_text: None,
             max_amount: None,
@@ -136,13 +190,27 @@ impl AmountInput {
         if self.amount_str.trim().is_empty() {
             None
         } else {
-            Amount::parse_with_decimals(&self.amount_str, self.decimal_places).ok()
+            match Amount::parse_with_decimals(&self.amount_str, self.decimal_places) {
+                Ok(mut amount) => {
+                    // Apply the unit name if we have one
+                    if let Some(ref unit_name) = self.unit_name {
+                        amount = amount.with_unit_name(unit_name.clone());
+                    }
+                    Some(amount)
+                }
+                Err(_) => None,
+            }
         }
     }
 
     /// Gets the number of decimal places this input is configured for.
     pub fn decimal_places(&self) -> u8 {
         self.decimal_places
+    }
+
+    /// Gets the unit name this input is configured for.
+    pub fn unit_name(&self) -> Option<&str> {
+        self.unit_name.as_deref()
     }
 
     /// Sets the label for the input field.
@@ -179,8 +247,8 @@ impl AmountInput {
 
     /// Sets the maximum amount allowed (mutable reference version).
     /// Use this for dynamic configuration when the max amount changes at runtime (e.g., balance updates).
-    pub fn set_max_amount(&mut self, max_amount: Option<Credits>) -> &mut Self {
-        self.max_amount = max_amount;
+    pub fn set_max_amount<T: Into<Credits>>(&mut self, max_amount: Option<T>) -> &mut Self {
+        self.max_amount = max_amount.map(Into::into);
         self
     }
 
@@ -277,7 +345,12 @@ impl AmountInput {
         }
 
         match Amount::parse_with_decimals(&self.amount_str, self.decimal_places) {
-            Ok(amount) => {
+            Ok(mut amount) => {
+                // Apply the unit name if we have one
+                if let Some(ref unit_name) = self.unit_name {
+                    amount = amount.with_unit_name(unit_name.clone());
+                }
+
                 // Check if amount exceeds maximum
                 if let Some(max_amount) = self.max_amount {
                     if amount.value() > max_amount {
@@ -450,5 +523,113 @@ mod tests {
         // Test creating enabled input
         let input = AmountInput::new(Amount::new(0, 8)).enabled(true);
         assert!(input.is_enabled());
+    }
+
+    #[test]
+    fn test_unit_name_preservation() {
+        let amount = Amount::new_with_unit(150_000_000_000, 11, "DASH".to_string()); // 1.5 DASH
+        let mut input = AmountInput::new(amount);
+
+        // Check that unit name is preserved
+        assert_eq!(input.unit_name(), Some("DASH"));
+
+        // Test that get_current_amount preserves unit name
+        input.amount_str = "2.5".to_string();
+        let current = input.get_current_amount().unwrap();
+        assert_eq!(current.unit_name(), Some("DASH"));
+        assert_eq!(format!("{}", current), "2.5 DASH");
+
+        // Test validation also preserves unit name
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_none());
+        let parsed = parsed.unwrap();
+        assert_eq!(parsed.unit_name(), Some("DASH"));
+        assert_eq!(format!("{}", parsed), "2.5 DASH");
+    }
+
+    #[test]
+    fn test_token_unit_name_preservation() {
+        let amount = Amount::new_with_unit(1000000, 6, "MYTOKEN".to_string()); // 1.0 MYTOKEN
+        let mut input = AmountInput::new(amount);
+
+        // Check that token unit name is preserved
+        assert_eq!(input.unit_name(), Some("MYTOKEN"));
+
+        // Test with different amount
+        input.amount_str = "5.5".to_string();
+        let current = input.get_current_amount().unwrap();
+        assert_eq!(current.unit_name(), Some("MYTOKEN"));
+        assert_eq!(format!("{}", current), "5.5 MYTOKEN");
+    }
+
+    #[test]
+    fn test_validation_states() {
+        let amount = Amount::new(0, 2); // 2 decimal places for simple testing
+        let mut input = AmountInput::new(amount);
+
+        // Test empty input (valid)
+        input.amount_str = "".to_string();
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_none(), "Empty input should be valid");
+        assert!(parsed.is_none(), "Empty input should have no parsed amount");
+
+        // Test valid input
+        input.amount_str = "10.50".to_string();
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_none(), "Valid input should have no error");
+        assert!(parsed.is_some(), "Valid input should have parsed amount");
+
+        // Test invalid input (too many decimals)
+        input.amount_str = "10.555".to_string();
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_some(), "Invalid input should have error");
+        assert!(
+            parsed.is_none(),
+            "Invalid input should have no parsed amount"
+        );
+
+        // Test invalid input (non-numeric)
+        input.amount_str = "abc".to_string();
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_some(), "Non-numeric input should have error");
+        assert!(
+            parsed.is_none(),
+            "Non-numeric input should have no parsed amount"
+        );
+    }
+
+    #[test]
+    fn test_min_max_validation() {
+        let amount = Amount::new(0, 2);
+        let mut input = AmountInput::new(amount)
+            .min_amount(Some(100)) // Minimum 1.00
+            .max_amount(Some(10000)); // Maximum 100.00
+
+        // Test amount below minimum
+        input.amount_str = "0.50".to_string(); // 50 (below min of 100)
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_some(), "Amount below minimum should have error");
+        assert!(
+            parsed.is_none(),
+            "Amount below minimum should have no parsed amount"
+        );
+
+        // Test amount above maximum
+        input.amount_str = "150.00".to_string(); // 15000 (above max of 10000)
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_some(), "Amount above maximum should have error");
+        assert!(
+            parsed.is_none(),
+            "Amount above maximum should have no parsed amount"
+        );
+
+        // Test valid amount within range
+        input.amount_str = "50.00".to_string(); // 5000 (within range)
+        let (error, parsed) = input.validate_amount();
+        assert!(error.is_none(), "Amount within range should have no error");
+        assert!(
+            parsed.is_some(),
+            "Amount within range should have parsed amount"
+        );
     }
 }

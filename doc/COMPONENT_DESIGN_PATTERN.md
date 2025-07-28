@@ -128,16 +128,18 @@ impl MyComponent {
 Component behavior is determined by the data types it works with, not manual configuration.
 
 ```rust
-// ✅ Decimal places determined by Amount object
-let amount_input = AmountInput::new(Amount::new(0, token_decimals));
+// ✅ Decimal places and unit names determined by Amount object
+let amount_input = AmountInput::new(Amount::new_with_unit(0, token_decimals, token_name));
 
 // ❌ Manual configuration would be error-prone
 // amount_input.set_decimal_places(token_decimals);
+// amount_input.set_unit_name(token_name);
 ```
 
 **Benefits:**
-- Single source of truth
+- Single source of truth for all type-specific behavior
 - Type safety prevents inconsistent states
+- Unit names are automatically preserved throughout the component lifecycle
 - Clear relationship between data and presentation
 
 ## Implementation Guidelines
@@ -252,6 +254,113 @@ impl MyScreen {
         // Note: Callbacks were already triggered during show() if configured
     }
 }
+```
+
+## Critical: Handling Invalid Input States
+
+When using input components like `AmountInput`, it's crucial to properly handle transitions between valid and invalid states. **Failure to do this correctly will cause your screen to retain stale data when the user enters invalid input.**
+
+### The Problem
+
+Consider this incorrect pattern that leads to bugs:
+
+```rust
+// ❌ INCORRECT - Only updates on valid input, retains stale data on invalid input
+let response = amount_input.show(ui);
+if let Some(parsed_amount) = response.inner.parsed_amount {
+    self.current_amount = Some(parsed_amount); // Only updates when valid
+}
+// BUG: If user enters valid amount then invalid amount, 
+// self.current_amount still holds the old valid value!
+```
+
+### The Solution
+
+Always handle input state changes to prevent retaining stale data. The `AmountInputResponse` provides a helper method to make this easy:
+
+```rust
+// ✅ CORRECT - Use the helper method for Option<Amount> fields
+let response = amount_input.show(ui);
+if response.inner.update(&mut self.current_amount) {
+    println!("Amount changed: {:?}", self.current_amount);
+}
+
+// ✅ CORRECT - For Amount fields (not Option<Amount>), use a temporary variable
+let response = amount_input.show(ui);
+let mut temp_amount: Option<Amount> = Some(self.amount.clone());
+if response.inner.update(&mut temp_amount) {
+    if let Some(amount) = temp_amount {
+        self.amount = amount;
+    } else {
+        // No valid amount - set to appropriate default
+        self.amount = Amount::dash(0); // or appropriate default
+    }
+}
+```
+
+You can also handle it manually if you need custom logic:
+
+```rust
+// ✅ CORRECT - Manual handling for custom logic
+let response = amount_input.show(ui);
+if response.inner.changed {
+    if response.inner.error_message.is_none() {
+        // Input is valid - update our data (could be None for empty input)
+        self.current_amount = response.inner.parsed_amount;
+    } else {
+        // Input is invalid - clear our data to prevent using stale values
+        self.current_amount = None;
+    }
+}
+```
+
+### Pattern for Different Component Types
+
+This pattern applies to all input components. For `AmountInput`, use the convenient helper method:
+
+```rust
+// For Option<Amount> fields - simplest case
+let response = amount_input.show(ui);
+if response.inner.update(&mut self.amount_option) {
+    // Amount was updated (or cleared if invalid)
+    // Unit names are automatically preserved by AmountInput
+}
+
+// For Amount fields (not Option), use a temporary variable
+let response = amount_input.show(ui);
+let mut temp_amount = Some(self.amount.clone());
+if response.inner.update(&mut temp_amount) {
+    if let Some(amount) = temp_amount {
+        self.amount = amount; // Unit name automatically preserved
+    } else {
+        // Set appropriate default for invalid/empty input
+        self.amount = Amount::new_with_unit(0, 8, "TOKEN".to_string());
+    }
+}
+
+// For other input components with validation
+if response.inner.changed {
+    if response.inner.error_message.is_none() {
+        // Input is valid - use the parsed data
+        self.component_data = response.inner.parsed_data;
+    } else {
+        // Input is invalid - clear to prevent stale data
+        self.component_data = None; // or appropriate default/reset value
+    }
+}
+
+// Always show errors to user
+if let Some(error) = &response.inner.error_message {
+    ui.colored_label(egui::Color32::RED, error);
+}
+```
+
+### Why This Matters
+
+- **Data Integrity**: Prevents operations with invalid/stale data
+- **User Experience**: Clear feedback when input becomes invalid  
+- **Business Logic**: Ensures validation rules are properly enforced
+- **Debugging**: Eliminates confusing state where UI shows errors but data is still "valid"
 ```
 
 ## When to Recreate Components

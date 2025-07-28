@@ -43,7 +43,7 @@ pub struct TransferScreen {
     selected_key: Option<IdentityPublicKey>,
     known_identities: Vec<QualifiedIdentity>,
     receiver_identity_id: String,
-    amount: Amount,
+    amount: Option<Amount>,
     amount_input: Option<AmountInput>,
     transfer_credits_status: TransferCreditsStatus,
     error_message: Option<String>,
@@ -77,7 +77,7 @@ impl TransferScreen {
             selected_key: selected_key.cloned(),
             known_identities,
             receiver_identity_id: String::new(),
-            amount: Amount::dash(0),
+            amount: Some(Amount::dash(0)),
             amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
@@ -112,7 +112,6 @@ impl TransferScreen {
         let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
         let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-        // Update max amount dynamically (since it can change)
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::dash(0))
                 .label("Amount:")
@@ -133,10 +132,7 @@ impl TransferScreen {
 
         let response = amount_input.show(ui);
 
-        // Update the amount if it was changed
-        if let Some(parsed_amount) = response.inner.parsed_amount {
-            self.amount = parsed_amount.with_unit_name("DASH".to_string());
-        }
+        response.inner.update(&mut self.amount);
 
         if let Some(error) = &response.inner.error_message {
             ui.colored_label(egui::Color32::DARK_RED, error);
@@ -196,11 +192,12 @@ impl TransferScreen {
 
                 ui.label(format!(
                     "Are you sure you want to transfer {} to {}",
-                    self.amount, self.receiver_identity_id
+                    self.amount.as_ref().expect("Amount should be present"),
+                    self.receiver_identity_id
                 ));
 
                 // Use the amount directly since it's already an Amount struct
-                let credits = self.amount.value() as u128;
+                let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;
@@ -398,6 +395,9 @@ impl ScreenLike for TransferScreen {
                 ui.add_space(10.0);
 
                 // Transfer button
+                let ready = self.amount.is_some()
+                    && !self.receiver_identity_id.is_empty()
+                    && self.selected_key.is_some();
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
@@ -405,7 +405,11 @@ impl ScreenLike for TransferScreen {
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
                     .corner_radius(3.0);
-                if ui.add(button).clicked() {
+                if ui
+                    .add_enabled(ready, button)
+                    .on_disabled_hover_text("Please ensure all fields are filled correctly")
+                    .clicked()
+                {
                     self.confirmation_popup = true;
                 }
 

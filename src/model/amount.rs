@@ -279,6 +279,8 @@ impl Amount {
 
     /// Updates the decimal places for this amount.
     /// This adjusts the internal value to maintain the same displayed amount.
+    ///
+    /// If new decimal places are equal to the current ones, it does nothing.
     pub fn recalculate_decimal_places(mut self, new_decimal_places: u8) -> Self {
         if self.decimal_places != new_decimal_places {
             let current_decimals = self.decimal_places;

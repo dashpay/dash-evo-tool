@@ -218,13 +218,10 @@ impl BurnTokensScreen {
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount.as_ref().and_then(|a| {
-                    if a.value() > 0 {
-                        Some(a.value())
-                    } else {
-                        None
-                    }
-                });
+                let amount_ok = self
+                    .amount
+                    .as_ref()
+                    .and_then(|a| if a.value() > 0 { Some(a.value()) } else { None });
                 if amount_ok.is_none() {
                     self.error_message = Some("Please enter a valid amount greater than 0.".into());
                     self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
@@ -523,7 +520,8 @@ impl ScreenLike for BurnTokensScreen {
                         "You are signing an existing group Burn so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!("Amount: {}", 
+                    ui.label(format!(
+                        "Amount: {}",
                         self.amount
                             .as_ref()
                             .map(|a| a.to_string())

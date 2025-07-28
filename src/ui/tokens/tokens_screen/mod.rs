@@ -56,8 +56,10 @@ use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -1001,8 +1003,10 @@ pub struct TokensScreen {
     token_description_input: String,
     should_capitalize_input: bool,
     decimals_input: String,
-    base_supply_input: String,
-    max_supply_input: String,
+    base_supply_amount: Option<Amount>,
+    base_supply_input: Option<AmountInput>,
+    max_supply_amount: Option<Amount>,
+    max_supply_input: Option<AmountInput>,
     start_as_paused_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
@@ -1356,10 +1360,10 @@ impl TokensScreen {
             token_description_input: String::new(),
             should_capitalize_input: true,
             decimals_input: 0.to_string(),
-            base_supply_input: TokenConfigurationV0::default_most_restrictive()
-                .base_supply()
-                .to_string(),
-            max_supply_input: String::new(),
+            base_supply_amount: None,
+            base_supply_input: None,
+            max_supply_amount: None,
+            max_supply_input: None,
             start_as_paused_input: false,
             show_advanced_keeps_history: false,
             token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
@@ -2105,8 +2109,10 @@ impl TokensScreen {
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
         self.decimals_input = "8".to_string();
-        self.base_supply_input = "100000".to_string();
-        self.max_supply_input = "".to_string();
+        self.base_supply_input = None;
+        self.base_supply_amount = None;
+        self.max_supply_input = None;
+        self.max_supply_amount = None;
         self.start_as_paused_input = false;
         self.should_capitalize_input = true;
         self.token_advanced_keeps_history =
@@ -2395,6 +2401,85 @@ impl TokensScreen {
         if !is_open {
             self.confirm_remove_token_popup = false;
             self.token_to_remove = None;
+        }
+    }
+
+    /// Renders the base supply amount input using AmountInput component
+    fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+
+        // Re-create the input if decimals changed or if it doesn't exist
+        let should_recreate = self.base_supply_input.is_none()
+            || self
+                .base_supply_amount
+                .as_ref()
+                .map(|amount| amount.decimal_places() != decimals)
+                .unwrap_or(false);
+
+        if should_recreate {
+            let initial_amount = if let Some(current_amount) = &self.base_supply_amount {
+                // Preserve the actual token value when decimal places change
+                current_amount.clone().recalculate_decimal_places(decimals)
+            } else {
+                // Use default value for new inputs
+                Amount::new(
+                    TokenConfigurationV0::default_most_restrictive().base_supply(),
+                    decimals,
+                )
+            };
+            let mut input = AmountInput::new(initial_amount).label("Base Supply*:");
+            input.set_changed(true);
+            self.base_supply_input = Some(input);
+        }
+
+        if let Some(base_supply_input) = &mut self.base_supply_input {
+            let response = base_supply_input.show(ui);
+
+            // Always use update() to handle the binding correctly
+            response.inner.update(&mut self.base_supply_amount);
+
+            // Show error message if present
+            if let Some(error) = &response.inner.error_message {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+        }
+    }
+
+    /// Renders the max supply amount input using AmountInput component
+    fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+
+        // Re-create the input if decimals changed or if it doesn't exist
+        let should_recreate = self.max_supply_input.is_none()
+            || self
+                .max_supply_amount
+                .as_ref()
+                .map(|amount| amount.decimal_places() != decimals)
+                .unwrap_or(false);
+
+        if should_recreate {
+            let initial_amount = if let Some(current_amount) = &self.max_supply_amount {
+                // Preserve the actual token value when decimal places change
+                current_amount.clone().recalculate_decimal_places(decimals)
+            } else {
+                // Use zero as default for new max supply inputs
+                Amount::new(0, decimals)
+            };
+            let mut input = AmountInput::new(initial_amount).label("Max Supply:");
+            input.set_changed(true);
+            self.max_supply_input = Some(input);
+        }
+
+        if let Some(max_supply_input) = &mut self.max_supply_input {
+            let response = max_supply_input.show(ui);
+
+            // Always use update() to handle the binding correctly
+            response.inner.update(&mut self.max_supply_amount);
+
+            // Show error message if present
+            if let Some(error) = &response.inner.error_message {
+                ui.colored_label(egui::Color32::RED, error);
+            }
         }
     }
 }
@@ -2935,8 +3020,10 @@ mod tests {
             TokenNameLanguage::English,
             true,
         )];
-        token_creator_ui.base_supply_input = "5000000".to_string();
-        token_creator_ui.max_supply_input = "10000000".to_string();
+        token_creator_ui.base_supply_input = None;
+        token_creator_ui.base_supply_amount = Some(Amount::new(5000000, 8));
+        token_creator_ui.max_supply_input = None;
+        token_creator_ui.max_supply_amount = Some(Amount::new(10000000, 8));
         token_creator_ui.decimals_input = "8".to_string();
         token_creator_ui.start_as_paused_input = true;
         token_creator_ui.token_advanced_keeps_history =

@@ -165,6 +165,9 @@ pub struct AmountInput {
     pub on_success_fn: Option<CallbackFn>,
     /// Function to execute when invalid amount is entered
     pub on_error_fn: Option<CallbackFn>,
+
+    // When true, we enforce that the input was changed, even if text edit didn't change.
+    changed: bool,
 }
 
 pub type ShowResponse = InnerResponse<AmountInputResponse>;
@@ -196,9 +199,17 @@ impl AmountInput {
             desired_width: None,
             on_success_fn: None,
             on_error_fn: None,
+            changed: false,
         }
     }
 
+    /// Sets whether the input has changed.
+    /// This is useful for cases where you want to force the component to treat the input as changed,
+    /// even if the text edit widget itself did not register a change.
+    pub fn set_changed(&mut self, changed: bool) -> &mut Self {
+        self.changed = changed;
+        self
+    }
     /// Gets the currently parsed amount without showing the widget.
     /// Returns None if the current text is empty or invalid.
     pub fn get_current_amount(&self) -> Option<Amount> {
@@ -401,7 +412,7 @@ impl AmountInput {
             }
 
             let text_response = ui.add(text_edit);
-            let changed = text_response.changed() && ui.is_enabled();
+            let mut changed = text_response.changed() && ui.is_enabled();
 
             // Validate the amount
             let (error_message, parsed_amount) = self.validate_amount();
@@ -413,11 +424,17 @@ impl AmountInput {
                     if ui.button("Max").clicked() {
                         self.amount_str = Amount::format_amount(max_amount, self.decimal_places);
                         max_clicked = true;
+                        changed = true;
                     }
                 } else if ui.button("Max").clicked() {
                     // Max button clicked but no max amount set - still report the click
                     max_clicked = true;
                 }
+            }
+
+            if self.changed {
+                changed = true; // Force changed if set
+                self.changed = false; // Reset after use
             }
 
             AmountInputResponse {

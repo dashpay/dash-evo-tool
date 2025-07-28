@@ -20,6 +20,9 @@ pub trait ComponentResponse: Clone {
 
     /// Returns the changed value of the component, if any; otherwise, `None`.
     /// It is Some() only if `has_changed()` is true.
+    ///
+    /// Note that only valid values should be returned here.
+    /// If the component value is invalid, this should return `None`.
     fn changed_value(&self) -> &Option<Self::DomainType>;
 
     /// Returns any error message from the component
@@ -254,7 +257,7 @@ pub trait UpdatableComponent<T> {
     ///
     /// # Arguments
     ///
-    /// * `value` - The optional value to update
+    /// * `value` - The optional value to update; it will be set to `None` if the component value is invalid
     ///
     /// # Returns
     ///

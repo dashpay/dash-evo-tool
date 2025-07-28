@@ -52,7 +52,6 @@ pub trait ComponentResponse: Clone {
 ///     internal_state: String,
 ///     domain_data: ValidationRules,
 ///     label: Option<WidgetText>,
-///     enabled: bool,
 /// }
 ///
 /// // Response struct
@@ -79,7 +78,6 @@ pub trait ComponentResponse: Clone {
 ///             internal_state: String::new(),
 ///             domain_data: domain_object,
 ///             label: None,
-///             enabled: true,
 ///         }
 ///     }
 ///     
@@ -93,12 +91,6 @@ pub trait ComponentResponse: Clone {
 ///                 parsed_data: None,
 ///             }
 ///         })
-///     }
-///     
-///     fn is_enabled(&self) -> bool { self.enabled }
-///     fn set_enabled(&mut self, enabled: bool) -> &mut Self {
-///         self.enabled = enabled;
-///         self
 ///     }
 /// }
 ///
@@ -140,10 +132,10 @@ pub trait ComponentResponse: Clone {
 ///             .label("My Label:")
 ///         });
 ///         
-///         // Dynamic configuration for runtime changes
-///         component.set_enabled(!self.operation_in_progress);
-///         
-///         let response = component.show(ui);
+///         // Use egui's built-in enabled state for dynamic control
+///         let response = ui.add_enabled_ui(!self.operation_in_progress, |ui| {
+///             component.show(ui)
+///         }).inner;
 ///         
 ///         // Handle response
 ///         if response.inner.has_changed() {
@@ -211,27 +203,6 @@ pub trait Component {
     ///
     /// An `InnerResponse` containing the component's response data
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response>;
-
-    /// Returns whether the component is currently enabled (interactive).
-    ///
-    /// When disabled, components should be rendered in a read-only state
-    /// and not accept user input. This is commonly used to prevent
-    /// changes during async operations.
-    fn is_enabled(&self) -> bool;
-
-    /// Sets whether the component is enabled (interactive).
-    ///
-    /// This method follows the mutable reference pattern for dynamic
-    /// configuration that may change at runtime.
-    ///
-    /// # Arguments
-    ///
-    /// * `enabled` - Whether the component should accept user input
-    ///
-    /// # Returns
-    ///
-    /// A mutable reference to self for method chaining
-    fn set_enabled(&mut self, enabled: bool) -> &mut Self;
 }
 
 /// Optional trait for components that support callback functions.

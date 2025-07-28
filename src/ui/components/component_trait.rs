@@ -20,7 +20,7 @@ pub trait ComponentResponse: Clone {
 
     /// Returns the changed value of the component, if any; otherwise, `None`.
     /// It is Some() only if `has_changed()` is true.
-    fn changed(&self) -> &Option<Self::DomainType>;
+    fn changed_value(&self) -> &Option<Self::DomainType>;
 
     /// Returns any error message from the component
     fn error_message(&self) -> Option<&str>;

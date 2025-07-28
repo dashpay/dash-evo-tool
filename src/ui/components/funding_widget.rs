@@ -109,7 +109,7 @@ impl ComponentResponse for FundingWidgetResponse {
         self.error.is_none()
     }
 
-    fn changed(&self) -> &Option<Self::DomainType> {
+    fn changed_value(&self) -> &Option<Self::DomainType> {
         &self.funding_secured
     }
 

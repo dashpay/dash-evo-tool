@@ -196,6 +196,14 @@ impl TransferScreen {
 
                 // Use the amount directly since it's already an Amount struct
                 let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
+                if credits == 0 {
+                    self.error_message = Some("Amount must be greater than 0".to_string());
+                    self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(
+                        "Amount must be greater than 0".to_string(),
+                    );
+                    self.confirmation_popup = false;
+                    return;
+                }
 
                 if ui.button("Confirm").clicked() {
                     self.confirmation_popup = false;

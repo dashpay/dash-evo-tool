@@ -99,6 +99,9 @@ impl Amount {
         decimal_places: u8,
     ) -> Result<(u64, Option<String>), String> {
         let input = input.trim();
+        if input.is_empty() {
+            return Err("Invalid amount: cannot be empty".to_string());
+        }
 
         // Split by whitespace to separate numeric part from potential unit
         let parts: Vec<&str> = input.split_whitespace().collect();

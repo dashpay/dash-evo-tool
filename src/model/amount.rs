@@ -195,6 +195,12 @@ impl Amount {
         }
     }
 
+    /// Creates a new Amount with the specified value in credits.
+    pub fn with_value(mut self, value: Credits) -> Self {
+        self.value = value;
+        self
+    }
+
     /// Updates the decimal places for this amount.
     /// This adjusts the internal value to maintain the same displayed amount.
     pub fn recalculate_decimal_places(mut self, new_decimal_places: u8) -> Self {
@@ -214,6 +220,13 @@ impl Amount {
             self.decimal_places = new_decimal_places;
         }
         self
+    }
+
+    /// Checks if the amount is for the same token as the other amount.
+    ///
+    /// This is determined by comparing the unit names and decimal places.
+    pub fn is_same_token(&self, other: &Self) -> bool {
+        self.unit_name == other.unit_name && self.decimal_places == other.decimal_places
     }
 }
 

@@ -61,7 +61,7 @@ impl ComponentResponse for AmountInputResponse {
         self.changed
     }
 
-    fn changed(&self) -> &Option<Self::DomainType> {
+    fn changed_value(&self) -> &Option<Self::DomainType> {
         &self.parsed_amount
     }
 

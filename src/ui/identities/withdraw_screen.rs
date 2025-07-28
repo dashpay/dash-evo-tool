@@ -119,9 +119,7 @@ impl WithdrawalScreen {
             }
         };
 
-        let response = ui.add_enabled_ui(enabled, |ui| {
-            amount_input.show(ui)
-        }).inner;
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.withdrawal_amount);
         if let Some(error) = &response.inner.error_message {

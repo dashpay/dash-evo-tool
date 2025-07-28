@@ -84,8 +84,17 @@ impl Amount {
     /// Parses a string amount into the internal u64 representation.
     /// Automatically strips any unit suffix from the input string.
     fn parse_amount_string(input: &str, decimal_places: u8) -> Result<u64, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("Invalid amount: cannot be empty".to_string());
+        }
+
         // Strip any unit suffix by taking only the numeric part
-        let numeric_part = input.split_whitespace().next().unwrap_or(input).trim();
+        let numeric_part = trimmed.split_whitespace().next().unwrap_or(trimmed).trim();
+
+        if numeric_part.is_empty() {
+            return Err("Invalid number: empty string".to_string());
+        }
 
         if decimal_places == 0 {
             return numeric_part

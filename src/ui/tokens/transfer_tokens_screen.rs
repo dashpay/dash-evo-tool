@@ -477,7 +477,7 @@ impl ScreenLike for TransferTokensScreen {
                     .clicked()
                 {
                     // Use the amount value directly since it's already parsed
-                    if self.amount.as_ref() > Some(&self.max_amount) {
+                    if self.amount.as_ref().is_some_and(|v| v > &self.max_amount) {
                         self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
                             "Amount exceeds available balance".to_string(),
                         );

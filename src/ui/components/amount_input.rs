@@ -1,4 +1,7 @@
 use crate::model::amount::Amount;
+use crate::ui::components::{
+    Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponent,
+};
 use dash_sdk::dpp::fee::Credits;
 use egui::{InnerResponse, Response, TextEdit, Ui, Widget, WidgetText};
 
@@ -49,6 +52,20 @@ impl AmountInputResponse {
         } else {
             false
         }
+    }
+}
+
+impl ComponentResponse for AmountInputResponse {
+    fn has_changed(&self) -> bool {
+        self.changed
+    }
+
+    fn is_valid(&self) -> bool {
+        self.error_message.is_none()
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        self.error_message.as_deref()
     }
 }
 
@@ -443,6 +460,46 @@ impl AmountInput {
 impl Widget for AmountInput {
     fn ui(mut self, ui: &mut Ui) -> Response {
         self.show(ui).response
+    }
+}
+
+impl Component for AmountInput {
+    type DomainType = Amount;
+    type Response = AmountInputResponse;
+
+    fn new(domain_object: Self::DomainType) -> Self {
+        AmountInput::new(domain_object)
+    }
+
+    fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
+        AmountInput::show(self, ui)
+    }
+
+    fn is_enabled(&self) -> bool {
+        AmountInput::is_enabled(self)
+    }
+
+    fn set_enabled(&mut self, enabled: bool) -> &mut Self {
+        AmountInput::set_enabled(self, enabled)
+    }
+}
+
+impl ComponentWithCallbacks<AmountInputResponse> for AmountInput {
+    fn on_success(
+        self,
+        callback: impl FnMut(&InnerResponse<AmountInputResponse>) + 'static,
+    ) -> Self {
+        AmountInput::on_success(self, callback)
+    }
+
+    fn on_error(self, callback: impl FnMut(&InnerResponse<AmountInputResponse>) + 'static) -> Self {
+        AmountInput::on_error(self, callback)
+    }
+}
+
+impl UpdatableComponent<Amount> for AmountInputResponse {
+    fn update(&self, value: &mut Option<Amount>) -> bool {
+        AmountInputResponse::update(self, value)
     }
 }
 

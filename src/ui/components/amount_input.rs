@@ -192,7 +192,7 @@ impl AmountInput {
                 Ok(mut amount) => {
                     // Apply the unit name if we have one
                     if let Some(ref unit_name) = self.unit_name {
-                        amount = amount.with_unit_name(unit_name.clone());
+                        amount = amount.with_unit_name(unit_name);
                     }
                     Some(amount)
                 }
@@ -336,7 +336,7 @@ impl AmountInput {
             Ok(mut amount) => {
                 // Apply the unit name if we have one
                 if let Some(ref unit_name) = self.unit_name {
-                    amount = amount.with_unit_name(unit_name.clone());
+                    amount = amount.with_unit_name(unit_name);
                 }
 
                 // Check if amount exceeds maximum
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_unit_name_preservation() {
-        let amount = Amount::new_with_unit(150_000_000_000, 11, "DASH".to_string()); // 1.5 DASH
+        let amount = Amount::new_with_unit(150_000_000_000, 11, "DASH"); // 1.5 DASH
         let mut input = AmountInput::new(amount);
 
         // Check that unit name is preserved
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_token_unit_name_preservation() {
-        let amount = Amount::new_with_unit(1000000, 6, "MYTOKEN".to_string()); // 1.0 MYTOKEN
+        let amount = Amount::new_with_unit(1000000, 6, "MYTOKEN"); // 1.0 MYTOKEN
         let mut input = AmountInput::new(amount);
 
         // Check that token unit name is preserved

@@ -6,11 +6,12 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use serde::{Deserialize, Serialize};
 
+/// How many decimal places are used for DASH amounts.
+///
+/// This value is used to convert between DASH and credits. 1 DASH = 10.pow(DASH_DECIMAL_PLACES)
+///
 /// 1 dash == 10e11 credits
 pub const DASH_DECIMAL_PLACES: u8 = 11;
-
-/// 1 dash = 1e8 duffs, 1 duff = 1e3 credits; see [CREDITS_PER_DUFF]
-const DUFF_DECIMAL_PLACES: i32 = DASH_DECIMAL_PLACES as i32 - 3;
 
 #[derive(Serialize, Deserialize, Encode, Decode, Clone, PartialEq, Eq, Default)]
 pub struct Amount {
@@ -64,7 +65,7 @@ impl Debug for Amount {
 
 impl Amount {
     /// Creates a new Amount.
-    pub fn new(value: TokenAmount, decimal_places: u8) -> Self {
+    pub const fn new(value: TokenAmount, decimal_places: u8) -> Self {
         Self {
             value,
             decimal_places,
@@ -73,11 +74,11 @@ impl Amount {
     }
 
     /// Creates a new Amount with a unit name.
-    pub fn new_with_unit(value: TokenAmount, decimal_places: u8, unit_name: String) -> Self {
+    pub fn new_with_unit(value: TokenAmount, decimal_places: u8, unit_name: &str) -> Self {
         Self {
             value,
             decimal_places,
-            unit_name: Some(unit_name),
+            unit_name: Some(unit_name.to_string()),
         }
     }
 
@@ -90,7 +91,7 @@ impl Amount {
         token_info: &crate::ui::tokens::tokens_screen::IdentityTokenInfo,
     ) -> Self {
         let decimal_places = token_info.token_config.conventions().decimals();
-        Self::new_with_unit(value, decimal_places, token_info.token_alias.clone())
+        Self::new_with_unit(value, decimal_places, &token_info.token_alias)
     }
 
     /// Creates a new Amount from a string input with specified decimal places.
@@ -98,7 +99,7 @@ impl Amount {
     pub fn parse_with_decimals(input: &str, decimal_places: u8) -> Result<Self, String> {
         let (value, unit_name) = Self::parse_amount_string_with_unit(input, decimal_places)?;
         match unit_name {
-            Some(unit) => Ok(Self::new_with_unit(value, decimal_places, unit)),
+            Some(unit) => Ok(Self::new_with_unit(value, decimal_places, &unit)),
             None => Ok(Self::new(value, decimal_places)),
         }
     }
@@ -238,8 +239,8 @@ impl Amount {
     }
 
     /// Sets the unit name.
-    pub fn with_unit_name(mut self, unit_name: String) -> Self {
-        self.unit_name = Some(unit_name);
+    pub fn with_unit_name(mut self, unit_name: &str) -> Self {
+        self.unit_name = Some(unit_name.to_string());
         self
     }
 
@@ -312,25 +313,29 @@ impl Amount {
 impl Amount {
     /// Creates a new Dash amount.
     ///
-    /// Note: Due to use of float, this may not be precise.
+    /// Given some value in DASH (eg. `1.5`), it converts it to the internal representation as an Amount.
+    ///
+    /// Note: Due to use of float, this may not be precise. Use [Amount::new()] for exact values.
     pub fn dash(value: f64) -> Self {
-        let credits = value * 10f64.powi(DASH_DECIMAL_PLACES as i32);
+        const MULTIPLIER: f64 = 10u64.pow(DASH_DECIMAL_PLACES as u32) as f64;
+        let credits = value * MULTIPLIER;
         Self::new_with_unit(
             checked_round(credits).expect("DASH value overflow"),
             DASH_DECIMAL_PLACES,
-            "DASH".to_string(),
+            "DASH",
         )
     }
 
-    pub fn duffs(value: Duffs) -> Self {
-        let dash = value as f64 / 10f64.powi(DUFF_DECIMAL_PLACES);
-        Self::dash(dash)
+    /// Return Amount representing Dash currency equal to the given duffs.
+    pub fn dash_from_duffs(duffs: Duffs) -> Self {
+        let credits = duffs * CREDITS_PER_DUFF;
+        Self::new_with_unit(credits, DASH_DECIMAL_PLACES, "DASH")
     }
 
     /// Creates a Dash amount from a duff string.
     pub fn parse_dash(input: &str) -> Result<Self, String> {
         Self::parse_with_decimals(input, DASH_DECIMAL_PLACES)
-            .map(|amount| amount.with_unit_name("DASH".to_string()))
+            .map(|amount| amount.with_unit_name("DASH"))
     }
 
     /// Returns the DASH amount as duffs, rounded down to the nearest integer.
@@ -370,7 +375,7 @@ impl From<&crate::ui::tokens::tokens_screen::IdentityTokenBalance> for Amount {
         Self::new_with_unit(
             token_balance.balance,
             decimal_places,
-            token_balance.token_alias.clone(),
+            &token_balance.token_alias,
         )
     }
 }
@@ -394,7 +399,7 @@ impl From<&crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> fo
         Self::new_with_unit(
             token_balance.balance,
             decimal_places,
-            token_balance.token_alias.clone(),
+            &token_balance.token_alias,
         )
     }
 }
@@ -518,21 +523,21 @@ mod tests {
         // 1 duff = 1000 credits (CREDITS_PER_DUFF)
         // So 1 DASH = 10^8 * 10^3 = 10^11 credits
 
-        let zero_duffs = Amount::duffs(0);
+        let zero_duffs = Amount::dash_from_duffs(0);
         assert_eq!(zero_duffs.value(), 0);
         assert_eq!(zero_duffs.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", zero_duffs), "0 DASH");
 
-        let one_duff = Amount::duffs(1);
+        let one_duff = Amount::dash_from_duffs(1);
         assert_eq!(one_duff.value(), 1000); // 1 duff = 1000 credits
         assert_eq!(one_duff.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", one_duff), "0.00000001 DASH");
 
-        let hundred_million_duffs = Amount::duffs(100_000_000); // 1 DASH
+        let hundred_million_duffs = Amount::dash_from_duffs(100_000_000); // 1 DASH
         assert_eq!(hundred_million_duffs.value(), 100_000_000_000);
         assert_eq!(format!("{}", hundred_million_duffs), "1 DASH");
 
-        let one_and_half_dash_in_duffs = Amount::duffs(150_000_000); // 1.5 DASH
+        let one_and_half_dash_in_duffs = Amount::dash_from_duffs(150_000_000); // 1.5 DASH
         assert_eq!(one_and_half_dash_in_duffs.value(), 150_000_000_000);
         assert_eq!(format!("{}", one_and_half_dash_in_duffs), "1.5 DASH");
     }
@@ -550,10 +555,10 @@ mod tests {
         assert_eq!(one_and_half_dash.to_duffs(), 150_000_000); // 1.5 DASH = 1.5*10^8 duffs
 
         // Test with very small amounts
-        let one_credit = Amount::new_with_unit(1, DASH_DECIMAL_PLACES, "DASH".to_string());
+        let one_credit = Amount::new_with_unit(1, DASH_DECIMAL_PLACES, "DASH");
         assert_eq!(one_credit.to_duffs(), 0); // 1 credit = 0 duffs (rounded down)
 
-        let thousand_credits = Amount::new_with_unit(1000, DASH_DECIMAL_PLACES, "DASH".to_string());
+        let thousand_credits = Amount::new_with_unit(1000, DASH_DECIMAL_PLACES, "DASH");
         assert_eq!(thousand_credits.to_duffs(), 1); // 1000 credits = 1 duff
 
         // Test with amount without unit name (should work)
@@ -564,14 +569,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "Amount is not in DASH")]
     fn test_to_duffs_panics_with_wrong_unit() {
-        let btc_amount = Amount::new_with_unit(100_000_000, 8, "BTC".to_string());
+        let btc_amount = Amount::new_with_unit(100_000_000, 8, "BTC");
         btc_amount.to_duffs(); // Should panic
     }
 
     #[test]
     #[should_panic(expected = "Amount is not in DASH, decimal places mismatch")]
     fn test_to_duffs_panics_with_wrong_decimals() {
-        let wrong_decimals = Amount::new_with_unit(100_000_000, 8, "DASH".to_string());
+        let wrong_decimals = Amount::new_with_unit(100_000_000, 8, "DASH");
         wrong_decimals.to_duffs(); // Should panic
     }
 
@@ -579,17 +584,17 @@ mod tests {
     fn test_dash_duffs_roundtrip() {
         // Test that duffs -> DASH -> duffs preserves the value
         let original_duffs = 123_456_789u64;
-        let dash_amount = Amount::duffs(original_duffs);
+        let dash_amount = Amount::dash_from_duffs(original_duffs);
         let converted_back = dash_amount.to_duffs();
         assert_eq!(original_duffs, converted_back);
 
         // Test edge cases
         let zero_duffs = 0u64;
-        let zero_dash = Amount::duffs(zero_duffs);
+        let zero_dash = Amount::dash_from_duffs(zero_duffs);
         assert_eq!(zero_duffs, zero_dash.to_duffs());
 
         let max_reasonable_duffs = 2_100_000_000_000_000u64; // 21M DASH * 10^8
-        let max_dash = Amount::duffs(max_reasonable_duffs);
+        let max_dash = Amount::dash_from_duffs(max_reasonable_duffs);
         assert_eq!(max_reasonable_duffs, max_dash.to_duffs());
         assert_eq!(max_reasonable_duffs * CREDITS_PER_DUFF, max_dash.value());
         assert_eq!(21_000_000.0, max_dash.to_f64());
@@ -624,21 +629,21 @@ mod tests {
         assert_eq!(format!("{}", dash_amount), "1.5 DASH");
 
         // Test amount with custom unit name
-        let amount_with_unit = Amount::new_with_unit(54321, 2, "USD".to_string());
+        let amount_with_unit = Amount::new_with_unit(54321, 2, "USD");
         assert_eq!(format!("{}", amount_with_unit), "543.21 USD");
     }
 
     #[test]
     fn test_unit_name_functionality() {
         // Test creating amount with unit name
-        let amount = Amount::new_with_unit(12345, 2, "USD".to_string());
+        let amount = Amount::new_with_unit(12345, 2, "USD");
         assert_eq!(amount.unit_name(), Some("USD"));
         assert_eq!(amount.value(), 12345);
         assert_eq!(amount.decimal_places(), 2);
         assert_eq!(format!("{}", amount), "123.45 USD");
 
         // Test adding unit name to existing amount
-        let amount = Amount::new(54321, 8).with_unit_name("BTC".to_string());
+        let amount = Amount::new(54321, 8).with_unit_name("BTC");
         assert_eq!(amount.unit_name(), Some("BTC"));
 
         // Test removing unit name
@@ -652,7 +657,7 @@ mod tests {
         // Test parsing with_unit_name
         let parsed = Amount::parse_with_decimals("123.45", 2)
             .unwrap()
-            .with_unit_name("TOKEN".to_string());
+            .with_unit_name("TOKEN");
         assert_eq!(parsed.unit_name(), Some("TOKEN"));
         assert_eq!(parsed.value(), 12345);
     }
@@ -692,7 +697,7 @@ mod tests {
         // Test adding unit name manually when not present in string
         let dash_amount = Amount::parse_with_decimals("1.5", 11)
             .unwrap()
-            .with_unit_name("DASH".to_string());
+            .with_unit_name("DASH");
         assert_eq!(dash_amount.value(), 150_000_000_000);
         assert_eq!(dash_amount.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", dash_amount), "1.5 DASH");
@@ -712,7 +717,7 @@ mod tests {
         assert_eq!(format!("{}", amount), "123.45"); // Display should be the same
 
         // Test amount with unit
-        let amount_with_unit = Amount::new_with_unit(12345, 2, "USD".to_string());
+        let amount_with_unit = Amount::new_with_unit(12345, 2, "USD");
         assert_eq!(amount_with_unit.to_string_without_unit(), "123.45"); // Without unit
         assert_eq!(format!("{}", amount_with_unit), "123.45 USD"); // Display includes unit
 

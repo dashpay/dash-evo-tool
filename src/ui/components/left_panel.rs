@@ -70,7 +70,7 @@ pub fn add_left_panel(
             RootScreenType::RootScreenToolsProofLogScreen,
             "tools.png",
         ),
-        ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
+        ("N", RootScreenType::RootScreenSettings, "config.png"),
     ];
 
     let panel_width = 60.0 + (Spacing::MD * 2.0); // Button width + margins
@@ -157,7 +157,7 @@ pub fn add_left_panel(
                                     .size(12.0);
                                 if ui.label(dev_label).clicked() {
                                     action = AppAction::SetMainScreenThenGoToMainScreen(
-                                        RootScreenType::RootScreenNetworkChooser,
+                                        RootScreenType::RootScreenSettings,
                                     );
                                 };
                             }

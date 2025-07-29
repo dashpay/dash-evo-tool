@@ -58,7 +58,7 @@ pub fn add_left_panel(
             RootScreenType::RootScreenToolsTransitionVisualizerScreen,
             "tools.png",
         ),
-        ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
+        ("N", RootScreenType::RootScreenSettings, "config.png"),
     ];
 
     let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)

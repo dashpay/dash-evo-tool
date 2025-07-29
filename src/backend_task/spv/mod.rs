@@ -3,7 +3,7 @@ use crate::context::AppContext;
 use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_spv::{ClientConfig, DashSpvClient, SyncProgress};
-use dash_spv::types::NetworkEvent;
+use dash_spv::types::{NetworkEvent, SyncPhaseInfo};
 use dashcore::QuorumHash;
 use dashcore::hashes::Hash;
 use dashcore::sml::llmq_type::LLMQType;
@@ -41,18 +41,6 @@ struct SpvState {
     is_syncing: bool,
     headers_synced: bool,
     last_update: Instant,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SyncPhaseInfo {
-    pub phase_name: String,
-    pub progress_percentage: f64,
-    pub items_completed: u32,
-    pub items_total: Option<u32>,
-    pub rate: f64,
-    pub eta_seconds: Option<u64>,
-    pub elapsed_seconds: u64,
-    pub details: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,6 +246,11 @@ impl SpvManager {
                                     if state.target_height == 0 || state.current_height > state.target_height - 20 {
                                         state.target_height = state.current_height + 50;
                                     }
+                                }
+                                
+                                // Log phase information if available
+                                if let Some(ref phase) = progress.current_phase {
+                                    tracing::debug!("Current sync phase: {} ({:.1}%)", phase.phase_name, phase.progress_percentage);
                                 }
                             }
                             
@@ -483,18 +476,7 @@ impl SpvManager {
             self.current_height = progress.header_height;
 
             // Extract phase info if available
-            let phase_info = progress.current_phase.map(|phase| {
-                SyncPhaseInfo {
-                    phase_name: phase.phase_name.clone(),
-                    progress_percentage: phase.progress_percentage,
-                    items_completed: phase.items_completed,
-                    items_total: phase.items_total,
-                    rate: phase.rate,
-                    eta_seconds: phase.eta_seconds,
-                    elapsed_seconds: phase.elapsed_seconds,
-                    details: phase.details.clone(),
-                }
-            });
+            let phase_info = progress.current_phase.clone();
 
             // Update target height based on phase info or current sync state
             if let Some(ref phase) = phase_info {
@@ -621,6 +603,16 @@ impl AppContext {
             }
             SpvTask::GetSyncProgress => {
                 let (current, target, percent, phase_info) = spv_manager.get_sync_progress_with_phase().await?;
+                
+                // Log phase info for debugging
+                if let Some(ref phase) = phase_info {
+                    tracing::info!("SPV Phase: {} - {:.1}% ({}/{:?} items)", 
+                        phase.phase_name, 
+                        phase.progress_percentage,
+                        phase.items_completed,
+                        phase.items_total
+                    );
+                }
 
                 if percent >= 100.0 {
                     Ok(BackendTaskSuccessResult::SpvResult(

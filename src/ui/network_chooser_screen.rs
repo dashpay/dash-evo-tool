@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::spv::{SpvTask, SpvTaskResult, SyncPhaseInfo};
+use crate::backend_task::spv::{SpvTask, SpvTaskResult};
+use dash_spv::types::SyncPhaseInfo;
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
@@ -20,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub struct NetworkChooserScreen {
+pub struct SettingsScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
@@ -50,7 +51,7 @@ pub struct NetworkChooserScreen {
     spv_phase_info: Option<SyncPhaseInfo>,
 }
 
-impl NetworkChooserScreen {
+impl SettingsScreen {
     fn render_connection_mode_section(&mut self, ui: &mut Ui, app_action: &mut AppAction) {
         StyledCard::new().padding(20.0).show(ui, |ui| {
             ui.heading("Connection Mode");
@@ -912,7 +913,7 @@ impl NetworkChooserScreen {
     }
 }
 
-impl ScreenLike for NetworkChooserScreen {
+impl ScreenLike for SettingsScreen {
     fn refresh_on_arrival(&mut self) {
         // Reset collapsing states when arriving at this screen
         // This ensures dropdowns are closed when navigating back
@@ -1054,7 +1055,7 @@ impl ScreenLike for NetworkChooserScreen {
         action |= add_left_panel(
             ctx,
             self.current_app_context(),
-            RootScreenType::RootScreenNetworkChooser,
+            RootScreenType::RootScreenSettings,
         );
 
         action |= island_central_panel(ctx, |ui| {
@@ -1076,7 +1077,7 @@ impl ScreenLike for NetworkChooserScreen {
                 self.spv_last_progress_check = current_time;
                 action = AppAction::BackendTask(BackendTask::SpvTask(SpvTask::GetSyncProgress));
             }
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            ctx.request_repaint_after(std::time::Duration::from_secs(3));
         } else if action == AppAction::None {
             // Recheck both network status every 3 seconds
             let recheck_time = Duration::from_secs(3);

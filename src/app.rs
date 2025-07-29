@@ -15,7 +15,7 @@ use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
-use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::network_chooser_screen::SettingsScreen;
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -231,7 +231,7 @@ impl AppState {
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
-        let mut network_chooser_screen = NetworkChooserScreen::new(
+        let mut network_chooser_screen = SettingsScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
@@ -436,8 +436,8 @@ impl AppState {
                     Screen::DocumentQueryScreen(document_query_screen),
                 ),
                 (
-                    RootScreenType::RootScreenNetworkChooser,
-                    Screen::NetworkChooserScreen(network_chooser_screen),
+                    RootScreenType::RootScreenSettings,
+                    Screen::SettingsScreen(network_chooser_screen),
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,
@@ -646,13 +646,13 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
-                            // Special handling for SPV results - always route to NetworkChooser screen
+                            // Special handling for SPV results - always route to Settings screen
                             if matches!(unboxed_message, BackendTaskSuccessResult::SpvResult(_)) {
 
-                                // Get the NetworkChooser screen directly
-                                if let Some(Screen::NetworkChooserScreen(network_chooser)) = self
+                                // Get the Settings screen directly
+                                if let Some(Screen::SettingsScreen(network_chooser)) = self
                                     .main_screens
-                                    .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                                    .get_mut(&RootScreenType::RootScreenSettings)
                                 {
                                     network_chooser.display_task_result(unboxed_message);
                                 } else {
@@ -863,7 +863,7 @@ impl App for AppState {
             AppAction::SwitchNetwork(network) => {
                 self.change_network(network);
                 self.current_app_context()
-                    .update_settings(RootScreenType::RootScreenNetworkChooser)
+                    .update_settings(RootScreenType::RootScreenSettings)
                     .ok();
             }
             AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {

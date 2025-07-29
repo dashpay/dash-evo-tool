@@ -3,7 +3,7 @@ use crate::ui::components::{
     Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponentResponse,
 };
 use dash_sdk::dpp::fee::Credits;
-use egui::{InnerResponse, Response, TextEdit, Ui, Widget, WidgetText};
+use egui::{InnerResponse, Response, TextEdit, Ui, Vec2, Widget, WidgetText};
 
 /// Response from the amount input widget
 #[derive(Clone)]
@@ -375,16 +375,15 @@ impl AmountInput {
     /// Renders the amount input widget and returns an `InnerResponse` for use with `show()`.
     fn show_internal(&mut self, ui: &mut Ui) -> InnerResponse<AmountInputResponse> {
         ui.horizontal(|ui| {
-            let has_max_button = self.show_max_button && self.max_amount.is_some();
-
+            if self.show_max_button {
+                // ensure we have height predefined to correctly vertically align the input field;
+                // see StyledButton::show() to see how y is calculated
+                ui.allocate_space(Vec2::new(0.0, 30.0));
+            }
             // Show label if provided
             if let Some(label) = &self.label {
-                if has_max_button {
-                    ui.add_space(15.0);
-                }
                 ui.label(label.clone());
             }
-
             // Create the text edit widget
             let mut text_edit = TextEdit::singleline(&mut self.amount_str);
 
@@ -397,10 +396,8 @@ impl AmountInput {
             }
 
             let text_response = ui.add(text_edit);
-            let mut changed = text_response.changed() && ui.is_enabled();
 
-            // Validate the amount
-            let (error_message, parsed_amount) = self.validate_amount();
+            let mut changed = text_response.changed() && ui.is_enabled();
 
             // Show max button if max amount is available
             let mut max_clicked = false;
@@ -417,11 +414,14 @@ impl AmountInput {
                 }
             }
 
+            // Validate the amount
+            let (error_message, parsed_amount) = self.validate_amount();
+
             // Show validation error if enabled and error exists
-            if self.show_validation_errors {
-                if let (Some(error_msg), _) = self.validate_amount() {
-                    ui.colored_label(ui.visuals().error_fg_color, error_msg);
-                }
+            if self.show_validation_errors
+                && let Some(error_msg) = &error_message
+            {
+                ui.colored_label(ui.visuals().error_fg_color, error_msg);
             }
 
             if self.changed {

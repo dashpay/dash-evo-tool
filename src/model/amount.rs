@@ -13,6 +13,16 @@ use serde::{Deserialize, Serialize};
 /// 1 dash == 10e11 credits
 pub const DASH_DECIMAL_PLACES: u8 = 11;
 
+/// Represents an amount of tokens, with optional unit name and decimal places.
+///
+/// This struct is used to represent amounts in a user-friendly way, allowing for
+/// displaying amounts with their unit names and handling decimal places correctly.
+///
+/// As a special case, it also supports DASH amounts, which are represented as [Credits].
+///
+/// Note that the base value is stored as an integer (u64) representing the smallest unit of the
+/// token (e.g., [Credits] for DASH). Any floating-point representation is not
+/// recommended for precise calculations, as it may lead to rounding errors.
 #[derive(Serialize, Deserialize, Encode, Decode, Clone, PartialEq, Eq, Default)]
 pub struct Amount {
     /// Number of tokens (or [Credits] in case of DASH).
@@ -311,14 +321,15 @@ impl Amount {
 
 /// Dash-specific amount handling
 impl Amount {
-    /// Creates a new Dash amount.
+    /// Creates a new [Amount] representing some value in DASH.
     ///
     /// Given some value in DASH (eg. `1.5`), it converts it to the internal representation as an Amount.
     ///
     /// Note: Due to use of float, this may not be precise. Use [Amount::new()] for exact values.
-    pub fn dash(value: f64) -> Self {
+    pub fn dash(dash_value: f64) -> Self {
         const MULTIPLIER: f64 = 10u64.pow(DASH_DECIMAL_PLACES as u32) as f64;
-        let credits = value * MULTIPLIER;
+        // internally we store DASH as [Credits] in the Amount.value field
+        let credits = dash_value * MULTIPLIER;
         Self::new_with_unit(
             checked_round(credits).expect("DASH value overflow"),
             DASH_DECIMAL_PLACES,
@@ -332,18 +343,12 @@ impl Amount {
         Self::new_with_unit(credits, DASH_DECIMAL_PLACES, "DASH")
     }
 
-    /// Creates a Dash amount from a duff string.
-    pub fn parse_dash(input: &str) -> Result<Self, String> {
-        Self::parse_with_decimals(input, DASH_DECIMAL_PLACES)
-            .map(|amount| amount.with_unit_name("DASH"))
-    }
-
     /// Returns the DASH amount as duffs, rounded down to the nearest integer.
     ///
     /// ## Returns
     ///
     /// Returns error if the token is not DASH, eg. decimals != DASH_DECIMAL_PLACES or token name is neither `DASH` nor empty.
-    pub fn to_duffs(&self) -> Result<Duffs, String> {
+    pub fn dash_to_duffs(&self) -> Result<Duffs, String> {
         if self.unit_name.as_ref().is_some_and(|name| name != "DASH") {
             return Err("Amount is not in DASH".into());
         }
@@ -479,13 +484,14 @@ mod tests {
     #[test]
     fn test_dash_amounts() {
         // Test Dash parsing
-        let dash_amount = Amount::parse_dash("1.5").unwrap();
+        let dash_amount = Amount::parse_with_decimals("1.5", DASH_DECIMAL_PLACES).unwrap();
         assert_eq!(dash_amount.value(), 150_000_000_000);
         assert_eq!(dash_amount.decimal_places(), DASH_DECIMAL_PLACES);
         assert_eq!(dash_amount.unit_name(), Some("DASH"));
 
         // Test Dash parsing with unit suffix
-        let dash_amount_with_unit = Amount::parse_dash("1.5 DASH").unwrap();
+        let dash_amount_with_unit =
+            Amount::parse_with_decimals("1.5 DASH", DASH_DECIMAL_PLACES).unwrap();
         assert_eq!(dash_amount_with_unit.value(), 150_000_000_000);
         assert_eq!(dash_amount_with_unit.decimal_places(), DASH_DECIMAL_PLACES);
         assert_eq!(dash_amount_with_unit.unit_name(), Some("DASH"));
@@ -546,38 +552,38 @@ mod tests {
     fn test_to_duffs_method() {
         // Test converting DASH amounts back to duffs
         let one_dash = Amount::dash(1.0);
-        assert_eq!(one_dash.to_duffs().unwrap(), 100_000_000); // 1 DASH = 10^8 duffs
+        assert_eq!(one_dash.dash_to_duffs().unwrap(), 100_000_000); // 1 DASH = 10^8 duffs
 
         let half_dash = Amount::dash(0.5);
-        assert_eq!(half_dash.to_duffs().unwrap(), 50_000_000); // 0.5 DASH = 5*10^7 duffs
+        assert_eq!(half_dash.dash_to_duffs().unwrap(), 50_000_000); // 0.5 DASH = 5*10^7 duffs
 
         let one_and_half_dash = Amount::dash(1.5);
-        assert_eq!(one_and_half_dash.to_duffs().unwrap(), 150_000_000); // 1.5 DASH = 1.5*10^8 duffs
+        assert_eq!(one_and_half_dash.dash_to_duffs().unwrap(), 150_000_000); // 1.5 DASH = 1.5*10^8 duffs
 
         // Test with very small amounts
         let one_credit = Amount::new_with_unit(1, DASH_DECIMAL_PLACES, "DASH");
-        assert_eq!(one_credit.to_duffs().unwrap(), 0); // 1 credit = 0 duffs (rounded down)
+        assert_eq!(one_credit.dash_to_duffs().unwrap(), 0); // 1 credit = 0 duffs (rounded down)
 
         let thousand_credits = Amount::new_with_unit(1000, DASH_DECIMAL_PLACES, "DASH");
-        assert_eq!(thousand_credits.to_duffs().unwrap(), 1); // 1000 credits = 1 duff
+        assert_eq!(thousand_credits.dash_to_duffs().unwrap(), 1); // 1000 credits = 1 duff
 
         // Test with amount without unit name (should work)
         let dash_no_unit = Amount::new(100_000_000_000, DASH_DECIMAL_PLACES);
-        assert_eq!(dash_no_unit.to_duffs().unwrap(), 100_000_000);
+        assert_eq!(dash_no_unit.dash_to_duffs().unwrap(), 100_000_000);
     }
 
     #[test]
     #[should_panic(expected = "Amount is not in DASH")]
     fn test_to_duffs_panics_with_wrong_unit() {
         let btc_amount = Amount::new_with_unit(100_000_000, 8, "BTC");
-        btc_amount.to_duffs().unwrap(); // Should panic
+        btc_amount.dash_to_duffs().unwrap(); // Should panic
     }
 
     #[test]
     #[should_panic(expected = "Amount is not in DASH, decimal places mismatch")]
     fn test_to_duffs_panics_with_wrong_decimals() {
         let wrong_decimals = Amount::new_with_unit(100_000_000, 8, "DASH");
-        wrong_decimals.to_duffs().unwrap(); // Should panic
+        wrong_decimals.dash_to_duffs().unwrap(); // Should panic
     }
 
     #[test]
@@ -585,17 +591,17 @@ mod tests {
         // Test that duffs -> DASH -> duffs preserves the value
         let original_duffs = 123_456_789u64;
         let dash_amount = Amount::dash_from_duffs(original_duffs);
-        let converted_back = dash_amount.to_duffs().unwrap();
+        let converted_back = dash_amount.dash_to_duffs().unwrap();
         assert_eq!(original_duffs, converted_back);
 
         // Test edge cases
         let zero_duffs = 0u64;
         let zero_dash = Amount::dash_from_duffs(zero_duffs);
-        assert_eq!(zero_duffs, zero_dash.to_duffs().unwrap());
+        assert_eq!(zero_duffs, zero_dash.dash_to_duffs().unwrap());
 
         let max_reasonable_duffs = 2_100_000_000_000_000u64; // 21M DASH * 10^8
         let max_dash = Amount::dash_from_duffs(max_reasonable_duffs);
-        assert_eq!(max_reasonable_duffs, max_dash.to_duffs().unwrap());
+        assert_eq!(max_reasonable_duffs, max_dash.dash_to_duffs().unwrap());
         assert_eq!(max_reasonable_duffs * CREDITS_PER_DUFF, max_dash.value());
         assert_eq!(21_000_000.0, max_dash.to_f64());
     }
@@ -725,7 +731,7 @@ mod tests {
         let dash_amount = Amount::dash(1.5); // 1.5 DASH
         assert_eq!(dash_amount.to_string_without_unit(), "1.5");
         assert_eq!(format!("{}", dash_amount), "1.5 DASH");
-        assert_eq!(dash_amount.to_duffs().unwrap(), 150_000_000); // 1.5 DASH in duffs
+        assert_eq!(dash_amount.dash_to_duffs().unwrap(), 150_000_000); // 1.5 DASH in duffs
 
         // Test zero amount
         let zero_amount = Amount::new(0, 8);

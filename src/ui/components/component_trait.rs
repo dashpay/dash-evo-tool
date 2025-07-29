@@ -45,11 +45,12 @@ pub trait ComponentResponse: Clone {
 ///
 /// Components implementing this trait should follow these patterns:
 ///
-/// 1. **Self-Contained State Management**: Manage internal state privately
-/// 2. **Lazy Initialization**: Created only when first needed via `Option<Component>`
-/// 3. **Builder API**: Provide fluent configuration methods like `new().with_config().with_label()`
-/// 4. **Response-Based Communication**: Return structured response objects from `show()`
-/// 5. **Dual Configuration API**: Provide both owned (`config()`) and mutable (`set_config()`) methods
+/// 1. **Self-Contained State Management**: Manage internal state privately and handle all UX internally
+/// 2. **Self-Contained UX**: Handle validation, error display, hints, and formatting within the component
+/// 3. **Lazy Initialization**: Created only when first needed via `Option<Component>`
+/// 4. **Builder API**: Provide fluent configuration methods like `new().with_config().with_label()`
+/// 5. **Response-Based Communication**: Return structured response objects from `show()`
+/// 6. **Dual Configuration API**: Provide both owned (`config()`) and mutable (`set_config()`) methods
 ///
 /// # Example Implementation
 ///
@@ -161,17 +162,15 @@ pub trait ComponentResponse: Clone {
 ///         }).inner;
 ///         
 ///         // Handle response using the changed() method
-///         if let Some(new_data) = response.inner.changed() {
-///             self.handle_valid_input(new_data);
+///         if let Some(new_data) = response.inner.changed_value() {
+///             self.handle_valid_input(new_data.clone());
 ///         } else if response.inner.has_changed() {
 ///             // Input changed but no valid data - clear stale data
 ///             self.clear_data();
 ///         }
 ///         
-///         // Show errors
-///         if let Some(error) = response.inner.error_message() {
-///             ui.colored_label(egui::Color32::RED, error);
-///         }
+///         // Note: Error display is handled internally by the component
+///         // No need to manually show errors here
 ///     }
 ///     
 ///     fn handle_valid_input(&mut self, _data: String) {
@@ -197,9 +196,12 @@ pub trait Component {
     /// Renders the component and returns a response with interaction results.
     ///
     /// This method should handle both rendering the component and processing
-    /// any user interactions. The returned response should contain information
-    /// about whether the component state changed, validation results, and
-    /// any parsed data.
+    /// any user interactions. Components should be self-contained and manage
+    /// their complete user experience including validation, error display,
+    /// hints, and formatting internally.
+    ///
+    /// The returned response should contain information about whether the
+    /// component state changed, validation results, and any parsed data.
     ///
     /// # Arguments
     ///

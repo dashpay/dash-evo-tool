@@ -120,7 +120,6 @@ impl NetworkChooserScreen {
     /// TODO: doesn't save local network settings like password yet.
     fn save(&self) -> Result<(), String> {
         self.current_app_context()
-            .db
             .update_dash_core_execution_settings(
                 self.custom_dash_qt_path.clone(),
                 self.overwrite_dash_conf,

@@ -248,19 +248,32 @@ pub trait ComponentWithCallbacks<Response>: Component {
 /// # Type Parameters
 ///
 /// * `T` - The type of data being managed (e.g., Amount, String, etc.)
-pub trait UpdatableComponent<T> {
-    /// Updates the provided optional value if the component state has changed.
-    ///
+pub trait UpdatableComponentResponse<T: Clone>: ComponentResponse<DomainType = T> {
+    /// Binds the response to a mutable value, updating it if the component state has changed.
     /// This is a convenience method for the common pattern of updating
-    /// an `Option<T>` field based on component state changes. It helps
-    /// prevent retaining stale data when input becomes invalid.
+    /// an `Option<T>` field based on component state changes.
     ///
-    /// # Arguments
+    /// ## Arguments
     ///
     /// * `value` - The optional value to update; it will be set to `None` if the component value is invalid
     ///
     /// # Returns
     ///
-    /// `true` if the value was updated (including change to `None`), `false` otherwise
-    fn update(&self, value: &mut Option<T>) -> bool;
+    /// * `true` if the value was updated (including change to `None`),
+    /// * `false` if it was not changed (eg. `self.has_changed() == false`).
+    ///
+    /// This method is useful for components that manage optional data and need to handle state transitions between valid and invalid inputs.
+    fn update(&self, value: &mut Option<Self::DomainType>) -> bool {
+        if self.has_changed() {
+            if let Some(inner) = self.changed_value() {
+                value.replace(inner.clone());
+                true
+            } else {
+                value.take();
+                true
+            }
+        } else {
+            false
+        }
+    }
 }

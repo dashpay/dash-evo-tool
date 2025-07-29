@@ -14,5 +14,5 @@ pub mod wallet_unlock;
 
 // Re-export the main traits for easy access
 pub use component_trait::{
-    Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponent,
+    Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponentResponse,
 };

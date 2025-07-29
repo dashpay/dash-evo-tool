@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::UpdatableComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -223,13 +224,7 @@ impl MintTokensScreen {
         let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.amount);
-
-        if let Some(error) = &response.inner.error_message {
-            ui.colored_label(
-                DashColors::error_color(ui.ctx().style().visuals.dark_mode),
-                error,
-            );
-        }
+        // errors are handled inside AmountInput
     }
 
     /// Renders an optional text input for the user to specify a "Recipient Identity"

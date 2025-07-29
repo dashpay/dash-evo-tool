@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::UpdatableComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -141,13 +142,7 @@ impl TransferTokensScreen {
         let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.amount);
-
-        if let Some(error) = &response.inner.error_message {
-            ui.colored_label(
-                DashColors::error_color(ui.ctx().style().visuals.dark_mode),
-                error,
-            );
-        }
+        // errors are handled inside AmountInput
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {

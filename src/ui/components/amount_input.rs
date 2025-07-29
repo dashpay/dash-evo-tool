@@ -1,6 +1,6 @@
 use crate::model::amount::Amount;
 use crate::ui::components::{
-    Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponent,
+    Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponentResponse,
 };
 use dash_sdk::dpp::fee::Credits;
 use egui::{InnerResponse, Response, TextEdit, Ui, Widget, WidgetText};
@@ -30,29 +30,6 @@ impl AmountInputResponse {
     pub fn has_changed(&self) -> bool {
         self.changed
     }
-
-    /// Update amount if it [has_changed](Self::has_changed).
-    ///
-    /// Once input has changed, it changes provided value to the parsed amount if valid, or `None` it if invalid.
-    /// If the input has not changed, the value remains unchanged.
-    ///
-    /// This function can be used to link the input widget to a mutable `Option<Amount>` value in your screen state.
-    /// Any changes to the input will be reflected in the provided value.
-    ///
-    /// Returns true if the value was updated (including change to `None`), false if it was not changed.
-    pub fn update(&self, value: &mut Option<Amount>) -> bool {
-        if self.has_changed() {
-            if let Some(amount) = &self.parsed_amount {
-                value.replace(amount.clone());
-                true
-            } else {
-                value.take(); // Clear the value if input is invalid
-                true
-            }
-        } else {
-            false
-        }
-    }
 }
 
 impl ComponentResponse for AmountInputResponse {
@@ -72,6 +49,10 @@ impl ComponentResponse for AmountInputResponse {
     fn error_message(&self) -> Option<&str> {
         self.error_message.as_deref()
     }
+}
+
+impl UpdatableComponentResponse<Amount> for AmountInputResponse {
+    // we rely on default implementation
 }
 
 type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
@@ -102,7 +83,7 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 /// // Store Option<AmountInput> for lazy initialization
 /// struct MyScreen {
 ///     amount_input: Option<AmountInput>,
-///     current_amount: Amount, // Track the current amount with unit name
+///     current_amount: Option<Amount>, // Track the current amount with unit name
 ///     operation_in_progress: bool,
 /// }
 ///
@@ -110,7 +91,7 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///     fn new() -> Self {
 ///         Self {
 ///             amount_input: None, // Lazy initialization
-///             current_amount: Amount::dash(0), // Zero DASH initially
+///             current_amount: None, // Will be set by [AmountInputResponse::update()]
 ///             operation_in_progress: false,
 ///         }
 ///     }
@@ -118,7 +99,7 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///     fn show(&mut self, ui: &mut Ui) {
 ///         // Initialize AmountInput with the current amount (preserves unit name)
 ///         let amount_input = self.amount_input.get_or_insert_with(|| {
-///             AmountInput::new(self.current_amount.clone())
+///             AmountInput::new(Amount::dash(0.0)) // Start with zero DASH
 ///                 .label("Amount:")
 ///                 .hint_text("Enter amount")
 ///                 .max_amount(Some(1000000))
@@ -132,22 +113,11 @@ type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
 ///         }).inner;
 ///
 ///         // Simple, correct handling using the helper method
-///         // Unit names are automatically preserved by AmountInput
-///         let mut temp_amount = Some(self.current_amount.clone());
-///         if response.inner.update(&mut temp_amount) {
-///             if let Some(amount) = temp_amount {
-///                 self.current_amount = amount; // Unit name is preserved
-///                 println!("Amount changed: {}", self.current_amount);
-///             } else {
-///                 self.current_amount = Amount::dash(0); // Fallback to zero
-///                 println!("Amount cleared");
-///             }
+///         if response.inner.update(&mut self.current_amount) {
+///             // Put logic to handle the amount change, if any
+///             println!("Amount updated: {:?}", self.current_amount);
 ///         }
-///
-///         // Show errors if present
-///         if let Some(error) = &response.inner.error_message {
-///             ui.colored_label(egui::Color32::RED, error);
-///         }
+///         // Note: error handling is done inside AmountInput, so we don't need to display errors here
 ///     }
 /// }
 /// ```
@@ -161,6 +131,7 @@ pub struct AmountInput {
     min_amount: Option<Credits>,
     show_max_button: bool,
     desired_width: Option<f32>,
+    show_validation_errors: bool,
     /// Function to execute when correct amount is entered
     pub on_success_fn: Option<CallbackFn>,
     /// Function to execute when invalid amount is entered
@@ -197,6 +168,7 @@ impl AmountInput {
             min_amount: Some(1), // Default minimum is 1 (greater than zero)
             show_max_button: false,
             desired_width: None,
+            show_validation_errors: true, // Default to showing validation errors
             on_success_fn: None,
             on_error_fn: None,
             changed: false,
@@ -312,6 +284,12 @@ impl AmountInput {
     /// Sets the desired width of the input field (mutable reference version).
     pub fn set_desired_width(&mut self, width: f32) -> &mut Self {
         self.desired_width = Some(width);
+        self
+    }
+
+    /// Controls whether validation errors are displayed as a label within the component.
+    pub fn show_validation_errors(mut self, show: bool) -> Self {
+        self.show_validation_errors = show;
         self
     }
 
@@ -439,6 +417,13 @@ impl AmountInput {
                 }
             }
 
+            // Show validation error if enabled and error exists
+            if self.show_validation_errors {
+                if let (Some(error_msg), _) = self.validate_amount() {
+                    ui.colored_label(ui.visuals().error_fg_color, error_msg);
+                }
+            }
+
             if self.changed {
                 changed = true; // Force changed if set
                 self.changed = false; // Reset after use
@@ -447,7 +432,7 @@ impl AmountInput {
             AmountInputResponse {
                 response: text_response,
                 changed,
-                error_message,
+                error_message: error_message.clone(),
                 max_clicked,
                 parsed_amount,
             }
@@ -480,12 +465,6 @@ impl ComponentWithCallbacks<AmountInputResponse> for AmountInput {
 
     fn on_error(self, callback: impl FnMut(&InnerResponse<AmountInputResponse>) + 'static) -> Self {
         AmountInput::on_error(self, callback)
-    }
-}
-
-impl UpdatableComponent<Amount> for AmountInputResponse {
-    fn update(&self, value: &mut Option<Amount>) -> bool {
-        AmountInputResponse::update(self, value)
     }
 }
 

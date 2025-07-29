@@ -59,6 +59,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::UpdatableComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -2437,11 +2438,7 @@ impl TokensScreen {
 
             // Always use update() to handle the binding correctly
             response.inner.update(&mut self.base_supply_amount);
-
-            // Show error message if present
-            if let Some(error) = &response.inner.error_message {
-                ui.colored_label(egui::Color32::RED, error);
-            }
+            // errors are handled in the AmountInput component
         }
     }
 
@@ -2475,11 +2472,7 @@ impl TokensScreen {
 
             // Always use update() to handle the binding correctly
             response.inner.update(&mut self.max_supply_amount);
-
-            // Show error message if present
-            if let Some(error) = &response.inner.error_message {
-                ui.colored_label(egui::Color32::RED, error);
-            }
+            // errors are handled in the AmountInput component
         }
     }
 }

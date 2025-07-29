@@ -1,3 +1,4 @@
+use crate::ui::components::UpdatableComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -225,15 +226,9 @@ impl BurnTokensScreen {
         });
 
         let amount_response = amount_input.show(ui).inner;
+        // Update the amount based on user input
         amount_response.update(&mut self.amount);
-
-        if let Some(err) = amount_response.error_message {
-            self.error_message = Some(format!("Invalid amount: {}", err));
-            self.status = BurnTokensStatus::ErrorMessage(format!("Invalid amount: {}", err));
-        } else if matches!(&self.status, BurnTokensStatus::ErrorMessage(msg) if msg.contains("Invalid amount"))
-        {
-            self.status = BurnTokensStatus::NotStarted; // Reset status if we had an error
-        }
+        // errors are handled inside AmountInput
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step

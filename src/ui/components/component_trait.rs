@@ -27,6 +27,32 @@ pub trait ComponentResponse: Clone {
 
     /// Returns any error message from the component
     fn error_message(&self) -> Option<&str>;
+
+    /// Binds the response to a mutable value, updating it if the component state has changed.
+    ///
+    /// Provided `value` will be updated whenever the user changes the component state.
+    /// It will be set to `None` if the component state is invalid (eg. user entered value that didn't pass the validation).
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the value was updated (including change to `None`),
+    /// * `false` if it was not changed (eg. `self.has_changed() == false`).
+    fn update(&self, value: &mut Option<Self::DomainType>) -> bool
+    where
+        Self::DomainType: Clone,
+    {
+        if self.has_changed() {
+            if let Some(inner) = self.changed_value() {
+                value.replace(inner.clone());
+                true
+            } else {
+                value.take();
+                true
+            }
+        } else {
+            false
+        }
+    }
 }
 
 /// Core trait that all UI components following the design pattern should implement.
@@ -41,147 +67,9 @@ pub trait ComponentResponse: Clone {
 ///   This represents the conceptual data type the component works with (e.g., Amount, Identity).
 /// * `Response` - The specific response type returned by the component's `show()` method
 ///
-/// # Design Pattern Implementation
+/// # See also
 ///
-/// Components implementing this trait should follow these patterns:
-///
-/// 1. **Self-Contained State Management**: Manage internal state privately and handle all UX internally
-/// 2. **Self-Contained UX**: Handle validation, error display, hints, and formatting within the component
-/// 3. **Lazy Initialization**: Created only when first needed via `Option<Component>`
-/// 4. **Builder API**: Provide fluent configuration methods like `new().with_config().with_label()`
-/// 5. **Response-Based Communication**: Return structured response objects from `show()`
-/// 6. **Dual Configuration API**: Provide both owned (`config()`) and mutable (`set_config()`) methods
-///
-/// # Example Implementation
-///
-/// ```ignore
-/// use egui::{InnerResponse, Ui, WidgetText};
-///
-/// // Define domain type
-/// struct ValidationRules {
-///     min_length: usize,
-///     max_length: usize,
-/// }
-///
-/// // Component struct
-/// pub struct MyInputComponent {
-///     internal_state: String,
-///     domain_data: ValidationRules,
-///     label: Option<WidgetText>,
-/// }
-///
-/// // Response struct
-/// #[derive(Clone)]
-/// pub struct MyInputResponse {
-///     pub response: egui::Response,
-///     pub changed: bool,
-///     pub error_message: Option<String>,
-///     pub parsed_data: Option<String>,
-/// }
-///
-/// impl ComponentResponse for MyInputResponse {
-///     type DomainType = String;
-///     
-///     fn has_changed(&self) -> bool { self.changed }
-///     fn is_valid(&self) -> bool { self.error_message.is_none() }
-///     fn changed(&self) -> Option<Self::DomainType> {
-///         self.parsed_data.clone()
-///     }
-///     fn error_message(&self) -> Option<&str> { self.error_message.as_deref() }
-/// }
-///
-/// impl Component for MyInputComponent {
-///     type DomainType = ValidationRules;
-///     type Response = MyInputResponse;
-///     
-///     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
-///         ui.horizontal(|ui| {
-///             // Render component...
-///             MyInputResponse {
-///                 response: ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
-///                 changed: false,
-///                 error_message: None,
-///                 parsed_data: None,
-///             }
-///         })
-///     }
-/// }
-///
-/// // Constructor implemented as regular method
-/// impl MyInputComponent {
-///     pub fn new(domain_object: ValidationRules) -> Self {
-///         Self {
-///             internal_state: String::new(),
-///             domain_data: domain_object,
-///             label: None,
-///         }
-///     }
-/// }
-///
-/// // Owned configuration methods (for builder pattern during lazy initialization)
-/// impl MyInputComponent {
-///     pub fn with_label<T: Into<WidgetText>>(mut self, label: T) -> Self {
-///         self.label = Some(label.into());
-///         self
-///     }
-/// }
-///
-/// // Mutable reference configuration methods (for dynamic updates)
-/// impl MyInputComponent {
-///     pub fn set_label<T: Into<WidgetText>>(&mut self, label: T) -> &mut Self {
-///         self.label = Some(label.into());
-///         self
-///     }
-/// }
-/// ```
-///
-/// # Usage in Screens
-///
-/// ```ignore
-/// use egui::Ui;
-///
-/// struct MyScreen {
-///     my_component: Option<MyInputComponent>,
-///     operation_in_progress: bool,
-/// }
-///
-/// impl MyScreen {
-///     fn render_component(&mut self, ui: &mut Ui) {
-///         // Static configuration during lazy initialization
-///         let component = self.my_component.get_or_insert_with(|| {
-///             MyInputComponent::new(ValidationRules {
-///                 min_length: 1,
-///                 max_length: 100
-///             })
-///             .with_label("My Label:")
-///         });
-///         
-///         // Use egui's built-in enabled state for dynamic control
-///         let response = ui.add_enabled_ui(!self.operation_in_progress, |ui| {
-///             component.show(ui)
-///         }).inner;
-///         
-///         // Handle response using the changed() method
-///         if let Some(new_data) = response.inner.changed_value() {
-///             self.handle_valid_input(new_data.clone());
-///         } else if response.inner.has_changed() {
-///             // Input changed but no valid data - clear stale data
-///             self.clear_data();
-///         }
-///         
-///         // Note: Error display is handled internally by the component
-///         // No need to manually show errors here
-///     }
-///     
-///     fn handle_valid_input(&mut self, _data: String) {
-///         // Handle the valid input
-///     }
-///     
-///     fn clear_data(&mut self) {
-///         // Clear stale data
-///     }
-/// }
-/// ```
+/// See `doc/COMPONENT_DESIGN_PATTERN.md` for detailed design pattern documentation.
 pub trait Component {
     /// The domain object type that this component is designed to handle.
     /// This type represents the data this component is designed to handle,
@@ -196,86 +84,12 @@ pub trait Component {
     /// Renders the component and returns a response with interaction results.
     ///
     /// This method should handle both rendering the component and processing
-    /// any user interactions. Components should be self-contained and manage
-    /// their complete user experience including validation, error display,
-    /// hints, and formatting internally.
-    ///
-    /// The returned response should contain information about whether the
-    /// component state changed, validation results, and any parsed data.
-    ///
-    /// # Arguments
-    ///
-    /// * `ui` - The egui UI context for rendering
+    /// any user interactions, including validation, error display, hints,
+    /// and formatting.
     ///
     /// # Returns
     ///
-    /// An `InnerResponse` containing the component's response data
+    /// An [`InnerResponse`]  containing the component's response data in [`InnerResponse::inner`] field.
+    /// [`InnerResponse::inner`] should implement [`ComponentResponse`] trait.
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response>;
-}
-
-/// Optional trait for components that support callback functions.
-///
-/// Components may implement this trait to provide callback support
-/// for scenarios requiring immediate response to state changes.
-/// This is an optional enhancement to the primary response-based pattern.
-///
-/// # Design Guidelines
-///
-/// - Always make callbacks optional (`Option<Box<dyn FnMut>>`)
-/// - Provide the full response object to callbacks for maximum flexibility
-/// - Only trigger callbacks when the relevant change occurs
-/// - Maintain response-based communication as the primary pattern
-/// - Keep callbacks simple and focused
-pub trait ComponentWithCallbacks<Response>: Component {
-    /// Sets a callback function to be called when the component transitions to a valid state.
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function to call when valid input is received
-    fn on_success(self, callback: impl FnMut(&InnerResponse<Response>) + 'static) -> Self;
-
-    /// Sets a callback function to be called when the component transitions to an invalid state.
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function to call when invalid input is received  
-    fn on_error(self, callback: impl FnMut(&InnerResponse<Response>) + 'static) -> Self;
-}
-
-/// Utility trait for components that work with optional values.
-///
-/// This trait provides helper methods for components that manage optional
-/// data and need to handle state transitions between valid and invalid inputs.
-///
-/// # Type Parameters
-///
-/// * `T` - The type of data being managed (e.g., Amount, String, etc.)
-pub trait UpdatableComponentResponse<T: Clone>: ComponentResponse<DomainType = T> {
-    /// Binds the response to a mutable value, updating it if the component state has changed.
-    /// This is a convenience method for the common pattern of updating
-    /// an `Option<T>` field based on component state changes.
-    ///
-    /// ## Arguments
-    ///
-    /// * `value` - The optional value to update; it will be set to `None` if the component value is invalid
-    ///
-    /// # Returns
-    ///
-    /// * `true` if the value was updated (including change to `None`),
-    /// * `false` if it was not changed (eg. `self.has_changed() == false`).
-    ///
-    /// This method is useful for components that manage optional data and need to handle state transitions between valid and invalid inputs.
-    fn update(&self, value: &mut Option<Self::DomainType>) -> bool {
-        if self.has_changed() {
-            if let Some(inner) = self.changed_value() {
-                value.replace(inner.clone());
-                true
-            } else {
-                value.take();
-                true
-            }
-        } else {
-            false
-        }
-    }
 }

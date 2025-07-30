@@ -12,6 +12,8 @@ All widgets follow the same simple pattern: add 2 fields to your screen struct, 
 
 ## Quick Start: Using Components
 
+In this section, you will see how to use an existing component.
+
 ### 1. Add fields to your screen struct
 ```rust
 struct MyScreen {
@@ -21,16 +23,20 @@ struct MyScreen {
 ```
 
 ### 2. Lazily initialize the component
+
+Inside your screen's `show()` method or simiar:
+
 ```rust
-fn show(&mut self, ui: &mut Ui) {
-    let amount_widget = self.amount_widget.get_or_insert_with(|| {
-        AmountInput::new(amount_type)
-            .with_label("Amount:")
-    });
-}
+let amount_widget = self.amount_widget.get_or_insert_with(|| {
+    AmountInput::new(amount_type)
+        .with_label("Amount:")
+});        
 ```
 
 ### 3. Show component and handle updates
+
+After initialization above, use `update()` to bind your screen's field with the component:
+
 ```rust
 let response = amount_widget.show(ui);
 response.inner.update(&mut self.amount);
@@ -42,6 +48,8 @@ When `self.amount.is_some()`, the user has entered a valid amount. Use it for wh
 ---
 
 ## Implementation Guidelines: Creating New Components
+
+In this screen, you will see generalized guidelines for creating a new component.
 
 ### ✅ Component Structure Checklist
 - [ ] Struct with private fields only
@@ -68,7 +76,7 @@ impl ComponentResponse for MyComponentResponse {
     
     fn has_changed(&self) -> bool { self.changed }
     fn is_valid(&self) -> bool { self.error_message.is_none() }
-    fn changed(&self) -> Option<Self::DomainType> { self.parsed_data.clone() }
+    fn changed_value(&self) -> Option<Self::DomainType> { self.parsed_data.clone() }
     fn error_message(&self) -> Option<&str> { self.error_message.as_deref() }
 }
 ```
@@ -76,7 +84,7 @@ impl ComponentResponse for MyComponentResponse {
 ### ✅ Best Practices
 - [ ] Use lazy initialization (`Option<Component>`)
 - [ ] Use egui's `add_enabled_ui()` for enabled/disabled state
-- [ ] Clear invalid data when input changes but is invalid
+- [ ] Set  data to `None` when input changes but is invalid
 - [ ] Provide fluent builder API for configuration
 - [ ] Keep internal state private
 - [ ] **Be self-contained**: Handle validation, error display, hints, and formatting internally

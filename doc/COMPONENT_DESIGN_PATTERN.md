@@ -54,13 +54,12 @@ In this screen, you will see generalized guidelines for creating a new component
 ### ✅ Component Structure Checklist
 - [ ] Struct with private fields only
 - [ ] `new()` constructor taking domain configuration
-- [ ] Builder methods (`with_label()`, `with_max_value()`, etc.)
-- [ ] Response struct with `changed`, `error_message`, `parsed_data` fields
+- [ ] Builder methods (`with_label()`, `with_max_amount()`, `with_hint_text()`, etc.)
+- [ ] Response struct with `response`, `changed`, `error_message`, and domain-specific data fields
 
 ### ✅ Trait Implementation Checklist
 - [ ] Implement `Component` trait with `show()` method
 - [ ] Implement `ComponentResponse` for response struct
-- [ ] Add `UpdatableComponent` if managing `Option<T>` data
 
 ### ✅ Response Pattern
 ```rust
@@ -68,6 +67,7 @@ pub struct MyComponentResponse {
     pub response: Response,
     pub changed: bool,
     pub error_message: Option<String>,
+    // Add any component-specific fields as needed
     pub parsed_data: Option<DomainType>,
 }
 
@@ -76,7 +76,7 @@ impl ComponentResponse for MyComponentResponse {
     
     fn has_changed(&self) -> bool { self.changed }
     fn is_valid(&self) -> bool { self.error_message.is_none() }
-    fn changed_value(&self) -> Option<Self::DomainType> { self.parsed_data.clone() }
+    fn changed_value(&self) -> &Option<Self::DomainType> { &self.parsed_data }
     fn error_message(&self) -> Option<&str> { self.error_message.as_deref() }
 }
 ```
@@ -84,10 +84,10 @@ impl ComponentResponse for MyComponentResponse {
 ### ✅ Best Practices
 - [ ] Use lazy initialization (`Option<Component>`)
 - [ ] Use egui's `add_enabled_ui()` for enabled/disabled state
-- [ ] Set  data to `None` when input changes but is invalid
+- [ ] Set data to `None` when input changes but is invalid
 - [ ] Provide fluent builder API for configuration
 - [ ] Keep internal state private
-- [ ] **Be self-contained**: Handle validation, error display, hints, and formatting internally
+- [ ] **Be self-contained**: Handle validation, error display, hints, and formatting internally (preferably with configurable error display)
 - [ ] **Own your UX**: Component should manage its complete user experience
 
 ### ❌ Anti-Patterns to Avoid

@@ -488,7 +488,7 @@ impl AppContext {
                 signing_key,
                 public_note,
             } => self
-                .claim_tokens(
+                .claim_all_tokens(
                     data_contract.clone(),
                     *token_position,
                     actor_identity,

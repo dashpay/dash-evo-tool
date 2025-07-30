@@ -99,6 +99,7 @@ pub enum BackendTaskSuccessResult {
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
+    TokensClaimed(TokenAmount),
 }
 
 impl BackendTaskSuccessResult {}

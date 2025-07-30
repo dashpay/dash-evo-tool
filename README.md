@@ -117,7 +117,7 @@ When the application runs for the first time, it creates an application director
 
 ### Connect to a Network
 
-1. **Open Network Chooser**: In the app, navigate to the **Network Chooser** screen.
+1. **Open Settings**: In the app, navigate to the **Settings** screen.
 
 2. **Select Network**: Choose **Mainnet** or **Testnet**.
 
@@ -181,9 +181,9 @@ When the application runs for the first time, it creates an application director
 
 ## Switching Networks
 
-1. **Open Network Chooser**:
+1. **Open Settings**:
 
-   - Go to the **Network Chooser** screen.
+   - Go to the **Settings** screen.
 
 2. **Select Network**:
 

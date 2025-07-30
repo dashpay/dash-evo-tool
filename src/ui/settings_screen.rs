@@ -1,7 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::spv::{SpvTask, SpvTaskResult};
-use dash_spv::types::SyncPhaseInfo;
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
@@ -15,6 +14,7 @@ use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
+use dash_spv::types::SyncPhaseInfo;
 use eframe::egui::{self, Color32, Context, Ui};
 use num_format::{Locale, ToFormattedString};
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ impl SettingsScreen {
                     mode_changed = true;
                 }
 
-                ui.add_space(20.0);
+                ui.add_space(10.0);
 
                 // SPV option
                 if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Spv, "SPV Client").clicked() {
@@ -154,7 +154,6 @@ impl SettingsScreen {
             } else {
                 ui.add_enabled(false, egui::Button::new("Syncing..."));
             }
-
         });
 
         if self.spv_is_syncing || self.spv_is_initialized {
@@ -169,20 +168,22 @@ impl SettingsScreen {
     }
 
     fn render_spv_sync_progress(&self, ui: &mut Ui) {
+        // Debug log to check if phase info exists
+        if let Some(ref phase_info) = self.spv_phase_info {
+            tracing::debug!(
+                "Rendering SPV progress with phase: {}",
+                phase_info.phase_name
+            );
+        }
+
         // Display phase name or generic label
         if let Some(ref phase_info) = self.spv_phase_info {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(&phase_info.phase_name).strong());
-                if self.spv_is_syncing {
-                    ui.spinner();
-                }
             });
         } else {
             ui.horizontal(|ui| {
                 ui.label("Sync Progress");
-                if self.spv_is_syncing {
-                    ui.spinner();
-                }
             });
         }
 
@@ -210,7 +211,7 @@ impl SettingsScreen {
                         phase_info.items_completed.to_formatted_string(&Locale::en)
                     ));
                 }
-                
+
                 if phase_info.rate > 0.0 {
                     ui.label(format!(" @ {:.1} items/sec", phase_info.rate));
                 }
@@ -272,6 +273,7 @@ impl SettingsScreen {
         overwrite_dash_conf: bool,
         connection_mode: ConnectionMode,
     ) -> Self {
+        tracing::info!("1");
         let local_network_dashmate_password = if let Ok(config) = Config::load() {
             if let Some(local_config) = config.config_for_network(Network::Regtest) {
                 local_config.core_rpc_password.clone()
@@ -613,6 +615,7 @@ impl SettingsScreen {
                                     .clicked()
                                     {
                                         // Update the global developer mode in config
+                                        tracing::info!("2");
                                         if let Ok(mut config) = Config::load() {
                                             config.developer_mode = Some(self.developer_mode);
                                             if let Err(e) = config.save() {
@@ -850,6 +853,7 @@ impl SettingsScreen {
                     .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
             );
             if ui.button("Save Password").clicked() {
+                tracing::info!("3");
                 // 1) Reload the config
                 if let Ok(mut config) = Config::load() {
                     if let Some(local_cfg) = config.config_for_network(Network::Regtest).clone() {
@@ -971,6 +975,17 @@ impl ScreenLike for SettingsScreen {
                         progress_percent,
                         phase_info,
                     } => {
+                        // Debug log the received phase info
+                        if let Some(ref phase) = phase_info {
+                            tracing::debug!(
+                                "Settings screen received phase: {} ({:.1}%)",
+                                phase.phase_name,
+                                phase.progress_percentage
+                            );
+                        } else {
+                            tracing::debug!("Settings screen received no phase info");
+                        }
+
                         // Check if phase has changed
                         let phase_changed = match (&self.spv_phase_info, &phase_info) {
                             (None, Some(_)) => true,
@@ -978,19 +993,22 @@ impl ScreenLike for SettingsScreen {
                             (Some(old), Some(new)) => old.phase_name != new.phase_name,
                             _ => false,
                         };
-                        
+
                         // Only log significant changes
                         let height_changed = current_height != self.spv_current_height;
-                        let progress_changed = (progress_percent - self.spv_sync_progress).abs() > 1.0;
-                        
+                        let progress_changed =
+                            (progress_percent - self.spv_sync_progress).abs() > 1.0;
+
                         if phase_changed {
                             if let Some(ref phase) = phase_info {
-                                tracing::info!(
-                                    "🔄 Phase Change: {}",
-                                    phase.phase_name
-                                );
+                                tracing::info!("🔄 Phase Change: {}", phase.phase_name);
                                 if let Some(ref details) = phase.details {
-                                    tracing::info!("{}: {} ({:.1}%)", phase.phase_name, details, phase.progress_percentage);
+                                    tracing::info!(
+                                        "{}: {} ({:.1}%)",
+                                        phase.phase_name,
+                                        details,
+                                        phase.progress_percentage
+                                    );
                                 }
                             }
                         } else if height_changed || progress_changed {
@@ -1075,6 +1093,7 @@ impl ScreenLike for SettingsScreen {
             // Only check progress once per 3 seconds
             if current_time >= self.spv_last_progress_check + 3000 {
                 self.spv_last_progress_check = current_time;
+                tracing::info!("Settings screen requesting SPV sync progress update");
                 action = AppAction::BackendTask(BackendTask::SpvTask(SpvTask::GetSyncProgress));
             }
             ctx.request_repaint_after(std::time::Duration::from_secs(3));

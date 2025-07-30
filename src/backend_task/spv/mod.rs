@@ -2,8 +2,8 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_spv::{ClientConfig, DashSpvClient, SyncProgress};
 use dash_spv::types::{NetworkEvent, SyncPhaseInfo};
+use dash_spv::{ClientConfig, DashSpvClient, SyncProgress};
 use dashcore::QuorumHash;
 use dashcore::hashes::Hash;
 use dashcore::sml::llmq_type::LLMQType;
@@ -207,7 +207,7 @@ impl SpvManager {
                     tracing::info!("📊 Sync started - client is behind peers");
                 } else {
                     tracing::info!("✅ Already synced to peer height");
-                    
+
                     // Update shared state to reflect we're already synced
                     if let Ok(progress) = client.sync_progress().await {
                         if let Ok(mut state) = shared_state.try_write() {
@@ -233,7 +233,7 @@ impl SpvManager {
                         SpvCommand::GetSyncProgress { response } => {
                             let result = client.sync_progress().await
                                 .map_err(|e| format!("Failed to get sync progress: {:?}", e));
-                            
+
                             // Update shared state with progress
                             if let Ok(progress) = &result {
                                 if let Ok(mut state) = shared_state.try_write() {
@@ -241,25 +241,23 @@ impl SpvManager {
                                     state.headers_synced = progress.headers_synced;
                                     state.is_syncing = !progress.headers_synced;
                                     state.last_update = Instant::now();
-                                    
+
                                     // Update target if needed
                                     if state.target_height == 0 || state.current_height > state.target_height - 20 {
                                         state.target_height = state.current_height + 50;
                                     }
                                 }
-                                
+
                                 // Log phase information if available
                                 if let Some(ref phase) = progress.current_phase {
                                     tracing::debug!("Current sync phase: {} ({:.1}%)", phase.phase_name, phase.progress_percentage);
                                 }
                             }
-                            
+
                             let _ = response.send(result);
                         }
                         SpvCommand::GetQuorumKey { quorum_type, quorum_hash, response } => {
-                            tracing::debug!("SPV task loop: Received GetQuorumKey command for type: {}, hash: {:?}", quorum_type, quorum_hash);
                             let result = Self::get_quorum_key_from_client(&client, quorum_type, &quorum_hash);
-                            tracing::debug!("SPV task loop: GetQuorumKey result: {:?}", result.is_some());
                             let _ = response.send(result);
                         }
                         SpvCommand::Stop { response } => {
@@ -270,7 +268,7 @@ impl SpvManager {
                         }
                     }
                 }
-                
+
                 // Check for events from SPV client with 100ms timeout
                 _ = async {
                     match client.next_event_timeout(Duration::from_millis(100)).await {
@@ -278,8 +276,6 @@ impl SpvManager {
                             // Handle the event
                             match event {
                                 NetworkEvent::PeerConnected { address, height, version } => {
-                                    tracing::debug!("Peer connected: {} at height {:?} (version: {:?})", address, height, version);
-
                                     // Check if we need to start sync now that we have a peer
                                     if let Ok(state) = shared_state.try_read() {
                                         if !state.is_syncing && state.current_height == 0 {
@@ -322,7 +318,7 @@ impl SpvManager {
                                         state.current_height = tip_height;
                                         state.is_syncing = progress_percent < 100.0;
                                         state.last_update = Instant::now();
-                                        
+
                                         // Update target height based on progress
                                         if progress_percent < 100.0 && progress_percent > 0.0 {
                                             // Estimate target based on progress
@@ -334,7 +330,7 @@ impl SpvManager {
                                     }
                                 }
                                 NetworkEvent::FilterHeadersReceived { count, tip_height } => {
-                                    tracing::debug!("Filter headers received: {} headers, tip: {}", count, tip_height);
+                                    tracing::info!("Filter headers received: {} headers, tip: {}", count, tip_height);
                                 }
                                 NetworkEvent::SyncCompleted { final_height } => {
                                     tracing::info!("SPV sync completed at height {}", final_height);
@@ -357,10 +353,10 @@ impl SpvManager {
                                     }
                                 }
                                 NetworkEvent::InstantLock { txid } => {
-                                    tracing::debug!("InstantLock received for tx: {}", txid);
+                                    tracing::info!("InstantLock received for tx: {}", txid);
                                 }
                                 NetworkEvent::MasternodeListUpdated { height, masternode_count } => {
-                                    tracing::debug!("Masternode list updated at height {} with {} masternodes",
+                                    tracing::info!("Masternode list updated at height {} with {} masternodes",
                                         height, masternode_count);
                                 }
                                 NetworkEvent::NetworkError { peer, error } => {
@@ -368,7 +364,7 @@ impl SpvManager {
                                 }
                                 _ => {
                                     // Log any other events we don't specifically handle
-                                    tracing::debug!("Received event: {:?}", event);
+                                    tracing::info!("Received event: {:?}", event);
                                 }
                             }
                         }
@@ -382,55 +378,27 @@ impl SpvManager {
                 } => {}
             }
         }
-
-        tracing::info!("SPV task loop ended");
     }
-    
+
     /// Get quorum key directly from the client's MasternodeListEngine
     fn get_quorum_key_from_client(
         client: &DashSpvClient,
         quorum_type: u8,
         quorum_hash: &[u8; 32],
     ) -> Option<[u8; 48]> {
-        tracing::debug!("get_quorum_key_from_client: Starting lookup for quorum_type: {}, quorum_hash: {:?}", quorum_type, quorum_hash);
         let mn_list_engine = client.masternode_list_engine()?;
-        tracing::debug!("get_quorum_key_from_client: MasternodeListEngine accessed successfully");
         let llmq_type = LLMQType::from(quorum_type);
-        
+
         // Try both reversed and unreversed hash
         let mut reversed_hash = *quorum_hash;
         reversed_hash.reverse();
         let quorum_hash_typed = QuorumHash::from_slice(&reversed_hash).ok()?;
-        let quorum_hash_original = QuorumHash::from_slice(quorum_hash).ok()?;
-        
-        tracing::debug!("get_quorum_key_from_client: Original hash: {}, Reversed hash: {}", 
-            quorum_hash_original, quorum_hash_typed);
-        
+
         // Search through masternode lists
-        tracing::debug!("get_quorum_key_from_client: Searching through {} masternode lists", mn_list_engine.masternode_lists.len());
         for (_height, mn_list) in &mn_list_engine.masternode_lists {
             if let Some(quorums) = mn_list.quorums.get(&llmq_type) {
-                tracing::debug!("get_quorum_key_from_client: Found {} quorums for type {:?}", quorums.len(), llmq_type);
-                
-                // Log first few quorum hashes for debugging
-                for (i, (hash, _)) in quorums.iter().enumerate().take(3) {
-                    tracing::debug!("  Quorum {}: {}", i, hash);
-                }
-                
-                // Try reversed hash first
+                // Query with reversed hash
                 if let Some(entry) = quorums.get(&quorum_hash_typed) {
-                    tracing::debug!("get_quorum_key_from_client: Found with reversed hash!");
-                    let public_key_bytes: &[u8] = entry.quorum_entry.quorum_public_key.as_ref();
-                    if public_key_bytes.len() == 48 {
-                        let mut key_array = [0u8; 48];
-                        key_array.copy_from_slice(public_key_bytes);
-                        return Some(key_array);
-                    }
-                }
-                
-                // Try original hash
-                if let Some(entry) = quorums.get(&quorum_hash_original) {
-                    tracing::debug!("get_quorum_key_from_client: Found with original hash!");
                     let public_key_bytes: &[u8] = entry.quorum_entry.quorum_public_key.as_ref();
                     if public_key_bytes.len() == 48 {
                         let mut key_array = [0u8; 48];
@@ -440,8 +408,7 @@ impl SpvManager {
                 }
             }
         }
-        
-        tracing::debug!("get_quorum_key_from_client: Quorum not found");
+
         None
     }
 
@@ -459,7 +426,9 @@ impl SpvManager {
         Ok((current, target, percent))
     }
 
-    pub async fn get_sync_progress_with_phase(&mut self) -> Result<(u32, u32, f32, Option<SyncPhaseInfo>), String> {
+    pub async fn get_sync_progress_with_phase(
+        &mut self,
+    ) -> Result<(u32, u32, f32, Option<SyncPhaseInfo>), String> {
         if let Some(tx) = &self.command_tx {
             let (response_tx, response_rx) = oneshot::channel();
 
@@ -477,6 +446,17 @@ impl SpvManager {
 
             // Extract phase info if available
             let phase_info = progress.current_phase.clone();
+
+            // Debug log what we received from SPV client
+            if let Some(ref phase) = phase_info {
+                tracing::info!(
+                    "SPV client returned phase: {} ({:.1}%)",
+                    phase.phase_name,
+                    phase.progress_percentage
+                );
+            } else {
+                tracing::info!("SPV client returned no phase info");
+            }
 
             // Update target height based on phase info or current sync state
             if let Some(ref phase) = phase_info {
@@ -504,7 +484,12 @@ impl SpvManager {
                 return Ok((self.current_height, self.target_height, 100.0, phase_info));
             }
 
-            Ok((self.current_height, self.target_height, progress_percent, phase_info))
+            Ok((
+                self.current_height,
+                self.target_height,
+                progress_percent,
+                phase_info,
+            ))
         } else {
             Err("SPV client not initialized".to_string())
         }
@@ -573,10 +558,7 @@ impl SpvManager {
 }
 
 impl AppContext {
-    pub async fn run_spv_task(
-        &self,
-        task: SpvTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    pub async fn run_spv_task(&self, task: SpvTask) -> Result<BackendTaskSuccessResult, String> {
         let mut spv_manager = self.spv_manager.write().await;
 
         match task {
@@ -602,12 +584,14 @@ impl AppContext {
                 ))
             }
             SpvTask::GetSyncProgress => {
-                let (current, target, percent, phase_info) = spv_manager.get_sync_progress_with_phase().await?;
-                
+                let (current, target, percent, phase_info) =
+                    spv_manager.get_sync_progress_with_phase().await?;
+
                 // Log phase info for debugging
                 if let Some(ref phase) = phase_info {
-                    tracing::info!("SPV Phase: {} - {:.1}% ({}/{:?} items)", 
-                        phase.phase_name, 
+                    tracing::info!(
+                        "SPV Phase: {} - {:.1}% ({}/{:?} items)",
+                        phase.phase_name,
                         phase.progress_percentage,
                         phase.items_completed,
                         phase.items_total

@@ -53,66 +53,29 @@ impl ComponentResponse for AmountInputResponse {
 /// This widget can be used for any type of amount input (tokens, Dash, etc.).
 ///
 /// The widget validates the input in real-time and shows error messages when
-/// the input is invalid. It properly handles decimal places according to the
-/// configured number of decimals. Unit names from the initial Amount are
-/// automatically preserved and applied to all parsed amounts.
+/// the input is invalid. It follows the component design pattern with lazy
+/// initialization and response-based communication.
 ///
-/// # Features
-/// - Real-time validation with error messages
-/// - Configurable minimum and maximum amounts
-/// - Optional "Max" button for quick maximum input
-/// - Automatic unit name preservation from initial Amount objects
-/// - Proper layout alignment when buttons are present
-/// - Self-contained state management
-/// - Enable/disable functionality to prevent changes during operations
+/// # Usage
 ///
-/// # Example
-/// ```rust
-/// use dash_evo_tool::ui::components::amount_input::AmountInput;
-/// use dash_evo_tool::model::amount::Amount;
-/// use egui::Ui;
+/// Store the component as `Option<AmountInput>` in your screen struct for lazy
+/// initialization, then use the fluent builder API to configure it:
 ///
-/// // Store Option<AmountInput> for lazy initialization
-/// struct MyScreen {
-///     amount_input: Option<AmountInput>,
-///     current_amount: Option<Amount>, // Track the current amount with unit name
-///     operation_in_progress: bool,
-/// }
+/// ```rust,ignore
+/// let amount_input = self.amount_input.get_or_insert_with(|| {
+///     AmountInput::new(Amount::new_dash(0.0))
+///         .label("Amount:")
+///         .hint_text("Enter amount")
+///         .max_amount(Some(1000000))
+///         .min_amount(Some(1000))
+///         .max_button(true)
+/// });
 ///
-/// impl MyScreen {
-///     fn new() -> Self {
-///         Self {
-///             amount_input: None, // Lazy initialization
-///             current_amount: None, // Will be set by [AmountInputResponse::update()]
-///             operation_in_progress: false,
-///         }
-///     }
-///
-///     fn show(&mut self, ui: &mut Ui) {
-///         // Initialize AmountInput with the current amount (preserves unit name)
-///         let amount_input = self.amount_input.get_or_insert_with(|| {
-///             AmountInput::new(Amount::dash(0.0)) // Start with zero DASH
-///                 .label("Amount:")
-///                 .hint_text("Enter amount")
-///                 .max_amount(Some(1000000))
-///                 .min_amount(Some(1000))
-///                 .max_button(true)
-///         });
-///
-///         // Use egui's enabled state to disable input during operations
-///         let response = ui.add_enabled_ui(!self.operation_in_progress, |ui| {
-///             amount_input.show(ui)
-///         }).inner;
-///
-///         // Simple, correct handling using the helper method
-///         if response.inner.update(&mut self.current_amount) {
-///             // Put logic to handle the amount change, if any
-///             println!("Amount updated: {:?}", self.current_amount);
-///         }
-///         // Note: error handling is done inside AmountInput, so we don't need to display errors here
-///     }
-/// }
+/// let response = amount_input.show(ui);
+/// response.inner.update(&mut self.amount);
 /// ```
+///
+/// See the tests for complete usage examples.
 pub struct AmountInput {
     // Raw data, as entered by the user
     amount_str: String,
@@ -165,24 +128,6 @@ impl AmountInput {
     pub fn set_changed(&mut self, changed: bool) -> &mut Self {
         self.changed = changed;
         self
-    }
-    /// Gets the currently parsed amount without showing the widget.
-    /// Returns None if the current text is empty or invalid.
-    pub fn get_current_amount(&self) -> Option<Amount> {
-        if self.amount_str.trim().is_empty() {
-            None
-        } else {
-            match Amount::parse(&self.amount_str, self.decimal_places) {
-                Ok(mut amount) => {
-                    // Apply the unit name if we have one
-                    if let Some(ref unit_name) = self.unit_name {
-                        amount = amount.with_unit_name(unit_name);
-                    }
-                    Some(amount)
-                }
-                Err(_) => None,
-            }
-        }
     }
 
     /// Gets the number of decimal places this input is configured for.
@@ -278,9 +223,12 @@ impl AmountInput {
     }
 
     /// Validates the current amount string and returns validation results.
-    fn validate_amount(&self) -> (Option<String>, Option<Amount>) {
+    ///
+    /// Returns `Ok(Some(Amount))` for valid input, `Ok(None)` for empty input,
+    /// or `Err(String)` with error message if validation fails.
+    fn validate_amount(&self) -> Result<Option<Amount>, String> {
         if self.amount_str.trim().is_empty() {
-            return (None, None);
+            return Ok(None);
         }
 
         match Amount::parse(&self.amount_str, self.decimal_places) {
@@ -293,33 +241,27 @@ impl AmountInput {
                 // Check if amount exceeds maximum
                 if let Some(max_amount) = self.max_amount {
                     if amount.value() > max_amount {
-                        return (
-                            Some(format!(
-                                "Amount {} exceeds allowed maximum {}",
-                                amount,
-                                Amount::new(max_amount, self.decimal_places)
-                            )),
-                            None,
-                        );
+                        return Err(format!(
+                            "Amount {} exceeds allowed maximum {}",
+                            amount,
+                            Amount::new(max_amount, self.decimal_places)
+                        ));
                     }
                 }
 
                 // Check if amount is below minimum
                 if let Some(min_amount) = self.min_amount {
                     if amount.value() < min_amount {
-                        return (
-                            Some(format!(
-                                "Amount must be at least {}",
-                                Amount::new(min_amount, self.decimal_places)
-                            )),
-                            None,
-                        );
+                        return Err(format!(
+                            "Amount must be at least {}",
+                            Amount::new(min_amount, self.decimal_places)
+                        ));
                     }
                 }
 
-                (None, Some(amount))
+                Ok(Some(amount))
             }
-            Err(error) => (Some(error), None),
+            Err(error) => Err(error),
         }
     }
 
@@ -366,7 +308,10 @@ impl AmountInput {
             }
 
             // Validate the amount
-            let (error_message, parsed_amount) = self.validate_amount();
+            let (error_message, parsed_amount) = match self.validate_amount() {
+                Ok(amount) => (None, amount),
+                Err(error) => (Some(error), None),
+            };
 
             // Show validation error if enabled and error exists
             if self.show_validation_errors
@@ -383,7 +328,7 @@ impl AmountInput {
             AmountInputResponse {
                 response: text_response,
                 changed,
-                error_message: error_message.clone(),
+                error_message,
                 max_clicked,
                 parsed_amount,
             }
@@ -459,14 +404,14 @@ mod tests {
 
         // Test that get_current_amount preserves unit name
         input.amount_str = "2.5".to_string();
-        let current = input.get_current_amount().unwrap();
+        let current = input.validate_amount().unwrap().unwrap();
         assert_eq!(current.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", current), "2.5 DASH");
 
         // Test validation also preserves unit name
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none());
-        let parsed = parsed.unwrap();
+        let validation_result = input.validate_amount();
+        assert!(validation_result.is_ok());
+        let parsed = validation_result.unwrap().unwrap();
         assert_eq!(parsed.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", parsed), "2.5 DASH");
     }
@@ -481,7 +426,7 @@ mod tests {
 
         // Test with different amount
         input.amount_str = "5.5".to_string();
-        let current = input.get_current_amount().unwrap();
+        let current = input.validate_amount().unwrap().unwrap();
         assert_eq!(current.unit_name(), Some("MYTOKEN"));
         assert_eq!(format!("{}", current), "5.5 MYTOKEN");
     }
@@ -493,32 +438,39 @@ mod tests {
 
         // Test empty input (valid)
         input.amount_str = "".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none(), "Empty input should be valid");
-        assert!(parsed.is_none(), "Empty input should have no parsed amount");
+        let validation_result = input.validate_amount();
+        assert!(validation_result.is_ok(), "Empty input should be valid");
+        assert!(
+            validation_result.unwrap().is_none(),
+            "Empty input should have no parsed amount"
+        );
 
         // Test valid input
         input.amount_str = "10.50".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none(), "Valid input should have no error");
-        assert!(parsed.is_some(), "Valid input should have parsed amount");
+        let validation_result = input.validate_amount();
+        assert!(
+            validation_result.is_ok(),
+            "Valid input should have no error"
+        );
+        assert!(
+            validation_result.unwrap().is_some(),
+            "Valid input should have parsed amount"
+        );
 
         // Test invalid input (too many decimals)
         input.amount_str = "10.555".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Invalid input should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Invalid input should have no parsed amount"
+            validation_result.is_err(),
+            "Invalid input should have error"
         );
 
         // Test invalid input (non-numeric)
         input.amount_str = "abc".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Non-numeric input should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Non-numeric input should have no parsed amount"
+            validation_result.is_err(),
+            "Non-numeric input should have error"
         );
     }
 
@@ -531,28 +483,29 @@ mod tests {
 
         // Test amount below minimum
         input.amount_str = "0.50".to_string(); // 50 (below min of 100)
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Amount below minimum should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Amount below minimum should have no parsed amount"
+            validation_result.is_err(),
+            "Amount below minimum should have error"
         );
 
         // Test amount above maximum
         input.amount_str = "150.00".to_string(); // 15000 (above max of 10000)
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Amount above maximum should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Amount above maximum should have no parsed amount"
+            validation_result.is_err(),
+            "Amount above maximum should have error"
         );
 
         // Test valid amount within range
         input.amount_str = "50.00".to_string(); // 5000 (within range)
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none(), "Amount within range should have no error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_some(),
+            validation_result.is_ok(),
+            "Amount within range should have no error"
+        );
+        assert!(
+            validation_result.unwrap().is_some(),
             "Amount within range should have parsed amount"
         );
     }

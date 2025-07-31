@@ -12,6 +12,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -104,7 +105,7 @@ impl WithdrawalScreen {
 
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {
-            AmountInput::new(Amount::dash(0.0))
+            AmountInput::new(Amount::new_dash(0.0))
                 .label("Amount:")
                 .max_button(true)
         });

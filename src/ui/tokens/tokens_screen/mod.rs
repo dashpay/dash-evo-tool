@@ -2409,71 +2409,46 @@ impl TokensScreen {
     fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
         let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
 
-        // Re-create the input if decimals changed or if it doesn't exist
-        let should_recreate = self.base_supply_input.is_none()
-            || self
-                .base_supply_amount
-                .as_ref()
-                .map(|amount| amount.decimal_places() != decimals)
-                .unwrap_or(false);
+        let input = self.base_supply_input.get_or_insert_with(|| {
+            let initial_amount = Amount::new(
+                TokenConfigurationV0::default_most_restrictive().base_supply(),
+                decimals,
+            );
 
-        if should_recreate {
-            let initial_amount = if let Some(current_amount) = &self.base_supply_amount {
-                // Preserve the actual token value when decimal places change
-                current_amount.clone().recalculate_decimal_places(decimals)
-            } else {
-                // Use default value for new inputs
-                Amount::new(
-                    TokenConfigurationV0::default_most_restrictive().base_supply(),
-                    decimals,
-                )
-            };
-            let mut input = AmountInput::new(initial_amount).label("Base Supply*:");
-            input.set_changed(true);
-            self.base_supply_input = Some(input);
+            AmountInput::new(initial_amount).with_label("Base Supply*:")
+        });
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
         }
 
-        if let Some(base_supply_input) = &mut self.base_supply_input {
-            let response = base_supply_input.show(ui);
-
-            // Always use update() to handle the binding correctly
-            response.inner.update(&mut self.base_supply_amount);
-            // errors are handled in the AmountInput component
-        }
+        let response = input.show(ui);
+        response.inner.update(&mut self.base_supply_amount);
     }
 
     /// Renders the max supply amount input using AmountInput component
     fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
         let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
 
-        // Re-create the input if decimals changed or if it doesn't exist
-        let should_recreate = self.max_supply_input.is_none()
-            || self
-                .max_supply_amount
-                .as_ref()
-                .map(|amount| amount.decimal_places() != decimals)
-                .unwrap_or(false);
+        let input = self.max_supply_input.get_or_insert_with(|| {
+            let initial_amount = Amount::new(
+                TokenConfigurationV0::default_most_restrictive()
+                    .max_supply()
+                    .unwrap_or(0),
+                decimals,
+            );
 
-        if should_recreate {
-            let initial_amount = if let Some(current_amount) = &self.max_supply_amount {
-                // Preserve the actual token value when decimal places change
-                current_amount.clone().recalculate_decimal_places(decimals)
-            } else {
-                // Use zero as default for new max supply inputs
-                Amount::new(0, decimals)
-            };
-            let mut input = AmountInput::new(initial_amount).label("Max Supply:");
-            input.set_changed(true);
-            self.max_supply_input = Some(input);
+            AmountInput::new(initial_amount).with_label("Max Supply:")
+        });
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
         }
 
-        if let Some(max_supply_input) = &mut self.max_supply_input {
-            let response = max_supply_input.show(ui);
-
-            // Always use update() to handle the binding correctly
-            response.inner.update(&mut self.max_supply_amount);
-            // errors are handled in the AmountInput component
-        }
+        let response = input.show(ui);
+        response.inner.update(&mut self.max_supply_amount);
     }
 }
 

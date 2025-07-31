@@ -118,7 +118,7 @@ impl AmountInput {
             show_max_button: false,
             desired_width: None,
             show_validation_errors: true, // Default to showing validation errors
-            changed: false,
+            changed: true,                // Start as changed to force initial validation
         }
     }
 

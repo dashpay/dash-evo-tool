@@ -1,3 +1,4 @@
+pub mod amount;
 pub mod contested_name;
 pub mod password_info;
 pub mod proof_log_item;

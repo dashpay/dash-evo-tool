@@ -1090,16 +1090,16 @@ impl ScreenLike for SettingsScreen {
                 .unwrap()
                 .as_millis() as TimestampMillis;
 
-            // Only check progress once per 3 seconds
-            if current_time >= self.spv_last_progress_check + 3000 {
+            // Only check progress once per 10 seconds
+            if current_time >= self.spv_last_progress_check + 10000 {
                 self.spv_last_progress_check = current_time;
                 tracing::info!("Settings screen requesting SPV sync progress update");
                 action = AppAction::BackendTask(BackendTask::SpvTask(SpvTask::GetSyncProgress));
             }
-            ctx.request_repaint_after(std::time::Duration::from_secs(3));
+            ctx.request_repaint_after(std::time::Duration::from_secs(10));
         } else if action == AppAction::None {
-            // Recheck both network status every 3 seconds
-            let recheck_time = Duration::from_secs(3);
+            // Recheck both network status every 10 seconds
+            let recheck_time = Duration::from_secs(10);
             let current_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards");

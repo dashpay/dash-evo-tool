@@ -158,7 +158,7 @@ impl SpvManager {
                 }
             };
 
-            tracing::info!("✅ Created SPV client with storage service (deadlock-free mode)");
+            tracing::info!("✅ Created SPV client with storage service");
 
             // Start the client
             if let Err(e) = client.start().await {
@@ -231,6 +231,7 @@ impl SpvManager {
                 Some(command) = command_rx.recv() => {
                     match command {
                         SpvCommand::GetSyncProgress { response } => {
+                            tracing::info!("Getting SPV sync progress");
                             let result = client.sync_progress().await
                                 .map_err(|e| format!("Failed to get sync progress: {:?}", e));
 

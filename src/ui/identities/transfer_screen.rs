@@ -115,9 +115,9 @@ impl TransferScreen {
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
-                .label("Amount:")
-                .max_button(true)
-                .max_amount(Some(max_amount_credits))
+                .with_label("Amount:")
+                .with_max_button(true)
+                .with_max_amount(Some(max_amount_credits))
         });
 
         // Check if input should be disabled when operation is in progress

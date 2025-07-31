@@ -221,7 +221,12 @@ impl Amount {
 
     /// Sets the unit name.
     pub fn with_unit_name(mut self, unit_name: &str) -> Self {
-        self.unit_name = Some(unit_name.to_string());
+        if unit_name.is_empty() {
+            self.unit_name = None;
+        } else {
+            self.unit_name = Some(unit_name.to_string());
+        }
+
         self
     }
 
@@ -256,29 +261,6 @@ impl Amount {
     /// Creates a new Amount with the specified value in TokenAmount.
     pub fn with_value(mut self, value: TokenAmount) -> Self {
         self.value = value;
-        self
-    }
-
-    /// Updates the decimal places for this amount.
-    /// This adjusts the internal value to maintain the same displayed amount.
-    ///
-    /// If new decimal places are equal to the current ones, it does nothing.
-    pub fn recalculate_decimal_places(mut self, new_decimal_places: u8) -> Self {
-        if self.decimal_places != new_decimal_places {
-            let current_decimals = self.decimal_places;
-
-            if new_decimal_places > current_decimals {
-                // More decimal places - multiply value
-                let factor = 10u64.pow((new_decimal_places - current_decimals) as u32);
-                self.value = self.value.saturating_mul(factor);
-            } else if new_decimal_places < current_decimals {
-                // Fewer decimal places - divide value
-                let factor = 10u64.pow((current_decimals - new_decimal_places) as u32);
-                self.value /= factor;
-            }
-
-            self.decimal_places = new_decimal_places;
-        }
         self
     }
 
@@ -665,28 +647,5 @@ mod tests {
         // Test zero amount
         let zero_amount = Amount::new(0, 8);
         assert_eq!(zero_amount.to_string_without_unit(), "0");
-    }
-
-    #[test]
-    fn test_decimal_places_conversion() {
-        // Test converting from 2 decimal places to 8 decimal places
-        let amount = Amount::new(12345, 2); // 123.45
-        let converted = amount.recalculate_decimal_places(8);
-        assert_eq!(converted.value(), 12345000000); // 123.45 with 8 decimals
-        assert_eq!(converted.decimal_places(), 8);
-        assert_eq!(format!("{}", converted), "123.45");
-
-        // Test converting from 8 decimal places to 2 decimal places
-        let amount = Amount::new(12345000000, 8); // 123.45
-        let converted = amount.recalculate_decimal_places(2);
-        assert_eq!(converted.value(), 12345); // 123.45 with 2 decimals
-        assert_eq!(converted.decimal_places(), 2);
-        assert_eq!(format!("{}", converted), "123.45");
-
-        // Test no conversion (same decimal places)
-        let amount = Amount::new(12345, 2);
-        let same = amount.clone().recalculate_decimal_places(2);
-        assert_eq!(same.value(), 12345);
-        assert_eq!(same.decimal_places(), 2);
     }
 }

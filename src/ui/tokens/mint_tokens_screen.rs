@@ -212,7 +212,7 @@ impl MintTokensScreen {
         let amount_input = self.amount_input.get_or_insert_with(|| {
             // Create appropriate Amount based on token configuration
             let token_amount = Amount::from_token(&self.identity_token_info, 0);
-            AmountInput::new(token_amount).label("Amount to Mint:")
+            AmountInput::new(token_amount).with_label("Amount to Mint:")
         });
 
         // Check if input should be disabled when operation is in progress

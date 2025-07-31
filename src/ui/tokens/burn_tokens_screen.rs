@@ -215,7 +215,7 @@ impl BurnTokensScreen {
     fn render_amount_input(&mut self, ui: &mut egui::Ui) {
         let amount_input = self.amount_input.get_or_insert_with(|| {
             let token_amount = Amount::from_token(&self.identity_token_info, 0);
-            let mut input = AmountInput::new(token_amount).label("Amount:");
+            let mut input = AmountInput::new(token_amount).with_label("Amount:");
 
             if self.max_amount.is_some() {
                 input.set_show_max_button(self.max_amount.is_some());

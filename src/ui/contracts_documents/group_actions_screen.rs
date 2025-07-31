@@ -200,7 +200,7 @@ impl GroupActionsScreen {
                     .body(|mut body| {
                         for (id, group_action) in group_actions {
                             let GroupActionEvent::TokenEvent(token_event) = group_action.event();
-                            
+
                             body.row(row_height, |mut row| {
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {

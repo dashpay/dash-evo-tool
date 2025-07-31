@@ -63,7 +63,6 @@ impl ImportWalletScreen {
                     let (encrypted_message, salt, nonce) =
                         encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
                     self.app_context
-                        .db
                         .update_main_password(&salt, &nonce, &encrypted_message)
                         .map_err(|e| e.to_string())?;
                 }

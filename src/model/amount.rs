@@ -104,18 +104,6 @@ impl Amount {
         Ok(Self::new(value, decimal_places))
     }
 
-    /// Creates a new Amount configured for a specific token.
-    ///
-    /// This extracts the decimal places and token alias from the token configuration
-    /// and creates an Amount with the specified value.
-    pub fn new_for_token(
-        value: TokenAmount,
-        token_info: &crate::ui::tokens::tokens_screen::IdentityTokenInfo,
-    ) -> Self {
-        let decimal_places = token_info.token_config.conventions().decimals();
-        Self::new_with_unit(value, decimal_places, token_info.token_alias.clone())
-    }
-
     /// Creates a new Amount from a string input with specified decimal places.
     /// If the input string contains a unit suffix (e.g., "123.45 USD"), the unit name will be preserved.
     pub fn parse(input: &str, decimal_places: u8) -> Result<Self, String> {

@@ -1,8 +1,8 @@
-use crate::ui::components::UpdatableComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
@@ -214,7 +214,7 @@ impl BurnTokensScreen {
     /// Renders a text input for the user to specify an amount to burn
     fn render_amount_input(&mut self, ui: &mut egui::Ui) {
         let amount_input = self.amount_input.get_or_insert_with(|| {
-            let token_amount = Amount::new_for_token(0, &self.identity_token_info);
+            let token_amount = Amount::from_token(&self.identity_token_info, 0);
             let mut input = AmountInput::new(token_amount).label("Amount:");
 
             if self.max_amount.is_some() {

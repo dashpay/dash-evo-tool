@@ -6,7 +6,6 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::UpdatableComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -14,6 +13,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
@@ -211,7 +211,7 @@ impl MintTokensScreen {
         // Lazy initialization with proper token configuration
         let amount_input = self.amount_input.get_or_insert_with(|| {
             // Create appropriate Amount based on token configuration
-            let token_amount = Amount::new_for_token(0, &self.identity_token_info);
+            let token_amount = Amount::from_token(&self.identity_token_info, 0);
             AmountInput::new(token_amount).label("Amount to Mint:")
         });
 

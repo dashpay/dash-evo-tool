@@ -88,8 +88,8 @@ impl Amount {
     /// This extracts the decimal places and token alias from the token configuration
     /// and creates an Amount with the specified value.
     pub fn from_token(
-        value: TokenAmount,
         token_info: &crate::ui::tokens::tokens_screen::IdentityTokenInfo,
+        value: TokenAmount,
     ) -> Self {
         let decimal_places = token_info.token_config.conventions().decimals();
         Self::new(value, decimal_places).with_unit_name(&token_info.token_alias)

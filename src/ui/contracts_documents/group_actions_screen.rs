@@ -200,7 +200,7 @@ impl GroupActionsScreen {
                     .body(|mut body| {
                         for (id, group_action) in group_actions {
                             let GroupActionEvent::TokenEvent(token_event) = group_action.event();
-
+                            
                             body.row(row_height, |mut row| {
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {
@@ -357,9 +357,9 @@ impl GroupActionsScreen {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.group_action_id = Some(action_id);
                 // Convert amount to Amount struct using the token configuration
-                mint_screen.amount = Some(Amount::new_for_token(
-                    *amount,
+                mint_screen.amount = Some(Amount::from_token(
                     &mint_screen.identity_token_info,
+                    *amount,
                 ));
                 mint_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::MintTokensScreen(mint_screen));
@@ -368,9 +368,9 @@ impl GroupActionsScreen {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
                 burn_screen.group_action_id = Some(action_id);
                 // Convert amount to Amount struct using the token configuration
-                burn_screen.amount = Some(Amount::new_for_token(
-                    *amount,
+                burn_screen.amount = Some(Amount::from_token(
                     &burn_screen.identity_token_info,
+                    *amount,
                 ));
                 burn_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::BurnTokensScreen(burn_screen));

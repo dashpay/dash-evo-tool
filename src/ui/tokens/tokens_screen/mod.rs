@@ -1061,9 +1061,9 @@ pub struct TokensScreen {
     // --- FixedAmount ---
     pub fixed_amount_input: String,
 
-    // --- Random ---
-    pub random_min_input: String,
-    pub random_max_input: String,
+    // --- Random ---  -  not supported
+    // pub random_min_input: String,
+    // pub random_max_input: String,
 
     // --- StepDecreasingAmount ---
     pub step_count_input: String,
@@ -1406,8 +1406,8 @@ impl TokensScreen {
             perpetual_dist_interval_unit: IntervalTimeUnit::Day,
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
             fixed_amount_input: String::new(),
-            random_min_input: String::new(),
-            random_max_input: String::new(),
+            // random_min_input: String::new(),
+            // random_max_input: String::new(),
             step_count_input: String::new(),
             decrease_per_interval_numerator_input: String::new(),
             decrease_per_interval_denominator_input: String::new(),
@@ -2133,8 +2133,8 @@ impl TokensScreen {
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
         self.fixed_amount_input = "".to_string();
-        self.random_min_input = "".to_string();
-        self.random_max_input = "".to_string();
+        // self.random_min_input = "".to_string();
+        // self.random_max_input = "".to_string();
         self.step_count_input = "".to_string();
         self.decrease_per_interval_numerator_input = "".to_string();
         self.decrease_per_interval_denominator_input = "".to_string();
@@ -3005,7 +3005,7 @@ mod tests {
         // -------------------------------------------------
         // Groups
         // -------------------------------------------------
-        // We'll define 2 groups for testing: positions 2 (main) and 7
+        // We'll define 2 groups for testing: positions 0 (main) and 1
         token_creator_ui.groups_ui = vec![
             GroupConfigUI {
                 required_power_str: "2".to_string(),
@@ -3165,25 +3165,26 @@ mod tests {
         };
         assert_eq!(
             new_dest_id.to_string(Encoding::Base58),
-            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
         );
         assert!(dist_rules_v0.minting_allow_choosing_destination);
 
         // F) Check the Groups
-        //    (Positions 2 and 7, from above)
+        //    (Positions 0 and 1, from above)
         assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
-        let group2 = contract_v1.groups.get(&2).expect("Expected group pos=2");
+
+        let group0 = contract_v1.groups.get(&0).expect("Expected group pos=0");
         assert_eq!(
-            group2.required_power(),
+            group0.required_power(),
             2,
-            "Group #2 required_power mismatch"
+            "Group #0 required_power mismatch"
         );
-        let members = &group2.members();
+        let members = &group0.members();
         assert_eq!(members.len(), 2);
 
-        let group7 = contract_v1.groups.get(&7).expect("Expected group pos=7");
-        assert_eq!(group7.required_power(), 1);
-        assert_eq!(group7.members().len(), 0);
+        let group1 = contract_v1.groups.get(&1).expect("Expected group pos=1");
+        assert_eq!(group1.required_power(), 1);
+        assert_eq!(group1.members().len(), 0);
     }
 
     #[test]
@@ -3238,9 +3239,10 @@ mod tests {
         // Enable perpetual distribution, select Random
         token_creator_ui.enable_perpetual_distribution = true;
         token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
-        token_creator_ui.perpetual_dist_interval_input = "60000".to_string();
-        token_creator_ui.random_min_input = "100".to_string();
-        token_creator_ui.random_max_input = "200".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
+        token_creator_ui.perpetual_dist_interval_input = "60".to_string();
+        token_creator_ui.perpetual_dist_interval_unit = IntervalTimeUnit::Second;
+        token_creator_ui.fixed_amount_input = "100".to_string();
 
         // Parse + build
         let build_args = token_creator_ui
@@ -3289,11 +3291,10 @@ mod tests {
             RewardDistributionType::TimeBasedDistribution { interval, function } => {
                 assert_eq!(*interval, 60000, "Expected 60s (in ms)");
                 match function {
-                    DistributionFunction::Random { min, max } => {
-                        assert_eq!(*min, 100);
-                        assert_eq!(*max, 200);
+                    DistributionFunction::FixedAmount { amount } => {
+                        assert_eq!(*amount, 100);
                     }
-                    _ => panic!("Expected DistributionFunction::Random"),
+                    _ => panic!("Expected DistributionFunction::FixedAmount"),
                 }
             }
             _ => panic!("Expected TimeBasedDistribution"),

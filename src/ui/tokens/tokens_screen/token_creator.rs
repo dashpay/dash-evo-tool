@@ -1021,13 +1021,13 @@ impl TokensScreen {
                 let base_supply_display = self
                     .base_supply_amount
                     .as_ref()
-                    .map(|amount| amount.to_string())
+                    .map(|amount| amount.to_string_opts(true, false))
                     .unwrap_or_else(|| "0".to_string());
                 let max_supply_display = self
                     .max_supply_amount
                     .as_ref()
                     .filter(|amount| amount.value() > 0)
-                    .map(|amount| amount.to_string())
+                    .map(|amount| amount.to_string_opts(true, false))
                     .unwrap_or_else(|| "None".to_string());
                 ui.label(format!(
                     "Name: {}\nBase Supply: {}\nMax Supply: {}",

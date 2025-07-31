@@ -74,6 +74,8 @@ const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/log_function.p
 const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/linear_function.png");
 const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/polynomial_function.png");
 
+const DEFAULT_DECIMALS: u8 = 8;
+
 pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     let image = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -1360,7 +1362,7 @@ impl TokensScreen {
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: true,
-            decimals_input: 0.to_string(),
+            decimals_input: DEFAULT_DECIMALS.to_string(),
             base_supply_amount: None,
             base_supply_input: None,
             max_supply_amount: None,
@@ -2109,7 +2111,7 @@ impl TokensScreen {
         )];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
-        self.decimals_input = "8".to_string();
+        self.decimals_input = DEFAULT_DECIMALS.to_string(); //
         self.base_supply_input = None;
         self.base_supply_amount = None;
         self.max_supply_input = None;
@@ -2992,7 +2994,7 @@ mod tests {
         token_creator_ui.base_supply_amount = Some(Amount::new(5000000, 8));
         token_creator_ui.max_supply_input = None;
         token_creator_ui.max_supply_amount = Some(Amount::new(10000000, 8));
-        token_creator_ui.decimals_input = "8".to_string();
+        token_creator_ui.decimals_input = DEFAULT_DECIMALS.to_string();
         token_creator_ui.start_as_paused_input = true;
         token_creator_ui.token_advanced_keeps_history =
             TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);

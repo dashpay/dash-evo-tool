@@ -50,13 +50,11 @@ impl PartialEq<TokenAmount> for &Amount {
 
 impl Display for Amount {
     /// Formats the TokenValue as a user-friendly string with optional unit name.
+    ///
+    /// See [`Amount::to_string_opts()`] for more formatting options.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let amount_str = self.to_string_without_unit();
-
-        match &self.unit_name {
-            Some(unit) => write!(f, "{} {}", amount_str, unit),
-            None => write!(f, "{}", amount_str),
-        }
+        let amount_str = self.to_string_opts(true, true);
+        write!(f, "{}", amount_str)
     }
 }
 
@@ -237,25 +235,53 @@ impl Amount {
     }
 
     /// Returns the numeric string representation without the unit name.
+    /// Trailing zeroes are trimmed by default.
     /// This is useful for text input fields where only the number should be shown.
+    ///
+    /// ## See also
+    ///
+    /// [`Amount::to_string_opts()`] for more formatting options.
     pub fn to_string_without_unit(&self) -> String {
-        if self.decimal_places == 0 {
-            self.value.to_string()
-        } else {
-            let divisor = 10u64.pow(self.decimal_places as u32);
-            let whole = self.value / divisor;
-            let fraction = self.value % divisor;
+        self.to_string_opts(false, true)
+    }
 
-            if fraction == 0 {
-                whole.to_string()
-            } else {
-                // Format with the appropriate number of decimal places, removing trailing zeros
-                let fraction_str =
-                    format!("{:0width$}", fraction, width = self.decimal_places as usize);
-                let trimmed = fraction_str.trim_end_matches('0');
-                format!("{}.{}", whole, trimmed)
+    /// Formats the Amount as a string with options for unit display and trailing zeroes.
+    pub fn to_string_opts(&self, show_unit: bool, trim_trailing_zeroes: bool) -> String {
+        let mut result = String::new();
+
+        let divisor = 10u64.pow(self.decimal_places as u32);
+        let whole = self.value / divisor;
+        let fraction = self.value % divisor;
+
+        // "123"
+        result.push_str(&whole.to_string());
+
+        if self.decimal_places != 0 {
+            // "123.0000"
+            result.push_str(&format!(
+                ".{:0width$}",
+                fraction,
+                width = self.decimal_places as usize
+            ));
+
+            if trim_trailing_zeroes {
+                // Remove trailing zeros
+                // "123."
+                result = result.trim_end_matches('0').to_string();
             }
+            // "123"
+            result = result.trim_end_matches('.').to_string();
+        };
+
+        if show_unit
+            && let Some(unit_name) = self.unit_name.as_ref()
+            && !unit_name.is_empty()
+        {
+            result.push(' ');
+            result.push_str(unit_name);
         }
+
+        result
     }
 
     /// Creates a new Amount with the specified value in TokenAmount.
@@ -647,5 +673,80 @@ mod tests {
         // Test zero amount
         let zero_amount = Amount::new(0, 8);
         assert_eq!(zero_amount.to_string_without_unit(), "0");
+    }
+
+    #[test]
+    fn test_to_string_opts() {
+        // Test basic formatting options with 2 decimal places
+        let amount = Amount::new(12345, 2).with_unit_name("USD");
+
+        // Test all combinations of show_unit and trim_trailing_zeroes
+        assert_eq!(amount.to_string_opts(true, true), "123.45 USD"); // show unit, trim zeros
+        assert_eq!(amount.to_string_opts(false, true), "123.45"); // no unit, trim zeros
+        assert_eq!(amount.to_string_opts(true, false), "123.45 USD"); // show unit, no trim (same as above since no trailing zeros)
+        assert_eq!(amount.to_string_opts(false, false), "123.45"); // no unit, no trim (same as above since no trailing zeros)
+
+        // Test with trailing zeros
+        let amount_with_zeros = Amount::new(12300, 2).with_unit_name("USD");
+        assert_eq!(amount_with_zeros.to_string_opts(true, true), "123 USD"); // show unit, trim zeros
+        assert_eq!(amount_with_zeros.to_string_opts(false, true), "123"); // no unit, trim zeros
+        assert_eq!(amount_with_zeros.to_string_opts(true, false), "123.00 USD"); // show unit, no trim
+        assert_eq!(amount_with_zeros.to_string_opts(false, false), "123.00"); // no unit, no trim
+
+        // Test with partial trailing zeros
+        let amount_partial_zeros = Amount::new(12340, 2).with_unit_name("USD");
+        assert_eq!(amount_partial_zeros.to_string_opts(true, true), "123.4 USD"); // show unit, trim zeros
+        assert_eq!(amount_partial_zeros.to_string_opts(false, true), "123.4"); // no unit, trim zeros
+        assert_eq!(
+            amount_partial_zeros.to_string_opts(true, false),
+            "123.40 USD"
+        ); // show unit, no trim
+        assert_eq!(amount_partial_zeros.to_string_opts(false, false), "123.40"); // no unit, no trim
+
+        // Test with 0 decimal places
+        let whole_amount = Amount::new(123, 0).with_unit_name("WHOLE");
+        assert_eq!(whole_amount.to_string_opts(true, true), "123 WHOLE");
+        assert_eq!(whole_amount.to_string_opts(false, true), "123");
+        assert_eq!(whole_amount.to_string_opts(true, false), "123 WHOLE");
+        assert_eq!(whole_amount.to_string_opts(false, false), "123");
+
+        // Test with high decimal places
+        let high_precision = Amount::new(123456789, 8).with_unit_name("BTC");
+        assert_eq!(high_precision.to_string_opts(true, true), "1.23456789 BTC"); // trim zeros
+        assert_eq!(high_precision.to_string_opts(false, true), "1.23456789"); // trim zeros
+        assert_eq!(high_precision.to_string_opts(true, false), "1.23456789 BTC"); // no trim (same as above since no trailing zeros)
+        assert_eq!(high_precision.to_string_opts(false, false), "1.23456789"); // no trim (same as above since no trailing zeros)
+
+        // Test with high decimal places and trailing zeros
+        let high_precision_zeros = Amount::new(100000000, 8).with_unit_name("BTC");
+        assert_eq!(high_precision_zeros.to_string_opts(true, true), "1 BTC"); // trim zeros
+        assert_eq!(high_precision_zeros.to_string_opts(false, true), "1"); // trim zeros
+        assert_eq!(
+            high_precision_zeros.to_string_opts(true, false),
+            "1.00000000 BTC"
+        ); // no trim
+        assert_eq!(
+            high_precision_zeros.to_string_opts(false, false),
+            "1.00000000"
+        ); // no trim
+
+        // Test zero amount
+        let zero_amount = Amount::new(0, 4).with_unit_name("TOKEN");
+        assert_eq!(zero_amount.to_string_opts(true, true), "0 TOKEN");
+        assert_eq!(zero_amount.to_string_opts(false, true), "0");
+        assert_eq!(zero_amount.to_string_opts(true, false), "0.0000 TOKEN");
+        assert_eq!(zero_amount.to_string_opts(false, false), "0.0000");
+
+        // Test amount without unit name
+        let no_unit = Amount::new(12345, 3);
+        assert_eq!(no_unit.to_string_opts(true, true), "12.345"); // show_unit=true but no unit name
+        assert_eq!(no_unit.to_string_opts(false, true), "12.345"); // show_unit=false
+        assert_eq!(no_unit.to_string_opts(true, false), "12.345"); // show_unit=true but no unit name, no trim
+        assert_eq!(no_unit.to_string_opts(false, false), "12.345"); // show_unit=false, no trim
+
+        // Test amount with empty unit name (should be treated as no unit)
+        let empty_unit = Amount::new(12345, 2).with_unit_name("");
+        assert_eq!(empty_unit.to_string_opts(true, true), "123.45"); // empty unit name should not show
+        assert_eq!(empty_unit.to_string_opts(false, true), "123.45");
     }
 }

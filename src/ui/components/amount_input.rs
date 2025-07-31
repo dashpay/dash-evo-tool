@@ -135,8 +135,22 @@ impl AmountInput {
         self.decimal_places
     }
 
-    /// Sets decimal places for the input, preserving displayed value. Intristic value will be multiplied by 10^n,
-    /// where n is difference between new and old decimal places.
+    /// Update decimal places used to render values.
+    ///
+    /// Value displayed in the input is not changed, but the actual [Amount]
+    /// will be multiplied or divided by 10^(difference of decimal places).
+    ///
+    /// ## Example
+    ///
+    /// The input contains `12.34` and decimal places is set to 3.
+    /// It will be interpreted as `12.340` when parsed (credits value `12_340`).
+    ///
+    ///
+    /// If you change the decimal places from 3 to 5:
+    ///
+    /// * The input will still display `12.34` (unchanged)
+    /// * The next time the input is parsed, it will generate `12.34000`
+    ///   (credits value `1_234_000`).
     pub fn set_decimal_places(&mut self, decimal_places: u8) -> &mut Self {
         self.decimal_places = decimal_places;
         self.changed = true;

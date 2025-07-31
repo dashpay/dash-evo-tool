@@ -162,6 +162,17 @@ impl AmountInput {
         self
     }
 
+    /// Sets value of the input field.
+    ///
+    /// This will update the internal state and mark the component as changed.
+    pub fn set_value(&mut self, value: Amount) -> &mut Self {
+        self.amount_str = value.to_string_without_unit();
+        self.decimal_places = value.decimal_places();
+        self.unit_name = value.unit_name().map(|s| s.to_string());
+        self.changed = true; // Mark as changed to trigger validation
+        self
+    }
+
     /// Sets the hint text for the input field.
     pub fn with_hint_text<T: Into<WidgetText>>(mut self, hint_text: T) -> Self {
         self.hint_text = Some(hint_text.into());

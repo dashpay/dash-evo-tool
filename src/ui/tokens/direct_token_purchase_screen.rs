@@ -3,6 +3,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
@@ -13,7 +15,10 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -45,11 +50,12 @@ pub struct PurchaseTokenScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
 
-    // Specific to this transition
-    amount_to_purchase: String,
-    total_agreed_price: String,
+    // Specific to this transition - using AmountInput components following design pattern
+    amount_to_purchase_input: Option<AmountInput>,
+    amount_to_purchase_value: Option<Amount>,
+    total_agreed_price_input: Option<AmountInput>,
     fetched_pricing_schedule: Option<TokenPricingSchedule>,
-    calculated_price: Option<Credits>,
+    calculated_price_credits: Option<Credits>,
     pricing_fetch_attempted: bool,
 
     /// Screen stuff
@@ -89,10 +95,11 @@ impl PurchaseTokenScreen {
         Self {
             identity_token_info,
             selected_key: possible_key,
-            amount_to_purchase: "".to_string(),
-            total_agreed_price: "".to_string(),
+            amount_to_purchase_input: None,
+            amount_to_purchase_value: None,
+            total_agreed_price_input: None,
             fetched_pricing_schedule: None,
-            calculated_price: None,
+            calculated_price_credits: None,
             pricing_fetch_attempted: false,
             status: PurchaseTokensStatus::NotStarted,
             error_message: None,
@@ -104,18 +111,34 @@ impl PurchaseTokenScreen {
         }
     }
 
-    /// Renders a text input for the user to specify an amount to purchase
+    /// Returns the total agreed price in credits, or 0.
+    fn get_total_agreed_price(&self) ->Option<Amount> {
+        self.total_agreed_price_input
+            .as_ref()
+            .and_then(|amount| amount.current_value())
+    }
+
+    /// Renders AmountInput components for the user to specify an amount to purchase
     fn render_amount_input(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         ui.horizontal(|ui| {
-            ui.label("Amount to Purchase:");
-            let response = ui.text_edit_singleline(&mut self.amount_to_purchase);
 
-            // When amount changes, recalculate the price if we have pricing schedule
-            if response.changed() {
+            // Use AmountInput for token amount with lazy initialization
+            let amount_input = self.amount_to_purchase_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new(0, self.identity_token_info.token_config.conventions().decimals()).with_unit_name(&self.identity_token_info.token_alias))
+                    .with_label("Amount to Purchase:")
+                    .with_hint_text("Enter token amount to purchase")
+                    .with_min_amount(Some(1))
+            });
+
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount_to_purchase_value);
+
+            // When amount changes, update domain data and recalculate the price
+            if response.inner.has_changed(){
                 self.recalculate_price();
-            }
+            } 
 
             // Fetch pricing button
             if ui.button("Fetch Token Price").clicked() {
@@ -143,13 +166,24 @@ impl PurchaseTokenScreen {
             ui.add_space(5.0);
             ui.label("Current pricing:");
             match pricing_schedule {
-                TokenPricingSchedule::SinglePrice(price) => {
-                    ui.label(format!("  Fixed price: {} credits per token", price));
+                TokenPricingSchedule::SinglePrice(price_credits) => {
+                    let price =
+                        Amount::new(*price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                    ui.label(format!(
+                        "  Fixed price: {} ({} credits) per token",
+                        price, price_credits
+                    ));
                 }
                 TokenPricingSchedule::SetPrices(tiers) => {
                     ui.label("  Tiered pricing:");
-                    for (amount, price) in tiers {
-                        ui.label(format!("    {} tokens: {} credits each", amount, price));
+                    for (amount_value, price_credits) in tiers {
+                        let amount = Amount::from_token(*amount_value, &self.identity_token_info);
+                        let price =
+                            Amount::new(*price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                        ui.label(format!(
+                            "    {} tokens: {} ({} credits) each",
+                            amount, price, price_credits
+                        ));
                     }
                 }
             }
@@ -160,10 +194,11 @@ impl PurchaseTokenScreen {
 
     /// Recalculates the total price based on amount and pricing schedule
     fn recalculate_price(&mut self) {
-        if let (Some(pricing_schedule), Ok(amount)) = (
+        if let (Some(pricing_schedule), Some(amount_value)) = (
             &self.fetched_pricing_schedule,
-            self.amount_to_purchase.parse::<u64>(),
+            &self.amount_to_purchase_value,
         ) {
+            let amount = amount_value.value();
             let price_per_token = match pricing_schedule {
                 TokenPricingSchedule::SinglePrice(price) => *price,
                 TokenPricingSchedule::SetPrices(tiers) => {
@@ -179,10 +214,23 @@ impl PurchaseTokenScreen {
             };
 
             let total_price = amount.saturating_mul(price_per_token);
-            self.calculated_price = Some(total_price);
-            self.total_agreed_price = total_price.to_string();
+            self.calculated_price_credits = Some(total_price);
+            
+            // Update the total agreed price AmountInput with calculated price
+            let price_amount = Amount::new(total_price, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+        
+            
+            // Update or create the price input component
+            let total_price_input = self.total_agreed_price_input.get_or_insert_with(|| {
+                AmountInput::new(price_amount.clone())
+                    .with_label("Total agreed price:")
+                    .with_hint_text("Calculated total price in Dash")
+            });
+            total_price_input.set_value(price_amount);
         } else {
-            self.calculated_price = None;
+            // hide and reset total agreed price when amount is invalid
+            self.total_agreed_price_input = None;
+            self.calculated_price_credits = None;
         }
     }
 
@@ -206,27 +254,26 @@ impl PurchaseTokenScreen {
             )
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount_to_purchase.parse::<u64>().ok();
-                if amount_ok.is_none() {
+                let amount_value = self.amount_to_purchase_value.as_ref();
+                let Some(amount) = amount_value else {
                     self.error_message = Some("Please enter a valid amount.".into());
                     self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
                     self.show_confirmation_popup = false;
                     return;
-                }
+                };
 
-                let total_agreed_price_ok: Option<Credits> =
-                    self.total_agreed_price.parse::<u64>().ok();
-                if total_agreed_price_ok.is_none() {
+                let Some( total_price) =  self.get_total_agreed_price() else{
                     self.error_message = Some("Please enter a valid total agreed price.".into());
                     self.status =
                         PurchaseTokensStatus::ErrorMessage("Invalid total agreed price".into());
                     self.show_confirmation_popup = false;
                     return;
-                }
+                };
+
 
                 ui.label(format!(
-                    "Are you sure you want to purchase {} token(s) for {} Credits?",
-                    self.amount_to_purchase, self.total_agreed_price
+                    "Are you sure you want to purchase {} token(s) for {} ({} Credits)?",
+                    amount, total_price, total_price.value()
                 ));
 
                 ui.add_space(10.0);
@@ -250,9 +297,8 @@ impl PurchaseTokenScreen {
                                 ),
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
-                                amount: amount_ok.expect("Expected a valid amount"),
-                                total_agreed_price: total_agreed_price_ok
-                                    .expect("Expected a valid total agreed price"),
+                                amount: amount.value(),
+                                total_agreed_price: total_price.value(),
                             })),
                             BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
@@ -474,12 +520,22 @@ impl ScreenLike for PurchaseTokenScreen {
 
                 ui.add_space(10.0);
 
-                // Display calculated price
-                if let Some(calculated_price) = self.calculated_price {
+                // Display calculated price and total agreed price input
+                if let Some(calculated_price_credits) = self.calculated_price_credits {
                     ui.group(|ui| {
                         ui.heading("Calculated total price:");
-                        ui.label(format!("{} credits", calculated_price));
+                        let dash_amount = Amount::new(calculated_price_credits, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
+                        ui.label(format!("{} DASH ({} credits)",dash_amount, calculated_price_credits));
                         ui.label("Note: This is the calculated price based on the current pricing schedule.");
+                        
+                        ui.add_space(10.0);
+                        ui.label("Total agreed price (you can adjust if needed):");
+                        
+                        // Show the total agreed price AmountInput
+                        if let Some(ref mut price_input) = self.total_agreed_price_input {
+                            price_input.show(ui);
+                        }
                     });
                 } else if self.fetched_pricing_schedule.is_some() {
                     ui.colored_label(
@@ -494,9 +550,11 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Purchase button (disabled if no pricing is available)
-                let can_purchase =
-                    self.fetched_pricing_schedule.is_some() && self.calculated_price.is_some();
+                // Purchase button (disabled if no valid amounts are available)
+                let can_purchase = self.fetched_pricing_schedule.is_some() 
+                    && self.calculated_price_credits.unwrap_or_default() > 0
+                    && self.amount_to_purchase_value.as_ref().map(|v|v.value()).unwrap_or_default() > 0
+                    && self.get_total_agreed_price().map(|v|v.value()).unwrap_or_default() > 0;
                 let purchase_text = "Purchase".to_string();
 
                 if can_purchase {

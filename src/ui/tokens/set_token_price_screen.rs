@@ -91,7 +91,8 @@ pub struct SetTokenPriceScreen {
     single_price_amount: Option<Amount>,
     single_price_input: Option<AmountInput>,
 
-    pub tiered_prices: Vec<(String, String)>,
+    // Tiered pricing with AmountInput components
+    pub tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
     status: SetTokenPriceStatus,
     error_message: Option<String>,
 
@@ -111,33 +112,6 @@ pub struct SetTokenPriceScreen {
 pub const CREDITS_PER_DASH: Credits = 100_000_000_000;
 
 impl SetTokenPriceScreen {
-    /// Converts Dash amount to credits (1 Dash = 100,000,000,000 credits)
-    ///
-    /// ## Panics
-    ///
-    /// This function will panic if the conversion fails, which should not happen under normal circumstances
-    fn dash_to_credits(dash_amount: f64) -> Credits {
-        let credits_f64 = dash_amount * CREDITS_PER_DASH as f64;
-
-        if credits_f64 < 0.0 || !credits_f64.is_finite() || credits_f64 > u64::MAX as f64 {
-            panic!(
-                "Dash amount {} after conversion to credits is not in a valid range: 0 <= {} <= {}",
-                dash_amount,
-                credits_f64,
-                u64::MAX
-            );
-        }
-
-        // Round to nearest integer to handle floating point precision issues
-        let credits_u64 = if credits_f64 > ((u64::MAX - 1) as f64) {
-            credits_f64.floor() as u64
-        } else {
-            credits_f64.round() as u64
-        };
-
-        credits_u64 as Credits
-    }
-
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
@@ -253,7 +227,7 @@ impl SetTokenPriceScreen {
             pricing_type: PricingType::RemovePricing,
             single_price_amount: None,
             single_price_input: None,
-            tiered_prices: vec![("1".to_string(), "".to_string())],
+            tiered_prices: vec![(None, None)],
             status: SetTokenPriceStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
@@ -268,23 +242,34 @@ impl SetTokenPriceScreen {
         let (single_price_amount, tiered_prices) = match &token_pricing_schedule {
             Some(TokenPricingSchedule::SinglePrice(price)) => {
                 let amount = Amount::new(*price, DASH_DECIMAL_PLACES).with_unit_name("DASH");
-                (Some(amount), vec![("1".to_string(), "".to_string())])
+                (Some(amount), vec![(None, None)])
             }
             Some(TokenPricingSchedule::SetPrices(prices)) => {
                 let tiered_prices = prices
                     .iter()
                     .map(|(amount, price)| {
-                        (
-                            amount.to_string(),
-                            (*price as f64 / CREDITS_PER_DASH as f64).to_string(),
-                        )
+                        // Create amount input for token threshold
+
+                        let amount_input = AmountInput::new(Amount::from_token(
+                            *amount,
+                            &self.identity_token_info,
+                        ))
+                        .with_hint_text("Token amount threshold");
+
+                        // Create price input for Dash pricing
+                        let price = Amount::new(*price, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                        let price_input = AmountInput::new(price)
+                            .with_hint_text("Enter price in Dash")
+                            .with_min_amount(Some(1));
+                        (Some(amount_input), Some(price_input))
                     })
                     .collect::<Vec<_>>();
 
                 (None, tiered_prices)
             }
-            None => (None, vec![("1".to_string(), String::new())]),
+            None => (None, vec![(None, None)]),
         };
+
         Self {
             pricing_type: PricingType::from(token_pricing_schedule),
             single_price_amount,
@@ -328,9 +313,9 @@ impl SetTokenPriceScreen {
                         .cloned()
                         .unwrap_or_else(|| Amount::new_dash(0.0));
                     AmountInput::new(initial_amount)
-                        .label("Price per token:")
-                        .hint_text("Enter price in Dash")
-                        .min_amount(Some(1)) // Minimum 1 credit (very small amount)
+                        .with_label("Price per token:")
+                        .with_hint_text("Enter price in Dash")
+                        .with_min_amount(Some(1)) // Minimum 1 credit (very small amount)
                 });
 
                 let response = single_price_input.show(ui);
@@ -397,50 +382,44 @@ impl SetTokenPriceScreen {
                         });
                     })
                     .body(|mut body| {
-                        for (i, (amount, price)) in self.tiered_prices.iter_mut().enumerate() {
-                            body.row(25.0, |mut row| {
+                        for i in 0..self.tiered_prices.len() {
+                            body.row(30.0, |mut row| {
                                 row.col(|ui| {
                                     if i == 0 {
-                                        // First tier is hardcoded to 1 token
-                                        ui.label("1");
-                                        *amount = "1".to_string(); // Ensure it's always 1
+                                        // First tier is hardcoded to 1 token - create AmountInput with value 1
+                                        let amount_input =
+                                            self.tiered_prices[i].0.get_or_insert_with(|| {
+                                                AmountInput::new(Amount::from_token(
+                                                    1,
+                                                    &self.identity_token_info,
+                                                ))
+                                                .with_hint_text("Token amount threshold")
+                                            });
+                                        amount_input.show(ui);
+                                        // Make sure it's always 1 - we could disable editing or show as read-only
                                     } else {
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                        ui.add(
-                                            egui::TextEdit::singleline(amount)
-                                                .hint_text(
-                                                    RichText::new("100").color(Color32::GRAY),
-                                                )
-                                                .desired_width(100.0)
-                                                .text_color(
-                                                    crate::ui::theme::DashColors::text_primary(
-                                                        dark_mode,
-                                                    ),
-                                                )
-                                                .background_color(
-                                                    crate::ui::theme::DashColors::input_background(
-                                                        dark_mode,
-                                                    ),
-                                                ),
-                                        );
+                                        // Other tiers use AmountInput for token amounts
+                                        let amount_input =
+                                            self.tiered_prices[i].0.get_or_insert_with(|| {
+                                                AmountInput::new(Amount::from_token(
+                                                    0,
+                                                    &self.identity_token_info,
+                                                ))
+                                                .with_hint_text("Token amount threshold")
+                                            });
+                                        amount_input.show(ui);
                                     }
                                 });
                                 row.col(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    ui.add(
-                                        egui::TextEdit::singleline(price)
-                                            .hint_text(RichText::new("50").color(Color32::GRAY))
-                                            .desired_width(120.0)
-                                            .text_color(crate::ui::theme::DashColors::text_primary(
-                                                dark_mode,
-                                            ))
-                                            .background_color(
-                                                crate::ui::theme::DashColors::input_background(
-                                                    dark_mode,
-                                                ),
-                                            ),
-                                    );
-                                    ui.label(" Dash");
+                                    // Use AmountInput for price with lazy initialization
+                                    let price_input =
+                                        self.tiered_prices[i].1.get_or_insert_with(|| {
+                                            AmountInput::new(Amount::new_dash(0.0))
+                                                .with_hint_text("Enter price in Dash")
+                                                .with_min_amount(Some(1)) // Minimum 1 credit
+                                        });
+
+                                    let _response = price_input.show(ui);
                                 });
                                 row.col(|ui| {
                                     if can_remove && i > 0 && ui.small_button("X").clicked() {
@@ -458,8 +437,8 @@ impl SetTokenPriceScreen {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("+ Add Tier").clicked() {
-                        // Add empty tier - user will fill in values
-                        self.tiered_prices.push(("".to_string(), "".to_string()));
+                        // Add empty tier with lazy initialization
+                        self.tiered_prices.push((None, None));
                     }
                 });
 
@@ -478,19 +457,20 @@ impl SetTokenPriceScreen {
         let mut valid_tiers = Vec::new();
         let mut has_errors = false;
 
-        for (amount_str, price_str) in &self.tiered_prices {
-            if amount_str.trim().is_empty() || price_str.trim().is_empty() {
-                continue;
-            }
+        for (amount_input, price_input) in &self.tiered_prices {
+            let Some(price) = price_input.as_ref().and_then(|input| input.current_value()) else {
+                continue; // Skip if no price input is available
+            };
 
-            match (amount_str.parse::<u64>(), price_str.parse::<f64>()) {
-                (Ok(amount), Ok(price)) if price > 0.0 => {
-                    valid_tiers.push((amount, price));
-                }
-                _ => {
-                    has_errors = true;
-                }
-            }
+            let Some(amount_value) = amount_input
+                .as_ref()
+                .and_then(|input| input.current_value())
+            else {
+                has_errors = true;
+                continue; // Skip if amount is invalid
+            };
+
+            valid_tiers.push((amount_value, price));
         }
 
         // Only show preview if there are valid tiers or errors
@@ -498,7 +478,7 @@ impl SetTokenPriceScreen {
             ui.group(|ui| {
                 // Sort tiers by amount
                 if !valid_tiers.is_empty() {
-                    valid_tiers.sort_by_key(|(amount, _)| *amount);
+                    valid_tiers.sort_by_key(|(amount, _)| amount.value());
                 }
 
                 if has_errors {
@@ -508,9 +488,9 @@ impl SetTokenPriceScreen {
                 if !valid_tiers.is_empty() {
                     ui.colored_label(Color32::DARK_GREEN, "Pricing Structure:");
                     for (amount, price) in &valid_tiers {
-                        let credits = Self::dash_to_credits(*price);
+                        let credits = price.value();
                         ui.label(format!(
-                            "  - {} or more tokens: {} Dash each ({} credits)",
+                            "  - {} or more tokens: {} each ({} credits)",
                             amount, price, credits
                         ));
                     }
@@ -534,33 +514,21 @@ impl SetTokenPriceScreen {
             PricingType::TieredPricing => {
                 let mut map = std::collections::BTreeMap::new();
 
-                for (amount_str, price_str) in &self.tiered_prices {
-                    if amount_str.trim().is_empty() || price_str.trim().is_empty() {
+                for (amount_input, price_input) in &self.tiered_prices {
+                    let Some(price) = price_input.as_ref().and_then(|input| input.current_value())
+                    else {
                         continue;
-                    }
+                    };
 
-                    let amount = amount_str.trim().parse::<u64>().map_err(|_| {
-                        format!(
-                            "Invalid amount '{}' - must be a positive number",
-                            amount_str.trim()
-                        )
-                    })?;
-                    let dash_price = price_str.trim().parse::<f64>().map_err(|_| {
-                        format!(
-                            "Invalid price '{}' - must be a positive number",
-                            price_str.trim()
-                        )
-                    })?;
+                    let Some(amount_value) = amount_input
+                        .as_ref()
+                        .and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
 
-                    if dash_price <= 0.0 {
-                        return Err(format!(
-                            "Price '{}' must be greater than 0",
-                            price_str.trim()
-                        ));
-                    }
-
-                    let credits_price = Self::dash_to_credits(dash_price);
-                    map.insert(amount, credits_price);
+                    let amount = amount_value.value();
+                    map.insert(amount, price.value());
                 }
 
                 if map.is_empty() {
@@ -619,19 +587,25 @@ impl SetTokenPriceScreen {
                     PricingType::TieredPricing => {
                         ui.label("Are you sure you want to set the following tiered pricing?");
                         ui.add_space(5.0);
-                        for (amount_str, price_str) in &self.tiered_prices {
-                            if amount_str.trim().is_empty() || price_str.trim().is_empty() {
+                        for (amount_input, price_input) in &self.tiered_prices {
+                            let Some(price) =
+                                price_input.as_ref().and_then(|input| input.current_value())
+                            else {
+                                continue; // Skip if no price input is available
+                            };
+
+                            let Some(amount_value) = amount_input
+                                .as_ref()
+                                .and_then(|input| input.current_value())
+                            else {
                                 continue;
-                            }
-                            if let (Ok(amount), Ok(dash_price)) = (
-                                amount_str.trim().parse::<u64>(),
-                                price_str.trim().parse::<f64>(),
-                            ) {
-                                ui.label(format!(
-                                    "  - {} or more tokens: {} Dash each",
-                                    amount, dash_price
-                                ));
-                            }
+                            };
+
+                            let amount = amount_value.value();
+                            ui.label(format!(
+                                "  - {} or more tokens: {} Dash each",
+                                amount, price
+                            ));
                         }
                     }
                 }
@@ -1000,10 +974,17 @@ impl ScreenLike for SetTokenPriceScreen {
                         self.single_price_amount.is_some()
                     },
                     PricingType::TieredPricing => {
-                        self.tiered_prices.iter().any(|(amount, price)| {
-                            !amount.trim().is_empty() && !price.trim().is_empty() &&
-                            amount.trim().parse::<u64>().is_ok() &&
-                            if let Ok(p) = price.trim().parse::<f64>() { p > 0.0 } else { false }
+                        // Check if there's at least one valid tier with both amount and price
+                        self.tiered_prices.iter().any(|(amount_input, price_input)| {
+                            let Some(price) = price_input.as_ref().and_then(|input| input.current_value()) else {
+                                return false; // Skip if no price input is available
+                            };
+
+                            let Some(amount_value) = amount_input.as_ref().and_then(|input| input.current_value()) else {
+                                return false; // Skip if no amount input is available
+                            };
+
+                            amount_value.value() > 0 && price.value() > 0
                         })
                     }
                 };

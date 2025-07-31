@@ -343,6 +343,15 @@ impl Component for AmountInput {
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         AmountInput::show_internal(self, ui)
     }
+
+    fn current_value(&self) -> Option<Self::DomainType> {
+        // Validate the current amount string and return the parsed amount
+        match self.validate_amount() {
+            Ok(Some(amount)) => Some(amount),
+            Ok(None) => None, // Empty input
+            Err(_) => None,   // Invalid input returns None
+        }
+    }
 }
 
 #[cfg(test)]

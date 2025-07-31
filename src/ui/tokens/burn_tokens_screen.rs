@@ -239,25 +239,18 @@ impl BurnTokensScreen {
             .collapsible(false)
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
-                // Validate user input
-                let amount_ok = self
-                    .amount
-                    .as_ref()
-                    .and_then(|a| if a.value() > 0 { Some(a.value()) } else { None });
-                if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid amount greater than 0.".into());
-                    self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
+                let amount = match self.amount.as_ref() {
+                    Some(amount) if amount.value() > 0 => amount,
+                    _ => {
+                        self.error_message =
+                            Some("Please enter a valid amount greater than 0.".into());
+                        self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
+                        self.show_confirmation_popup = false;
+                        return;
+                    }
+                };
 
-                ui.label(format!(
-                    "Are you sure you want to burn {} tokens?",
-                    self.amount
-                        .as_ref()
-                        .map(|a| a.to_string())
-                        .unwrap_or_default()
-                ));
+                ui.label(format!("Are you sure you want to burn {}?", amount));
 
                 ui.add_space(10.0);
 
@@ -303,7 +296,7 @@ impl BurnTokensScreen {
                                 } else {
                                     self.public_note.clone()
                                 },
-                                amount: amount_ok.unwrap(),
+                                amount: amount.value(),
                                 group_info,
                             })),
                             BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),

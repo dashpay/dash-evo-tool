@@ -1,5 +1,6 @@
 use crate::model::amount::Amount;
 use crate::ui::components::{Component, ComponentResponse};
+use dash_sdk::dpp::balances::credits::MAX_CREDITS;
 use dash_sdk::dpp::fee::Credits;
 use egui::{InnerResponse, Response, TextEdit, Ui, Vec2, WidgetText};
 
@@ -113,7 +114,7 @@ impl AmountInput {
             unit_name: amount.unit_name().map(|s| s.to_string()),
             label: None,
             hint_text: None,
-            max_amount: None,
+            max_amount: Some(MAX_CREDITS),
             min_amount: Some(1), // Default minimum is 1 (greater than zero)
             show_max_button: false,
             desired_width: None,
@@ -187,6 +188,8 @@ impl AmountInput {
 
     /// Sets the maximum amount allowed. If provided, a "Max" button will be shown
     /// when `show_max_button` is true.
+    ///
+    /// Defaults to [`MAX_CREDITS`](dash_sdk::dpp::balances::credits::MAX_CREDITS).
     pub fn with_max_amount(mut self, max_amount: Option<Credits>) -> Self {
         self.max_amount = max_amount;
         self
@@ -194,6 +197,8 @@ impl AmountInput {
 
     /// Sets the maximum amount allowed (mutable reference version).
     /// Use this for dynamic configuration when the max amount changes at runtime (e.g., balance updates).
+    ///
+    /// Defaults to [`MAX_CREDITS`](dash_sdk::dpp::balances::credits::MAX_CREDITS).
     pub fn set_max_amount(&mut self, max_amount: Option<Credits>) -> &mut Self {
         self.max_amount = max_amount;
         self

@@ -120,8 +120,8 @@ impl TransferTokensScreen {
                             .as_ref()
                             .unwrap_or(&Amount::from(&self.identity_token_balance)),
                     )
-                    .label("Amount:")
-                    .max_button(true),
+                    .with_label("Amount:")
+                    .with_max_button(true),
                 );
 
                 self.amount_input

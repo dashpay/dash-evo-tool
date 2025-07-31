@@ -92,4 +92,13 @@ pub trait Component {
     /// An [`InnerResponse`]  containing the component's response data in [`InnerResponse::inner`] field.
     /// [`InnerResponse::inner`] should implement [`ComponentResponse`] trait.
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response>;
+
+    /// Returns the current value of the component.
+    ///
+    /// This method is an equivalent of binding some variable using [`ComponentResponse::update()`].
+    ///
+    /// ## See also
+    ///
+    /// See [`ComponentResponse::update`].
+    fn current_value(&self) -> Option<Self::DomainType>;
 }

@@ -3,12 +3,15 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
@@ -83,7 +86,11 @@ pub struct SetTokenPriceScreen {
     pub token_pricing_schedule: String,
     /// Token pricing schedule to use; if None, we will remove the pricing schedule
     pub pricing_type: PricingType,
-    pub single_price: String,
+
+    // AmountInput components for pricing - following the design pattern
+    single_price_amount: Option<Amount>,
+    single_price_input: Option<AmountInput>,
+
     pub tiered_prices: Vec<(String, String)>,
     status: SetTokenPriceStatus,
     error_message: Option<String>,
@@ -244,7 +251,8 @@ impl SetTokenPriceScreen {
             group_action_id: None,
             token_pricing_schedule: "".to_string(),
             pricing_type: PricingType::RemovePricing,
-            single_price: "".to_string(),
+            single_price_amount: None,
+            single_price_input: None,
             tiered_prices: vec![("1".to_string(), "".to_string())],
             status: SetTokenPriceStatus::NotStarted,
             error_message: None,
@@ -257,12 +265,11 @@ impl SetTokenPriceScreen {
     }
 
     pub fn with_schedule(self, token_pricing_schedule: Option<TokenPricingSchedule>) -> Self {
-        let (single_price, tiered_prices) = match &token_pricing_schedule {
-            Some(TokenPricingSchedule::SinglePrice(price)) => (
-                // we store price as credits, so convert to Dash for processing
-                (*price as f64 / CREDITS_PER_DASH as f64).to_string(),
-                vec![("1".to_string(), "".to_string())],
-            ),
+        let (single_price_amount, tiered_prices) = match &token_pricing_schedule {
+            Some(TokenPricingSchedule::SinglePrice(price)) => {
+                let amount = Amount::new(*price, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                (Some(amount), vec![("1".to_string(), "".to_string())])
+            }
             Some(TokenPricingSchedule::SetPrices(prices)) => {
                 let tiered_prices = prices
                     .iter()
@@ -274,13 +281,13 @@ impl SetTokenPriceScreen {
                     })
                     .collect::<Vec<_>>();
 
-                (String::new(), tiered_prices)
+                (None, tiered_prices)
             }
-            None => (String::new(), vec![("1".to_string(), String::new())]),
+            None => (None, vec![("1".to_string(), String::new())]),
         };
         Self {
             pricing_type: PricingType::from(token_pricing_schedule),
-            single_price,
+            single_price_amount,
             tiered_prices,
             ..self
         }
@@ -312,28 +319,35 @@ impl SetTokenPriceScreen {
         match self.pricing_type {
             PricingType::SinglePrice => {
                 ui.label("Set a fixed price per token:");
-                ui.horizontal(|ui| {
-                    ui.label("Price per token (Dash):");
-                    ui.text_edit_singleline(&mut self.single_price);
+
+                // Lazy initialization of AmountInput following the design pattern
+                let single_price_input = self.single_price_input.get_or_insert_with(|| {
+                    let initial_amount = self
+                        .single_price_amount
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| Amount::new_dash(0.0));
+                    AmountInput::new(initial_amount)
+                        .label("Price per token:")
+                        .hint_text("Enter price in Dash")
+                        .min_amount(Some(1)) // Minimum 1 credit (very small amount)
                 });
 
-                // Show preview
-                if !self.single_price.is_empty() {
-                    if let Ok(price) = self.single_price.parse::<f64>() {
-                        if price > 0.0 {
-                            ui.add_space(5.0);
-                            let credits = Self::dash_to_credits(price);
-                            ui.colored_label(
-                                Color32::DARK_GREEN,
-                                format!("Price: {} Dash per token ({} credits)", price, credits),
-                            );
-                        } else {
-                            ui.colored_label(Color32::DARK_RED, "X Price must be greater than 0");
-                        }
-                    } else {
+                let response = single_price_input.show(ui);
+
+                // Update the domain data if there's a valid change
+                if response.inner.has_changed() && response.inner.is_valid() {
+                    self.single_price_amount = response.inner.changed_value().clone();
+                }
+
+                // Show validation preview
+                if let Some(amount) = &self.single_price_amount {
+                    if amount.value() > 0 {
+                        ui.add_space(5.0);
+                        let credits = amount.value();
                         ui.colored_label(
-                            Color32::DARK_RED,
-                            "X Invalid price - must be a positive number",
+                            Color32::DARK_GREEN,
+                            format!("Price: {} per token ({} credits)", amount, credits),
                         );
                     }
                 }
@@ -509,19 +523,14 @@ impl SetTokenPriceScreen {
     fn create_pricing_schedule(&self) -> Result<Option<TokenPricingSchedule>, String> {
         match self.pricing_type {
             PricingType::RemovePricing => Ok(None),
-            PricingType::SinglePrice => {
-                if self.single_price.trim().is_empty() {
-                    return Err("Please enter a price".to_string());
+            PricingType::SinglePrice => match &self.single_price_amount {
+                Some(amount) if amount.value() > 0 => {
+                    let credits_price = amount.value();
+                    Ok(Some(TokenPricingSchedule::SinglePrice(credits_price)))
                 }
-                match self.single_price.trim().parse::<f64>() {
-                    Ok(dash_price) if dash_price > 0.0 => {
-                        let credits_price = Self::dash_to_credits(dash_price);
-                        Ok(Some(TokenPricingSchedule::SinglePrice(credits_price)))
-                    }
-                    Ok(_) => Err("Price must be greater than 0".to_string()),
-                    Err(_) => Err("Invalid price - must be a positive number".to_string()),
-                }
-            }
+                Some(_) => Err("Price must be greater than 0".to_string()),
+                None => Err("Please enter a price".to_string()),
+            },
             PricingType::TieredPricing => {
                 let mut map = std::collections::BTreeMap::new();
 
@@ -600,10 +609,10 @@ impl SetTokenPriceScreen {
                         ui.label("This will make the token unavailable for direct purchase.");
                     }
                     PricingType::SinglePrice => {
-                        if let Ok(dash_price) = self.single_price.trim().parse::<f64>() {
+                        if let Some(amount) = &self.single_price_amount {
                             ui.label(format!(
-                                "Are you sure you want to set a fixed price of {} Dash per token?",
-                                dash_price
+                                "Are you sure you want to set a fixed price of {} per token?",
+                                amount
                             ));
                         }
                     }
@@ -988,11 +997,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 let can_proceed = match self.pricing_type {
                     PricingType::RemovePricing => true,
                     PricingType::SinglePrice => {
-                        if let Ok(price) = self.single_price.trim().parse::<f64>() {
-                            price > 0.0
-                        } else {
-                            false
-                        }
+                        self.single_price_amount.is_some()
                     },
                     PricingType::TieredPricing => {
                         self.tiered_prices.iter().any(|(amount, price)| {

@@ -24,6 +24,10 @@ use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
+/// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
+/// This constant provides a constant padding to be used in such cases to ensure proper alignment.
+pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
+
 /// Helper function to create a styled info icon button
 pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());

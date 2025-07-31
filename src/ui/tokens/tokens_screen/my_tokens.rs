@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::model::amount::Amount;
 use crate::ui::Screen;
 use crate::ui::components::styled::StyledButton;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -419,8 +420,10 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
-                                                let formatted_balance = balance.to_string();
-                                                ui.label(formatted_balance);
+                                                // Create an amount using the token's decimal places and alias
+                                                let decimals = itb.token_config.conventions().decimals();
+                                                let amount = Amount::new(balance, decimals).with_unit_name(&itb.token_alias);
+                                                ui.label(amount.to_string_without_unit());
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
                                             }
@@ -430,8 +433,10 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                let formatted_rewards = known_rewards.to_string();
-                                                                ui.label(formatted_rewards);
+                                                                // Create an amount for rewards using the token's decimal places and alias
+                                                                let decimals = itb.token_config.conventions().decimals();
+                                                                let rewards_amount = Amount::new(known_rewards, decimals);
+                                                                ui.label(rewards_amount.to_string());
 
                                                                 // Info button to show explanation
                                                                 let identity_token_id = IdentityTokenIdentifier {
@@ -512,12 +517,18 @@ impl TokensScreen {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             ui.heading("Reward Estimation Details");
                             ui.separator();
+                            let decimal_places =
+                                token_info.token_configuration.conventions().decimals();
+                            let unit_name = token_info
+                                .token_configuration
+                                .conventions()
+                                .plural_form_by_language_code_or_default("en");
+                            let reward_amount = Amount::new(
+                                explanation.total_amount,
+                                decimal_places,
+                            ).with_unit_name(unit_name);
 
-                            let formatted_total = explanation.total_amount.to_string();
-                            ui.label(format!(
-                                "Total Estimated Rewards: {} tokens",
-                                formatted_total
-                            ));
+                            ui.label(format!("Total Estimated Rewards: {}", reward_amount));
                             ui.separator();
 
                             ui.collapsing("Basic Explanation", |ui| {

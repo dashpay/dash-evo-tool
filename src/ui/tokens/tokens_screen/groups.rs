@@ -164,7 +164,7 @@ impl TokensScreen {
                                         .members
                                         .iter()
                                         .enumerate()
-                                        .filter_map(|(i, m)| if i != j && !m.identity_str.is_empty() { 
+                                        .filter_map(|(i, m)| if i != j && !m.identity_str.is_empty() {
                                             let identifier = Identifier::from_string(&m.identity_str, Encoding::Base58).ok()?;
                                             Some(identifier)
                                         } else {

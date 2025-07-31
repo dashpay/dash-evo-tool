@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, RichText, TextEdit, Ui};
+use egui::{ComboBox, Context,  RichText, TextEdit, Ui};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
@@ -245,10 +245,14 @@ impl TokensScreen {
                                 }
 
                                 // Row 2: Base Supply
+                                // We put label manually to comply with grid layout;
+                                // errors will be rendered in second column
+                                ui.label("Base Supply*:");
                                 self.render_base_supply_input(ui);
                                 ui.end_row();
 
                                 // Row 3: Max Supply
+                                ui.label("Max Supply:");
                                  self.render_max_supply_input(ui);
                                 ui.end_row();
 

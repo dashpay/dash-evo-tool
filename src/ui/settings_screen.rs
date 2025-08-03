@@ -139,6 +139,19 @@ impl SettingsScreen {
 
                 ui.add_space(8.0);
 
+                // Add progress bar
+                let progress = if let Some(ref phase_info) = self.spv_phase_info {
+                    (phase_info.progress_percentage / 100.0) as f32
+                } else {
+                    0.0_f32
+                };
+                
+                let progress_bar = egui::ProgressBar::new(progress)
+                    .show_percentage();
+                
+                ui.add(progress_bar);
+                ui.add_space(8.0);
+
                 // Display raw data
                 egui::Grid::new("spv_raw_status")
                     .num_columns(2)
@@ -154,15 +167,7 @@ impl SettingsScreen {
                             ui.label(&phase_info.phase_name);
                             ui.end_row();
 
-                            // Progress (second)
-                            ui.label(
-                                egui::RichText::new("Progress:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(format!("{:.1}%", phase_info.progress_percentage));
-                            ui.end_row();
-
-                            // Synced height (third)
+                            // Synced height
                             ui.label(
                                 egui::RichText::new("Synced:")
                                     .color(DashColors::text_secondary(dark_mode)),
@@ -175,18 +180,14 @@ impl SettingsScreen {
                             } else {
                                 self.spv_current_height
                             };
-                            ui.label(synced_value.to_formatted_string(&Locale::en));
+                            ui.label(format!(
+                                "{} / {}", 
+                                synced_value.to_formatted_string(&Locale::en),
+                                self.spv_target_height.to_formatted_string(&Locale::en)
+                            ));
                             ui.end_row();
 
-                            // Target height (fourth)
-                            ui.label(
-                                egui::RichText::new("Target Height:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(self.spv_target_height.to_formatted_string(&Locale::en));
-                            ui.end_row();
-
-                            // Rate (fifth)
+                            // Rate
                             if phase_info.rate > 0.0 {
                                 ui.label(
                                     egui::RichText::new("Rate:")
@@ -339,12 +340,12 @@ impl SettingsScreen {
         let mut app_action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Main Connection Settings Card
+        // Connection Settings Card
         StyledCard::new().padding(24.0).show(ui, |ui| {
             ui.heading("Connection Settings");
             ui.add_space(20.0);
 
-            // Create a table with 3 rows and 2 columns
+            // Create a table with rows and 2 columns
             egui::Grid::new("connection_settings_grid")
                 .num_columns(2)
                 .spacing([40.0, 12.0])
@@ -470,6 +471,77 @@ impl SettingsScreen {
                     ui.end_row();
                 });
 
+            // Password input for Local network
+            if self.current_network == Network::Regtest
+                && self.connection_mode == ConnectionMode::Core
+            {
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(12.0);
+                
+                ui.label(
+                    egui::RichText::new("Local Network Password")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(8.0);
+                
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.local_network_dashmate_password);
+                    
+                    if ui.button("Save").clicked() {
+                        // Save the password to config
+                        if let Ok(mut config) = Config::load() {
+                            if let Some(local_cfg) =
+                                config.config_for_network(Network::Regtest).clone()
+                            {
+                                let updated_local_config = local_cfg.update_core_rpc_password(
+                                    self.local_network_dashmate_password.clone(),
+                                );
+                                config.update_config_for_network(
+                                    Network::Regtest,
+                                    updated_local_config.clone(),
+                                );
+                                if let Err(e) = config.save() {
+                                    eprintln!("Failed to save config to .env: {e}");
+                                }
+                                
+                                // Update our local AppContext in memory
+                                if let Some(local_app_context) = &self.local_app_context {
+                                    {
+                                        // Overwrite the config field with the new password
+                                        let mut cfg_lock =
+                                            local_app_context.config.write().unwrap();
+                                        *cfg_lock = updated_local_config;
+                                    }
+                                    
+                                    // Re-init the client & sdk from the updated config
+                                    if let Err(e) =
+                                        Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                                    {
+                                        eprintln!(
+                                            "Failed to re-init local RPC client and sdk: {}",
+                                            e
+                                        );
+                                    } else {
+                                        // Trigger SwitchNetworks
+                                        app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        // Connection Status Card
+        ui.add_space(16.0);
+        
+        StyledCard::new().padding(24.0).show(ui, |ui| {
+            ui.heading("Connection Status");
+            ui.add_space(20.0);
+
             // Check connection status
             let (is_connected, is_syncing) = match self.connection_mode {
                 ConnectionMode::Core => (self.check_network_status(self.current_network), false),
@@ -492,127 +564,97 @@ impl SettingsScreen {
                 }
             };
 
-            if is_connected {
-                ui.add_space(20.0);
-                if self.connection_mode == ConnectionMode::Spv {
-                    let disconnect_button = egui::Button::new(
-                        egui::RichText::new("Disconnect").color(DashColors::WHITE),
-                    )
-                    .fill(DashColors::ERROR)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(Shape::RADIUS_MD);
+            // Button on the left with status
+            ui.horizontal(|ui| {
+                if is_connected {
+                    if self.connection_mode == ConnectionMode::Spv {
+                        let disconnect_button = egui::Button::new(
+                            egui::RichText::new("Disconnect").color(DashColors::WHITE),
+                        )
+                        .fill(DashColors::ERROR)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(Shape::RADIUS_MD)
+                        .min_size(egui::vec2(120.0, 36.0));
 
-                    if ui.add(disconnect_button).clicked() {
-                        app_action =
-                            AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::Stop));
-                        // Reset UI state immediately
-                        self.spv_is_initialized = false;
-                        self.spv_is_syncing = false;
-                        self.spv_sync_progress = 0.0;
-                        self.spv_current_height = 0;
-                        self.spv_target_height = 0;
-                        self.spv_last_error = None;
-                        self.spv_phase_info = None;
+                        if ui.add(disconnect_button).clicked() {
+                            app_action =
+                                AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::Stop));
+                            // Reset UI state immediately
+                            self.spv_is_initialized = false;
+                            self.spv_is_syncing = false;
+                            self.spv_sync_progress = 0.0;
+                            self.spv_current_height = 0;
+                            self.spv_target_height = 0;
+                            self.spv_last_error = None;
+                            self.spv_phase_info = None;
+                        }
+                        
+                        // Show sync status next to button
+                        ui.add_space(12.0);
+                        // Check if we're in the initialization phase (no progress yet)
+                        let is_initializing = self.spv_is_initialized 
+                            && self.spv_current_height == 0 
+                            && self.spv_phase_info.is_none();
+                        
+                        if !is_initializing && self.spv_is_syncing && self.spv_sync_progress < 100.0 {
+                            // Only show syncing status if we're not in the initialization phase
+                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Syncing...")
+                                    .color(DashColors::DASH_BLUE)
+                            );
+                        } else if self.spv_sync_progress >= 100.0 {
+                            ui.colored_label(DashColors::SUCCESS, "✓ Fully Synced");
+                        }
+                    } else {
+                        // For Core mode, just show status since it can switch networks freely
+                        ui.colored_label(DashColors::DASH_BLUE, "✓ Connected");
                     }
                 } else {
-                    // For Core mode, just show status since it can switch networks freely
-                    ui.colored_label(DashColors::DASH_BLUE, "Ready");
-                }
-            } else {
-                ui.add_space(20.0);
-                let connect_button =
-                    egui::Button::new(egui::RichText::new("Connect").color(DashColors::WHITE))
-                        .fill(DashColors::DASH_BLUE)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(Shape::RADIUS_MD);
+                    let connect_button =
+                        egui::Button::new(egui::RichText::new("Connect").color(DashColors::WHITE))
+                            .fill(DashColors::DASH_BLUE)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(Shape::RADIUS_MD)
+                            .min_size(egui::vec2(120.0, 36.0));
 
-                if ui.add(connect_button).clicked() {
-                    if self.connection_mode == ConnectionMode::Spv {
-                        let checkpoint_height = 0; // Start from genesis
-                        // Use SPV V2 for better concurrency
-                        app_action = AppAction::BackendTask(BackendTask::SpvTaskV2(
-                            SpvTaskV2::InitializeAndSync { checkpoint_height },
-                        ));
-                        // Set immediate UI feedback
-                        self.spv_is_initialized = true;
-                        self.spv_is_syncing = true;
-                        self.spv_sync_progress = 0.0;
-                        self.spv_current_height = 0;
-                        self.spv_target_height = 0;
-                        self.spv_last_error = None;
-                        self.spv_phase_info = None;
-                    } else {
-                        // Core mode connect
-                        let settings = self.current_app_context().db.get_settings().ok().flatten();
-                        let (custom_path, overwrite) = settings
-                            .map(|(_, _, _, custom_path, overwrite, _, _)| (custom_path, overwrite))
-                            .unwrap_or((None, true));
-                        if let Some(dash_qt_path) = custom_path {
-                            app_action = AppAction::BackendTask(BackendTask::CoreTask(
-                                CoreTask::StartDashQT(
-                                    self.current_network,
-                                    dash_qt_path,
-                                    overwrite,
-                                ),
+                    if ui.add(connect_button).clicked() {
+                        if self.connection_mode == ConnectionMode::Spv {
+                            let checkpoint_height = 0; // Start from genesis
+                            // Use SPV V2 for better concurrency
+                            app_action = AppAction::BackendTask(BackendTask::SpvTaskV2(
+                                SpvTaskV2::InitializeAndSync { checkpoint_height },
                             ));
-                        }
-                    }
-                }
-            }
-
-            // Password input for Local network
-            if self.current_network == Network::Regtest
-                && self.connection_mode == ConnectionMode::Core
-            {
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.label("Local Network Password:");
-                    ui.text_edit_singleline(&mut self.local_network_dashmate_password);
-
-                    if ui.button("Save").clicked() {
-                        // Save the password to config
-                        if let Ok(mut config) = Config::load() {
-                            if let Some(local_cfg) =
-                                config.config_for_network(Network::Regtest).clone()
-                            {
-                                let updated_local_config = local_cfg.update_core_rpc_password(
-                                    self.local_network_dashmate_password.clone(),
-                                );
-                                config.update_config_for_network(
-                                    Network::Regtest,
-                                    updated_local_config.clone(),
-                                );
-                                if let Err(e) = config.save() {
-                                    eprintln!("Failed to save config to .env: {e}");
-                                }
-
-                                // Update our local AppContext in memory
-                                if let Some(local_app_context) = &self.local_app_context {
-                                    {
-                                        // Overwrite the config field with the new password
-                                        let mut cfg_lock =
-                                            local_app_context.config.write().unwrap();
-                                        *cfg_lock = updated_local_config;
-                                    }
-
-                                    // Re-init the client & sdk from the updated config
-                                    if let Err(e) =
-                                        Arc::clone(local_app_context).reinit_core_client_and_sdk()
-                                    {
-                                        eprintln!(
-                                            "Failed to re-init local RPC client and sdk: {}",
-                                            e
-                                        );
-                                    } else {
-                                        // Trigger SwitchNetworks
-                                        app_action = AppAction::SwitchNetwork(Network::Regtest);
-                                    }
-                                }
+                            // Set immediate UI feedback
+                            self.spv_is_initialized = true;
+                            self.spv_is_syncing = true;
+                            self.spv_sync_progress = 0.0;
+                            self.spv_current_height = 0;
+                            self.spv_target_height = 0;
+                            self.spv_last_error = None;
+                            self.spv_phase_info = None;
+                        } else {
+                            // Core mode connect
+                            let settings = self.current_app_context().db.get_settings().ok().flatten();
+                            let (custom_path, overwrite) = settings
+                                .map(|(_, _, _, custom_path, overwrite, _, _)| (custom_path, overwrite))
+                                .unwrap_or((None, true));
+                            if let Some(dash_qt_path) = custom_path {
+                                app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                                    CoreTask::StartDashQT(
+                                        self.current_network,
+                                        dash_qt_path,
+                                        overwrite,
+                                    ),
+                                ));
                             }
                         }
                     }
-                });
-            }
+                }
+            });
 
             // SPV sync controls (only show when SPV is selected)
             if self.connection_mode == ConnectionMode::Spv {

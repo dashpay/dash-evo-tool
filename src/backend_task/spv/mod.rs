@@ -117,13 +117,19 @@ impl SpvManager {
         );
 
         // Create SPV client configuration
-        let config = match network {
+        let mut config = match network {
             "mainnet" => ClientConfig::mainnet(),
             "testnet" => ClientConfig::testnet(),
             "devnet" => ClientConfig::testnet(), // Devnet uses testnet config
             "regtest" => ClientConfig::regtest(),
             _ => return Err(format!("Unsupported network: {}", network)),
         };
+        
+        // For mainnet only, use the specific peer that responds properly
+        if network == "mainnet" {
+            config.peers.clear();
+            config.add_peer("8.219.185.232:9999".parse().unwrap());
+        }
 
         // Configure storage path
         let app_data_dir = crate::app_dir::app_user_data_dir_path()

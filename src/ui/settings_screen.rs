@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::spv::{SpvTask, SpvTaskResult};
+use crate::backend_task::spv_v2::{SpvTaskResultV2, SpvTaskV2};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
@@ -9,13 +10,14 @@ use crate::model::settings::ConnectionMode;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{DashColors, ThemeMode};
+use crate::ui::theme::{DashColors, Shape, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_spv::types::SyncPhaseInfo;
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Context, Ui};
+use egui::Vec2;
 use num_format::{Locale, ToFormattedString};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,216 +54,181 @@ pub struct SettingsScreen {
 }
 
 impl SettingsScreen {
-    fn render_connection_mode_section(&mut self, ui: &mut Ui, app_action: &mut AppAction) {
-        StyledCard::new().padding(20.0).show(ui, |ui| {
-            ui.heading("Connection Mode");
-            ui.separator();
+    fn update_all_connection_modes(&mut self) {
+        // Update connection mode in context
+        if let Err(e) = self
+            .current_app_context()
+            .set_connection_mode(self.connection_mode)
+        {
+            self.spv_last_error = Some(format!("Failed to update connection mode: {}", e));
+        }
 
-            ui.horizontal(|ui| {
-                ui.label("Select connection method:");
-
-                let mut mode_changed = false;
-
-                // Core RPC option
-                if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Core, "Dash Core RPC").clicked() {
-                    mode_changed = true;
-                }
-
-                ui.add_space(10.0);
-
-                // SPV option
-                if ui.selectable_value(&mut self.connection_mode, ConnectionMode::Spv, "SPV Client").clicked() {
-                    mode_changed = true;
-                }
-
-                if mode_changed {
-                    // Update connection mode in context
-                    if let Err(e) = self.current_app_context().set_connection_mode(self.connection_mode) {
-                        self.spv_last_error = Some(format!("Failed to update connection mode: {}", e));
-                    }
-
-                    // Update all contexts
-                    self.mainnet_app_context.set_connection_mode(self.connection_mode).ok();
-                    if let Some(ref ctx) = self.testnet_app_context {
-                        ctx.set_connection_mode(self.connection_mode).ok();
-                    }
-                    if let Some(ref ctx) = self.devnet_app_context {
-                        ctx.set_connection_mode(self.connection_mode).ok();
-                    }
-                    if let Some(ref ctx) = self.local_app_context {
-                        ctx.set_connection_mode(self.connection_mode).ok();
-                    }
-                }
-            });
-
-            ui.add_space(10.0);
-
-            match self.connection_mode {
-                ConnectionMode::Core => {
-                    ui.label("Uses Dash Core's RPC interface for blockchain operations.");
-                    ui.label("Requires a running Dash Core node with proper configuration.");
-                }
-                ConnectionMode::Spv => {
-                    ui.label("SPV (Simplified Payment Verification) allows lightweight blockchain access.");
-                    ui.label("No full node required - connects directly to the Dash network.");
-
-                    ui.separator();
-
-                    // SPV sync controls
-                    self.render_spv_controls(ui, app_action);
-                }
-            }
-        });
+        // Update all contexts
+        self.mainnet_app_context
+            .set_connection_mode(self.connection_mode)
+            .ok();
+        if let Some(ref ctx) = self.testnet_app_context {
+            ctx.set_connection_mode(self.connection_mode).ok();
+        }
+        if let Some(ref ctx) = self.devnet_app_context {
+            ctx.set_connection_mode(self.connection_mode).ok();
+        }
+        if let Some(ref ctx) = self.local_app_context {
+            ctx.set_connection_mode(self.connection_mode).ok();
+        }
     }
 
-    fn render_spv_controls(&mut self, ui: &mut Ui, action: &mut AppAction) {
-        ui.heading("SPV Sync Controls");
-
-        ui.horizontal(|ui| {
-            if !self.spv_is_initialized || (!self.spv_is_syncing && self.spv_current_height == 0) {
-                // Use network-appropriate checkpoint height
-                // Start from genesis to avoid checkpoint validation issues
-                let checkpoint_height = match self.current_network {
-                    Network::Dash => 0,    // Start from genesis due to checkpoint validation issues
-                    Network::Testnet => 0, // Start from genesis due to checkpoint validation issues
-                    Network::Devnet => 0,  // Start from genesis for devnet
-                    Network::Regtest => 0, // Start from genesis for regtest
-                    _ => 0,
-                };
-
-                if ui.button("Initialize & Sync").clicked() {
-                    *action =
-                        AppAction::BackendTask(BackendTask::SpvTask(SpvTask::InitializeAndSync {
-                            checkpoint_height,
-                        }));
-                    // Set syncing state immediately for UI feedback
-                    self.spv_is_syncing = true;
-                    self.spv_last_error = None;
-                }
-            } else if !self.spv_is_syncing {
-                // For resume, we'll use the current height as the checkpoint
-                let checkpoint_height = self.spv_current_height;
-
-                if ui.button("Resume Sync").clicked() {
-                    *action =
-                        AppAction::BackendTask(BackendTask::SpvTask(SpvTask::InitializeAndSync {
-                            checkpoint_height,
-                        }));
-                    // Set syncing state immediately for UI feedback
-                    self.spv_is_syncing = true;
-                    self.spv_last_error = None;
-                }
-            } else {
-                ui.add_enabled(false, egui::Button::new("Syncing..."));
-            }
-        });
-
-        if self.spv_is_syncing || self.spv_is_initialized {
+    fn render_spv_controls(&mut self, ui: &mut Ui, _action: &mut AppAction) {
+        // Show progress if syncing or complete
+        if self.spv_is_initialized || self.spv_is_syncing || self.spv_sync_progress > 0.0 {
+            ui.add_space(10.0);
             ui.separator();
-            self.render_spv_sync_progress(ui);
+            ui.add_space(10.0);
+
+            // Show "Syncing..." with spinner if initialized but no progress yet
+            if self.spv_is_initialized
+                && self.spv_current_height == 0
+                && self.spv_phase_info.is_none()
+            {
+                ui.horizontal(|ui| {
+                    // Add a blue spinner
+                    ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
+                    ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
+                    ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                    ui.spinner();
+                    ui.label("Initializing SPV client...");
+                });
+            } else {
+                self.render_spv_sync_progress(ui);
+            }
         }
 
         if let Some(error) = &self.spv_last_error {
-            ui.separator();
-            ui.colored_label(Color32::RED, format!("Error: {}", error));
+            ui.add_space(12.0);
+            egui::Frame::new()
+                .fill(DashColors::ERROR.linear_multiply(0.1))
+                .stroke(egui::Stroke::new(1.0, DashColors::ERROR))
+                .corner_radius(Shape::RADIUS_SM)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("⚠").color(DashColors::ERROR));
+                        ui.label(
+                            egui::RichText::new(format!("Error: {}", error))
+                                .color(DashColors::ERROR),
+                        );
+                    });
+                });
         }
     }
 
     fn render_spv_sync_progress(&self, ui: &mut Ui) {
-        // Debug log to check if phase info exists
-        if let Some(ref phase_info) = self.spv_phase_info {
-            tracing::debug!(
-                "Rendering SPV progress with phase: {}",
-                phase_info.phase_name
-            );
-        }
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Display phase name or generic label
-        if let Some(ref phase_info) = self.spv_phase_info {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&phase_info.phase_name).strong());
+        // Raw sync status display
+        egui::Frame::new()
+            .fill(DashColors::glass_white(dark_mode))
+            .corner_radius(Shape::RADIUS_SM)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("SPV Sync Status")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+
+                ui.add_space(8.0);
+
+                // Display raw data
+                egui::Grid::new("spv_raw_status")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        // Phase info if available
+                        if let Some(ref phase_info) = self.spv_phase_info {
+                            // Phase (first)
+                            ui.label(
+                                egui::RichText::new("Phase:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(&phase_info.phase_name);
+                            ui.end_row();
+
+                            // Progress (second)
+                            ui.label(
+                                egui::RichText::new("Progress:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(format!("{:.1}%", phase_info.progress_percentage));
+                            ui.end_row();
+
+                            // Synced height (third)
+                            ui.label(
+                                egui::RichText::new("Synced:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            // Use current_position from phase_info if available, otherwise fall back to items_completed or spv_current_height
+                            let synced_value = if let Some(current_pos) = phase_info.current_position {
+                                current_pos
+                            } else if phase_info.phase_name.contains("Headers") && phase_info.items_completed > 0 {
+                                phase_info.items_completed
+                            } else {
+                                self.spv_current_height
+                            };
+                            ui.label(synced_value.to_formatted_string(&Locale::en));
+                            ui.end_row();
+
+                            // Target height (fourth)
+                            ui.label(
+                                egui::RichText::new("Target Height:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(self.spv_target_height.to_formatted_string(&Locale::en));
+                            ui.end_row();
+
+                            // Rate (fifth)
+                            if phase_info.rate > 0.0 {
+                                ui.label(
+                                    egui::RichText::new("Rate:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                // Use rate_units if available, otherwise default to "/sec"
+                                let rate_display = if let Some(ref units) = phase_info.rate_units {
+                                    format!("{:.1} {}", phase_info.rate, units)
+                                } else {
+                                    format!("{:.1}/sec", phase_info.rate)
+                                };
+                                ui.label(rate_display);
+                                ui.end_row();
+                            }
+
+                            // // Details (last)
+                            // if let Some(ref details) = phase_info.details {
+                            //     ui.label(
+                            //         egui::RichText::new("Details:")
+                            //             .color(DashColors::text_secondary(dark_mode)),
+                            //     );
+                            //     ui.label(details);
+                            //     ui.end_row();
+                            // }
+                        } else {
+                            // If no phase info, show basic info
+                            ui.label(
+                                egui::RichText::new("Phase:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label("Initializing");
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("Target Height:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(self.spv_target_height.to_formatted_string(&Locale::en));
+                            ui.end_row();
+                        }
+                    });
             });
-        } else {
-            ui.horizontal(|ui| {
-                ui.label("Sync Progress");
-            });
-        }
-
-        // Add progress bar with proper width constraints
-        ui.add_sized(
-            [ui.available_width(), 20.0],
-            egui::ProgressBar::new(self.spv_sync_progress / 100.0)
-                .text(format!("{:.2}%", self.spv_sync_progress))
-                .animate(self.spv_is_syncing),
-        );
-
-        // Display phase-specific information
-        if let Some(ref phase_info) = self.spv_phase_info {
-            ui.horizontal(|ui| {
-                ui.label("Progress:");
-                if let Some(total) = phase_info.items_total {
-                    ui.label(format!(
-                        "{} / {} items",
-                        phase_info.items_completed.to_formatted_string(&Locale::en),
-                        total.to_formatted_string(&Locale::en)
-                    ));
-                } else {
-                    ui.label(format!(
-                        "{} items",
-                        phase_info.items_completed.to_formatted_string(&Locale::en)
-                    ));
-                }
-
-                if phase_info.rate > 0.0 {
-                    ui.label(format!(" @ {:.1} items/sec", phase_info.rate));
-                }
-            });
-
-            // Display ETA if available
-            if let Some(eta) = phase_info.eta_seconds {
-                ui.horizontal(|ui| {
-                    ui.label("ETA:");
-                    let eta_text = if eta < 60 {
-                        format!("{} seconds", eta)
-                    } else if eta < 3600 {
-                        format!("{:.1} minutes", eta as f64 / 60.0)
-                    } else {
-                        format!("{:.1} hours", eta as f64 / 3600.0)
-                    };
-                    ui.label(eta_text);
-                });
-            }
-
-            // Display phase details if available
-            if let Some(ref details) = phase_info.details {
-                ui.add_space(5.0);
-                ui.label(egui::RichText::new(details).small().color(Color32::GRAY));
-            }
-        } else if self.spv_target_height > 0 {
-            // Fallback to basic height display
-            ui.horizontal(|ui| {
-                ui.label("Progress:");
-                ui.label(format!(
-                    "{} / {} blocks",
-                    self.spv_current_height.to_formatted_string(&Locale::en),
-                    self.spv_target_height.to_formatted_string(&Locale::en)
-                ));
-            });
-
-            if self.spv_is_syncing
-                && self.spv_current_height > 0
-                && self.spv_target_height > self.spv_current_height
-            {
-                let blocks_remaining = self.spv_target_height - self.spv_current_height;
-                ui.horizontal(|ui| {
-                    ui.label("Blocks Remaining:");
-                    ui.label(format!(
-                        "{}",
-                        blocks_remaining.to_formatted_string(&Locale::en)
-                    ));
-                });
-            }
-        }
     }
 
     pub fn new(
@@ -366,542 +333,568 @@ impl SettingsScreen {
             )
             .map_err(|e| e.to_string())
     }
-    /// Render the network selection table
+
+    /// Render the simplified settings interface
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Connection Mode Section
-        self.render_connection_mode_section(ui, &mut app_action);
+        // Main Connection Settings Card
+        StyledCard::new().padding(24.0).show(ui, |ui| {
+            ui.heading("Connection Settings");
+            ui.add_space(20.0);
 
-        ui.add_space(20.0);
+            // Create a table with 3 rows and 2 columns
+            egui::Grid::new("connection_settings_grid")
+                .num_columns(2)
+                .spacing([40.0, 12.0])
+                .striped(false)
+                .show(ui, |ui| {
+                    // Row 1: Connection Type
+                    ui.label(
+                        egui::RichText::new("Connection Type:")
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
 
-        egui::Grid::new("network_grid")
-            .striped(false)
-            .spacing([20.0, 10.0])
-            .show(ui, |ui| {
-                // Header row
-                ui.label(
-                    egui::RichText::new("Network")
-                        .strong()
-                        .underline()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.label(
-                    egui::RichText::new("Status")
-                        .strong()
-                        .underline()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                // ui.label(egui::RichText::new("Wallet Count").strong().underline());
-                // ui.label(egui::RichText::new("Add New Wallet").strong().underline());
-                ui.label(
-                    egui::RichText::new("Select")
-                        .strong()
-                        .underline()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.label(
-                    egui::RichText::new("Start Dash Core")
-                        .strong()
-                        .underline()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.label(
-                    egui::RichText::new("Dashmate Password")
-                        .strong()
-                        .underline()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.label(
-                    egui::RichText::new("Actions")
-                        .strong()
-                        .underline()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.end_row();
+                    let connection_text = match self.connection_mode {
+                        ConnectionMode::Spv => "SPV Client",
+                        ConnectionMode::Core => "Dash Core RPC",
+                    };
 
-                // Render Mainnet Row
-                app_action |= self.render_network_row(ui, Network::Dash, "Mainnet");
-
-                // Render Testnet Row
-                app_action |= self.render_network_row(ui, Network::Testnet, "Testnet");
-
-                // Render Devnet Row
-                app_action |= self.render_network_row(ui, Network::Devnet, "Devnet");
-
-                // Render Local Row
-                app_action |= self.render_network_row(ui, Network::Regtest, "Local");
-            });
-
-        ui.add_space(20.0);
-
-        // Advanced Settings - Collapsible
-        let mut collapsing_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("advanced_settings_header"),
-            false,
-        );
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            collapsing_state.set_open(false);
-            self.should_reset_collapsing_states = false;
-        }
-
-        collapsing_state
-            .show_header(ui, |ui| {
-                ui.label("Advanced Settings");
-            })
-            .body(|ui| {
-                // Advanced Settings Card Content
-                StyledCard::new().padding(20.0).show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        // Dash-QT Path Section
-                        ui.group(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Custom Dash-QT Path")
-                                        .strong()
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                                ui.add_space(8.0);
-
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add(
-                                            egui::Button::new("Select File")
-                                                .fill(DashColors::DASH_BLUE)
-                                                .stroke(egui::Stroke::NONE)
-                                                .corner_radius(egui::CornerRadius::same(6))
-                                                .min_size(egui::vec2(120.0, 32.0)),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                            let file_name =
-                                                path.file_name().and_then(|f| f.to_str());
-                                            if let Some(file_name) = file_name {
-                                                self.custom_dash_qt_path = None;
-                                                self.custom_dash_qt_error_message = None;
-
-                                                // Handle macOS .app bundles
-                                                let resolved_path = if cfg!(target_os = "macos") && path.extension().and_then(|s| s.to_str()) == Some("app") {
-                                                    // For .app bundles, resolve to the actual executable inside
-                                                    path.join("Contents").join("MacOS").join("Dash-Qt")
-                                                } else {
-                                                    path.clone()
-                                                };
-
-                                                // Check if the resolved path exists and is valid
-                                                let is_valid = if cfg!(target_os = "windows") {
-                                                    file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
-                                                } else if cfg!(target_os = "macos") {
-                                                    // Accept both direct executable and .app bundle
-                                                    file_name.eq_ignore_ascii_case("dash-qt") || 
-                                                    (file_name.to_ascii_lowercase().ends_with(".app") && resolved_path.exists())
-                                                } else {
-                                                    // Linux
-                                                    file_name.eq_ignore_ascii_case("dash-qt")
-                                                };
-
-                                                if is_valid {
-                                                    self.custom_dash_qt_path = Some(resolved_path);
-                                                    self.custom_dash_qt_error_message = None;
-                                                    self.save()
-                                                        .expect("Expected to save db settings");
-                                                } else {
-                                                    let required_file_name = if cfg!(target_os = "windows") {
-                                                        "dash-qt.exe"
-                                                    } else if cfg!(target_os = "macos") {
-                                                        "Dash-Qt or Dash-Qt.app"
-                                                    } else {
-                                                        "dash-qt"
-                                                    };
-                                                    self.custom_dash_qt_error_message = Some(format!(
-                                                        "Invalid file: Please select a valid '{}'.",
-                                                        required_file_name
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (self.custom_dash_qt_path.is_some()
-                                        || self.custom_dash_qt_error_message.is_some())
-                                        && ui
-                                            .add(
-                                                egui::Button::new("Clear")
-                                                    .fill(DashColors::ERROR.linear_multiply(0.8))
-                                                    .stroke(egui::Stroke::NONE)
-                                                    .corner_radius(egui::CornerRadius::same(6))
-                                                    .min_size(egui::vec2(80.0, 32.0)),
-                                            )
-                                            .clicked()
-                                    {
-                                        self.custom_dash_qt_path = Some(PathBuf::new()); // Reset to empty to avoid auto-detection
-                                        self.custom_dash_qt_error_message = None;
-                                        self.save().expect("Expected to save db settings");
-                                    }
-                                });
-
-                                ui.add_space(8.0);
-
-                                if let Some(ref file) = self.custom_dash_qt_path {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Selected:");
-                                        ui.label(
-                                            egui::RichText::new(format_path_for_display(file)).color(DashColors::SUCCESS),
-                                        )
-                                        .on_hover_text(format!("Full path: {}", file.display()));
-                                    });
-                                } else if let Some(ref error) = self.custom_dash_qt_error_message {
-                                    ui.horizontal(|ui| {
-                                        ui.label("Error:");
-                                        ui.colored_label(DashColors::ERROR, error);
-                                    });
-                                } else {
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "dash-qt not found, click 'Select File' to choose.",
-                                        )
-                                        .color(DashColors::TEXT_SECONDARY)
-                                        .italics(),
-                                    );
-                                }
-                            });
-                        });
-
-                        ui.add_space(16.0);
-
-                        // Configuration Options Section
-                        ui.group(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Configuration Options")
-                                        .strong()
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                                ui.add_space(8.0);
-
-                                // Overwrite dash.conf checkbox
-                                ui.horizontal(|ui| {
-                                    if StyledCheckbox::new(
-                                        &mut self.overwrite_dash_conf,
-                                        "Overwrite dash.conf",
-                                    )
-                                    .show(ui)
-                                    .clicked()
-                                    {
-                                        self.save().expect("Expected to save db settings");
-                                    }
-                                    ui.label(
-                                    egui::RichText::new(
-                                        "Automatically configure dash.conf with required settings",
-                                    )
-                                    .color(DashColors::TEXT_SECONDARY),
-                                );
-                                });
-
-                                ui.add_space(8.0);
-
-                                // Developer mode checkbox
-                                ui.horizontal(|ui| {
-                                    if StyledCheckbox::new(
-                                        &mut self.developer_mode,
-                                        "Enable developer mode",
-                                    )
-                                    .show(ui)
-                                    .clicked()
-                                    {
-                                        // Update the global developer mode in config
-                                        tracing::info!("2");
-                                        if let Ok(mut config) = Config::load() {
-                                            config.developer_mode = Some(self.developer_mode);
-                                            if let Err(e) = config.save() {
-                                                eprintln!("Failed to save config to .env: {e}");
-                                            }
-
-                                            // Update developer mode for all contexts
-                                            self.mainnet_app_context
-                                                .enable_developer_mode(self.developer_mode);
-
-                                            if let Some(ref testnet_ctx) = self.testnet_app_context
-                                            {
-                                                testnet_ctx
-                                                    .enable_developer_mode(self.developer_mode);
-                                            }
-
-                                            if let Some(ref devnet_ctx) = self.devnet_app_context {
-                                                devnet_ctx
-                                                    .enable_developer_mode(self.developer_mode);
-                                            }
-
-                                            if let Some(ref local_ctx) = self.local_app_context {
-                                                local_ctx
-                                                    .enable_developer_mode(self.developer_mode);
-                                            }
-                                        }
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "Enables advanced features and less strict validation",
-                                        )
-                                        .color(DashColors::TEXT_SECONDARY),
-                                    );
-                                });
-                            });
-                        });
-
-                        // Theme Selection Section
-                        ui.add_space(16.0);
-                        ui.group(|ui| {
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Theme:")
-                                            .strong()
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-
-                                    egui::ComboBox::from_id_salt("theme_selection")
-                                        .selected_text(match self.theme_preference {
-                                            ThemeMode::Light => "Light",
-                                            ThemeMode::Dark => "Dark",
-                                            ThemeMode::System => "System",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::System, "System").clicked() {
-                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                                    SystemTask::UpdateThemePreference(ThemeMode::System)
-                                                ));
-                                            }
-                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Light, "Light").clicked() {
-                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                                    SystemTask::UpdateThemePreference(ThemeMode::Light)
-                                                ));
-                                            }
-                                            if ui.selectable_value(&mut self.theme_preference, ThemeMode::Dark, "Dark").clicked() {
-                                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                                    SystemTask::UpdateThemePreference(ThemeMode::Dark)
-                                                ));
-                                            }
-                                        });
-                                });
-                                ui.label(
-                                    egui::RichText::new(
-                                        "System: follows your OS theme • Light/Dark: force specific theme",
-                                    )
-                                    .color(DashColors::TEXT_SECONDARY),
-                                );
-                            });
-                        });
-
-                        // Configuration Requirements Section (only show if not overwriting dash.conf)
-                        if !self.overwrite_dash_conf {
-                            ui.add_space(16.0);
-
-                            ui.group(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Manual Configuration Required")
-                                            .strong()
-                                            .color(DashColors::WARNING),
-                                    );
-                                    ui.add_space(8.0);
-
-                                    let (network_name, zmq_ports) = match self.current_network {
-                                        Network::Dash => ("Mainnet", ("23708", "23708")),
-                                        Network::Testnet => ("Testnet", ("23709", "23709")),
-                                        Network::Devnet => ("Devnet", ("23710", "23710")),
-                                        Network::Regtest => ("Regtest", ("20302", "20302")),
-                                        _ => ("Unknown", ("0", "0")),
-                                    };
-
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "Add these lines to your {} dash.conf:",
-                                            network_name
-                                        ))
-                                        .color(DashColors::TEXT_PRIMARY),
-                                    );
-
-                                    ui.add_space(8.0);
-
-                                    // Configuration code block
-                                    egui::Frame::new()
-                                        .fill(DashColors::INPUT_BACKGROUND)
-                                        .stroke(egui::Stroke::new(1.0, DashColors::BORDER))
-                                        .corner_radius(egui::CornerRadius::same(6))
-                                        .inner_margin(egui::Margin::same(12))
-                                        .show(ui, |ui| {
-                                            ui.vertical(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "zmqpubrawtxlocksig=tcp://0.0.0.0:{}",
-                                                        zmq_ports.0
-                                                    ))
-                                                    .monospace()
-                                                    .color(DashColors::TEXT_PRIMARY),
-                                                );
-                                                if self.current_network != Network::Regtest {
-                                                    ui.label(
-                                                        egui::RichText::new(format!(
-                                                            "zmqpubrawchainlock=tcp://0.0.0.0:{}",
-                                                            zmq_ports.1
-                                                        ))
-                                                        .monospace()
-                                                        .color(DashColors::TEXT_PRIMARY),
-                                                    );
-                                                }
-                                            });
-                                        });
-                                });
-                            });
-                        }
-                    });
-                });
-            });
-
-        app_action
-    }
-
-    /// Render a single row for the network table
-    fn render_network_row(&mut self, ui: &mut Ui, network: Network, name: &str) -> AppAction {
-        let mut app_action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        ui.label(name);
-
-        // Check network status
-        let is_working = self.check_network_status(network);
-        let status_color = if is_working {
-            DashColors::success_color(dark_mode) // Theme-aware green
-        } else {
-            DashColors::error_color(dark_mode) // Theme-aware red
-        };
-
-        // Display status indicator
-        ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
-
-        if network == Network::Testnet && self.testnet_app_context.is_none() {
-            ui.label("(No configs for testnet loaded)");
-            ui.end_row();
-            return AppAction::None;
-        }
-        if network == Network::Devnet && self.devnet_app_context.is_none() {
-            ui.label("(No configs for devnet loaded)");
-            ui.end_row();
-            return AppAction::None;
-        }
-        if network == Network::Regtest && self.local_app_context.is_none() {
-            ui.label("(No configs for local loaded)");
-            ui.end_row();
-            return AppAction::None;
-        }
-
-        // Network selection
-        let mut is_selected = self.current_network == network;
-        if StyledCheckbox::new(&mut is_selected, "").show(ui).clicked() && is_selected {
-            self.current_network = network;
-            app_action = AppAction::SwitchNetwork(network);
-            // Recheck in 1 second
-            self.recheck_time = Some(
-                (SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    + Duration::from_secs(1))
-                .as_millis() as u64,
-            );
-        }
-
-        // Add a button to start the network
-        let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
-            !path.as_os_str().is_empty() && path.is_file()
-        } else {
-            false
-        };
-
-        if network != Network::Regtest {
-            ui.add_enabled_ui(start_enabled, |ui| {
-                if ui
-                    .button("Start")
-                    .on_disabled_hover_text(
-                        "Please select path to dash-qt binary in Advanced Settings",
-                    )
-                    .clicked()
-                {
-                    app_action =
-                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                            network,
-                            self.custom_dash_qt_path
-                                .clone()
-                                .expect("Some() checked above"),
-                            self.overwrite_dash_conf,
-                        )));
-                }
-            });
-        }
-
-        // Add a text field for the dashmate password
-        if network == Network::Regtest {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.add(
-                egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
-                    .desired_width(100.0)
-                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
-            );
-            if ui.button("Save Password").clicked() {
-                tracing::info!("3");
-                // 1) Reload the config
-                if let Ok(mut config) = Config::load() {
-                    if let Some(local_cfg) = config.config_for_network(Network::Regtest).clone() {
-                        let updated_local_config = local_cfg
-                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
-                        config.update_config_for_network(
-                            Network::Regtest,
-                            updated_local_config.clone(),
-                        );
-                        if let Err(e) = config.save() {
-                            eprintln!("Failed to save config to .env: {e}");
-                        }
-
-                        // 5) Update our local AppContext in memory
-                        if let Some(local_app_context) = &self.local_app_context {
+                    egui::ComboBox::from_id_salt("connection_mode_selector")
+                        .selected_text(connection_text)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(
+                                    &mut self.connection_mode,
+                                    ConnectionMode::Spv,
+                                    "SPV Client",
+                                )
+                                .changed()
                             {
-                                // Overwrite the config field with the new password
-                                let mut cfg_lock = local_app_context.config.write().unwrap();
-                                *cfg_lock = updated_local_config;
+                                self.update_all_connection_modes();
                             }
-
-                            // 6) Re-init the client & sdk from the updated config
-                            if let Err(e) =
-                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                            if ui
+                                .selectable_value(
+                                    &mut self.connection_mode,
+                                    ConnectionMode::Core,
+                                    "Dash Core RPC",
+                                )
+                                .changed()
                             {
-                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
-                            } else {
-                                // Trigger SwitchNetworks
+                                self.update_all_connection_modes();
+                            }
+                        });
+
+                    ui.end_row();
+
+                    // Row 2: Network
+                    ui.label(
+                        egui::RichText::new("Network:").color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    // Check if currently connected via SPV (only SPV restricts network switching)
+                    let is_spv_connected = if self.connection_mode == ConnectionMode::Spv {
+                        let ctx = self.current_app_context();
+                        if let Ok(spv_manager) = ctx.spv_manager.try_read() {
+                            spv_manager.is_initialized() || spv_manager.is_syncing
+                        } else {
+                            false
+                        }
+                    } else {
+                        false // Core mode doesn't restrict network switching
+                    };
+
+                    let network_text = match self.current_network {
+                        Network::Dash => "Mainnet",
+                        Network::Testnet => "Testnet",
+                        Network::Devnet => "Devnet",
+                        Network::Regtest => "Local",
+                        _ => "Unknown",
+                    };
+
+                    let network_combo = egui::ComboBox::from_id_salt("network_selector")
+                        .selected_text(network_text)
+                        .width(200.0);
+
+                    let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
+                        network_combo.show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(
+                                    &mut self.current_network,
+                                    Network::Dash,
+                                    "Mainnet",
+                                )
+                                .clicked()
+                            {
+                                app_action = AppAction::SwitchNetwork(Network::Dash);
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.current_network,
+                                    Network::Testnet,
+                                    "Testnet",
+                                )
+                                .clicked()
+                            {
+                                app_action = AppAction::SwitchNetwork(Network::Testnet);
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.current_network,
+                                    Network::Devnet,
+                                    "Devnet",
+                                )
+                                .clicked()
+                            {
+                                app_action = AppAction::SwitchNetwork(Network::Devnet);
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.current_network,
+                                    Network::Regtest,
+                                    "Local",
+                                )
+                                .clicked()
+                            {
                                 app_action = AppAction::SwitchNetwork(Network::Regtest);
                             }
+                        });
+                    });
+
+                    if is_spv_connected {
+                        response.response.on_hover_text("Disconnect from SPV first");
+                    }
+
+                    ui.end_row();
+                });
+
+            // Check connection status
+            let (is_connected, is_syncing) = match self.connection_mode {
+                ConnectionMode::Core => (self.check_network_status(self.current_network), false),
+                ConnectionMode::Spv => {
+                    // First check UI state for immediate feedback
+                    if self.spv_is_initialized {
+                        (true, self.spv_is_syncing)
+                    } else {
+                        // Otherwise check actual SPV manager state
+                        let ctx = self.current_app_context();
+                        if let Ok(spv_manager) = ctx.spv_manager.try_read() {
+                            // SPV is connected if it's initialized, regardless of sync status
+                            let initialized = spv_manager.is_initialized();
+                            let syncing = spv_manager.is_syncing;
+                            (initialized, syncing)
+                        } else {
+                            (false, false)
+                        }
+                    }
+                }
+            };
+
+            if is_connected {
+                ui.add_space(20.0);
+                if self.connection_mode == ConnectionMode::Spv {
+                    let disconnect_button = egui::Button::new(
+                        egui::RichText::new("Disconnect").color(DashColors::WHITE),
+                    )
+                    .fill(DashColors::ERROR)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(Shape::RADIUS_MD);
+
+                    if ui.add(disconnect_button).clicked() {
+                        app_action =
+                            AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::Stop));
+                        // Reset UI state immediately
+                        self.spv_is_initialized = false;
+                        self.spv_is_syncing = false;
+                        self.spv_sync_progress = 0.0;
+                        self.spv_current_height = 0;
+                        self.spv_target_height = 0;
+                        self.spv_last_error = None;
+                        self.spv_phase_info = None;
+                    }
+                } else {
+                    // For Core mode, just show status since it can switch networks freely
+                    ui.colored_label(DashColors::DASH_BLUE, "Ready");
+                }
+            } else {
+                ui.add_space(20.0);
+                let connect_button =
+                    egui::Button::new(egui::RichText::new("Connect").color(DashColors::WHITE))
+                        .fill(DashColors::DASH_BLUE)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(Shape::RADIUS_MD);
+
+                if ui.add(connect_button).clicked() {
+                    if self.connection_mode == ConnectionMode::Spv {
+                        let checkpoint_height = 0; // Start from genesis
+                        // Use SPV V2 for better concurrency
+                        app_action = AppAction::BackendTask(BackendTask::SpvTaskV2(
+                            SpvTaskV2::InitializeAndSync { checkpoint_height },
+                        ));
+                        // Set immediate UI feedback
+                        self.spv_is_initialized = true;
+                        self.spv_is_syncing = true;
+                        self.spv_sync_progress = 0.0;
+                        self.spv_current_height = 0;
+                        self.spv_target_height = 0;
+                        self.spv_last_error = None;
+                        self.spv_phase_info = None;
+                    } else {
+                        // Core mode connect
+                        let settings = self.current_app_context().db.get_settings().ok().flatten();
+                        let (custom_path, overwrite) = settings
+                            .map(|(_, _, _, custom_path, overwrite, _, _)| (custom_path, overwrite))
+                            .unwrap_or((None, true));
+                        if let Some(dash_qt_path) = custom_path {
+                            app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::StartDashQT(
+                                    self.current_network,
+                                    dash_qt_path,
+                                    overwrite,
+                                ),
+                            ));
                         }
                     }
                 }
             }
-        } else {
-            ui.label("");
-        }
 
-        if network == Network::Devnet {
-            if ui.button("Clear local Platform data").clicked() {
-                app_action =
-                    AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData));
+            // Password input for Local network
+            if self.current_network == Network::Regtest
+                && self.connection_mode == ConnectionMode::Core
+            {
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label("Local Network Password:");
+                    ui.text_edit_singleline(&mut self.local_network_dashmate_password);
+
+                    if ui.button("Save").clicked() {
+                        // Save the password to config
+                        if let Ok(mut config) = Config::load() {
+                            if let Some(local_cfg) =
+                                config.config_for_network(Network::Regtest).clone()
+                            {
+                                let updated_local_config = local_cfg.update_core_rpc_password(
+                                    self.local_network_dashmate_password.clone(),
+                                );
+                                config.update_config_for_network(
+                                    Network::Regtest,
+                                    updated_local_config.clone(),
+                                );
+                                if let Err(e) = config.save() {
+                                    eprintln!("Failed to save config to .env: {e}");
+                                }
+
+                                // Update our local AppContext in memory
+                                if let Some(local_app_context) = &self.local_app_context {
+                                    {
+                                        // Overwrite the config field with the new password
+                                        let mut cfg_lock =
+                                            local_app_context.config.write().unwrap();
+                                        *cfg_lock = updated_local_config;
+                                    }
+
+                                    // Re-init the client & sdk from the updated config
+                                    if let Err(e) =
+                                        Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                                    {
+                                        eprintln!(
+                                            "Failed to re-init local RPC client and sdk: {}",
+                                            e
+                                        );
+                                    } else {
+                                        // Trigger SwitchNetworks
+                                        app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
             }
-        } else {
-            ui.label("");
-        }
 
-        ui.end_row();
+            // SPV sync controls (only show when SPV is selected)
+            if self.connection_mode == ConnectionMode::Spv {
+                self.render_spv_controls(ui, &mut app_action);
+            }
+        });
+
+        // Advanced Settings section with clean dropdown
+        ui.add_space(16.0);
+
+        StyledCard::new().padding(20.0).show(ui, |ui| {
+            // Custom collapsing header
+            let id = ui.make_persistent_id("advanced_settings_header");
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                false,
+            );
+
+            // Custom expand/collapse icon
+            let icon = if state.is_open() {
+                "−" // Minus sign when open
+            } else {
+                "+" // Plus sign when closed
+            };
+
+            let response = ui.horizontal(|ui| {
+                // Make the content area clickable
+                let response = ui.allocate_response(
+                    egui::vec2(ui.available_width(), 30.0),
+                    egui::Sense::click(),
+                );
+
+                // Draw the content on top of the response area
+                let painter = ui.painter_at(response.rect);
+                let mut cursor = response.rect.min;
+
+                // Icon with background
+                let icon_size = egui::vec2(24.0, 24.0);
+                let icon_rect = egui::Rect::from_min_size(cursor, icon_size);
+                painter.rect_filled(
+                    icon_rect,
+                    egui::Rounding::from(4.0),
+                    DashColors::glass_white(dark_mode),
+                );
+
+                let icon_text = painter.layout_no_wrap(
+                    icon.to_string(),
+                    egui::FontId::proportional(16.0),
+                    DashColors::DASH_BLUE,
+                );
+                painter.galley(
+                    icon_rect.center() - icon_text.size() / 2.0,
+                    icon_text,
+                    DashColors::DASH_BLUE,
+                );
+
+                cursor.x += icon_size.x + 8.0;
+
+                // Advanced Settings text
+                let text = painter.layout_no_wrap(
+                    "Advanced Settings".to_string(),
+                    egui::FontId::proportional(16.0),
+                    DashColors::text_primary(dark_mode),
+                );
+                painter.galley(
+                    cursor + egui::vec2(0.0, (icon_size.y - text.size().y) / 2.0),
+                    text,
+                    DashColors::text_primary(dark_mode),
+                );
+
+                response
+            });
+
+            if response.inner.clicked() {
+                state.toggle(ui);
+            }
+
+            if response.inner.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            };
+
+            state.show_body_unindented(ui, |ui| {
+                ui.add_space(12.0);
+
+                // Theme Selection
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🎨").size(16.0));
+                    ui.label("Theme:");
+
+                    egui::ComboBox::from_id_salt("theme_selection")
+                        .selected_text(match self.theme_preference {
+                            ThemeMode::Light => "☀ Light",
+                            ThemeMode::Dark => "🌙 Dark",
+                            ThemeMode::System => "🖥 System",
+                        })
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(
+                                    &mut self.theme_preference,
+                                    ThemeMode::System,
+                                    "🖥 System",
+                                )
+                                .clicked()
+                            {
+                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                    SystemTask::UpdateThemePreference(ThemeMode::System),
+                                ));
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.theme_preference,
+                                    ThemeMode::Light,
+                                    "☀ Light",
+                                )
+                                .clicked()
+                            {
+                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                    SystemTask::UpdateThemePreference(ThemeMode::Light),
+                                ));
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.theme_preference,
+                                    ThemeMode::Dark,
+                                    "🌙 Dark",
+                                )
+                                .clicked()
+                            {
+                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                    SystemTask::UpdateThemePreference(ThemeMode::Dark),
+                                ));
+                            }
+                        });
+                });
+
+                // Dash-QT Path
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.label(
+                    egui::RichText::new("Dash Core Executable Path")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Select File").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            let file_name = path.file_name().and_then(|f| f.to_str());
+                            if let Some(file_name) = file_name {
+                                self.custom_dash_qt_path = None;
+                                self.custom_dash_qt_error_message = None;
+
+                                // Handle macOS .app bundles
+                                let resolved_path = if cfg!(target_os = "macos")
+                                    && path.extension().and_then(|s| s.to_str()) == Some("app")
+                                {
+                                    path.join("Contents").join("MacOS").join("Dash-Qt")
+                                } else {
+                                    path.clone()
+                                };
+
+                                // Check if the resolved path exists and is valid
+                                let is_valid = if cfg!(target_os = "windows") {
+                                    file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
+                                } else if cfg!(target_os = "macos") {
+                                    file_name.eq_ignore_ascii_case("dash-qt")
+                                        || (file_name.to_ascii_lowercase().ends_with(".app")
+                                            && resolved_path.exists())
+                                } else {
+                                    file_name.eq_ignore_ascii_case("dash-qt")
+                                };
+
+                                if is_valid {
+                                    self.custom_dash_qt_path = Some(resolved_path);
+                                    self.custom_dash_qt_error_message = None;
+                                    self.save().expect("Expected to save db settings");
+                                } else {
+                                    let required_file_name = if cfg!(target_os = "windows") {
+                                        "dash-qt.exe"
+                                    } else if cfg!(target_os = "macos") {
+                                        "Dash-Qt or Dash-Qt.app"
+                                    } else {
+                                        "dash-qt"
+                                    };
+                                    self.custom_dash_qt_error_message = Some(format!(
+                                        "Invalid file: Please select a valid '{}'.",
+                                        required_file_name
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
+                        self.custom_dash_qt_path = Some(PathBuf::new());
+                        self.custom_dash_qt_error_message = None;
+                        self.save().expect("Expected to save db settings");
+                    }
+                });
+
+                if let Some(ref file) = self.custom_dash_qt_path {
+                    if !file.as_os_str().is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label("Path:");
+                            ui.label(
+                                egui::RichText::new(format_path_for_display(file))
+                                    .color(DashColors::SUCCESS)
+                                    .italics(),
+                            );
+                        });
+                    }
+                } else if let Some(ref error) = self.custom_dash_qt_error_message {
+                    ui.colored_label(DashColors::ERROR, error);
+                }
+
+                // Configuration Options
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.label(
+                    egui::RichText::new("Configuration Options")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.save().expect("Expected to save db settings");
+                    }
+                    ui.label(
+                        egui::RichText::new("Auto-configure required settings")
+                            .color(DashColors::TEXT_SECONDARY)
+                            .italics(),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if StyledCheckbox::new(&mut self.developer_mode, "Developer mode")
+                        .show(ui)
+                        .clicked()
+                    {
+                        if let Ok(mut config) = Config::load() {
+                            config.developer_mode = Some(self.developer_mode);
+                            if let Err(e) = config.save() {
+                                eprintln!("Failed to save config: {e}");
+                            }
+
+                            // Update all contexts
+                            self.mainnet_app_context
+                                .enable_developer_mode(self.developer_mode);
+                            if let Some(ref ctx) = self.testnet_app_context {
+                                ctx.enable_developer_mode(self.developer_mode);
+                            }
+                            if let Some(ref ctx) = self.devnet_app_context {
+                                ctx.enable_developer_mode(self.developer_mode);
+                            }
+                            if let Some(ref ctx) = self.local_app_context {
+                                ctx.enable_developer_mode(self.developer_mode);
+                            }
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new("Enable advanced features")
+                            .color(DashColors::TEXT_SECONDARY)
+                            .italics(),
+                    );
+                });
+            });
+        });
+
         app_action
     }
 
@@ -929,6 +922,51 @@ impl ScreenLike for SettingsScreen {
             self.overwrite_dash_conf = settings.overwrite_dash_conf;
             self.theme_preference = settings.theme_mode;
             self.connection_mode = settings.connection_mode;
+        }
+
+        // Reset SPV state for the current network
+        // This ensures we show the correct connection status when switching networks
+        if self.connection_mode == ConnectionMode::Spv {
+            // Get the current app context's SPV manager state
+            let ctx = self.current_app_context();
+
+            tracing::debug!(
+                "Refreshing SPV state for network: {:?}, ctx network: {:?}",
+                self.current_network,
+                ctx.network
+            );
+
+            // Collect values from SPV manager in a limited scope to avoid borrow issues
+            let (is_initialized, is_syncing, current_height, target_height) = {
+                if let Ok(spv_manager) = ctx.spv_manager.try_read() {
+                    let result = (
+                        spv_manager.is_initialized(),
+                        spv_manager.is_syncing,
+                        spv_manager.current_height,
+                        spv_manager.target_height,
+                    );
+                    tracing::debug!(
+                        "SPV state for {:?}: initialized={}, syncing={}, height={}/{}",
+                        ctx.network,
+                        result.0,
+                        result.1,
+                        result.2,
+                        result.3
+                    );
+                    result
+                } else {
+                    tracing::debug!("Could not get SPV manager lock for {:?}", ctx.network);
+                    (false, false, 0, 0)
+                }
+            }; // spv_manager lock is dropped here
+
+            // Now update self without any borrows active
+            self.spv_is_initialized = is_initialized;
+            self.spv_is_syncing = is_syncing;
+            self.spv_current_height = current_height;
+            self.spv_target_height = target_height;
+            // Don't calculate progress from target_height, use actual progress from SPV client
+            self.spv_sync_progress = 0.0;
         }
     }
 
@@ -970,6 +1008,52 @@ impl ScreenLike for SettingsScreen {
             BackendTaskSuccessResult::SpvResult(spv_result) => {
                 match spv_result {
                     SpvTaskResult::SyncProgress {
+                        current_height,
+                        target_height,
+                        progress_percent,
+                        phase_info,
+                    } => {
+                        // Debug log the received phase info
+                        if let Some(ref phase) = phase_info {
+                            tracing::debug!(
+                                "Received phase info: {} ({:.1}%)",
+                                phase.phase_name,
+                                phase.progress_percentage
+                            );
+                        }
+
+                        self.spv_current_height = current_height;
+                        self.spv_target_height = target_height;
+                        self.spv_sync_progress = progress_percent;
+                        self.spv_phase_info = phase_info;
+                        self.spv_is_syncing = progress_percent < 100.0;
+                        self.spv_is_initialized = true;
+
+                        // Clear error on successful progress
+                        self.spv_last_error = None;
+
+                        if progress_percent >= 100.0 {
+                            self.spv_is_syncing = false;
+                            tracing::info!("SPV sync completed at height {}", current_height);
+                        }
+                    }
+                    SpvTaskResult::SyncComplete { final_height } => {
+                        self.spv_current_height = final_height;
+                        self.spv_target_height = final_height;
+                        self.spv_sync_progress = 100.0;
+                        self.spv_is_syncing = false;
+                        tracing::info!("SPV sync completed at height {}", final_height);
+                    }
+                    SpvTaskResult::Error(error) => {
+                        self.spv_last_error = Some(error);
+                        self.spv_is_syncing = false;
+                    }
+                    _ => {}
+                }
+            }
+            BackendTaskSuccessResult::SpvResultV2(spv_result) => {
+                match spv_result {
+                    SpvTaskResultV2::SyncProgress {
                         current_height,
                         target_height,
                         progress_percent,
@@ -1039,23 +1123,24 @@ impl ScreenLike for SettingsScreen {
                         self.spv_last_error = None;
                         self.spv_phase_info = phase_info;
                     }
-                    SpvTaskResult::SyncComplete { final_height } => {
+                    SpvTaskResultV2::SyncComplete { final_height } => {
                         self.spv_current_height = final_height;
                         self.spv_target_height = final_height;
                         self.spv_sync_progress = 100.0;
                         self.spv_is_syncing = false;
                         self.spv_last_error = None;
                     }
-                    SpvTaskResult::ProofVerificationResult { is_valid, details } => {
+                    SpvTaskResultV2::ProofVerificationResult { is_valid, details } => {
                         // Handle proof verification results if needed
                         if !is_valid {
                             self.spv_last_error = Some(details);
                         }
                     }
-                    SpvTaskResult::Error(error) => {
+                    SpvTaskResultV2::Error(error) => {
                         self.spv_last_error = Some(error);
                         self.spv_is_syncing = false;
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -1083,21 +1168,24 @@ impl ScreenLike for SettingsScreen {
                 .inner
         });
 
-        // Auto-refresh progress while SPV is syncing (once per second)
-        if self.spv_is_syncing && action == AppAction::None {
+        // Auto-refresh progress while SPV is syncing or connected
+        if action == AppAction::None && self.connection_mode == ConnectionMode::Spv {
             let current_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as TimestampMillis;
 
-            // Only check progress once per 10 seconds
-            if current_time >= self.spv_last_progress_check + 10000 {
+            // Only check progress once per 5 seconds
+            if current_time >= self.spv_last_progress_check + 5000 {
+                tracing::debug!("Checking SPV sync progress");
                 self.spv_last_progress_check = current_time;
-                tracing::info!("Settings screen requesting SPV sync progress update");
-                action = AppAction::BackendTask(BackendTask::SpvTask(SpvTask::GetSyncProgress));
+                // Use SPV V2 for progress checks
+                action = AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::GetSyncProgress));
             }
-            ctx.request_repaint_after(std::time::Duration::from_secs(10));
-        } else if action == AppAction::None {
+            ctx.request_repaint_after(std::time::Duration::from_secs(5));
+        }
+        
+        if action == AppAction::None {
             // Recheck both network status every 10 seconds
             let recheck_time = Duration::from_secs(10);
             let current_time = SystemTime::now()

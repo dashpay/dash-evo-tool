@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
 use spv::{SpvTask, SpvTaskResult};
+use spv_v2::{SpvTaskV2, SpvTaskResultV2};
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -38,6 +39,7 @@ pub mod identity;
 pub mod platform_info;
 pub mod register_contract;
 pub mod spv;
+pub mod spv_v2;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -57,6 +59,7 @@ pub enum BackendTask {
     SystemTask(SystemTask),
     PlatformInfo(PlatformInfoTaskRequestType),
     SpvTask(SpvTask),
+    SpvTaskV2(SpvTaskV2),
     None,
 }
 
@@ -103,6 +106,7 @@ pub enum BackendTaskSuccessResult {
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
     SpvResult(SpvTaskResult),
+    SpvResultV2(SpvTaskResultV2),
 }
 
 impl BackendTaskSuccessResult {}
@@ -179,6 +183,7 @@ impl AppContext {
                 self.run_platform_info_task(platform_info_task).await
             }
             BackendTask::SpvTask(spv_task) => self.run_spv_task(spv_task).await,
+            BackendTask::SpvTaskV2(spv_task) => self.run_spv_v2_task(spv_task).await,
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }

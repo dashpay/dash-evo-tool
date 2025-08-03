@@ -1,6 +1,7 @@
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::spv::SpvManager;
+use crate::backend_task::spv_v2::SpvManagerV2;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
@@ -74,8 +75,10 @@ pub struct AppContext {
     animate: AtomicBool,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
-    // SPV manager for SPV functionality
+    // SPV manager for SPV functionality (legacy)
     pub(crate) spv_manager: Arc<TokioRwLock<SpvManager>>,
+    // SPV manager V2 with improved architecture
+    pub(crate) spv_manager_v2: Arc<TokioRwLock<SpvManagerV2>>,
     // Connection mode (Core or SPV)
     pub(crate) connection_mode: RwLock<crate::model::settings::ConnectionMode>,
 }
@@ -192,6 +195,7 @@ impl AppContext {
             animate,
             subtasks,
             spv_manager: Arc::new(TokioRwLock::new(SpvManager::new())),
+            spv_manager_v2: Arc::new(TokioRwLock::new(SpvManagerV2::new())),
             connection_mode: RwLock::new(connection_mode),
         };
 

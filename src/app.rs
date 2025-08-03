@@ -648,7 +648,6 @@ impl App for AppState {
                         _ => {
                             // Special handling for SPV results - always route to Settings screen
                             if matches!(unboxed_message, BackendTaskSuccessResult::SpvResult(_)) {
-                                tracing::info!("Routing SPV result to Settings screen");
                                 // Get the Settings screen directly
                                 if let Some(Screen::SettingsScreen(network_chooser)) = self
                                     .main_screens

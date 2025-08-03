@@ -17,6 +17,7 @@ pub enum SpvTask {
     GetSyncProgress,
     VerifyStateTransition(StateTransition),
     VerifyIdentity(Bytes32),
+    Stop,
 }
 
 #[derive(Debug)]
@@ -134,6 +135,8 @@ impl SpvManager {
             tracing::warn!("Failed to create SPV storage directory: {:?}", e);
         }
 
+        tracing::info!("SPV storage path: {:?}", storage_path);
+
         // Configure with checkpoint settings
         let config = config
             .with_storage_path(storage_path)
@@ -227,52 +230,100 @@ impl SpvManager {
 
         loop {
             tokio::select! {
-                // Handle commands
+                // Set biased to prioritize command handling
+                biased;
+
+                // Handle commands with higher priority
                 Some(command) = command_rx.recv() => {
                     match command {
                         SpvCommand::GetSyncProgress { response } => {
-                            tracing::info!("Getting SPV sync progress");
-                            let result = client.sync_progress().await
-                                .map_err(|e| format!("Failed to get sync progress: {:?}", e));
+                            tracing::debug!("Received GetSyncProgress command");
 
-                            // Update shared state with progress
-                            if let Ok(progress) = &result {
-                                if let Ok(mut state) = shared_state.try_write() {
-                                    state.current_height = progress.header_height;
-                                    state.headers_synced = progress.headers_synced;
-                                    state.is_syncing = !progress.headers_synced;
-                                    state.last_update = Instant::now();
+                            // Use a timeout to prevent blocking sync operations
+                            let result = tokio::time::timeout(
+                                tokio::time::Duration::from_millis(100),
+                                client.sync_progress()
+                            ).await;
 
-                                    // Update target if needed
-                                    if state.target_height == 0 || state.current_height > state.target_height - 20 {
-                                        state.target_height = state.current_height + 50;
-                                    }
+                            let progress_result = match result {
+                                Ok(Ok(progress)) => Ok(progress),
+                                Ok(Err(e)) => Err(format!("Failed to get sync progress: {:?}", e)),
+                                Err(_) => {
+                                    // Timeout - sync might be busy, return error
+                                    tracing::debug!("GetSyncProgress timed out, sync might be busy");
+                                    Err("Sync progress temporarily unavailable - sync in progress".to_string())
                                 }
+                            };
 
-                                // Log phase information if available
-                                if let Some(ref phase) = progress.current_phase {
-                                    tracing::debug!("Current sync phase: {} ({:.1}%)", phase.phase_name, phase.progress_percentage);
-                                }
-                            }
+                            tracing::debug!("Sync progress result: {:?}", progress_result);
 
-                            let _ = response.send(result);
+                            let _ = response.send(progress_result);
                         }
                         SpvCommand::GetQuorumKey { quorum_type, quorum_hash, response } => {
                             let result = Self::get_quorum_key_from_client(&client, quorum_type, &quorum_hash);
                             let _ = response.send(result);
                         }
                         SpvCommand::Stop { response } => {
-                            let result = client.stop().await
-                                .map_err(|e| format!("Failed to stop SPV client: {:?}", e));
+                            tracing::info!("Stopping SPV client...");
+
+                            // Try to stop the client with a timeout
+                            let stop_result = tokio::time::timeout(
+                                tokio::time::Duration::from_secs(5),
+                                client.stop()
+                            ).await;
+
+                            let result = match stop_result {
+                                Ok(Ok(_)) => {
+                                    tracing::info!("SPV client stopped successfully");
+                                    Ok(())
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::error!("SPV client stop returned error: {:?}", e);
+                                    Err(format!("Failed to stop SPV client: {:?}", e))
+                                }
+                                Err(_) => {
+                                    tracing::error!("SPV client stop timed out after 5 seconds");
+                                    Err("SPV client stop timed out".to_string())
+                                }
+                            };
+
+                            // Reset shared state when stopping
+                            if let Ok(mut state) = shared_state.try_write() {
+                                state.current_height = 0;
+                                state.target_height = 0;
+                                state.is_syncing = false;
+                                state.headers_synced = false;
+                                state.last_update = Instant::now();
+                            }
+
                             let _ = response.send(result);
+
+                            tracing::info!("SPV client stop command completed, exiting task loop");
+
+                            // Drop the client to ensure all background tasks are stopped
+                            drop(client);
+
+                            // Give a small delay to allow background threads to finish
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
                             break;
                         }
                     }
                 }
 
-                // Check for events from SPV client with 100ms timeout
+                // Process network messages with lower priority to avoid interrupting commands
                 _ = async {
-                    match client.next_event_timeout(Duration::from_millis(100)).await {
+                    // Add a small yield to ensure commands get processed first
+                    tokio::task::yield_now().await;
+
+                    // Process network messages to keep sync running
+                    // Use a shorter duration to be more responsive to commands
+                    if let Err(e) = client.process_network_messages(Duration::from_millis(100)).await {
+                        tracing::error!("Error processing network messages: {:?}", e);
+                    }
+
+                    // Check for events with a very short timeout
+                    match client.next_event_timeout(Duration::from_millis(50)).await {
                         Ok(Some(event)) => {
                             // Handle the event
                             match event {
@@ -305,9 +356,6 @@ impl SpvManager {
                                         // Handle optional target_height
                                         if let Some(target) = target_height {
                                             state.target_height = target;
-                                        } else {
-                                            // If no target height provided, estimate it
-                                            state.target_height = starting_height + 1000;
                                         }
                                         state.last_update = Instant::now();
                                     }
@@ -320,11 +368,8 @@ impl SpvManager {
                                         state.is_syncing = progress_percent < 100.0;
                                         state.last_update = Instant::now();
 
-                                        // Update target height based on progress
-                                        if progress_percent < 100.0 && progress_percent > 0.0 {
-                                            // Estimate target based on progress
-                                            state.target_height = (tip_height as f64 / (progress_percent / 100.0)) as u32;
-                                        } else if progress_percent >= 100.0 {
+                                        // Mark as synced when progress is 100%
+                                        if progress_percent >= 100.0 {
                                             state.target_height = tip_height;
                                             state.headers_synced = true;
                                         }
@@ -379,6 +424,8 @@ impl SpvManager {
                 } => {}
             }
         }
+
+        tracing::info!("SPV task loop has exited completely");
     }
 
     /// Get quorum key directly from the client's MasternodeListEngine
@@ -443,6 +490,12 @@ impl SpvManager {
                 .await
                 .map_err(|_| "Failed to receive response from SPV task".to_string())??;
 
+            tracing::debug!(
+                "SPV sync progress response: current_height={}, headers_synced={}",
+                progress.header_height,
+                progress.headers_synced
+            );
+
             self.current_height = progress.header_height;
 
             // Extract phase info if available
@@ -466,21 +519,18 @@ impl SpvManager {
                         self.target_height = total;
                     }
                 }
-            } else if self.target_height == 0 || self.current_height > 1_200_000 {
-                self.target_height = self.current_height + 50;
             }
 
             let progress_percent = if let Some(ref phase) = phase_info {
                 phase.progress_percentage as f32
-            } else if self.target_height > 0 {
-                (self.current_height as f32 / self.target_height as f32) * 100.0
+            } else if progress.headers_synced {
+                100.0
             } else {
                 0.0
             };
 
-            // If we're fully synced, adjust target to current
-            if progress.headers_synced && progress.header_height > 1_200_000 {
-                self.target_height = self.current_height;
+            // If we're fully synced
+            if progress.headers_synced {
                 self.is_syncing = false;
                 return Ok((self.current_height, self.target_height, 100.0, phase_info));
             }
@@ -585,36 +635,24 @@ impl AppContext {
                 ))
             }
             SpvTask::GetSyncProgress => {
+                tracing::debug!("Getting SPV sync progress");
                 let (current, target, percent, phase_info) =
                     spv_manager.get_sync_progress_with_phase().await?;
+                tracing::debug!(
+                    "SPV sync progress: current={}, target={}, percent={:.1}%",
+                    current,
+                    target,
+                    percent
+                );
 
-                // Log phase info for debugging
-                if let Some(ref phase) = phase_info {
-                    tracing::info!(
-                        "SPV Phase: {} - {:.1}% ({}/{:?} items)",
-                        phase.phase_name,
-                        phase.progress_percentage,
-                        phase.items_completed,
-                        phase.items_total
-                    );
-                }
-
-                if percent >= 100.0 {
-                    Ok(BackendTaskSuccessResult::SpvResult(
-                        SpvTaskResult::SyncComplete {
-                            final_height: current,
-                        },
-                    ))
-                } else {
-                    Ok(BackendTaskSuccessResult::SpvResult(
-                        SpvTaskResult::SyncProgress {
-                            current_height: current,
-                            target_height: target,
-                            progress_percent: percent,
-                            phase_info,
-                        },
-                    ))
-                }
+                Ok(BackendTaskSuccessResult::SpvResult(
+                    SpvTaskResult::SyncProgress {
+                        current_height: current,
+                        target_height: target,
+                        progress_percent: percent,
+                        phase_info,
+                    },
+                ))
             }
             SpvTask::VerifyStateTransition(state_transition) => {
                 let is_valid = spv_manager
@@ -643,6 +681,25 @@ impl AppContext {
                         } else {
                             "Identity proof verification failed".to_string()
                         },
+                    },
+                ))
+            }
+            SpvTask::Stop => {
+                spv_manager.stop().await?;
+
+                // Reset SpvManager state after stopping
+                spv_manager.is_syncing = false;
+                spv_manager.is_monitoring = false;
+                spv_manager.current_height = 0;
+                spv_manager.target_height = 0;
+                spv_manager.command_tx = None;
+
+                Ok(BackendTaskSuccessResult::SpvResult(
+                    SpvTaskResult::SyncProgress {
+                        current_height: 0,
+                        target_height: 0,
+                        progress_percent: 0.0,
+                        phase_info: None,
                     },
                 ))
             }

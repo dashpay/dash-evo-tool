@@ -135,14 +135,54 @@ impl ContextProvider for Provider {
         let is_spv_mode = app_ctx.is_spv_mode();
 
         if is_spv_mode {
-            // Try to get SPV manager
-            tracing::debug!("SPV mode is enabled, trying to access SPV manager");
+            // First try SPV v2 manager
+            tracing::debug!("SPV mode is enabled, trying to access SPV v2 manager first");
+            match app_ctx.spv_manager_v2.try_read() {
+                Ok(spv_v2_guard) => {
+                    if spv_v2_guard.is_initialized() {
+                        tracing::debug!("SPV v2 manager is initialized, using it");
+
+                        // Use blocking executor to call async method
+                        tracing::debug!("Calling get_quorum_public_key on SPV v2 manager");
+                        let result = tokio::task::block_in_place(|| {
+                            let handle = tokio::runtime::Handle::current();
+                            handle.block_on(async {
+                                spv_v2_guard
+                                    .get_quorum_public_key(quorum_type as u8, &quorum_hash)
+                                    .await
+                            })
+                        });
+
+                        match result {
+                            Some(key_array) => {
+                                tracing::debug!(
+                                    "Quorum public key retrieved successfully from SPV v2"
+                                );
+                                return Ok(key_array);
+                            }
+                            None => {
+                                tracing::debug!(
+                                    "Quorum not found in SPV v2 manager, falling back to v1"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::debug!("SPV v2 not initialized, trying v1");
+                    }
+                }
+                Err(_) => {
+                    tracing::debug!("Failed to acquire SPV v2 manager lock, trying v1");
+                }
+            }
+
+            // Fall back to SPV v1 manager
+            tracing::debug!("Trying to access SPV v1 manager");
             match app_ctx.spv_manager.try_read() {
                 Ok(spv_manager_guard) => {
                     tracing::debug!("SPV manager acquired");
                     if !spv_manager_guard.is_initialized() {
                         return Err(ContextProviderError::Generic(
-                            "SPV client not initialized".to_string(),
+                            "Neither SPV v1 nor v2 client is initialized".to_string(),
                         ));
                     }
 

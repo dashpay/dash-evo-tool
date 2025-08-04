@@ -79,28 +79,18 @@ impl SettingsScreen {
     }
 
     fn render_spv_controls(&mut self, ui: &mut Ui, _action: &mut AppAction) {
-        // Show progress if syncing or complete
-        if self.spv_is_initialized || self.spv_is_syncing || self.spv_sync_progress > 0.0 {
+        // Check if we're in initialization phase
+        let is_initializing = self.spv_is_initialized 
+            && self.spv_current_height == 0 
+            && self.spv_phase_info.is_none();
+            
+        // Show progress only if we're past initialization and have actual sync data
+        if self.spv_is_initialized && !is_initializing && (self.spv_is_syncing || self.spv_sync_progress > 0.0) {
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
 
-            // Show "Syncing..." with spinner if initialized but no progress yet
-            if self.spv_is_initialized
-                && self.spv_current_height == 0
-                && self.spv_phase_info.is_none()
-            {
-                ui.horizontal(|ui| {
-                    // Add a blue spinner
-                    ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
-                    ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
-                    ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
-                    ui.spinner();
-                    ui.label("Initializing SPV client...");
-                });
-            } else {
-                self.render_spv_sync_progress(ui);
-            }
+            self.render_spv_sync_progress(ui);
         }
 
         if let Some(error) = &self.spv_last_error {
@@ -398,7 +388,7 @@ impl SettingsScreen {
                     // Check if currently connected via SPV (only SPV restricts network switching)
                     let is_spv_connected = if self.connection_mode == ConnectionMode::Spv {
                         let ctx = self.current_app_context();
-                        if let Ok(spv_manager) = ctx.spv_manager.try_read() {
+                        if let Ok(spv_manager) = ctx.spv_manager_v2.try_read() {
                             spv_manager.is_initialized() || spv_manager.is_syncing
                         } else {
                             false
@@ -550,9 +540,9 @@ impl SettingsScreen {
                     if self.spv_is_initialized {
                         (true, self.spv_is_syncing)
                     } else {
-                        // Otherwise check actual SPV manager state
+                        // Otherwise check actual SPV manager V2 state
                         let ctx = self.current_app_context();
-                        if let Ok(spv_manager) = ctx.spv_manager.try_read() {
+                        if let Ok(spv_manager) = ctx.spv_manager_v2.try_read() {
                             // SPV is connected if it's initialized, regardless of sync status
                             let initialized = spv_manager.is_initialized();
                             let syncing = spv_manager.is_syncing;
@@ -596,15 +586,23 @@ impl SettingsScreen {
                             && self.spv_current_height == 0 
                             && self.spv_phase_info.is_none();
                         
-                        if !is_initializing && self.spv_is_syncing && self.spv_sync_progress < 100.0 {
-                            // Only show syncing status if we're not in the initialization phase
+                        if is_initializing {
+                            // Show initialization status
+                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Initializing SPV client...")
+                            );
+                        } else if self.spv_is_syncing && self.spv_sync_progress < 100.0 {
+                            // Show syncing status
                             ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
                             ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
                             ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
                             ui.spinner();
                             ui.label(
                                 egui::RichText::new("Syncing...")
-                                    .color(DashColors::DASH_BLUE)
                             );
                         } else if self.spv_sync_progress >= 100.0 {
                             ui.colored_label(DashColors::SUCCESS, "✓ Fully Synced");
@@ -1101,6 +1099,15 @@ impl ScreenLike for SettingsScreen {
                         progress_percent,
                         phase_info,
                     } => {
+                        // Debug log all received values
+                        tracing::info!(
+                            "SPV Progress Update - current: {}, target: {}, percent: {:.1}%, has_phase: {}",
+                            current_height,
+                            target_height,
+                            progress_percent,
+                            phase_info.is_some()
+                        );
+                        
                         // Debug log the received phase info
                         if let Some(ref phase) = phase_info {
                             tracing::debug!(
@@ -1157,13 +1164,26 @@ impl ScreenLike for SettingsScreen {
                             }
                         }
 
-                        self.spv_current_height = current_height;
-                        self.spv_target_height = target_height;
-                        self.spv_sync_progress = progress_percent;
-                        self.spv_is_syncing = true;
-                        self.spv_is_initialized = true;
-                        self.spv_last_error = None;
-                        self.spv_phase_info = phase_info;
+                        // Check if this is a stop result (target_height is 0)
+                        if target_height == 0 {
+                            // This is a stop result, reset everything
+                            self.spv_current_height = 0;
+                            self.spv_target_height = 0;
+                            self.spv_sync_progress = 0.0;
+                            self.spv_is_syncing = false;
+                            self.spv_is_initialized = false;
+                            self.spv_last_error = None;
+                            self.spv_phase_info = None;
+                        } else {
+                            // Normal sync progress update (including initialization)
+                            self.spv_current_height = current_height;
+                            self.spv_target_height = target_height;
+                            self.spv_sync_progress = progress_percent;
+                            self.spv_is_syncing = true; // Always syncing if we have a target
+                            self.spv_is_initialized = true;
+                            self.spv_last_error = None;
+                            self.spv_phase_info = phase_info;
+                        }
                     }
                     SpvTaskResultV2::SyncComplete { final_height } => {
                         self.spv_current_height = final_height;
@@ -1211,7 +1231,10 @@ impl ScreenLike for SettingsScreen {
         });
 
         // Auto-refresh progress while SPV is syncing or connected
-        if action == AppAction::None && self.connection_mode == ConnectionMode::Spv {
+        if action == AppAction::None 
+            && self.connection_mode == ConnectionMode::Spv 
+            && self.spv_is_initialized // Only check progress if we're actually connected
+        {
             let current_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

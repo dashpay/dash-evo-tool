@@ -203,6 +203,7 @@ pub enum RegisterIdentityFundingMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
+    // QR code mathod
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
     FundWithWallet(Amount, IdentityIndex, TopUpIndex),
 }

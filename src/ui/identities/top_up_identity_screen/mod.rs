@@ -58,6 +58,10 @@ impl TopUpIdentityScreen {
         let Some(selected_wallet) = &self.wallet else {
             return AppAction::None;
         };
+        // reset error message
+        self.error_message = None;
+
+        // Process the funding method
         match funding_method {
             FundingWidgetMethod::UseAssetLock(address, funding_asset_lock, tx) => {
                 let txid = tx.txid().to_hex();
@@ -170,6 +174,17 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error topping up identity: {}", message));
+            let mut step = self.step.write().unwrap();
+            match *step {
+                WalletFundedScreenStep::WaitingForAssetLock
+                | WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    // Reset to the initial step if in progress
+                    *step = WalletFundedScreenStep::ChooseFundingMethod;
+                }
+                WalletFundedScreenStep::ChooseFundingMethod | WalletFundedScreenStep::Success => {
+                    // noop
+                }
+            }
         } else {
             self.error_message = Some(message.to_string());
         }

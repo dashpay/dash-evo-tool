@@ -10,6 +10,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Address, ChainLock, Network, OutPoint, Transaction, TxOut};
+use dash_sdk::dpp::fee::Credits;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -20,7 +21,8 @@ pub enum CoreTask {
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, PathBuf, bool),
-    CreateAssetLock(Arc<RwLock<Wallet>>, u64), // wallet, amount in credits
+    CreateRegistrationAssetLock(Arc<RwLock<Wallet>>, Credits, u32), // wallet, amount in credits, identity index
+    CreateTopUpAssetLock(Arc<RwLock<Wallet>>, Credits, u32, u32), // wallet, amount in credits, identity index, top up index
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -37,8 +39,12 @@ impl PartialEq for CoreTask {
                     CoreTask::StartDashQT(_, _, _)
                 )
                 | (
-                    CoreTask::CreateAssetLock(_, _),
-                    CoreTask::CreateAssetLock(_, _)
+                    CoreTask::CreateRegistrationAssetLock(_, _, _),
+                    CoreTask::CreateRegistrationAssetLock(_, _, _)
+                )
+                | (
+                    CoreTask::CreateTopUpAssetLock(_, _, _, _),
+                    CoreTask::CreateTopUpAssetLock(_, _, _, _)
                 )
         )
     }
@@ -119,9 +125,12 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
-            CoreTask::CreateAssetLock(wallet, amount) => self
-                .create_asset_lock(wallet, amount)
+            CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => self
+                .create_registration_asset_lock(wallet, amount, true, identity_index)
                 .map_err(|e| format!("Error creating asset lock: {}", e)),
+            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => self
+                .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
+                .map_err(|e| format!("Error creating top up asset lock: {}", e)),
         }
     }
 

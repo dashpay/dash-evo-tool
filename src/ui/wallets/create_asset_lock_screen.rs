@@ -2,7 +2,9 @@ use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -18,6 +20,12 @@ use eframe::egui::{self, Context, Ui};
 use egui::{RichText, Vec2};
 use std::sync::{Arc, RwLock};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AssetLockPurpose {
+    Registration,
+    TopUp,
+}
+
 pub struct CreateAssetLockScreen {
     pub wallet: Arc<RwLock<Wallet>>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -30,12 +38,19 @@ pub struct CreateAssetLockScreen {
     // Asset lock creation fields
     step: Arc<RwLock<WalletFundedScreenStep>>,
     amount_input: String,
+    identity_index: u32,
     amount_credits: Option<Credits>,
     funding_address: Option<Address>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     core_has_funding_address: Option<bool>,
     is_creating: bool,
     asset_lock_tx_id: Option<String>,
+
+    // New fields for asset lock purpose flow
+    asset_lock_purpose: Option<AssetLockPurpose>,
+    selected_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
+    top_up_index: u32,
 }
 
 impl CreateAssetLockScreen {
@@ -51,12 +66,17 @@ impl CreateAssetLockScreen {
             error_message: None,
             step: Arc::new(RwLock::new(WalletFundedScreenStep::WaitingOnFunds)),
             amount_input: "0.5".to_string(), // Default to 0.5 DASH
-            amount_credits: Some(50000000),  // 0.5 DASH in credits
+            identity_index: 0,
+            amount_credits: Some(50000000), // 0.5 DASH in credits
             funding_address: None,
             funding_utxo: None,
             core_has_funding_address: None,
             is_creating: false,
             asset_lock_tx_id: None,
+            asset_lock_purpose: None,
+            selected_identity: None,
+            selected_identity_string: String::new(),
+            top_up_index: 0,
         }
     }
 
@@ -330,16 +350,169 @@ impl ScreenLike for CreateAssetLockScreen {
                     let (needs_unlock, unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                     if !needs_unlock || unlocked {
+                        // First, select the purpose of the asset lock
+                        if self.asset_lock_purpose.is_none() {
+                            ui.heading("Select Asset Lock Purpose");
+                            ui.add_space(10.0);
+
+                            ui.label(
+                                RichText::new("What is the purpose of this asset lock?")
+                                    .color(DashColors::text_secondary(dark_mode))
+                            );
+                            ui.add_space(20.0);
+
+                            ui.horizontal(|ui| {
+                                if ui.button(RichText::new("Registration").size(16.0)).clicked() {
+                                    self.asset_lock_purpose = Some(AssetLockPurpose::Registration);
+                                }
+
+                                ui.add_space(20.0);
+
+                                if ui.button(RichText::new("Top Up").size(16.0)).clicked() {
+                                    self.asset_lock_purpose = Some(AssetLockPurpose::TopUp);
+                                }
+                            });
+
+                            ui.add_space(20.0);
+
+                            // Show explanation
+                            ui.group(|ui| {
+                                ui.label(RichText::new("ℹ️ Information").strong());
+                                ui.add_space(5.0);
+                                ui.label("• Registration: Create an asset lock for a new identity registration");
+                                ui.label("• Top Up: Add credits to an existing identity");
+                            });
+
+                            return;
+                        }
+
+                        // Show selected purpose
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Purpose:").strong());
+                            let purpose_text = match self.asset_lock_purpose {
+                                Some(AssetLockPurpose::Registration) => "Registration",
+                                Some(AssetLockPurpose::TopUp) => "Top Up",
+                                None => "Not selected",
+                            };
+                            ui.label(purpose_text);
+
+                            if ui.button("Change").clicked() {
+                                self.asset_lock_purpose = None;
+                                self.selected_identity = None;
+                                self.selected_identity_string.clear();
+                            }
+                        });
+                        ui.add_space(20.0);
+
+                        // For top up, select identity and indices
+                        if self.asset_lock_purpose == Some(AssetLockPurpose::TopUp) {
+                            ui.heading("1. Select Identity to Top Up");
+                            ui.add_space(10.0);
+                            let identities = match self.app_context.load_local_qualified_identities() {
+                                Ok(ids) => ids,
+                                Err(e) => {
+                                    ui.label(
+                                        RichText::new(format!("Error loading identities: {}", e))
+                                            .color(egui::Color32::RED)
+                                    );
+                                    return;
+                                }
+                            };
+
+                            if identities.is_empty() {
+                                ui.label(
+                                    RichText::new("No identities found. Please create an identity first.")
+                                        .color(egui::Color32::from_rgb(255, 152, 0))
+                                );
+                                return;
+                            }
+
+                            let identity_selector_response = ui.add(IdentitySelector::new(
+                                "top_up_identity_selector",
+                                &mut self.selected_identity_string,
+                                &identities
+                            )
+                            .selected_identity(&mut self.selected_identity).unwrap()
+                            .label("Identity to top up:")
+                            .width(300.0));
+
+                            // Update identity index when identity selection changes
+                            if identity_selector_response.changed() {
+                                if let Some(selected) = &self.selected_identity {
+                                    if let Some(wallet_idx) = selected.wallet_index {
+                                        self.identity_index = wallet_idx;
+                                    }
+                                }
+                            }
+
+                            if self.selected_identity.is_none() {
+                                return;
+                            }
+
+                            ui.add_space(20.0);
+
+                            // Identity index input (for wallet key derivation)
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Identity Index:").color(DashColors::text_primary(dark_mode)));
+                                let mut index_str = self.identity_index.to_string();
+                                if ui.text_edit_singleline(&mut index_str).changed() {
+                                    if let Ok(index) = index_str.parse::<u32>() {
+                                        self.identity_index = index;
+                                    }
+                                }
+                            });
+                            ui.label(
+                                RichText::new("This is the wallet's key derivation index")
+                                    .size(12.0)
+                                    .color(DashColors::text_secondary(dark_mode))
+                            );
+
+                            ui.add_space(10.0);
+
+                            // Top up index input
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Top Up Index:").color(DashColors::text_primary(dark_mode)));
+                                let mut index_str = self.top_up_index.to_string();
+                                if ui.text_edit_singleline(&mut index_str).changed() {
+                                    if let Ok(index) = index_str.parse::<u32>() {
+                                        self.top_up_index = index;
+                                    }
+                                }
+                            });
+                            ui.label(
+                                RichText::new("Sequential index for this specific top up")
+                                    .size(12.0)
+                                    .color(DashColors::text_secondary(dark_mode))
+                            );
+                            ui.add_space(20.0);
+                        } else if self.asset_lock_purpose == Some(AssetLockPurpose::Registration) {
+                            // Registration index input
+                            ui.heading("1. Set Registration Index");
+                            ui.add_space(10.0);
+
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Identity Index:").color(DashColors::text_primary(dark_mode)));
+                                let mut index_str = self.identity_index.to_string();
+                                if ui.text_edit_singleline(&mut index_str).changed() {
+                                    if let Ok(index) = index_str.parse::<u32>() {
+                                        self.identity_index = index;
+                                    }
+                                }
+                            });
+                            ui.add_space(20.0);
+                        }
+
                         let step = *self.step.read().unwrap();
 
-                        // Step 1: Amount selection
-                        ui.heading("1. Select how much you would like to transfer?");
+                        // Step 2: Amount selection
+                        let step_number = if self.asset_lock_purpose == Some(AssetLockPurpose::TopUp) { "2" } else { "2" };
+                        ui.heading(format!("{}. Select how much you would like to transfer?", step_number));
                         ui.add_space(10.0);
 
                         self.render_amount_input(ui);
                         ui.add_space(20.0);
 
-                        // Step 2: QR Code and address
+                        // Step 3: QR Code and address
                         let amount_valid = self.amount_input.parse::<f64>().map(|a| a > 0.0).unwrap_or(false);
                         if amount_valid {
                             let layout_action = ui.with_layout(
@@ -368,9 +541,24 @@ impl ScreenLike for CreateAssetLockScreen {
                                             if self.is_creating {
                                                 self.is_creating = false;
                                                 if let Some(credits) = self.amount_credits {
-                                                    AppAction::BackendTask(BackendTask::CoreTask(
-                                                        CoreTask::CreateAssetLock(self.wallet.clone(), credits)
-                                                    ))
+                                                    match self.asset_lock_purpose {
+                                                        Some(AssetLockPurpose::Registration) => {
+                                                            AppAction::BackendTask(BackendTask::CoreTask(
+                                                                CoreTask::CreateRegistrationAssetLock(self.wallet.clone(), credits, self.identity_index)
+                                                            ))
+                                                        }
+                                                        Some(AssetLockPurpose::TopUp) => {
+                                                            if let Some(identity) = &self.selected_identity {
+                                                                let identity_index = identity.wallet_index.unwrap_or(self.identity_index);
+                                                                AppAction::BackendTask(BackendTask::CoreTask(
+                                                                    CoreTask::CreateTopUpAssetLock(self.wallet.clone(), credits, identity_index, self.top_up_index)
+                                                                ))
+                                                            } else {
+                                                                AppAction::None
+                                                            }
+                                                        }
+                                                        None => AppAction::None
+                                                    }
                                                 } else {
                                                     AppAction::None
                                                 }
@@ -398,6 +586,8 @@ impl ScreenLike for CreateAssetLockScreen {
                         if *self.step.read().unwrap() == WalletFundedScreenStep::Success {
                             inner_action |= self.show_success(ui);
                         }
+                    } else {
+                        // Wallet needs to be unlocked
                     }
                 });
 

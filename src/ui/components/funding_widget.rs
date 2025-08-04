@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
-use crate::ui::components::{Component, ComponentResponse, UpdatableComponent};
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -62,7 +62,11 @@ pub struct FundingWidgetResponse {
     pub funding_method_changed: Option<FundingMethod>,
     /// Funding amount changed
     pub amount_changed: Option<String>,
-    /// Address generated or changed
+    /// Address generated or changed.  
+    ///
+    /// This field is populated when a new address is generated or an existing address is updated.  
+    /// Address changes can be triggered by user actions (e.g., selecting a different funding method)  
+    /// or by system events (e.g., generating a new address for a funding transaction).  
     pub address_changed: Option<Address>,
     /// Asset lock selected (Transaction, AssetLockProof, Address)
     pub asset_lock_selected: Option<(Transaction, AssetLockProof, Address)>,
@@ -118,22 +122,6 @@ impl ComponentResponse for FundingWidgetResponse {
     }
 }
 
-impl UpdatableComponent<FundingWidgetMethod> for FundingWidgetResponse {
-    fn update(&self, value: &mut Option<FundingWidgetMethod>) -> bool {
-        if self.has_changed() {
-            if let Some(new_method) = &self.funding_secured {
-                *value = Some(new_method.clone());
-                true
-            } else {
-                *value = None;
-                true
-            }
-        } else {
-            false
-        }
-    }
-}
-
 /// Funding widget state
 pub struct FundingWidget {
     app_context: Arc<AppContext>,
@@ -163,7 +151,7 @@ pub struct FundingWidget {
 impl FundingWidget {
     /// Create a new FundingWidget with default configuration
     pub fn new(app_context: Arc<AppContext>) -> Self {
-        let default_amount = Amount::dash(0.5); // 0.5 DASH
+        let default_amount = Amount::new_dash(0.5); // 0.5 DASH
 
         Self {
             app_context,
@@ -322,7 +310,9 @@ impl FundingWidget {
                             .iter()
                             .find(|(_, addr, _, _, _)| addr == address)
                         {
-                            if *lock_amount >= amount.to_duffs() {
+                            if *lock_amount
+                                >= amount.dash_to_duffs().expect("amount should be in DASH")
+                            {
                                 Some(FundingWidgetMethod::UseAssetLock(
                                     address.clone(),
                                     Box::new(asset_lock_proof.clone()),
@@ -373,7 +363,11 @@ impl FundingWidget {
         let wallet = wallet_guard.read().unwrap();
         let max_balance_duffs = wallet.max_balance();
 
-        max_balance_duffs >= required_amount.to_duffs() + FEE_DUFFS
+        max_balance_duffs
+            >= required_amount
+                .dash_to_duffs()
+                .expect("amount should be in DASH")
+                + FEE_DUFFS
     }
 
     fn render_wallet_selection(
@@ -572,7 +566,7 @@ impl FundingWidget {
                     let wallet = wallet.read().unwrap();
 
                     let max_amount_duffs = wallet.max_balance().saturating_sub(FEE_DUFFS);
-                    self.current_funding_amount = Some(Amount::duffs(max_amount_duffs));
+                    self.current_funding_amount = Some(Amount::dash_from_duffs(max_amount_duffs));
                 }
             };
 
@@ -589,13 +583,13 @@ impl FundingWidget {
         let default_amount = self
             .current_funding_amount
             .clone()
-            .unwrap_or_else(|| Amount::dash(0.5)); // 0.5 DASH default
+            .unwrap_or_else(|| Amount::new_dash(0.5)); // 0.5 DASH default
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(default_amount)
-                .label("Amount:")
-                .hint_text("Enter amount (e.g., 0.1234)")
-                .max_button(
+                .with_label("Amount:")
+                .with_hint_text("Enter amount (e.g., 0.1234)")
+                .with_max_button(
                     self.show_max_button && self.funding_method == FundingMethod::UseWalletBalance,
                 )
         });
@@ -1016,7 +1010,7 @@ impl FundingWidget {
             {
                 ui.horizontal(|ui| {
                     let tx_id = tx.txid().to_string();
-                    let lock_amount = Amount::duffs(*amount_duffs);
+                    let lock_amount = Amount::dash_from_duffs(*amount_duffs);
                     let is_locked = if islock.is_some() { "Yes" } else { "No" };
 
                     // Display asset lock information with "Selected" if this one is selected
@@ -1129,6 +1123,10 @@ impl Component for FundingWidget {
 
         InnerResponse::new(response, ui_response.response)
     }
+
+    fn current_value(&self) -> Option<Self::DomainType> {
+        self.check_funding_method_readiness()
+    }
 }
 
 impl FundingWidget {
@@ -1157,7 +1155,7 @@ impl FundingWidget {
 
         let wallet_guard = self.selected_wallet.as_ref()?;
         let wallet = wallet_guard.read().unwrap();
-        let required_amount_duffs = amount.to_duffs();
+        let required_amount_duffs = amount.dash_to_duffs().expect("amount should be in DASH");
 
         // we don't use existing UTXOs snapshot if ignore_existing_utxos is enabled; when it's disabled, existing_utxos will be None
         let existing_utxos = self.existing_utxos_snapshot.as_ref();
@@ -1167,8 +1165,9 @@ impl FundingWidget {
             utxos
                 .iter()
                 .find(|utxo| {
-                    !existing_utxos.is_some_and(|snapshot| snapshot.contains_key(utxo.0))
-                        && utxo.1.value >= required_amount_duffs
+                    // enough value and NOT on the existing UTXOs list
+                    utxo.1.value >= required_amount_duffs
+                        && !existing_utxos.is_some_and(|snapshot| snapshot.contains_key(utxo.0))
                 })
                 .map(|utxo| (*utxo.0, utxo.1.clone(), funding_address.clone()))
         } else {

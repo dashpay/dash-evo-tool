@@ -275,7 +275,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 // Initialize funding widget if needed
                 if self.funding_widget.is_none() {
                     let mut widget = FundingWidget::new(self.app_context.clone())
-                        .with_default_amount(crate::model::amount::Amount::dash(0.5)); // 0.5 DASH
+                        .with_default_amount(crate::model::amount::Amount::new_dash(0.5)); // 0.5 DASH
 
                     // Set wallet if already selected
                     if let Some(wallet) = &self.wallet {

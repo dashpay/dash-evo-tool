@@ -175,15 +175,9 @@ impl ScreenLike for TopUpIdentityScreen {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error topping up identity: {}", message));
             let mut step = self.step.write().unwrap();
-            match *step {
-                WalletFundedScreenStep::WaitingForAssetLock
-                | WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    // Reset to the initial step if in progress
-                    *step = WalletFundedScreenStep::ChooseFundingMethod;
-                }
-                WalletFundedScreenStep::ChooseFundingMethod | WalletFundedScreenStep::Success => {
-                    // noop
-                }
+            if *step == WalletFundedScreenStep::WaitingForAssetLock {
+                // Funding rejected, reset to funding method selection
+                *step = WalletFundedScreenStep::ChooseFundingMethod;
             }
         } else {
             self.error_message = Some(message.to_string());
@@ -307,7 +301,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 if let Some(ref mut widget) = self.funding_widget {
                     // Disable balance checks if operation is in progress
                     let step = {*self.step.read().unwrap()};
-                    let enabled = !step.is_processing();
+                    let enabled = step == WalletFundedScreenStep::ChooseFundingMethod;
 
                     ui.heading(format!("{}. Configure your top-up", step_number));
                     ui.add_space(10.0);
@@ -335,21 +329,23 @@ impl ScreenLike for TopUpIdentityScreen {
                         self.error_message = Some(error.clone());
                     }
 
-                    let funding_secured = response_data.funded() || step.is_processing();
+                    let funding_secured = response_data.funded() || step!= WalletFundedScreenStep::ChooseFundingMethod;
 
                     if funding_secured {
                         if let Some(funding_method) = self.funding.clone() {
                         // for FundWithUtxo (eg. qr code scan), we don't need to show the confirmation
                         // button, as the funding is already secured.                            
-                            if !step.is_processing() && matches!(funding_method, FundingWidgetMethod::FundWithUtxo(_, _, _)) {
+                            if step== WalletFundedScreenStep::ChooseFundingMethod && matches!(funding_method, FundingWidgetMethod::FundWithUtxo(_, _, _)) {
                                 inner_action |= self.top_up_identity_clicked(funding_method);
                             } else {
                                 ui.add_space(15.0);
                                 ui.separator();
                                 ui.add_space(10.0);
-                                
+
                                 let btn = Button::new("Top Up Identity");
-                                if ui.add_enabled(!step.is_processing(), btn).clicked() {
+                                // top up button is enabled only if we are in the ChooseFundingMethod step
+                                let top_up_enabled = matches!(step, WalletFundedScreenStep::ChooseFundingMethod);
+                                if ui.add_enabled(top_up_enabled, btn).clicked() {
                                     inner_action |= self.top_up_identity_clicked(funding_method);
                                 }
                             }

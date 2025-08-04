@@ -589,6 +589,7 @@ impl FundingWidget {
             AmountInput::new(default_amount)
                 .with_label("Amount:")
                 .with_hint_text("Enter amount (e.g., 0.1234)")
+                .with_validation_errors_display(true)
                 .with_max_button(
                     self.show_max_button && self.funding_method == FundingMethod::UseWalletBalance,
                 )
@@ -624,11 +625,6 @@ impl FundingWidget {
             } else {
                 response.amount_changed = Some("".to_string());
             }
-        }
-
-        // Show errors if present
-        if let Some(error) = &amount_response.inner.error_message {
-            ui.colored_label(Color32::RED, error);
         }
     }
 

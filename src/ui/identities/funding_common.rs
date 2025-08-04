@@ -6,23 +6,12 @@ use egui::Vec2;
 use image::Luma;
 use qrcode::QrCode;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone, Debug)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
     WaitingForAssetLock,
     WaitingForPlatformAcceptance,
     Success,
-}
-
-impl WalletFundedScreenStep {
-    /// Returns true if the step indicates that the wallet is in progress of identity creation
-    pub fn is_processing(&self) -> bool {
-        matches!(
-            self,
-            WalletFundedScreenStep::WaitingForAssetLock
-                | WalletFundedScreenStep::WaitingForPlatformAcceptance
-        )
-    }
 }
 
 impl Display for WalletFundedScreenStep {

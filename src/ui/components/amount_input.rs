@@ -240,7 +240,7 @@ impl AmountInput {
     }
 
     /// Controls whether validation errors are displayed as a label within the component.
-    pub fn show_validation_errors(mut self, show: bool) -> Self {
+    pub fn with_validation_errors_display(mut self, show: bool) -> Self {
         self.show_validation_errors = show;
         self
     }

@@ -483,9 +483,12 @@ impl AddNewIdentityScreen {
             return AppAction::None;
         };
 
-        // Use the funding method from the widget response
+        // reset error message
+        self.error_message = None;
+
+        // Process the funding method
         if let Some(funding_method) = &funding_widget_response.funding_secured {
-            let identity_funding_method = funding_method
+            let register_identity_funding_method = funding_method
                 .clone()
                 .to_register_identity_funding_method(self.identity_id_number);
 
@@ -494,7 +497,7 @@ impl AddNewIdentityScreen {
                 keys: self.identity_keys.clone(),
                 wallet: Arc::clone(selected_wallet),
                 wallet_identity_index: self.identity_id_number,
-                identity_funding_method,
+                identity_funding_method: register_identity_funding_method,
             };
 
             // Set the appropriate step based on funding method
@@ -654,10 +657,16 @@ impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error registering identity: {}", message));
+            let mut step = self.step.write().unwrap();
+            if *step == WalletFundedScreenStep::WaitingForAssetLock {
+                // Funding rejected, reset to funding method selection
+                *step = WalletFundedScreenStep::ChooseFundingMethod;
+            }
         } else {
             self.error_message = Some(message.to_string());
         }
     }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         let mut step = self.step.write().unwrap();
         match *step {
@@ -719,6 +728,8 @@ impl ScreenLike for AddNewIdentityScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
+            // Ensure we use whole window width
+            ui.set_width(ui.available_width());
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};
                 if step == WalletFundedScreenStep::Success {
@@ -741,8 +752,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 if let Some(ref mut widget) = self.funding_widget {
                     // Disable balance checks if operation is in progress
                     let step = {*self.step.read().unwrap()};
-                    let enabled = !step.is_processing();
-
+                    let enabled = step == WalletFundedScreenStep::ChooseFundingMethod;
                     let response_data = ui.add_enabled_ui(enabled, |ui|{
                         widget.show(ui).inner
                     }).inner;
@@ -780,101 +790,96 @@ impl ScreenLike for AddNewIdentityScreen {
                     }
 
                     if let Some(error) = response_data.error {
-                        self.error_message = Some(error);
+                       self.error_message = Some(error);
                     }
 
                     // Get funding readiness from the widget response
-                    funding_ready = response_data.funding_secured.is_some() || step.is_processing();
+                    funding_ready = response_data.funding_secured.is_some() || step!= WalletFundedScreenStep::ChooseFundingMethod;
                 }
 
                 // Don't proceed if funding is not ready
-                if !funding_ready {
-                    return;
-                };
-
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                if needed_unlock {
-                    if just_unlocked {
-                        // Select wallet will properly update all dependencies
-                        self.update_wallet(self.selected_wallet.clone().expect("we just checked selected_wallet set above"));
-                    } else {
-                        return;
-                    }
-                }
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Step 2: Identity index selection
-                ui.horizontal(|ui| {
-                    let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                    let wallet = wallet_guard.read().unwrap();
-                    if wallet.identities.is_empty() {
-                        ui.heading("2. Choose an identity index. Leave this 0 if this is your first identity for this wallet.");
-                    } else {
-                        ui.heading(format!(
-                            "2. Choose an identity index. Leaving this {} is recommended.",
-                            self.next_identity_id(),
-                        ));
-                    }
-
-
-                    // Create info icon button with tooltip
-                    let response = crate::ui::helpers::info_icon_button(ui, "The identity index is an internal reference within the wallet. The wallet's seed phrase can always be used to recover any identity, including this one, by using the same index.");
-
-                    // Check if the label was clicked
-                    if response.clicked() {
-                        self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
-                    }
-                });
-
-                ui.add_space(8.0);
-
-                self.render_identity_index_input(ui);
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Step 3: Key selection
-                ui.horizontal(|ui| {
-                    ui.heading("3. Choose what keys you want to add to this new identity.");
-
-                    // Create info icon button with tooltip
-                    let response = crate::ui::helpers::info_icon_button(ui, "Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
-
-                    // Check if the label was clicked
-                    if response.clicked() {
-                        self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
-                    }
-                });
-
-                ui.add_space(8.0);
-
-                self.render_key_selection(ui);
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Step 4: Identity alias and registration
-                ui.heading("4. Final details and registration");
-                ui.add_space(10.0);
-
-                // Add alias input
-                ui.horizontal(|ui| {
-                    ui.label("Identity Alias (Optional):");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.alias_input)
-                            .hint_text("Enter a friendly name for this identity")
-                            .desired_width(200.0),
-                    );
-                });
-
-                // Show register button when funding is ready
                 if funding_ready {
+                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+
+                    if needed_unlock {
+                        if just_unlocked {
+                            // Select wallet will properly update all dependencies
+                            self.update_wallet(self.selected_wallet.clone().expect("we just checked selected_wallet set above"));
+                        } else {
+                            return;
+                        }
+                    }
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Step 2: Identity index selection
+                    ui.horizontal(|ui| {
+                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                        let wallet = wallet_guard.read().unwrap();
+                        if wallet.identities.is_empty() {
+                            ui.heading("2. Choose an identity index. Leave this 0 if this is your first identity for this wallet.");
+                        } else {
+                            ui.heading(format!(
+                                "2. Choose an identity index. Leaving this {} is recommended.",
+                                self.next_identity_id(),
+                            ));
+                        }
+
+
+                        // Create info icon button with tooltip
+                        let response = crate::ui::helpers::info_icon_button(ui, "The identity index is an internal reference within the wallet. The wallet's seed phrase can always be used to recover any identity, including this one, by using the same index.");
+
+                        // Check if the label was clicked
+                        if response.clicked() {
+                            self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
+                        }
+                    });
+
+                    ui.add_space(8.0);
+
+                    self.render_identity_index_input(ui);
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Step 3: Key selection
+                    ui.horizontal(|ui| {
+                        ui.heading("3. Choose what keys you want to add to this new identity.");
+
+                        // Create info icon button with tooltip
+                        let response = crate::ui::helpers::info_icon_button(ui, "Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
+
+                        // Check if the label was clicked
+                        if response.clicked() {
+                            self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
+                        }
+                    });
+
+                    ui.add_space(8.0);
+
+                    self.render_key_selection(ui);
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Step 4: Identity alias and registration
+                    ui.heading("4. Final details and registration");
+                    ui.add_space(10.0);
+
+                    // Add alias input
+                    ui.horizontal(|ui| {
+                        ui.label("Identity Alias (Optional):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.alias_input)
+                                .hint_text("Enter a friendly name for this identity")
+                                .desired_width(200.0),
+                        );
+                    });
+
                     if let Some(ref widget_response) = funding_widget_response {
                         ui.add_space(15.0);
                         ui.separator();
@@ -892,7 +897,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             }
                         }).response.on_disabled_hover_text(format!("Registration in progress, please wait until it is finished. Current step: {step}"));
                     }
-                }
+                } // end of if funding_ready
 
                 // Show error message if any
                 if let Some(error_message) = self.error_message.as_ref() {
@@ -918,6 +923,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     _ => {}
                 });
             });
+
             inner_action
         });
 

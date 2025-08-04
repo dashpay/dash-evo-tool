@@ -523,10 +523,9 @@ impl TokensScreen {
                                 .token_configuration
                                 .conventions()
                                 .plural_form_by_language_code_or_default("en");
-                            let reward_amount = Amount::new(
-                                explanation.total_amount,
-                                decimal_places,
-                            ).with_unit_name(unit_name);
+                            let reward_amount =
+                                Amount::new(explanation.total_amount, decimal_places)
+                                    .with_unit_name(unit_name);
 
                             ui.label(format!("Total Estimated Rewards: {}", reward_amount));
                             ui.separator();

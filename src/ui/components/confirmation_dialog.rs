@@ -56,6 +56,7 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
 /// across the application. It supports customizable titles, messages, button text
 /// with rich formatting (using WidgetText for styling), danger mode for destructive
 /// actions, and optional buttons (confirm and cancel buttons can be hidden independently).
+/// The dialog can be dismissed by pressing Escape (treated as cancel) or clicking the X button.
 pub struct ConfirmationDialog {
     title: WidgetText,
     message: WidgetText,
@@ -194,16 +195,11 @@ impl ConfirmationDialog {
             final_response = ConfirmationStatus::Canceled;
         }
 
-        // If no buttons are present, the user can only close via the X button or pressing Escape
-        // In that case, we treat it as canceled
-        if self.confirm_text.is_none()
-            && self.cancel_text.is_none()
-            && matches!(final_response, ConfirmationStatus::None)
+        // Handle Escape key press - always treat as cancel
+        if matches!(final_response, ConfirmationStatus::None)
+            && ui.input(|i| i.key_pressed(egui::Key::Escape))
         {
-            // Check if user pressed Escape
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                final_response = ConfirmationStatus::Canceled;
-            }
+            final_response = ConfirmationStatus::Canceled;
         }
 
         // Update the dialog's open state

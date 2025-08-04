@@ -4,10 +4,10 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{
-    ConfirmationDialog, ConfirmationDialogResponse, island_central_panel,
-};
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -76,6 +76,7 @@ pub struct SetTokenPriceScreen {
 
     /// Confirmation popup
     show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -208,6 +209,7 @@ impl SetTokenPriceScreen {
             error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -591,6 +593,7 @@ impl SetTokenPriceScreen {
     /// Handle the confirmation action when user clicks OK
     fn confirmation_ok(&mut self) -> AppAction {
         self.show_confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
 
         // Validate user input and create pricing schedule
         let token_pricing_schedule_opt = match self.create_pricing_schedule() {
@@ -648,6 +651,7 @@ impl SetTokenPriceScreen {
     /// Handle the cancel action when user clicks Cancel or closes dialog
     fn confirmation_cancel(&mut self) -> AppAction {
         self.show_confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
         AppAction::None
     }
 
@@ -659,19 +663,24 @@ impl SetTokenPriceScreen {
 
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let response = ConfirmationDialog::new(
-            "Confirm pricing schedule update",
-            self.confirmation_message(),
-        )
-        .confirm_text("Confirm")
-        .cancel_text("Cancel")
-        .danger_mode(self.pricing_type == PricingType::RemovePricing)
-        .show(ui);
+        // Prepare values before borrowing
+        let confirmation_message = self.confirmation_message();
+        let is_danger_mode = self.pricing_type == PricingType::RemovePricing;
 
-        match response.inner {
-            ConfirmationDialogResponse::Confirmed => self.confirmation_ok(),
-            ConfirmationDialogResponse::Canceled => self.confirmation_cancel(),
-            ConfirmationDialogResponse::None => AppAction::None,
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm pricing schedule update", confirmation_message)
+                .confirm_text("Confirm")
+                .cancel_text("Cancel")
+                .danger_mode(is_danger_mode)
+        });
+
+        let response = confirmation_dialog.show(ui);
+
+        match response.inner.dialog_response {
+            ConfirmationStatus::Confirmed => self.confirmation_ok(),
+            ConfirmationStatus::Canceled => self.confirmation_cancel(),
+            ConfirmationStatus::None => AppAction::None,
         }
     }
 

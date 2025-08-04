@@ -6,13 +6,12 @@ use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{
-    ConfirmationDialog, ConfirmationDialogResponse, island_central_panel,
-};
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::fee::Credits;
@@ -53,6 +52,7 @@ pub struct TransferScreen {
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
@@ -87,6 +87,7 @@ impl TransferScreen {
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -156,6 +157,7 @@ impl TransferScreen {
     /// Handle the confirmation action when user clicks OK
     fn confirmation_ok(&mut self) -> AppAction {
         self.confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
 
         // Validate identifier
         let identifier = match self.validate_receiver_identifier() {
@@ -203,6 +205,7 @@ impl TransferScreen {
     /// Handle the cancel action when user clicks Cancel or closes dialog
     fn confirmation_cancel(&mut self) -> AppAction {
         self.confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
         AppAction::None
     }
 
@@ -226,24 +229,33 @@ impl TransferScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        // Prepare values before borrowing
         let Some(amount) = &self.amount else {
-            self.set_error_state("Amount is not set".to_string());
+            self.set_error_state("Incorrect or empty amount".to_string());
             return AppAction::None;
         };
 
+        let receiver_id = self.receiver_identity_id.clone();
+
         let msg = format!(
             "Are you sure you want to transfer {} to {}?",
-            amount, self.receiver_identity_id
+            amount, receiver_id
         );
-        let response = ConfirmationDialog::new("Confirm Transfer", msg)
-            .confirm_text("Confirm")
-            .cancel_text("Cancel")
-            .show(ui);
 
-        match response.inner {
-            ConfirmationDialogResponse::Confirmed => self.confirmation_ok(),
-            ConfirmationDialogResponse::Canceled => self.confirmation_cancel(),
-            ConfirmationDialogResponse::None => AppAction::None,
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Transfer", msg)
+                .confirm_text("Confirm")
+                .cancel_text("Cancel")
+        });
+
+        let response = confirmation_dialog.show(ui);
+
+        // Handle the response using the Component pattern
+        match response.inner.dialog_response {
+            ConfirmationStatus::Confirmed => self.confirmation_ok(),
+            ConfirmationStatus::Canceled => self.confirmation_cancel(),
+            ConfirmationStatus::None => AppAction::None,
         }
     }
 

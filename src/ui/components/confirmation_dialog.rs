@@ -1,8 +1,9 @@
-use egui::{Color32, InnerResponse, RichText, Ui, Widget};
+use crate::ui::components::component_trait::{Component, ComponentResponse};
+use egui::{Color32, InnerResponse, RichText, Ui};
 
 /// Response from showing a confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
-pub enum ConfirmationDialogResponse {
+pub enum ConfirmationStatus {
     /// Dialog is still open, no action taken
     None,
     /// User clicked confirm button
@@ -11,6 +12,43 @@ pub enum ConfirmationDialogResponse {
     Canceled,
 }
 
+/// Response struct for the ConfirmationDialog component following the Component trait pattern
+#[derive(Debug, Clone)]
+pub struct ConfirmationDialogComponentResponse {
+    pub response: egui::Response,
+    pub changed: bool,
+    pub error_message: Option<String>,
+    pub dialog_response: ConfirmationStatus,
+}
+
+impl ComponentResponse for ConfirmationDialogComponentResponse {
+    type DomainType = ConfirmationStatus;
+
+    fn has_changed(&self) -> bool {
+        self.changed
+    }
+
+    fn is_valid(&self) -> bool {
+        self.error_message.is_none()
+    }
+
+    fn changed_value(&self) -> &Option<Self::DomainType> {
+        // Return Some(status) if dialog has a response, None if still open
+        static CONFIRMED: Option<ConfirmationStatus> = Some(ConfirmationStatus::Confirmed);
+        static CANCELED: Option<ConfirmationStatus> = Some(ConfirmationStatus::Canceled);
+        static NONE: Option<ConfirmationStatus> = None;
+
+        match self.dialog_response {
+            ConfirmationStatus::Confirmed => &CONFIRMED,
+            ConfirmationStatus::Canceled => &CANCELED,
+            ConfirmationStatus::None => &NONE,
+        }
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        self.error_message.as_deref()
+    }
+}
 /// A reusable confirmation dialog component that implements the Widget trait
 ///
 /// This component provides a consistent modal dialog for confirming user actions
@@ -20,34 +58,32 @@ pub enum ConfirmationDialogResponse {
 ///
 /// # Examples
 ///
-/// Basic usage:
+/// Basic usage with Component trait:
 /// ```rust
-/// # use dash_evo_tool::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationDialogResponse};
+/// # use dash_evo_tool::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+/// # use dash_evo_tool::ui::components::component_trait::Component;
 /// # use egui::Ui;
 /// # fn example(ui: &mut Ui) {
-/// let response = ConfirmationDialog::new("Confirm Action", "Are you sure?")
-///     .show(ui);
+/// // In your screen struct:
+/// // confirmation_dialog: Option<ConfirmationDialog>,
 ///
-/// match response.inner {
-///      ConfirmationDialogResponse::Confirmed => println!("User confirmed"),
-///      ConfirmationDialogResponse::Canceled => println!("User canceled"),
-///      ConfirmationDialogResponse::None => println!("Dialog still open")
-/// };
+/// // In your show method:
+/// let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+///     ConfirmationDialog::new("Confirm Action", "Are you sure?")
+/// });
+///
+/// let response = confirmation_dialog.show(ui);
+///
+/// if let Some(status) = response.inner.changed_value() {
+///     match status {
+///         ConfirmationStatus::Confirmed => println!("User confirmed"),
+///         ConfirmationStatus::Canceled => println!("User canceled/closed"),
+///         ConfirmationStatus::None => {} // This won't happen in changed_value()
+///     }
+/// }
 /// # }
 /// ```
 ///
-/// With custom styling:
-/// ```rust
-/// # use dash_evo_tool::ui::components::confirmation_dialog::ConfirmationDialog;
-/// # use egui::Ui;
-/// # fn example(ui: &mut Ui) {
-/// let response = ConfirmationDialog::new("Delete Item", "This action cannot be undone")
-///     .confirm_text("Delete")
-///     .cancel_text("Keep")
-///     .danger_mode(true)
-///     .show(ui);
-/// # }
-/// ```
 pub struct ConfirmationDialog {
     title: String,
     message: String,
@@ -55,6 +91,27 @@ pub struct ConfirmationDialog {
     cancel_text: String,
     danger_mode: bool,
     is_open: bool,
+}
+
+impl Component for ConfirmationDialog {
+    type DomainType = ConfirmationStatus;
+    type Response = ConfirmationDialogComponentResponse;
+
+    fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
+        let inner_response = self.show_dialog(ui);
+        let changed = !matches!(inner_response.inner, ConfirmationStatus::None);
+        let response = inner_response.response;
+
+        InnerResponse::new(
+            ConfirmationDialogComponentResponse {
+                response: response.clone(),
+                changed,
+                error_message: None, // Confirmation dialogs don't have validation errors
+                dialog_response: inner_response.inner,
+            },
+            response,
+        )
+    }
 }
 
 impl ConfirmationDialog {
@@ -97,17 +154,17 @@ impl ConfirmationDialog {
 
 impl ConfirmationDialog {
     /// Show the dialog and return the user's response
-    pub fn show(self, ui: &mut Ui) -> InnerResponse<ConfirmationDialogResponse> {
+    pub fn show_dialog(&mut self, ui: &mut Ui) -> InnerResponse<ConfirmationStatus> {
         let mut is_open = self.is_open;
 
         if !is_open {
             return InnerResponse::new(
-                ConfirmationDialogResponse::Canceled,
+                ConfirmationStatus::Canceled,
                 ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
             );
         }
 
-        let mut final_response = ConfirmationDialogResponse::None;
+        let mut final_response = ConfirmationStatus::None;
         let window_response = egui::Window::new(&self.title)
             .collapsible(false)
             .resizable(false)
@@ -139,7 +196,7 @@ impl ConfirmationDialog {
                         };
 
                         if ui.add(confirm_button).clicked() {
-                            final_response = ConfirmationDialogResponse::Confirmed;
+                            final_response = ConfirmationStatus::Confirmed;
                         }
 
                         ui.add_space(10.0);
@@ -149,7 +206,7 @@ impl ConfirmationDialog {
                             .fill(Color32::from_rgb(108, 117, 125)); // Gray for secondary
 
                         if ui.add(cancel_button).clicked() {
-                            final_response = ConfirmationDialogResponse::Canceled;
+                            final_response = ConfirmationStatus::Canceled;
                         }
                     });
                 });
@@ -158,9 +215,12 @@ impl ConfirmationDialog {
             });
 
         // Handle window being closed via X button - treat as cancel
-        if !is_open && matches!(final_response, ConfirmationDialogResponse::None) {
-            final_response = ConfirmationDialogResponse::Canceled;
+        if !is_open && matches!(final_response, ConfirmationStatus::None) {
+            final_response = ConfirmationStatus::Canceled;
         }
+
+        // Update the dialog's open state
+        self.is_open = is_open;
 
         if let Some(window_response) = window_response {
             InnerResponse::new(final_response, window_response.response)
@@ -172,14 +232,6 @@ impl ConfirmationDialog {
         }
     }
 }
-
-impl Widget for ConfirmationDialog {
-    fn ui(self, ui: &mut Ui) -> egui::Response {
-        let inner_response = self.show(ui);
-        inner_response.response
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

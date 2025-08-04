@@ -124,11 +124,22 @@ impl SpvManager {
             "regtest" => ClientConfig::regtest(),
             _ => return Err(format!("Unsupported network: {}", network)),
         };
-        
+
         // For mainnet only, use the specific peer that responds properly
         if network == "mainnet" {
             config.peers.clear();
             config.add_peer("8.219.185.232:9999".parse().unwrap());
+        }
+
+        // Set checkpoint height if provided (0 means start from genesis)
+        if checkpoint_height > 0 {
+            config.start_from_height = Some(checkpoint_height);
+            tracing::info!(
+                "Configured to start sync from checkpoint height: {}",
+                checkpoint_height
+            );
+        } else {
+            tracing::info!("Starting sync from genesis block");
         }
 
         // Configure storage path

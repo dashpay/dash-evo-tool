@@ -107,11 +107,28 @@ impl SpvManagerV2 {
             "regtest" => ClientConfig::regtest(),
             _ => return Err(format!("Unsupported network: {}", network)),
         };
-        
+
         // For mainnet only, use the specific peer that responds properly
         if network == "mainnet" {
             config.peers.clear();
             config.add_peer("8.219.185.232:9999".parse().unwrap());
+        }
+
+        // Set checkpoint height if provided
+        // 0 means start from genesis
+        if checkpoint_height > 0 {
+            config.start_from_height = Some(checkpoint_height);
+            tracing::info!(
+                "Setting config.start_from_height = Some({})",
+                checkpoint_height
+            );
+            tracing::info!(
+                "Configured to start sync from checkpoint height: {}",
+                checkpoint_height
+            );
+        } else {
+            config.start_from_height = Some(0);
+            tracing::info!("Starting sync from genesis block");
         }
 
         // Configure storage path
@@ -126,11 +143,24 @@ impl SpvManagerV2 {
 
         tracing::info!("SPV storage path: {:?}", storage_path);
 
-        // Configure with checkpoint settings
-        let config = config
-            .with_storage_path(storage_path)
-            .with_log_level("warn")
-            .with_start_height(checkpoint_height);
+        // Configure with storage and logging, and set start height
+        let config = if checkpoint_height > 0 {
+            config
+                .with_storage_path(storage_path)
+                .with_log_level("warn")
+                .with_start_height(checkpoint_height)
+        } else {
+            config
+                .with_storage_path(storage_path)
+                .with_log_level("warn")
+                .with_start_height(0)
+        };
+
+        // Log the final config state
+        tracing::info!(
+            "Final SPV config: start_from_height = {:?}",
+            config.start_from_height
+        );
 
         // Create SPV client
         let client = DashSpvClient::new_with_storage_service(config)
@@ -263,10 +293,13 @@ impl AppContext {
                 spv_manager.initialize(network, checkpoint_height).await?;
                 spv_manager.start_sync().await?;
 
+                // Set initial progress to 0 until we get real data
+                let (current, target) = (0, 0);
+
                 Ok(BackendTaskSuccessResult::SpvResultV2(
                     SpvTaskResultV2::SyncProgress {
-                        current_height: checkpoint_height,
-                        target_height: checkpoint_height + 1000,
+                        current_height: current,
+                        target_height: target,
                         progress_percent: 0.0,
                         phase_info: None,
                     },
@@ -276,12 +309,26 @@ impl AppContext {
                 tracing::debug!("Getting SPV sync progress");
                 let (current, target, percent, phase_info) =
                     spv_manager.get_sync_progress_with_phase().await?;
-                tracing::debug!(
-                    "SPV sync progress: current={}, target={}, percent={:.1}%",
-                    current,
-                    target,
-                    percent
-                );
+                
+                // Log more details about the phase info
+                if let Some(ref phase) = phase_info {
+                    tracing::info!(
+                        "SPV sync progress - phase: {}, current: {}, target: {}, percent: {:.1}%, phase_current_pos: {:?}, items_completed: {}",
+                        phase.phase_name,
+                        current,
+                        target,
+                        percent,
+                        phase.current_position,
+                        phase.items_completed
+                    );
+                } else {
+                    tracing::info!(
+                        "SPV sync progress - current: {}, target: {}, percent: {:.1}% (no phase info)",
+                        current,
+                        target,
+                        percent
+                    );
+                }
 
                 Ok(BackendTaskSuccessResult::SpvResultV2(
                     SpvTaskResultV2::SyncProgress {

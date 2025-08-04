@@ -51,6 +51,8 @@ pub struct SettingsScreen {
     spv_is_initialized: bool,
     spv_last_progress_check: TimestampMillis,
     spv_phase_info: Option<SyncPhaseInfo>,
+    // Checkpoint selection
+    spv_selected_checkpoint: u32, // 0 = genesis, u32::MAX = latest
 }
 
 impl SettingsScreen {
@@ -79,13 +81,9 @@ impl SettingsScreen {
     }
 
     fn render_spv_controls(&mut self, ui: &mut Ui, _action: &mut AppAction) {
-        // Check if we're in initialization phase
-        let is_initializing = self.spv_is_initialized 
-            && self.spv_current_height == 0 
-            && self.spv_phase_info.is_none();
-            
-        // Show progress only if we're past initialization and have actual sync data
-        if self.spv_is_initialized && !is_initializing && (self.spv_is_syncing || self.spv_sync_progress > 0.0) {
+        // Show progress if we're initialized and have any sync data
+        if self.spv_is_initialized && (self.spv_target_height > 0 || self.spv_phase_info.is_some())
+        {
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
@@ -130,15 +128,16 @@ impl SettingsScreen {
                 ui.add_space(8.0);
 
                 // Add progress bar
-                let progress = if let Some(ref phase_info) = self.spv_phase_info {
-                    (phase_info.progress_percentage / 100.0) as f32
+                // Calculate true blockchain sync progress
+                let progress = if self.spv_target_height > 0 {
+                    (self.spv_current_height as f32 / self.spv_target_height as f32)
                 } else {
                     0.0_f32
                 };
-                
+
                 let progress_bar = egui::ProgressBar::new(progress)
                     .show_percentage();
-                
+
                 ui.add(progress_bar);
                 ui.add_space(8.0);
 
@@ -162,16 +161,11 @@ impl SettingsScreen {
                                 egui::RichText::new("Synced:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
-                            // Use current_position from phase_info if available, otherwise fall back to items_completed or spv_current_height
-                            let synced_value = if let Some(current_pos) = phase_info.current_position {
-                                current_pos
-                            } else if phase_info.phase_name.contains("Headers") && phase_info.items_completed > 0 {
-                                phase_info.items_completed
-                            } else {
-                                self.spv_current_height
-                            };
+                            // Use spv_current_height which contains the correct blockchain height
+                            // phase_info.current_position seems to be incorrectly doubled when using checkpoints
+                            let synced_value = self.spv_current_height;
                             ui.label(format!(
-                                "{} / {}", 
+                                "{} / {}",
                                 synced_value.to_formatted_string(&Locale::en),
                                 self.spv_target_height.to_formatted_string(&Locale::en)
                             ));
@@ -289,6 +283,11 @@ impl SettingsScreen {
             spv_is_initialized: false,
             spv_last_progress_check: 0,
             spv_phase_info: None,
+            spv_selected_checkpoint: match current_network {
+                Network::Dash => 1_900_000, // Default to most recent mainnet checkpoint
+                Network::Testnet => 1_600_000, // Default to most recent testnet checkpoint
+                _ => 0,                     // Genesis for other networks
+            },
         }
     }
 
@@ -380,7 +379,105 @@ impl SettingsScreen {
 
                     ui.end_row();
 
-                    // Row 2: Network
+                    // Row 2: SPV Checkpoint (only show for SPV mode)
+                    if self.connection_mode == ConnectionMode::Spv {
+                        ui.label(
+                            egui::RichText::new("SPV Checkpoint:")
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+
+                        // Determine checkpoint options based on network
+                        let checkpoint_text = if self.spv_selected_checkpoint == 0 {
+                            "Genesis Block"
+                        } else {
+                            // Format specific checkpoint heights
+                            match self.current_network {
+                                Network::Dash => match self.spv_selected_checkpoint {
+                                    1_900_000 => "Height 1,900,000 (2023)",
+                                    1_500_000 => "Height 1,500,000 (2022)",
+                                    971_300 => "Height 971,300 (2020)",
+                                    657_000 => "Height 657,000 (2019)",
+                                    523_412 => "Height 523,412 (2018)",
+                                    407_813 => "Height 407,813 (2018)",
+                                    312_668 => "Height 312,668 (2017)",
+                                    216_000 => "Height 216,000 (2017)",
+                                    107_996 => "Height 107,996 (2016)",
+                                    4_991 => "Height 4,991 (2014)",
+                                    _ => "Custom Height",
+                                },
+                                Network::Testnet => match self.spv_selected_checkpoint {
+                                    1_600_000 => "Height 1,600,000",
+                                    1_480_000 => "Height 1,480,000",
+                                    1_350_000 => "Height 1,350,000",
+                                    1_270_000 => "Height 1,270,000",
+                                    851_000 => "Height 851,000",
+                                    797_400 => "Height 797,400",
+                                    500_000 => "Height 500,000",
+                                    _ => "Custom Height",
+                                },
+                                _ => "Custom Height",
+                            }
+                        };
+
+                        let checkpoint_combo = egui::ComboBox::from_id_salt("checkpoint_selector")
+                            .selected_text(checkpoint_text)
+                            .width(200.0);
+
+                        // Check if currently connected via SPV
+                        let is_spv_connected = {
+                            let ctx = self.current_app_context();
+                            if let Ok(spv_manager) = ctx.spv_manager_v2.try_read() {
+                                spv_manager.is_initialized() || spv_manager.is_syncing
+                            } else {
+                                false
+                            }
+                        };
+
+                        let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
+                            checkpoint_combo.show_ui(ui, |ui| {
+                                // Network-specific checkpoints
+                                match self.current_network {
+                                    Network::Dash => {
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_900_000, "Height 1,900,000 (2023)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_500_000, "Height 1,500,000 (2022)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 971_300, "Height 971,300 (2020)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 657_000, "Height 657,000 (2019)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 523_412, "Height 523,412 (2018)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 407_813, "Height 407,813 (2018)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 312_668, "Height 312,668 (2017)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 216_000, "Height 216,000 (2017)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 107_996, "Height 107,996 (2016)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 4_991, "Height 4,991 (2014)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 0, "Genesis Block");
+                                    }
+                                    Network::Testnet => {
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_600_000, "Height 1,600,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_480_000, "Height 1,480,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_350_000, "Height 1,350,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_270_000, "Height 1,270,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 851_000, "Height 851,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 797_400, "Height 797,400");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 500_000, "Height 500,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 0, "Genesis Block");
+                                    }
+                                    _ => {
+                                        // For other networks, only show genesis
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 0, "Genesis Block");
+                                    }
+                                }
+                            });
+                        });
+
+                        if is_spv_connected {
+                            response.response.on_hover_text("Disconnect from SPV to change checkpoint");
+                        } else {
+                            response.response.on_hover_text("Select a checkpoint to speed up initial sync. More recent checkpoints sync faster.");
+                        }
+
+                        ui.end_row();
+                    }
+
+                    // Row 3: Network
                     ui.label(
                         egui::RichText::new("Network:").color(DashColors::text_primary(dark_mode)),
                     );
@@ -468,17 +565,17 @@ impl SettingsScreen {
                 ui.add_space(20.0);
                 ui.separator();
                 ui.add_space(12.0);
-                
+
                 ui.label(
                     egui::RichText::new("Local Network Password")
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add_space(8.0);
-                
+
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.local_network_dashmate_password);
-                    
+
                     if ui.button("Save").clicked() {
                         // Save the password to config
                         if let Ok(mut config) = Config::load() {
@@ -495,7 +592,7 @@ impl SettingsScreen {
                                 if let Err(e) = config.save() {
                                     eprintln!("Failed to save config to .env: {e}");
                                 }
-                                
+
                                 // Update our local AppContext in memory
                                 if let Some(local_app_context) = &self.local_app_context {
                                     {
@@ -504,7 +601,7 @@ impl SettingsScreen {
                                             local_app_context.config.write().unwrap();
                                         *cfg_lock = updated_local_config;
                                     }
-                                    
+
                                     // Re-init the client & sdk from the updated config
                                     if let Err(e) =
                                         Arc::clone(local_app_context).reinit_core_client_and_sdk()
@@ -527,7 +624,7 @@ impl SettingsScreen {
 
         // Connection Status Card
         ui.add_space(16.0);
-        
+
         StyledCard::new().padding(24.0).show(ui, |ui| {
             ui.heading("Connection Status");
             ui.add_space(20.0);
@@ -536,17 +633,14 @@ impl SettingsScreen {
             let (is_connected, is_syncing) = match self.connection_mode {
                 ConnectionMode::Core => (self.check_network_status(self.current_network), false),
                 ConnectionMode::Spv => {
-                    // First check UI state for immediate feedback
+                    // Use UI state first for immediate feedback
                     if self.spv_is_initialized {
                         (true, self.spv_is_syncing)
                     } else {
-                        // Otherwise check actual SPV manager V2 state
+                        // Fall back to checking actual SPV manager V2 state
                         let ctx = self.current_app_context();
                         if let Ok(spv_manager) = ctx.spv_manager_v2.try_read() {
-                            // SPV is connected if it's initialized, regardless of sync status
-                            let initialized = spv_manager.is_initialized();
-                            let syncing = spv_manager.is_syncing;
-                            (initialized, syncing)
+                            (spv_manager.is_initialized(), spv_manager.is_syncing)
                         } else {
                             (false, false)
                         }
@@ -567,6 +661,7 @@ impl SettingsScreen {
                         .min_size(egui::vec2(120.0, 36.0));
 
                         if ui.add(disconnect_button).clicked() {
+                            tracing::info!("Disconnect clicked - stopping SPV");
                             app_action =
                                 AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::Stop));
                             // Reset UI state immediately
@@ -577,33 +672,39 @@ impl SettingsScreen {
                             self.spv_target_height = 0;
                             self.spv_last_error = None;
                             self.spv_phase_info = None;
+                            self.spv_last_progress_check = 0;  // Reset progress check timer
                         }
-                        
+
                         // Show sync status next to button
                         ui.add_space(12.0);
                         // Check if we're in the initialization phase (no progress yet)
-                        let is_initializing = self.spv_is_initialized 
-                            && self.spv_current_height == 0 
+                        let is_initializing = self.spv_is_initialized
+                            && self.spv_current_height == 0
                             && self.spv_phase_info.is_none();
-                        
+
                         if is_initializing {
                             // Show initialization status
-                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
-                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
-                            ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
+                                DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
+                                DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.active.fg_stroke.color =
+                                DashColors::DASH_BLUE;
                             ui.spinner();
-                            ui.label(
-                                egui::RichText::new("Initializing SPV client...")
-                            );
-                        } else if self.spv_is_syncing && self.spv_sync_progress < 100.0 {
+                            ui.label(egui::RichText::new("Initializing SPV client..."));
+                        } else if self.spv_is_initialized
+                            && (self.spv_is_syncing
+                                || (self.spv_target_height > 0 && self.spv_sync_progress < 100.0))
+                        {
                             // Show syncing status
-                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
-                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
-                            ui.style_mut().visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
+                                DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
+                                DashColors::DASH_BLUE;
+                            ui.style_mut().visuals.widgets.active.fg_stroke.color =
+                                DashColors::DASH_BLUE;
                             ui.spinner();
-                            ui.label(
-                                egui::RichText::new("Syncing...")
-                            );
+                            ui.label(egui::RichText::new("Syncing..."));
                         } else if self.spv_sync_progress >= 100.0 {
                             ui.colored_label(DashColors::SUCCESS, "✓ Fully Synced");
                         }
@@ -621,7 +722,12 @@ impl SettingsScreen {
 
                     if ui.add(connect_button).clicked() {
                         if self.connection_mode == ConnectionMode::Spv {
-                            let checkpoint_height = 0; // Start from genesis
+                            // Use the selected checkpoint height
+                            let checkpoint_height = self.spv_selected_checkpoint;
+                            tracing::info!(
+                                "Connecting to SPV with checkpoint height: {}",
+                                checkpoint_height
+                            );
                             // Use SPV V2 for better concurrency
                             app_action = AppAction::BackendTask(BackendTask::SpvTaskV2(
                                 SpvTaskV2::InitializeAndSync { checkpoint_height },
@@ -636,9 +742,12 @@ impl SettingsScreen {
                             self.spv_phase_info = None;
                         } else {
                             // Core mode connect
-                            let settings = self.current_app_context().db.get_settings().ok().flatten();
+                            let settings =
+                                self.current_app_context().db.get_settings().ok().flatten();
                             let (custom_path, overwrite) = settings
-                                .map(|(_, _, _, custom_path, overwrite, _, _)| (custom_path, overwrite))
+                                .map(|(_, _, _, custom_path, overwrite, _, _)| {
+                                    (custom_path, overwrite)
+                                })
                                 .unwrap_or((None, true));
                             if let Some(dash_qt_path) = custom_path {
                                 app_action = AppAction::BackendTask(BackendTask::CoreTask(
@@ -952,6 +1061,8 @@ impl SettingsScreen {
 
 impl ScreenLike for SettingsScreen {
     fn refresh_on_arrival(&mut self) {
+        tracing::info!("SettingsScreen::refresh_on_arrival called");
+
         // Reset collapsing states when arriving at this screen
         // This ensures dropdowns are closed when navigating back
         self.should_reset_collapsing_states = true;
@@ -967,46 +1078,52 @@ impl ScreenLike for SettingsScreen {
         // Reset SPV state for the current network
         // This ensures we show the correct connection status when switching networks
         if self.connection_mode == ConnectionMode::Spv {
-            // Get the current app context's SPV manager state
-            let ctx = self.current_app_context();
+            // Only refresh if we're not in the middle of a connection attempt
+            // This prevents overwriting the UI state during initialization
+            if !self.spv_is_initialized {
+                // Get the current app context's SPV manager state
+                let ctx = self.current_app_context();
 
-            tracing::debug!(
-                "Refreshing SPV state for network: {:?}, ctx network: {:?}",
-                self.current_network,
-                ctx.network
-            );
+                tracing::debug!(
+                    "Refreshing SPV state for network: {:?}, ctx network: {:?}",
+                    self.current_network,
+                    ctx.network
+                );
 
-            // Collect values from SPV manager in a limited scope to avoid borrow issues
-            let (is_initialized, is_syncing, current_height, target_height) = {
-                if let Ok(spv_manager) = ctx.spv_manager.try_read() {
-                    let result = (
-                        spv_manager.is_initialized(),
-                        spv_manager.is_syncing,
-                        spv_manager.current_height,
-                        spv_manager.target_height,
-                    );
-                    tracing::debug!(
-                        "SPV state for {:?}: initialized={}, syncing={}, height={}/{}",
-                        ctx.network,
-                        result.0,
-                        result.1,
-                        result.2,
-                        result.3
-                    );
-                    result
-                } else {
-                    tracing::debug!("Could not get SPV manager lock for {:?}", ctx.network);
-                    (false, false, 0, 0)
-                }
-            }; // spv_manager lock is dropped here
+                // Collect values from SPV manager V2 in a limited scope to avoid borrow issues
+                let (is_initialized, is_syncing, current_height, target_height) = {
+                    if let Ok(spv_manager) = ctx.spv_manager_v2.try_read() {
+                        let result = (
+                            spv_manager.is_initialized(),
+                            spv_manager.is_syncing,
+                            spv_manager.current_height,
+                            spv_manager.target_height,
+                        );
+                        tracing::debug!(
+                            "SPV V2 state for {:?}: initialized={}, syncing={}, height={}/{}",
+                            ctx.network,
+                            result.0,
+                            result.1,
+                            result.2,
+                            result.3
+                        );
+                        result
+                    } else {
+                        tracing::debug!("Could not get SPV manager V2 lock for {:?}", ctx.network);
+                        (false, false, 0, 0)
+                    }
+                }; // spv_manager_v2 lock is dropped here
 
-            // Now update self without any borrows active
-            self.spv_is_initialized = is_initialized;
-            self.spv_is_syncing = is_syncing;
-            self.spv_current_height = current_height;
-            self.spv_target_height = target_height;
-            // Don't calculate progress from target_height, use actual progress from SPV client
-            self.spv_sync_progress = 0.0;
+                // Now update self without any borrows active
+                self.spv_is_initialized = is_initialized;
+                self.spv_is_syncing = is_syncing;
+                self.spv_current_height = current_height;
+                self.spv_target_height = target_height;
+                // Don't calculate progress from target_height, use actual progress from SPV client
+                self.spv_sync_progress = 0.0;
+            } else {
+                tracing::debug!("Skipping SPV state refresh - connection in progress");
+            }
         }
     }
 
@@ -1021,6 +1138,16 @@ impl ScreenLike for SettingsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        tracing::info!(
+            "SettingsScreen::display_task_result called with: {:?}",
+            match &backend_task_success_result {
+                BackendTaskSuccessResult::SpvResultV2(_) => "SpvResultV2",
+                BackendTaskSuccessResult::SpvResult(_) => "SpvResult",
+                BackendTaskSuccessResult::CoreItem(_) => "CoreItem",
+                _ => "Other",
+            }
+        );
+
         match backend_task_success_result {
             BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
                 mainnet_chainlock,
@@ -1101,13 +1228,13 @@ impl ScreenLike for SettingsScreen {
                     } => {
                         // Debug log all received values
                         tracing::info!(
-                            "SPV Progress Update - current: {}, target: {}, percent: {:.1}%, has_phase: {}",
+                            "SettingsScreen received SPV Progress Update - current: {}, target: {}, percent: {:.1}%, has_phase: {}",
                             current_height,
                             target_height,
                             progress_percent,
                             phase_info.is_some()
                         );
-                        
+
                         // Debug log the received phase info
                         if let Some(ref phase) = phase_info {
                             tracing::debug!(
@@ -1164,16 +1291,40 @@ impl ScreenLike for SettingsScreen {
                             }
                         }
 
-                        // Check if this is a stop result (target_height is 0)
-                        if target_height == 0 {
-                            // This is a stop result, reset everything
-                            self.spv_current_height = 0;
-                            self.spv_target_height = 0;
-                            self.spv_sync_progress = 0.0;
-                            self.spv_is_syncing = false;
-                            self.spv_is_initialized = false;
-                            self.spv_last_error = None;
-                            self.spv_phase_info = None;
+                        // Check if this is a stop result (all values are 0 and we're not expecting to be initialized)
+                        if target_height == 0
+                            && current_height == 0
+                            && progress_percent == 0.0
+                            && phase_info.is_none()
+                        {
+                            // Only treat as stop if we're not in the middle of initializing
+                            let ctx = self.current_app_context();
+                            let is_actually_initialized =
+                                if let Ok(spv_manager) = ctx.spv_manager_v2.try_read() {
+                                    spv_manager.is_initialized()
+                                } else {
+                                    false
+                                };
+
+                            if !is_actually_initialized && !self.spv_is_initialized {
+                                // This is truly a stop result - both backend and UI agree
+                                tracing::info!("SPV stop detected - resetting UI state");
+                                self.spv_current_height = 0;
+                                self.spv_target_height = 0;
+                                self.spv_sync_progress = 0.0;
+                                self.spv_is_syncing = false;
+                                self.spv_is_initialized = false;
+                                self.spv_last_error = None;
+                                self.spv_phase_info = None;
+                            } else {
+                                // Either backend is initialized OR we just clicked connect
+                                tracing::debug!("Maintaining initialized state - backend: {}, UI: {}", 
+                                    is_actually_initialized, self.spv_is_initialized);
+                                // Don't reset if we're expecting to be initialized
+                                if self.spv_is_initialized || is_actually_initialized {
+                                    self.spv_is_initialized = true;
+                                }
+                            }
                         } else {
                             // Normal sync progress update (including initialization)
                             self.spv_current_height = current_height;
@@ -1231,25 +1382,52 @@ impl ScreenLike for SettingsScreen {
         });
 
         // Auto-refresh progress while SPV is syncing or connected
-        if action == AppAction::None 
-            && self.connection_mode == ConnectionMode::Spv 
-            && self.spv_is_initialized // Only check progress if we're actually connected
-        {
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as TimestampMillis;
+        if action == AppAction::None && self.connection_mode == ConnectionMode::Spv {
+            // Check actual SPV manager state, not just UI state
+            let should_check_progress = if self.spv_is_initialized {
+                true
+            } else {
+                // Also check the actual SPV manager
+                let ctx_app = self.current_app_context();
+                if let Ok(spv_manager) = ctx_app.spv_manager_v2.try_read() {
+                    spv_manager.is_initialized()
+                } else {
+                    false
+                }
+            };
 
-            // Only check progress once per 5 seconds
-            if current_time >= self.spv_last_progress_check + 5000 {
-                tracing::debug!("Checking SPV sync progress");
-                self.spv_last_progress_check = current_time;
-                // Use SPV V2 for progress checks
-                action = AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::GetSyncProgress));
+            if should_check_progress {
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as TimestampMillis;
+
+                // Check progress more frequently during initialization phase
+                let is_initializing = self.spv_is_initialized
+                    && self.spv_current_height == 0
+                    && self.spv_phase_info.is_none();
+
+                let check_interval = if is_initializing {
+                    1000 // 1 second during initialization
+                } else {
+                    2000 // 2 seconds during normal sync
+                };
+
+                if current_time >= self.spv_last_progress_check + check_interval {
+                    tracing::debug!(
+                        "Scheduling SPV progress check - UI initialized: {}, should_check: {}",
+                        self.spv_is_initialized,
+                        should_check_progress
+                    );
+                    self.spv_last_progress_check = current_time;
+                    // Use SPV V2 for progress checks
+                    action =
+                        AppAction::BackendTask(BackendTask::SpvTaskV2(SpvTaskV2::GetSyncProgress));
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(check_interval as u64));
             }
-            ctx.request_repaint_after(std::time::Duration::from_secs(5));
         }
-        
+
         if action == AppAction::None {
             // Recheck both network status every 10 seconds
             let recheck_time = Duration::from_secs(10);

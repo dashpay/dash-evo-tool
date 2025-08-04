@@ -432,7 +432,11 @@ impl ScreenLike for TransferScreen {
                 // Transfer button
                 let ready = self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
-                    && self.selected_key.is_some();
+                    && self.selected_key.is_some()
+                    && !matches!(
+                        self.transfer_credits_status,
+                        TransferCreditsStatus::WaitingForResult(_),
+                    );
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);

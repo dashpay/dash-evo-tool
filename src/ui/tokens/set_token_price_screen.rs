@@ -984,6 +984,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
+                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
 
                 let button_color = if validation_result.is_ok() {
                     Color32::from_rgb(0, 128, 255)
@@ -995,8 +996,7 @@ impl ScreenLike for SetTokenPriceScreen {
                     .fill(button_color)
                     .corner_radius(3.0);
 
-                let button_response = ui.add_enabled(validation_result.is_ok(), button);
-
+                let button_response = ui.add_enabled(button_active, button);
 
                 if let Err(hover_message) = validation_result {
                                     button_response.on_disabled_hover_text(hover_message);

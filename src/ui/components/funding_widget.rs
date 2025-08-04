@@ -11,7 +11,7 @@ use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::epaint::TextureHandle;
-use egui::{Color32, ComboBox, InnerResponse, Ui, Widget};
+use egui::{Color32, ComboBox, InnerResponse, Ui};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -1173,11 +1173,5 @@ impl FundingWidget {
         } else {
             None
         }
-    }
-}
-
-impl Widget for &mut FundingWidget {
-    fn ui(self, ui: &mut Ui) -> egui::Response {
-        self.show(ui).response
     }
 }

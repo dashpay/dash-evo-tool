@@ -223,6 +223,7 @@ pub struct QualifiedIdentity {
     pub wallet_index: Option<u32>,
     pub top_ups: BTreeMap<u32, u64>,
     pub status: IdentityStatus,
+    pub network: Network,
 }
 
 impl AsRef<QualifiedIdentity> for QualifiedIdentity {
@@ -286,6 +287,7 @@ impl Decode for QualifiedIdentity {
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Unknown, // Loaded from the database, not encoded
+            network: Network::Dash,          // Loaded from the database, not encoded
         })
     }
 }
@@ -308,6 +310,7 @@ impl Signer for QualifiedIdentity {
                     .cloned()
                     .collect::<Vec<_>>()
                     .as_slice(),
+                self.network,
             )
             .map_err(ProtocolError::Generic)?
             .ok_or(ProtocolError::Generic(format!(
@@ -614,23 +617,5 @@ impl QualifiedIdentity {
             .next();
 
         Ok(wallet_info)
-    }
-}
-impl From<Identity> for QualifiedIdentity {
-    fn from(value: Identity) -> Self {
-        QualifiedIdentity {
-            identity: value,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Unknown,
-        }
     }
 }

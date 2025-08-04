@@ -304,6 +304,7 @@ impl AppContext {
             wallet_index: None, //todo
             top_ups: Default::default(),
             status: IdentityStatus::Active,
+            network: self.network,
         };
         let wallet_info = qualified_identity.determine_wallet_info()?;
 

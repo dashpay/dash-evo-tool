@@ -2854,6 +2854,7 @@ impl ScreenWithWalletUnlock for TokensScreen {
 mod tests {
     use std::path::Path;
 
+    use crate::app_dir::copy_env_file_if_not_exists;
     use crate::database::Database;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -2892,6 +2893,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
+        copy_env_file_if_not_exists(); // Required by AppContext::new()
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3193,6 +3195,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
+        copy_env_file_if_not_exists(); // required by AppContext::new()
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3307,6 +3310,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
+        copy_env_file_if_not_exists(); // required by AppContext::new()
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);

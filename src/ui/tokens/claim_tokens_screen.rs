@@ -260,7 +260,6 @@ impl ScreenLike for ClaimTokensScreen {
                 );
                 self.status = ClaimTokensStatus::Complete;
             } else {
-                // self.display_message("No tokens available to claim.", MessageType::Error);
                 self.status =
                     ClaimTokensStatus::ErrorMessage("No tokens available to claim.".to_string());
             }

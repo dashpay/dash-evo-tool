@@ -68,8 +68,6 @@ impl AppContext {
                     // No more rewards available, exit the loop
                     break;
                 }
-                // ConsensusError::StateError(StateError::InvalidTokenClaimNoCurrentRewards(as_refected)))) if as_expected,
-
                 // any other result we propagate
                 Ok(x) => return Ok(x),
                 Err(e) => {

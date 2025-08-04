@@ -2410,15 +2410,9 @@ impl TokensScreen {
     /// Renders the base supply amount input using AmountInput component
     fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
         let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
-
-        let input = self.base_supply_input.get_or_insert_with(|| {
-            let initial_amount = Amount::new(
-                TokenConfigurationV0::default_most_restrictive().base_supply(),
-                decimals,
-            );
-
-            AmountInput::new(initial_amount)
-        });
+        let input = self
+            .base_supply_input
+            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
 
         if decimals != input.decimal_places() {
             // Update decimals; it will change actual value but I guess this is what user expects

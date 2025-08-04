@@ -422,7 +422,7 @@ impl TokensScreen {
                                             if let Some(balance) = itb.balance {
                                                 // Create an amount using the token's decimal places and alias
                                                 let decimals = itb.token_config.conventions().decimals();
-                                                let amount = Amount::new_with_unit(balance, decimals, itb.token_alias.clone());
+                                                let amount = Amount::new(balance, decimals).with_unit_name(&itb.token_alias);
                                                 ui.label(amount.to_string_without_unit());
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
@@ -523,11 +523,10 @@ impl TokensScreen {
                                 .token_configuration
                                 .conventions()
                                 .plural_form_by_language_code_or_default("en");
-                            let reward_amount = Amount::new_with_unit(
+                            let reward_amount = Amount::new(
                                 explanation.total_amount,
                                 decimal_places,
-                                unit_name.to_string(),
-                            );
+                            ).with_unit_name(unit_name);
 
                             ui.label(format!("Total Estimated Rewards: {}", reward_amount));
                             ui.separator();

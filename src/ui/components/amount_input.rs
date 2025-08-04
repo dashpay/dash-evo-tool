@@ -1,9 +1,7 @@
 use crate::model::amount::Amount;
-use crate::ui::components::{
-    Component, ComponentResponse, ComponentWithCallbacks, UpdatableComponent,
-};
+use crate::ui::components::{Component, ComponentResponse};
 use dash_sdk::dpp::fee::Credits;
-use egui::{InnerResponse, Response, TextEdit, Ui, Widget, WidgetText};
+use egui::{InnerResponse, Response, TextEdit, Ui, Vec2, WidgetText};
 
 /// Response from the amount input widget
 #[derive(Clone)]
@@ -30,29 +28,6 @@ impl AmountInputResponse {
     pub fn has_changed(&self) -> bool {
         self.changed
     }
-
-    /// Update amount if it [has_changed](Self::has_changed).
-    ///
-    /// Once input has changed, it changes provided value to the parsed amount if valid, or `None` it if invalid.
-    /// If the input has not changed, the value remains unchanged.
-    ///
-    /// This function can be used to link the input widget to a mutable `Option<Amount>` value in your screen state.
-    /// Any changes to the input will be reflected in the provided value.
-    ///
-    /// Returns true if the value was updated (including change to `None`), false if it was not changed.
-    pub fn update(&self, value: &mut Option<Amount>) -> bool {
-        if self.has_changed() {
-            if let Some(amount) = &self.parsed_amount {
-                value.replace(amount.clone());
-                true
-            } else {
-                value.take(); // Clear the value if input is invalid
-                true
-            }
-        } else {
-            false
-        }
-    }
 }
 
 impl ComponentResponse for AmountInputResponse {
@@ -74,84 +49,35 @@ impl ComponentResponse for AmountInputResponse {
     }
 }
 
-type CallbackFn = Box<dyn FnMut(&ShowResponse)>;
-
 /// A reusable amount input widget that handles decimal parsing and validation.
 /// This widget can be used for any type of amount input (tokens, Dash, etc.).
 ///
 /// The widget validates the input in real-time and shows error messages when
-/// the input is invalid. It properly handles decimal places according to the
-/// configured number of decimals. Unit names from the initial Amount are
-/// automatically preserved and applied to all parsed amounts.
+/// the input is invalid. It follows the component design pattern with lazy
+/// initialization and response-based communication.
 ///
-/// # Features
-/// - Real-time validation with error messages
-/// - Configurable minimum and maximum amounts
-/// - Optional "Max" button for quick maximum input
-/// - Automatic unit name preservation from initial Amount objects
-/// - Proper layout alignment when buttons are present
-/// - Self-contained state management
-/// - Enable/disable functionality to prevent changes during operations
+/// # Usage
 ///
-/// # Example
-/// ```rust
-/// use dash_evo_tool::ui::components::amount_input::AmountInput;
-/// use dash_evo_tool::model::amount::Amount;
-/// use egui::Ui;
+/// Store the component as `Option<AmountInput>` in your screen struct for lazy
+/// initialization, then use the fluent builder API to configure it:
 ///
-/// // Store Option<AmountInput> for lazy initialization
-/// struct MyScreen {
-///     amount_input: Option<AmountInput>,
-///     current_amount: Amount, // Track the current amount with unit name
-///     operation_in_progress: bool,
-/// }
+/// ```rust,ignore
+/// let amount_input = self.amount_input.get_or_insert_with(|| {
+///     AmountInput::new(Amount::new_dash(0.0))
+///         .label("Amount:")
+///         .hint_text("Enter amount")
+///         .max_amount(Some(1000000))
+///         .min_amount(Some(1000))
+///         .max_button(true)
+/// });
 ///
-/// impl MyScreen {
-///     fn new() -> Self {
-///         Self {
-///             amount_input: None, // Lazy initialization
-///             current_amount: Amount::dash(0), // Zero DASH initially
-///             operation_in_progress: false,
-///         }
-///     }
-///
-///     fn show(&mut self, ui: &mut Ui) {
-///         // Initialize AmountInput with the current amount (preserves unit name)
-///         let amount_input = self.amount_input.get_or_insert_with(|| {
-///             AmountInput::new(self.current_amount.clone())
-///                 .label("Amount:")
-///                 .hint_text("Enter amount")
-///                 .max_amount(Some(1000000))
-///                 .min_amount(Some(1000))
-///                 .max_button(true)
-///         });
-///
-///         // Use egui's enabled state to disable input during operations
-///         let response = ui.add_enabled_ui(!self.operation_in_progress, |ui| {
-///             amount_input.show(ui)
-///         }).inner;
-///
-///         // Simple, correct handling using the helper method
-///         // Unit names are automatically preserved by AmountInput
-///         let mut temp_amount = Some(self.current_amount.clone());
-///         if response.inner.update(&mut temp_amount) {
-///             if let Some(amount) = temp_amount {
-///                 self.current_amount = amount; // Unit name is preserved
-///                 println!("Amount changed: {}", self.current_amount);
-///             } else {
-///                 self.current_amount = Amount::dash(0); // Fallback to zero
-///                 println!("Amount cleared");
-///             }
-///         }
-///
-///         // Show errors if present
-///         if let Some(error) = &response.inner.error_message {
-///             ui.colored_label(egui::Color32::RED, error);
-///         }
-///     }
-/// }
+/// let response = amount_input.show(ui);
+/// response.inner.update(&mut self.amount);
 /// ```
+///
+/// See the tests for complete usage examples.
 pub struct AmountInput {
+    // Raw data, as entered by the user
     amount_str: String,
     decimal_places: u8,
     unit_name: Option<String>,
@@ -161,13 +87,10 @@ pub struct AmountInput {
     min_amount: Option<Credits>,
     show_max_button: bool,
     desired_width: Option<f32>,
-    /// Function to execute when correct amount is entered
-    pub on_success_fn: Option<CallbackFn>,
-    /// Function to execute when invalid amount is entered
-    pub on_error_fn: Option<CallbackFn>,
+    show_validation_errors: bool,
+    // When true, we enforce that the input was changed, even if text edit didn't change.
+    changed: bool,
 }
-
-pub type ShowResponse = InnerResponse<AmountInputResponse>;
 
 impl AmountInput {
     /// Creates a new amount input widget from an Amount.
@@ -194,28 +117,17 @@ impl AmountInput {
             min_amount: Some(1), // Default minimum is 1 (greater than zero)
             show_max_button: false,
             desired_width: None,
-            on_success_fn: None,
-            on_error_fn: None,
+            show_validation_errors: true, // Default to showing validation errors
+            changed: false,
         }
     }
 
-    /// Gets the currently parsed amount without showing the widget.
-    /// Returns None if the current text is empty or invalid.
-    pub fn get_current_amount(&self) -> Option<Amount> {
-        if self.amount_str.trim().is_empty() {
-            None
-        } else {
-            match Amount::parse_with_decimals(&self.amount_str, self.decimal_places) {
-                Ok(mut amount) => {
-                    // Apply the unit name if we have one
-                    if let Some(ref unit_name) = self.unit_name {
-                        amount = amount.with_unit_name(unit_name.clone());
-                    }
-                    Some(amount)
-                }
-                Err(_) => None,
-            }
-        }
+    /// Sets whether the input has changed.
+    /// This is useful for cases where you want to force the component to treat the input as changed,
+    /// even if the text edit widget itself did not register a change.
+    pub fn set_changed(&mut self, changed: bool) -> &mut Self {
+        self.changed = changed;
+        self
     }
 
     /// Gets the number of decimal places this input is configured for.
@@ -304,91 +216,67 @@ impl AmountInput {
         self
     }
 
-    /// Sets a function to call when a valid amount is entered.
-    pub fn on_success(mut self, on_success_fn: impl FnMut(&ShowResponse) + 'static) -> Self {
-        self.on_success_fn = Some(Box::new(on_success_fn));
+    /// Controls whether validation errors are displayed as a label within the component.
+    pub fn show_validation_errors(mut self, show: bool) -> Self {
+        self.show_validation_errors = show;
         self
-    }
-
-    /// Sets a function to call when invalid amount is entered
-    pub fn on_error(mut self, on_error_fn: impl FnMut(&ShowResponse) + 'static) -> Self {
-        self.on_error_fn = Some(Box::new(on_error_fn));
-        self
-    }
-
-    /// Standard show method for backwards compatibility
-    pub fn show(&mut self, ui: &mut Ui) -> InnerResponse<AmountInputResponse> {
-        let result = self.show_internal(ui);
-        if result.inner.changed {
-            if result.inner.parsed_amount.is_some()
-                && let Some(on_success_fn) = &mut self.on_success_fn
-            {
-                on_success_fn(&result);
-            }
-
-            // Call the error function if provided
-            if let Some(on_error_fn) = &mut self.on_error_fn
-                && result.inner.error_message.is_some()
-            {
-                on_error_fn(&result);
-            }
-        }
-
-        result
     }
 
     /// Validates the current amount string and returns validation results.
-    fn validate_amount(&self) -> (Option<String>, Option<Amount>) {
+    ///
+    /// Returns `Ok(Some(Amount))` for valid input, `Ok(None)` for empty input,
+    /// or `Err(String)` with error message if validation fails.
+    fn validate_amount(&self) -> Result<Option<Amount>, String> {
         if self.amount_str.trim().is_empty() {
-            return (None, None);
+            return Ok(None);
         }
 
-        match Amount::parse_with_decimals(&self.amount_str, self.decimal_places) {
+        match Amount::parse(&self.amount_str, self.decimal_places) {
             Ok(mut amount) => {
                 // Apply the unit name if we have one
                 if let Some(ref unit_name) = self.unit_name {
-                    amount = amount.with_unit_name(unit_name.clone());
+                    amount = amount.with_unit_name(unit_name);
                 }
 
                 // Check if amount exceeds maximum
                 if let Some(max_amount) = self.max_amount {
                     if amount.value() > max_amount {
-                        return (Some("Amount exceeds maximum allowed".to_string()), None);
+                        return Err(format!(
+                            "Amount {} exceeds allowed maximum {}",
+                            amount,
+                            Amount::new(max_amount, self.decimal_places)
+                        ));
                     }
                 }
 
                 // Check if amount is below minimum
                 if let Some(min_amount) = self.min_amount {
                     if amount.value() < min_amount {
-                        return (
-                            Some(format!(
-                                "Amount must be at least {}",
-                                Amount::format_amount(min_amount, self.decimal_places)
-                            )),
-                            None,
-                        );
+                        return Err(format!(
+                            "Amount must be at least {}",
+                            Amount::new(min_amount, self.decimal_places)
+                        ));
                     }
                 }
 
-                (None, Some(amount))
+                Ok(Some(amount))
             }
-            Err(error) => (Some(error), None),
+            Err(error) => Err(error),
         }
     }
 
     /// Renders the amount input widget and returns an `InnerResponse` for use with `show()`.
     fn show_internal(&mut self, ui: &mut Ui) -> InnerResponse<AmountInputResponse> {
         ui.horizontal(|ui| {
-            let has_max_button = self.show_max_button && self.max_amount.is_some();
-
+            if self.show_max_button {
+                // ensure we have height predefined to correctly vertically align the input field;
+                // see StyledButton::show() to see how y is calculated
+                ui.allocate_space(Vec2::new(0.0, 30.0));
+            }
             // Show label if provided
             if let Some(label) = &self.label {
-                if has_max_button {
-                    ui.add_space(15.0);
-                }
                 ui.label(label.clone());
             }
-
             // Create the text edit widget
             let mut text_edit = TextEdit::singleline(&mut self.amount_str);
 
@@ -402,7 +290,6 @@ impl AmountInput {
 
             let text_response = ui.add(text_edit);
 
-            // note we might notify changed even if actual text didn't change, but this is fine
             let mut changed = text_response.changed() && ui.is_enabled();
 
             // Show max button if max amount is available
@@ -410,7 +297,7 @@ impl AmountInput {
             if self.show_max_button {
                 if let Some(max_amount) = self.max_amount {
                     if ui.button("Max").clicked() {
-                        self.amount_str = Amount::format_amount(max_amount, self.decimal_places);
+                        self.amount_str = Amount::new(max_amount, self.decimal_places).to_string();
                         max_clicked = true;
                         changed = true;
                     }
@@ -421,7 +308,22 @@ impl AmountInput {
             }
 
             // Validate the amount
-            let (error_message, parsed_amount) = self.validate_amount();
+            let (error_message, parsed_amount) = match self.validate_amount() {
+                Ok(amount) => (None, amount),
+                Err(error) => (Some(error), None),
+            };
+
+            // Show validation error if enabled and error exists
+            if self.show_validation_errors
+                && let Some(error_msg) = &error_message
+            {
+                ui.colored_label(ui.visuals().error_fg_color, error_msg);
+            }
+
+            if self.changed {
+                changed = true; // Force changed if set
+                self.changed = false; // Reset after use
+            }
 
             AmountInputResponse {
                 response: text_response,
@@ -434,37 +336,12 @@ impl AmountInput {
     }
 }
 
-impl Widget for AmountInput {
-    fn ui(mut self, ui: &mut Ui) -> Response {
-        self.show(ui).response
-    }
-}
-
 impl Component for AmountInput {
     type DomainType = Amount;
     type Response = AmountInputResponse;
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
-        AmountInput::show(self, ui)
-    }
-}
-
-impl ComponentWithCallbacks<AmountInputResponse> for AmountInput {
-    fn on_success(
-        self,
-        callback: impl FnMut(&InnerResponse<AmountInputResponse>) + 'static,
-    ) -> Self {
-        AmountInput::on_success(self, callback)
-    }
-
-    fn on_error(self, callback: impl FnMut(&InnerResponse<AmountInputResponse>) + 'static) -> Self {
-        AmountInput::on_error(self, callback)
-    }
-}
-
-impl UpdatableComponent<Amount> for AmountInputResponse {
-    fn update(&self, value: &mut Option<Amount>) -> bool {
-        AmountInputResponse::update(self, value)
+        AmountInput::show_internal(self, ui)
     }
 }
 
@@ -475,7 +352,7 @@ mod tests {
     #[test]
     fn test_initialization_with_non_zero_amount_and_unit() {
         // Test that AmountInput correctly initializes from an existing amount
-        let amount = Amount::dash(1.5); // 1.5 DASH 
+        let amount = Amount::new_dash(1.5); // 1.5 DASH 
 
         assert_eq!(amount.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", amount), "1.5 DASH");
@@ -490,7 +367,7 @@ mod tests {
     #[test]
     fn test_initialization_with_zero_amount() {
         // Test that zero amounts initialize with empty string
-        let amount = Amount::dash(0.0);
+        let amount = Amount::new_dash(0.0);
         let amount_input = AmountInput::new(amount);
         assert_eq!(amount_input.amount_str, "");
         assert_eq!(amount_input.decimal_places, 11);
@@ -519,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_unit_name_preservation() {
-        let amount = Amount::new_with_unit(150_000_000_000, 11, "DASH".to_string()); // 1.5 DASH
+        let amount = Amount::new(150_000_000_000, 11).with_unit_name("DASH"); // 1.5 DASH
         let mut input = AmountInput::new(amount);
 
         // Check that unit name is preserved
@@ -527,21 +404,21 @@ mod tests {
 
         // Test that get_current_amount preserves unit name
         input.amount_str = "2.5".to_string();
-        let current = input.get_current_amount().unwrap();
+        let current = input.validate_amount().unwrap().unwrap();
         assert_eq!(current.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", current), "2.5 DASH");
 
         // Test validation also preserves unit name
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none());
-        let parsed = parsed.unwrap();
+        let validation_result = input.validate_amount();
+        assert!(validation_result.is_ok());
+        let parsed = validation_result.unwrap().unwrap();
         assert_eq!(parsed.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", parsed), "2.5 DASH");
     }
 
     #[test]
     fn test_token_unit_name_preservation() {
-        let amount = Amount::new_with_unit(1000000, 6, "MYTOKEN".to_string()); // 1.0 MYTOKEN
+        let amount = Amount::new(1000000, 6).with_unit_name("MYTOKEN"); // 1.0 MYTOKEN
         let mut input = AmountInput::new(amount);
 
         // Check that token unit name is preserved
@@ -549,7 +426,7 @@ mod tests {
 
         // Test with different amount
         input.amount_str = "5.5".to_string();
-        let current = input.get_current_amount().unwrap();
+        let current = input.validate_amount().unwrap().unwrap();
         assert_eq!(current.unit_name(), Some("MYTOKEN"));
         assert_eq!(format!("{}", current), "5.5 MYTOKEN");
     }
@@ -561,32 +438,39 @@ mod tests {
 
         // Test empty input (valid)
         input.amount_str = "".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none(), "Empty input should be valid");
-        assert!(parsed.is_none(), "Empty input should have no parsed amount");
+        let validation_result = input.validate_amount();
+        assert!(validation_result.is_ok(), "Empty input should be valid");
+        assert!(
+            validation_result.unwrap().is_none(),
+            "Empty input should have no parsed amount"
+        );
 
         // Test valid input
         input.amount_str = "10.50".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none(), "Valid input should have no error");
-        assert!(parsed.is_some(), "Valid input should have parsed amount");
+        let validation_result = input.validate_amount();
+        assert!(
+            validation_result.is_ok(),
+            "Valid input should have no error"
+        );
+        assert!(
+            validation_result.unwrap().is_some(),
+            "Valid input should have parsed amount"
+        );
 
         // Test invalid input (too many decimals)
         input.amount_str = "10.555".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Invalid input should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Invalid input should have no parsed amount"
+            validation_result.is_err(),
+            "Invalid input should have error"
         );
 
         // Test invalid input (non-numeric)
         input.amount_str = "abc".to_string();
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Non-numeric input should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Non-numeric input should have no parsed amount"
+            validation_result.is_err(),
+            "Non-numeric input should have error"
         );
     }
 
@@ -599,28 +483,29 @@ mod tests {
 
         // Test amount below minimum
         input.amount_str = "0.50".to_string(); // 50 (below min of 100)
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Amount below minimum should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Amount below minimum should have no parsed amount"
+            validation_result.is_err(),
+            "Amount below minimum should have error"
         );
 
         // Test amount above maximum
         input.amount_str = "150.00".to_string(); // 15000 (above max of 10000)
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_some(), "Amount above maximum should have error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_none(),
-            "Amount above maximum should have no parsed amount"
+            validation_result.is_err(),
+            "Amount above maximum should have error"
         );
 
         // Test valid amount within range
         input.amount_str = "50.00".to_string(); // 5000 (within range)
-        let (error, parsed) = input.validate_amount();
-        assert!(error.is_none(), "Amount within range should have no error");
+        let validation_result = input.validate_amount();
         assert!(
-            parsed.is_some(),
+            validation_result.is_ok(),
+            "Amount within range should have no error"
+        );
+        assert!(
+            validation_result.unwrap().is_some(),
             "Amount within range should have parsed amount"
         );
     }

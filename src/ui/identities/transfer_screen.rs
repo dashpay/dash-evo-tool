@@ -10,6 +10,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::fee::Credits;
@@ -77,7 +78,7 @@ impl TransferScreen {
             selected_key: selected_key.cloned(),
             known_identities,
             receiver_identity_id: String::new(),
-            amount: Some(Amount::dash(0.0)),
+            amount: Some(Amount::new_dash(0.0)),
             amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
@@ -113,7 +114,7 @@ impl TransferScreen {
         let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
-            AmountInput::new(Amount::dash(0.0))
+            AmountInput::new(Amount::new_dash(0.0))
                 .label("Amount:")
                 .max_button(true)
                 .max_amount(Some(max_amount_credits))

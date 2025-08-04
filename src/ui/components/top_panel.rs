@@ -159,9 +159,10 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     let resp = resp.on_hover_text(tip);
 
                     if resp.clicked() && !connected {
-                        let settings = app_context.db.get_settings().ok().flatten();
+                        let settings = app_context.get_settings().ok().flatten();
+
                         let (custom_path, overwrite) = settings
-                            .map(|(_, _, _, custom_path, overwrite, _)| (custom_path, overwrite))
+                            .map(|s| (s.dash_qt_path, s.overwrite_dash_conf))
                             .unwrap_or((None, true));
                         if let Some(dash_qt_path) = custom_path {
                             action |= AppAction::BackendTask(BackendTask::CoreTask(

@@ -8,7 +8,7 @@ use egui::{InnerResponse, Response, TextEdit, Ui, Vec2, WidgetText};
 pub struct AmountInputResponse {
     /// The response from the text edit widget
     pub response: Response,
-    /// Whether the parsed_amount has changed
+    /// Whether the input text has changed
     pub changed: bool,
     /// The error message if the input is invalid
     pub error_message: Option<String>,
@@ -118,7 +118,7 @@ impl AmountInput {
             show_max_button: false,
             desired_width: None,
             show_validation_errors: true, // Default to showing validation errors
-            changed: false,
+            changed: true,                // Start as changed to force initial validation
         }
     }
 
@@ -135,13 +135,36 @@ impl AmountInput {
         self.decimal_places
     }
 
+    /// Update decimal places used to render values.
+    ///
+    /// Value displayed in the input is not changed, but the actual [Amount]
+    /// will be multiplied or divided by 10^(difference of decimal places).
+    ///
+    /// ## Example
+    ///
+    /// The input contains `12.34` and decimal places is set to 3.
+    /// It will be interpreted as `12.340` when parsed (credits value `12_340`).
+    ///
+    ///
+    /// If you change the decimal places from 3 to 5:
+    ///
+    /// * The input will still display `12.34` (unchanged)
+    /// * The next time the input is parsed, it will generate `12.34000`
+    ///   (credits value `1_234_000`).
+    pub fn set_decimal_places(&mut self, decimal_places: u8) -> &mut Self {
+        self.decimal_places = decimal_places;
+        self.changed = true;
+
+        self
+    }
+
     /// Gets the unit name this input is configured for.
     pub fn unit_name(&self) -> Option<&str> {
         self.unit_name.as_deref()
     }
 
     /// Sets the label for the input field.
-    pub fn label<T: Into<WidgetText>>(mut self, label: T) -> Self {
+    pub fn with_label<T: Into<WidgetText>>(mut self, label: T) -> Self {
         self.label = Some(label.into());
         self
     }
@@ -154,7 +177,7 @@ impl AmountInput {
     }
 
     /// Sets the hint text for the input field.
-    pub fn hint_text<T: Into<WidgetText>>(mut self, hint_text: T) -> Self {
+    pub fn with_hint_text<T: Into<WidgetText>>(mut self, hint_text: T) -> Self {
         self.hint_text = Some(hint_text.into());
         self
     }
@@ -167,7 +190,7 @@ impl AmountInput {
 
     /// Sets the maximum amount allowed. If provided, a "Max" button will be shown
     /// when `show_max_button` is true.
-    pub fn max_amount(mut self, max_amount: Option<Credits>) -> Self {
+    pub fn with_max_amount(mut self, max_amount: Option<Credits>) -> Self {
         self.max_amount = max_amount;
         self
     }
@@ -181,7 +204,7 @@ impl AmountInput {
 
     /// Sets the minimum amount allowed. Defaults to 1 (must be greater than zero).
     /// Set to Some(0) to allow zero amounts, or None to disable minimum validation.
-    pub fn min_amount(mut self, min_amount: Option<Credits>) -> Self {
+    pub fn with_min_amount(mut self, min_amount: Option<Credits>) -> Self {
         self.min_amount = min_amount;
         self
     }
@@ -193,7 +216,7 @@ impl AmountInput {
     }
 
     /// Whether to show a "Max" button that sets the amount to the maximum.
-    pub fn max_button(mut self, show: bool) -> Self {
+    pub fn with_max_button(mut self, show: bool) -> Self {
         self.show_max_button = show;
         self
     }
@@ -205,7 +228,7 @@ impl AmountInput {
     }
 
     /// Sets the desired width of the input field.
-    pub fn desired_width(mut self, width: f32) -> Self {
+    pub fn with_desired_width(mut self, width: f32) -> Self {
         self.desired_width = Some(width);
         self
     }
@@ -343,6 +366,15 @@ impl Component for AmountInput {
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         AmountInput::show_internal(self, ui)
     }
+
+    fn current_value(&self) -> Option<Self::DomainType> {
+        // Validate the current amount string and return the parsed amount
+        match self.validate_amount() {
+            Ok(Some(amount)) => Some(amount),
+            Ok(None) => None, // Empty input
+            Err(_) => None,   // Invalid input returns None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -382,15 +414,15 @@ mod tests {
         assert_eq!(input.min_amount, Some(1));
 
         // Custom minimum
-        let input = AmountInput::new(Amount::new(0, 8)).min_amount(Some(1000));
+        let input = AmountInput::new(Amount::new(0, 8)).with_min_amount(Some(1000));
         assert_eq!(input.min_amount, Some(1000));
 
         // Allow zero
-        let input = AmountInput::new(Amount::new(0, 8)).min_amount(Some(0));
+        let input = AmountInput::new(Amount::new(0, 8)).with_min_amount(Some(0));
         assert_eq!(input.min_amount, Some(0));
 
         // No minimum
-        let input = AmountInput::new(Amount::new(0, 8)).min_amount(None);
+        let input = AmountInput::new(Amount::new(0, 8)).with_min_amount(None);
         assert_eq!(input.min_amount, None);
     }
 
@@ -478,8 +510,8 @@ mod tests {
     fn test_min_max_validation() {
         let amount = Amount::new(0, 2);
         let mut input = AmountInput::new(amount)
-            .min_amount(Some(100)) // Minimum 1.00
-            .max_amount(Some(10000)); // Maximum 100.00
+            .with_min_amount(Some(100)) // Minimum 1.00
+            .with_max_amount(Some(10000)); // Maximum 100.00
 
         // Test amount below minimum
         input.amount_str = "0.50".to_string(); // 50 (below min of 100)

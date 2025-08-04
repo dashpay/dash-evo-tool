@@ -8,6 +8,7 @@ use crate::ui::components::funding_widget::FundingWidget;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
@@ -49,6 +50,9 @@ pub struct WalletsBalancesScreen {
     rename_input: String,
     // Funding widget for top-up
     funding_widget: Option<FundingWidget>,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>,
 }
 
 pub trait DerivationPathHelpers {
@@ -139,6 +143,9 @@ impl WalletsBalancesScreen {
             show_rename_dialog: false,
             rename_input: String::new(),
             funding_widget: None,
+            wallet_password: String::new(),
+            show_password: false,
+            error_message: None,
         }
     }
 
@@ -149,10 +156,17 @@ impl WalletsBalancesScreen {
                 wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
             };
 
-            // Now the immutable borrow of `wallet` is dropped, and we can use `self` mutably
-            if let Err(e) = result {
-                self.display_message(&e, MessageType::Error);
+            match result {
+                Ok(address) => {
+                    let message = format!("Added new receiving address: {}", address);
+                    self.display_message(&message, MessageType::Success);
+                }
+                Err(e) => {
+                    self.display_message(&e, MessageType::Error);
+                }
             }
+        } else {
+            self.display_message("No wallet selected", MessageType::Error);
         }
     }
 
@@ -572,14 +586,27 @@ impl WalletsBalancesScreen {
     fn render_bottom_options(&mut self, ui: &mut Ui) {
         if self.selected_filters.contains("Funds") {
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("➕ Add Receiving Address").size(14.0))
-                    .clicked()
-                {
-                    self.add_receiving_address();
-                }
-            });
+
+            // Check if wallet is unlocked
+            let wallet_is_open = if let Some(wallet_guard) = &self.selected_wallet {
+                wallet_guard.read().unwrap().is_open()
+            } else {
+                false
+            };
+
+            if wallet_is_open {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(RichText::new("➕ Add Receiving Address").size(14.0))
+                        .clicked()
+                    {
+                        self.add_receiving_address();
+                    }
+                });
+            } else {
+                // Show wallet unlock UI
+                self.render_wallet_unlock_if_needed(ui);
+            }
         }
     }
 
@@ -826,15 +853,7 @@ impl WalletsBalancesScreen {
     }
 
     fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            // Automatically dismiss the message after 10 seconds
-            if elapsed.num_seconds() >= 10 {
-                self.dismiss_message();
-            }
-        }
+        // Messages no longer auto-expire, they must be dismissed manually
     }
 }
 
@@ -899,6 +918,35 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            // Display messages at the top, outside of scroll area
+            let message = self.message.clone();
+            if let Some((message, message_type, _timestamp)) = message {
+                let message_color = match message_type {
+                    MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
+                    MessageType::Info => DashColors::text_primary(dark_mode),
+                    MessageType::Success => egui::Color32::from_rgb(100, 255, 100),
+                };
+
+                // Display message in a prominent frame
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(message).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.dismiss_message();
+                                }
+                            });
+                        });
+                });
+                ui.add_space(10.0);
+            }
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
@@ -979,29 +1027,6 @@ impl ScreenLike for WalletsBalancesScreen {
                     }
                 });
 
-            let message = self.message.clone();
-            if let Some((message, message_type, timestamp)) = message {
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                ui.add_space(25.0); // Same space as refreshing indicator
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    // Calculate remaining seconds
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    // Add the message with auto-dismiss countdown
-                    let full_msg = format!("{} ({}s)", message, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(message_color));
-                });
-                ui.add_space(2.0); // Same space below as refreshing indicator
-            }
             inner_action
         });
 
@@ -1086,4 +1111,34 @@ impl ScreenLike for WalletsBalancesScreen {
     fn refresh_on_arrival(&mut self) {}
 
     fn refresh(&mut self) {}
+}
+
+impl ScreenWithWalletUnlock for WalletsBalancesScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
+    }
 }

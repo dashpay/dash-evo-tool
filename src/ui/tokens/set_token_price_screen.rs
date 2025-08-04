@@ -670,8 +670,8 @@ impl SetTokenPriceScreen {
         // Lazy initialization of the confirmation dialog
         let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
             ConfirmationDialog::new("Confirm pricing schedule update", confirmation_message)
-                .confirm_text("Confirm")
-                .cancel_text("Cancel")
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
                 .danger_mode(is_danger_mode)
         });
 

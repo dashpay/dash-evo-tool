@@ -245,8 +245,8 @@ impl TransferScreen {
         // Lazy initialization of the confirmation dialog
         let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
             ConfirmationDialog::new("Confirm Transfer", msg)
-                .confirm_text("Confirm")
-                .cancel_text("Cancel")
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
         });
 
         let response = confirmation_dialog.show(ui);

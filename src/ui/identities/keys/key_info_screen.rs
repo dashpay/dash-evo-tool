@@ -322,10 +322,22 @@ impl ScreenLike for KeyInfoScreen {
                                 && self.selected_wallet.is_some()
                             {
                                 if let Some(private_key) = self.decrypted_private_key {
+                                    ui.label(RichText::new("Private Key (WIF):").strong());
                                     let private_key_wif = private_key.to_wif();
                                     ui.add(
                                         TextEdit::multiline(
                                             &mut private_key_wif.as_str().to_owned(),
+                                        )
+                                        .desired_width(f32::INFINITY),
+                                    );
+                                    
+                                    ui.add_space(10.0);
+                                    
+                                    ui.label(RichText::new("Private Key (Hex):").strong());
+                                    let private_key_hex = hex::encode(private_key.inner.secret_bytes());
+                                    ui.add(
+                                        TextEdit::multiline(
+                                            &mut private_key_hex.as_str().to_owned(),
                                         )
                                         .desired_width(f32::INFINITY),
                                     );
@@ -336,6 +348,7 @@ impl ScreenLike for KeyInfoScreen {
                                         &derivation_path.derivation_path,
                                     ) {
                                         Ok(private_key) => {
+                                            ui.label(RichText::new("Private Key (WIF):").strong());
                                             let private_key_wif = private_key.to_wif();
                                             ui.add(
                                                 TextEdit::multiline(
@@ -343,6 +356,18 @@ impl ScreenLike for KeyInfoScreen {
                                                 )
                                                 .desired_width(f32::INFINITY),
                                             );
+                                            
+                                            ui.add_space(10.0);
+                                            
+                                            ui.label(RichText::new("Private Key (Hex):").strong());
+                                            let private_key_hex = hex::encode(private_key.inner.secret_bytes());
+                                            ui.add(
+                                                TextEdit::multiline(
+                                                    &mut private_key_hex.as_str().to_owned(),
+                                                )
+                                                .desired_width(f32::INFINITY),
+                                            );
+                                            
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
@@ -367,6 +392,7 @@ impl ScreenLike for KeyInfoScreen {
                                         &derivation_path.derivation_path,
                                     ) {
                                         Ok(private_key) => {
+                                            ui.label(RichText::new("Private Key (WIF):").strong());
                                             let private_key_wif = private_key.to_wif();
                                             ui.add(
                                                 TextEdit::multiline(
@@ -374,6 +400,18 @@ impl ScreenLike for KeyInfoScreen {
                                                 )
                                                 .desired_width(f32::INFINITY),
                                             );
+                                            
+                                            ui.add_space(10.0);
+                                            
+                                            ui.label(RichText::new("Private Key (Hex):").strong());
+                                            let private_key_hex = hex::encode(private_key.inner.secret_bytes());
+                                            ui.add(
+                                                TextEdit::multiline(
+                                                    &mut private_key_hex.as_str().to_owned(),
+                                                )
+                                                .desired_width(f32::INFINITY),
+                                            );
+                                            
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {

@@ -26,7 +26,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
-use egui::{Color32, RichText, ScrollArea, TextEdit};
+use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 
 pub struct KeyInfoScreen {
@@ -299,11 +299,15 @@ impl ScreenLike for KeyInfoScreen {
 
                     match private_key {
                         PrivateKeyData::Clear(clear) | PrivateKeyData::AlwaysClear(clear) => {
-                            let private_key_hex = hex::encode(clear);
-                            ui.add(
-                                TextEdit::singleline(&mut private_key_hex.as_str().to_owned())
-                                    .desired_width(f32::INFINITY),
-                            );
+                            egui::Grid::new("private_key_grid")
+                                .num_columns(2)
+                                .spacing([10.0, 10.0])
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
+                                    let private_key_hex = hex::encode(clear);
+                                    ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+                                    ui.end_row();
+                                });
                             ui.add_space(10.0);
                             if ui.button("Remove private key from DET").clicked() {
                                 self.show_confirm_remove_private_key = true;
@@ -322,13 +326,20 @@ impl ScreenLike for KeyInfoScreen {
                                 && self.selected_wallet.is_some()
                             {
                                 if let Some(private_key) = self.decrypted_private_key {
-                                    let private_key_wif = private_key.to_wif();
-                                    ui.add(
-                                        TextEdit::multiline(
-                                            &mut private_key_wif.as_str().to_owned(),
-                                        )
-                                        .desired_width(f32::INFINITY),
-                                    );
+                                    egui::Grid::new("private_key_grid_wallet")
+                                        .num_columns(2)
+                                        .spacing([10.0, 10.0])
+                                        .show(ui, |ui| {
+                                            ui.label(RichText::new("Private Key (WIF):").strong().color(ui.visuals().text_color()));
+                                            let private_key_wif = private_key.to_wif();
+                                            ui.label(RichText::new(private_key_wif).color(ui.visuals().text_color()));
+                                            ui.end_row();
+                                            
+                                            ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
+                                            let private_key_hex = hex::encode(private_key.inner.secret_bytes());
+                                            ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+                                            ui.end_row();
+                                        });
                                 } else {
                                     let wallet =
                                         self.selected_wallet.as_ref().unwrap().read().unwrap();
@@ -337,13 +348,21 @@ impl ScreenLike for KeyInfoScreen {
                                         self.app_context.network,
                                     ) {
                                         Ok(private_key) => {
-                                            let private_key_wif = private_key.to_wif();
-                                            ui.add(
-                                                TextEdit::multiline(
-                                                    &mut private_key_wif.as_str().to_owned(),
-                                                )
-                                                .desired_width(f32::INFINITY),
-                                            );
+                                            egui::Grid::new("private_key_grid_wallet2")
+                                                .num_columns(2)
+                                                .spacing([10.0, 10.0])
+                                                .show(ui, |ui| {
+                                                    ui.label(RichText::new("Private Key (WIF):").strong().color(ui.visuals().text_color()));
+                                                    let private_key_wif = private_key.to_wif();
+                                                    ui.label(RichText::new(private_key_wif).color(ui.visuals().text_color()));
+                                                    ui.end_row();
+                                                    
+                                                    ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
+                                                    let private_key_hex = hex::encode(private_key.inner.secret_bytes());
+                                                    ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+                                                    ui.end_row();
+                                                });
+                                            
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
@@ -369,13 +388,21 @@ impl ScreenLike for KeyInfoScreen {
                                         self.app_context.network,
                                     ) {
                                         Ok(private_key) => {
-                                            let private_key_wif = private_key.to_wif();
-                                            ui.add(
-                                                TextEdit::multiline(
-                                                    &mut private_key_wif.as_str().to_owned(),
-                                                )
-                                                .desired_width(f32::INFINITY),
-                                            );
+                                            egui::Grid::new("private_key_grid_wallet2")
+                                                .num_columns(2)
+                                                .spacing([10.0, 10.0])
+                                                .show(ui, |ui| {
+                                                    ui.label(RichText::new("Private Key (WIF):").strong().color(ui.visuals().text_color()));
+                                                    let private_key_wif = private_key.to_wif();
+                                                    ui.label(RichText::new(private_key_wif).color(ui.visuals().text_color()));
+                                                    ui.end_row();
+                                                    
+                                                    ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
+                                                    let private_key_hex = hex::encode(private_key.inner.secret_bytes());
+                                                    ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+                                                    ui.end_row();
+                                                });
+                                            
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {

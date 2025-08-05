@@ -284,8 +284,8 @@ impl SettingsScreen {
             spv_last_progress_check: 0,
             spv_phase_info: None,
             spv_selected_checkpoint: match current_network {
-                Network::Dash => 1_900_000, // Default to most recent mainnet checkpoint
-                Network::Testnet => 1_600_000, // Default to most recent testnet checkpoint
+                Network::Dash => 2_300_000, // Default to most recent mainnet checkpoint
+                Network::Testnet => 1_100_000, // Default to most recent testnet checkpoint
                 _ => 0,                     // Genesis for other networks
             },
         }
@@ -393,25 +393,15 @@ impl SettingsScreen {
                             // Format specific checkpoint heights
                             match self.current_network {
                                 Network::Dash => match self.spv_selected_checkpoint {
+                                    2_300_000 => "Height 2,300,000 (2025)",
                                     1_900_000 => "Height 1,900,000 (2023)",
-                                    1_500_000 => "Height 1,500,000 (2022)",
-                                    971_300 => "Height 971,300 (2020)",
-                                    657_000 => "Height 657,000 (2019)",
-                                    523_412 => "Height 523,412 (2018)",
-                                    407_813 => "Height 407,813 (2018)",
-                                    312_668 => "Height 312,668 (2017)",
-                                    216_000 => "Height 216,000 (2017)",
-                                    107_996 => "Height 107,996 (2016)",
-                                    4_991 => "Height 4,991 (2014)",
+                                    1_700_000 => "Height 1,700,000 (2022)",
+                                    750_000 => "Height 750,000 (2017)",
                                     _ => "Custom Height",
                                 },
                                 Network::Testnet => match self.spv_selected_checkpoint {
-                                    1_600_000 => "Height 1,600,000",
-                                    1_480_000 => "Height 1,480,000",
-                                    1_350_000 => "Height 1,350,000",
-                                    1_270_000 => "Height 1,270,000",
-                                    851_000 => "Height 851,000",
-                                    797_400 => "Height 797,400",
+                                    1_100_000 => "Height 1,100,000",
+                                    800_000 => "Height 800,000",
                                     500_000 => "Height 500,000",
                                     _ => "Custom Height",
                                 },
@@ -438,25 +428,15 @@ impl SettingsScreen {
                                 // Network-specific checkpoints
                                 match self.current_network {
                                     Network::Dash => {
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 2_300_000, "Height 2,300,000 (2025)");
                                         ui.selectable_value(&mut self.spv_selected_checkpoint, 1_900_000, "Height 1,900,000 (2023)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_500_000, "Height 1,500,000 (2022)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 971_300, "Height 971,300 (2020)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 657_000, "Height 657,000 (2019)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 523_412, "Height 523,412 (2018)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 407_813, "Height 407,813 (2018)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 312_668, "Height 312,668 (2017)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 216_000, "Height 216,000 (2017)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 107_996, "Height 107,996 (2016)");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 4_991, "Height 4,991 (2014)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_700_000, "Height 1,700,000 (2022)");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 750_000, "Height 750,000 (2017)");
                                         ui.selectable_value(&mut self.spv_selected_checkpoint, 0, "Genesis Block");
                                     }
                                     Network::Testnet => {
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_600_000, "Height 1,600,000");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_480_000, "Height 1,480,000");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_350_000, "Height 1,350,000");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_270_000, "Height 1,270,000");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 851_000, "Height 851,000");
-                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 797_400, "Height 797,400");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 1_100_000, "Height 1,100,000");
+                                        ui.selectable_value(&mut self.spv_selected_checkpoint, 800_000, "Height 800,000");
                                         ui.selectable_value(&mut self.spv_selected_checkpoint, 500_000, "Height 500,000");
                                         ui.selectable_value(&mut self.spv_selected_checkpoint, 0, "Genesis Block");
                                     }
@@ -692,21 +672,22 @@ impl SettingsScreen {
                                 DashColors::DASH_BLUE;
                             ui.spinner();
                             ui.label(egui::RichText::new("Initializing SPV client..."));
-                        } else if self.spv_is_initialized
-                            && (self.spv_is_syncing
-                                || (self.spv_target_height > 0 && self.spv_sync_progress < 100.0))
-                        {
-                            // Show syncing status
-                            ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
-                                DashColors::DASH_BLUE;
-                            ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
-                                DashColors::DASH_BLUE;
-                            ui.style_mut().visuals.widgets.active.fg_stroke.color =
-                                DashColors::DASH_BLUE;
-                            ui.spinner();
-                            ui.label(egui::RichText::new("Syncing..."));
-                        } else if self.spv_sync_progress >= 100.0 {
-                            ui.colored_label(DashColors::SUCCESS, "✓ Fully Synced");
+                        } else if self.spv_is_initialized {
+                            // Check the phase to determine status
+                            if self.spv_phase_info.as_ref().map(|p| p.phase_name.as_str()) == Some("Fully Synced") {
+                                // Show fully synced status only when dash-spv reports "Fully Synced" phase
+                                ui.colored_label(DashColors::SUCCESS, "Fully Synced");
+                            } else {
+                                // Show syncing status for any other phase (headers, filters, etc.)
+                                ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
+                                    DashColors::DASH_BLUE;
+                                ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
+                                    DashColors::DASH_BLUE;
+                                ui.style_mut().visuals.widgets.active.fg_stroke.color =
+                                    DashColors::DASH_BLUE;
+                                ui.spinner();
+                                ui.label(egui::RichText::new("Syncing..."));
+                            }
                         }
                     } else {
                         // For Core mode, just show status since it can switch networks freely
@@ -1330,7 +1311,8 @@ impl ScreenLike for SettingsScreen {
                             self.spv_current_height = current_height;
                             self.spv_target_height = target_height;
                             self.spv_sync_progress = progress_percent;
-                            self.spv_is_syncing = true; // Always syncing if we have a target
+                            // Only syncing if we're not at 100% yet
+                            self.spv_is_syncing = progress_percent < 100.0 && target_height > current_height;
                             self.spv_is_initialized = true;
                             self.spv_last_error = None;
                             self.spv_phase_info = phase_info;

@@ -127,22 +127,11 @@ impl SettingsScreen {
 
                 ui.add_space(8.0);
 
-                // Add progress bar
-                // Calculate true blockchain sync progress
-                let progress = if self.spv_target_height > 0 {
-                    (self.spv_current_height as f32 / self.spv_target_height as f32)
-                } else {
-                    0.0_f32
-                };
-
-                let progress_bar = egui::ProgressBar::new(progress)
-                    .show_percentage();
-
-                ui.add(progress_bar);
-                ui.add_space(8.0);
-
-                // Display raw data
-                egui::Grid::new("spv_raw_status")
+                // Add progress bars for different sync phases
+                let phase_name = self.spv_phase_info.as_ref().map(|p| p.phase_name.as_str()).unwrap_or("");
+                
+                // Display all sync information in a single grid
+                egui::Grid::new("spv_sync_info")
                     .num_columns(2)
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
@@ -212,6 +201,70 @@ impl SettingsScreen {
                             ui.label(self.spv_target_height.to_formatted_string(&Locale::en));
                             ui.end_row();
                         }
+                        
+                        // Add separator between stats and progress bars
+                        ui.separator();
+                        ui.separator();
+                        ui.end_row();
+                        
+                        // Headers progress bar
+                        ui.label(
+                            egui::RichText::new("Headers:")
+                                .color(DashColors::text_secondary(dark_mode))
+                        );
+                        let headers_progress = if phase_name.contains("Headers") {
+                            // When syncing headers, calculate progress based on actual blockchain heights
+                            // This gives us accurate progress even when starting from a checkpoint
+                            if self.spv_target_height > 0 {
+                                (self.spv_current_height as f32 / self.spv_target_height as f32).min(1.0)
+                            } else {
+                                0.0_f32
+                            }
+                        } else if phase_name == "Fully Synced" || (phase_name.contains("Masternode") || phase_name.contains("Blocks")) {
+                            1.0_f32 // Headers complete if we're on later phases
+                        } else {
+                            0.0_f32
+                        };
+                        ui.add(egui::ProgressBar::new(headers_progress).show_percentage());
+                        ui.end_row();
+                        
+                        // Masternode Lists progress bar
+                        ui.label(
+                            egui::RichText::new("Masternode Lists:")
+                                .color(DashColors::text_secondary(dark_mode))
+                        );
+                        let mn_progress = if phase_name.contains("Masternode") {
+                            if let Some(ref phase_info) = self.spv_phase_info {
+                                (phase_info.progress_percentage / 100.0) as f32
+                            } else {
+                                0.0_f32
+                            }
+                        } else if phase_name == "Fully Synced" || phase_name.contains("Blocks") {
+                            1.0_f32 // MN lists complete if we're on later phases
+                        } else {
+                            0.0_f32
+                        };
+                        ui.add(egui::ProgressBar::new(mn_progress).show_percentage());
+                        ui.end_row();
+                        
+                        // Blocks progress bar
+                        ui.label(
+                            egui::RichText::new("Blocks:")
+                                .color(DashColors::text_secondary(dark_mode))
+                        );
+                        let blocks_progress = if phase_name.contains("Blocks") || phase_name.contains("Filter") {
+                            if let Some(ref phase_info) = self.spv_phase_info {
+                                (phase_info.progress_percentage / 100.0) as f32
+                            } else {
+                                0.0_f32
+                            }
+                        } else if phase_name == "Fully Synced" {
+                            1.0_f32 // Blocks complete if fully synced
+                        } else {
+                            0.0_f32
+                        };
+                        ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
+                        ui.end_row();
                     });
             });
     }
@@ -676,7 +729,7 @@ impl SettingsScreen {
                             // Check the phase to determine status
                             if self.spv_phase_info.as_ref().map(|p| p.phase_name.as_str()) == Some("Fully Synced") {
                                 // Show fully synced status only when dash-spv reports "Fully Synced" phase
-                                ui.colored_label(DashColors::SUCCESS, "Fully Synced");
+                                ui.colored_label(DashColors::SUCCESS, "Fully Synced - The SPV client can now be used for transacting and querying.");
                             } else {
                                 // Show syncing status for any other phase (headers, filters, etc.)
                                 ui.style_mut().visuals.widgets.inactive.fg_stroke.color =

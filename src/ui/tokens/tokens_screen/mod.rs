@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde_json;
 
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::balances::credits::{TokenAmount};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -56,13 +56,16 @@ use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -70,6 +73,8 @@ const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/inv_log_fu
 const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/log_function.png");
 const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/linear_function.png");
 const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/polynomial_function.png");
+
+const DEFAULT_DECIMALS: u8 = 8;
 
 pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     let image = ImageReader::new(std::io::Cursor::new(bytes))
@@ -1001,8 +1006,10 @@ pub struct TokensScreen {
     token_description_input: String,
     should_capitalize_input: bool,
     decimals_input: String,
-    base_supply_input: String,
-    max_supply_input: String,
+    base_supply_amount: Option<Amount>,
+    base_supply_input: Option<AmountInput>,
+    max_supply_amount: Option<Amount>,
+    max_supply_input: Option<AmountInput>,
     start_as_paused_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
@@ -1355,11 +1362,11 @@ impl TokensScreen {
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: true,
-            decimals_input: 0.to_string(),
-            base_supply_input: TokenConfigurationV0::default_most_restrictive()
-                .base_supply()
-                .to_string(),
-            max_supply_input: String::new(),
+            decimals_input: DEFAULT_DECIMALS.to_string(),
+            base_supply_amount: None,
+            base_supply_input: None,
+            max_supply_amount: None,
+            max_supply_input: None,
             start_as_paused_input: false,
             show_advanced_keeps_history: false,
             token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
@@ -2104,9 +2111,11 @@ impl TokensScreen {
         )];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
-        self.decimals_input = "8".to_string();
-        self.base_supply_input = "100000".to_string();
-        self.max_supply_input = "".to_string();
+        self.decimals_input = DEFAULT_DECIMALS.to_string(); //
+        self.base_supply_input = None;
+        self.base_supply_amount = None;
+        self.max_supply_input = None;
+        self.max_supply_amount = None;
         self.start_as_paused_input = false;
         self.should_capitalize_input = true;
         self.token_advanced_keeps_history =
@@ -2396,6 +2405,46 @@ impl TokensScreen {
             self.confirm_remove_token_popup = false;
             self.token_to_remove = None;
         }
+    }
+
+    /// Renders the base supply amount input using AmountInput component
+    fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+        let input = self
+            .base_supply_input
+            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.base_supply_amount);
+    }
+
+    /// Renders the max supply amount input using AmountInput component
+    fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+
+        let input = self.max_supply_input.get_or_insert_with(|| {
+            let initial_amount = Amount::new(
+                TokenConfigurationV0::default_most_restrictive()
+                    .max_supply()
+                    .unwrap_or(0),
+                decimals,
+            );
+
+            AmountInput::new(initial_amount)
+        });
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.max_supply_amount);
     }
 }
 
@@ -2937,9 +2986,11 @@ mod tests {
             TokenNameLanguage::English,
             true,
         )];
-        token_creator_ui.base_supply_input = "5000000".to_string();
-        token_creator_ui.max_supply_input = "10000000".to_string();
-        token_creator_ui.decimals_input = "8".to_string();
+        token_creator_ui.base_supply_input = None;
+        token_creator_ui.base_supply_amount = Some(Amount::new(5000000, 8));
+        token_creator_ui.max_supply_input = None;
+        token_creator_ui.max_supply_amount = Some(Amount::new(10000000, 8));
+        token_creator_ui.decimals_input = DEFAULT_DECIMALS.to_string();
         token_creator_ui.start_as_paused_input = true;
         token_creator_ui.token_advanced_keeps_history =
             TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);

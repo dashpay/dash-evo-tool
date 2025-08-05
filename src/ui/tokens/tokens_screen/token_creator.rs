@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, RichText, TextEdit, Ui};
+use egui::{ComboBox, Context,  RichText, TextEdit, Ui};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
@@ -245,13 +245,15 @@ impl TokensScreen {
                                 }
 
                                 // Row 2: Base Supply
+                                // We put label manually to comply with grid layout;
+                                // errors will be rendered in second column
                                 ui.label("Base Supply*:");
-                                ui.text_edit_singleline(&mut self.base_supply_input);
+                                self.render_base_supply_input(ui);
                                 ui.end_row();
 
                                 // Row 3: Max Supply
                                 ui.label("Max Supply:");
-                                ui.text_edit_singleline(&mut self.max_supply_input);
+                                 self.render_max_supply_input(ui);
                                 ui.end_row();
 
                                 // Row 4: Contract Keywords
@@ -807,19 +809,18 @@ impl TokensScreen {
             .parse::<u8>()
             .map_err(|_| "Invalid decimal places amount".to_string())?;
         let base_supply = self
-            .base_supply_input
-            .parse::<u64>()
-            .map_err(|_| "Invalid base supply amount".to_string())?;
-        let max_supply = if self.max_supply_input.is_empty() {
-            None
-        } else {
-            // If parse fails, error out
-            Some(
-                self.max_supply_input
-                    .parse::<u64>()
-                    .map_err(|_| "Invalid Max Supply".to_string())?,
-            )
-        };
+            .base_supply_amount
+            .as_ref()
+            .map(|amount| amount.value())
+            .ok_or_else(|| "Please enter a valid base supply amount".to_string())?;
+        let max_supply = self
+            .max_supply_amount
+            .as_ref()
+            .map(|amount| {
+                let value = amount.value();
+                if value > 0 { Some(value) } else { None }
+            })
+            .unwrap_or(None);
 
         let start_paused = self.start_as_paused_input;
         let allow_transfers_to_frozen_identities = self.allow_transfers_to_frozen_identities;
@@ -1017,14 +1018,20 @@ impl TokensScreen {
                 ui.label(
                     "Are you sure you want to register a new token contract with these settings?\n",
                 );
-                let max_supply_display = if self.max_supply_input.is_empty() {
-                    "None".to_string()
-                } else {
-                    self.max_supply_input.clone()
-                };
+                let base_supply_display = self
+                    .base_supply_amount
+                    .as_ref()
+                    .map(|amount| amount.to_string_opts(true, false))
+                    .unwrap_or_else(|| "0".to_string());
+                let max_supply_display = self
+                    .max_supply_amount
+                    .as_ref()
+                    .filter(|amount| amount.value() > 0)
+                    .map(|amount| amount.to_string_opts(true, false))
+                    .unwrap_or_else(|| "None".to_string());
                 ui.label(format!(
                     "Name: {}\nBase Supply: {}\nMax Supply: {}",
-                    self.token_names_input[0].0, self.base_supply_input, max_supply_display,
+                    self.token_names_input[0].0, base_supply_display, max_supply_display,
                 ));
 
                 ui.add_space(10.0);

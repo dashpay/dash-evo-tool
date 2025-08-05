@@ -120,8 +120,8 @@ impl TransferTokensScreen {
                             .as_ref()
                             .unwrap_or(&Amount::from(&self.identity_token_balance)),
                     )
-                    .label("Amount:")
-                    .max_button(true),
+                    .with_label("Amount:")
+                    .with_max_button(true),
                 );
 
                 self.amount_input
@@ -142,13 +142,7 @@ impl TransferTokensScreen {
         let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.amount);
-
-        if let Some(error) = &response.inner.error_message {
-            ui.colored_label(
-                DashColors::error_color(ui.ctx().style().visuals.dark_mode),
-                error,
-            );
-        }
+        // errors are handled inside AmountInput
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {

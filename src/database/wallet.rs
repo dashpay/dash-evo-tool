@@ -467,6 +467,7 @@ impl Database {
             if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
                 let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&identity_data);
                 identity.wallet_index = Some(wallet_index);
+                identity.network = *network;
 
                 tracing::trace!(
                     wallet_seed = ?wallet_seed_hash_array,

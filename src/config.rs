@@ -40,6 +40,8 @@ pub struct NetworkConfig {
     pub core_rpc_password: String,
     /// URL of the Insight API
     pub insight_api_url: String,
+    /// ZMQ endpoint for Core blockchain events (e.g., tcp://127.0.0.1:23708)
+    pub zmq_endpoint: Option<String>,
     /// Devnet network name if one exists
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
@@ -102,6 +104,11 @@ impl Config {
                 prefix, config.insight_api_url
             )
             .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+            if let Some(zmq_endpoint) = &config.zmq_endpoint {
+                writeln!(env_file, "{}zmq_endpoint={}", prefix, zmq_endpoint)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            }
 
             if let Some(devnet_name) = &config.devnet_name {
                 // Only write devnet name if it exists

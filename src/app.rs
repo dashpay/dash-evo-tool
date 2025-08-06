@@ -319,9 +319,16 @@ impl AppState {
         let (core_message_sender, core_message_receiver) =
             mpsc::channel().with_egui_ctx(ctx.clone());
 
+        let mainnet_zmq_endpoint = mainnet_app_context
+            .config
+            .read()
+            .unwrap()
+            .zmq_endpoint
+            .clone()
+            .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
-            "tcp://127.0.0.1:23708",
+            &mainnet_zmq_endpoint,
             core_message_sender.clone(), // Clone the sender for each listener
             Some(mainnet_app_context.sx_zmq_status.clone()),
         )
@@ -331,9 +338,13 @@ impl AppState {
             .as_ref()
             .map(|context| context.sx_zmq_status.clone());
 
+        let testnet_zmq_endpoint = testnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.config.read().unwrap().zmq_endpoint.clone())
+            .unwrap_or_else(|| "tcp://127.0.0.1:23709".to_string());
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
-            "tcp://127.0.0.1:23709",
+            &testnet_zmq_endpoint,
             core_message_sender.clone(), // Use the original sender or create a new one if needed
             testnet_tx_zmq_status_option,
         )
@@ -343,9 +354,13 @@ impl AppState {
             .as_ref()
             .map(|context| context.sx_zmq_status.clone());
 
+        let devnet_zmq_endpoint = devnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.config.read().unwrap().zmq_endpoint.clone())
+            .unwrap_or_else(|| "tcp://127.0.0.1:23710".to_string());
         let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Devnet,
-            "tcp://127.0.0.1:23710",
+            &devnet_zmq_endpoint,
             core_message_sender.clone(),
             devnet_tx_zmq_status_option,
         )
@@ -355,9 +370,13 @@ impl AppState {
             .as_ref()
             .map(|context| context.sx_zmq_status.clone());
 
+        let local_zmq_endpoint = local_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.config.read().unwrap().zmq_endpoint.clone())
+            .unwrap_or_else(|| "tcp://127.0.0.1:20302".to_string());
         let local_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Regtest,
-            "tcp://127.0.0.1:20302",
+            &local_zmq_endpoint,
             core_message_sender,
             local_tx_zmq_status_option,
         )

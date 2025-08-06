@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use egui::{Color32, InnerResponse, Ui, WidgetText};
+use crate::ui::theme::ComponentStyles;
+use egui::{InnerResponse, Ui, WidgetText};
 
 /// Response from showing a confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
@@ -161,15 +164,35 @@ impl ConfirmationDialog {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button (only if text is provided)
                         if let Some(confirm_text) = &self.confirm_text {
-                            let confirm_button = if self.danger_mode {
-                                egui::Button::new(confirm_text.clone())
-                                    .fill(Color32::from_rgb(220, 53, 69)) // Red for danger
+                            let (fill_color, text_color) = if self.danger_mode {
+                                (
+                                    ComponentStyles::danger_button_fill(),
+                                    ComponentStyles::danger_button_text(),
+                                )
                             } else {
-                                egui::Button::new(confirm_text.clone())
-                                    .fill(Color32::from_rgb(0, 128, 255)) // Blue for primary
+                                (
+                                    ComponentStyles::primary_button_fill(),
+                                    ComponentStyles::primary_button_text(),
+                                )
+                            };
+                            let confirm_label = if let WidgetText::RichText(rich_text) =
+                                confirm_text
+                            {
+                                // preserve rich text formatting
+                                rich_text.clone()
+                            } else {
+                                Arc::new(egui::RichText::new(confirm_text.text()).color(text_color))
                             };
 
-                            if ui.add(confirm_button).clicked() {
+                            let confirm_button = egui::Button::new(confirm_label)
+                                .fill(fill_color)
+                                .stroke(ComponentStyles::primary_button_stroke());
+
+                            if ui
+                                .add(confirm_button)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
                                 final_response = Some(ConfirmationStatus::Confirmed);
                             }
 
@@ -181,10 +204,25 @@ impl ConfirmationDialog {
 
                         // Cancel button (only if text is provided)
                         if let Some(cancel_text) = &self.cancel_text {
-                            let cancel_button = egui::Button::new(cancel_text.clone())
-                                .fill(Color32::from_rgb(108, 117, 125)); // Gray for secondary
+                            let cancel_label = if let WidgetText::RichText(rich_text) = cancel_text
+                            {
+                                // preserve rich text formatting
+                                rich_text.clone()
+                            } else {
+                                egui::RichText::new(cancel_text.text())
+                                    .color(ComponentStyles::secondary_button_text())
+                                    .into()
+                            };
 
-                            if ui.add(cancel_button).clicked() {
+                            let cancel_button = egui::Button::new(cancel_label)
+                                .fill(ComponentStyles::secondary_button_fill())
+                                .stroke(ComponentStyles::secondary_button_stroke());
+
+                            if ui
+                                .add(cancel_button)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
                                 final_response = Some(ConfirmationStatus::Canceled);
                             }
                         }

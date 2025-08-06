@@ -678,9 +678,9 @@ impl SetTokenPriceScreen {
         let response = confirmation_dialog.show(ui);
 
         match response.inner.dialog_response {
-            ConfirmationStatus::Confirmed => self.confirmation_ok(),
-            ConfirmationStatus::Canceled => self.confirmation_cancel(),
-            ConfirmationStatus::None => AppAction::None,
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
+            Some(ConfirmationStatus::Canceled) => self.confirmation_cancel(),
+            None => AppAction::None,
         }
     }
 

@@ -4,8 +4,6 @@ use egui::{Color32, InnerResponse, Ui, WidgetText};
 /// Response from showing a confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmationStatus {
-    /// Dialog is still open, no action taken
-    None,
     /// User clicked confirm button
     Confirmed,
     /// User clicked cancel button or closed dialog
@@ -19,7 +17,7 @@ pub struct ConfirmationDialogComponentResponse {
     pub response: egui::Response,
     pub changed: bool,
     pub error_message: Option<String>,
-    pub dialog_response: ConfirmationStatus,
+    pub dialog_response: Option<ConfirmationStatus>,
 }
 
 impl ComponentResponse for ConfirmationDialogComponentResponse {
@@ -34,15 +32,10 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
     }
 
     fn changed_value(&self) -> &Option<Self::DomainType> {
-        // Return Some(status) if dialog has a response, None if still open
-        static CONFIRMED: Option<ConfirmationStatus> = Some(ConfirmationStatus::Confirmed);
-        static CANCELED: Option<ConfirmationStatus> = Some(ConfirmationStatus::Canceled);
-        static NONE: Option<ConfirmationStatus> = None;
-
-        match self.dialog_response {
-            ConfirmationStatus::Confirmed => &CONFIRMED,
-            ConfirmationStatus::Canceled => &CANCELED,
-            ConfirmationStatus::None => &NONE,
+        if self.has_changed() {
+            &self.dialog_response
+        } else {
+            &None
         }
     }
 
@@ -60,6 +53,7 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
 pub struct ConfirmationDialog {
     title: WidgetText,
     message: WidgetText,
+    status: Option<ConfirmationStatus>,
     confirm_text: Option<WidgetText>,
     cancel_text: Option<WidgetText>,
     danger_mode: bool,
@@ -72,7 +66,7 @@ impl Component for ConfirmationDialog {
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         let inner_response = self.show_dialog(ui);
-        let changed = !matches!(inner_response.inner, ConfirmationStatus::None);
+        let changed = inner_response.inner.is_some();
         let response = inner_response.response;
 
         InnerResponse::new(
@@ -84,6 +78,15 @@ impl Component for ConfirmationDialog {
             },
             response,
         )
+    }
+
+    fn current_value(&self) -> Option<Self::DomainType> {
+        // Return the current dialog state - None if still open, Some(status) if closed
+        if self.is_open {
+            None
+        } else {
+            Some(ConfirmationStatus::Canceled) // If dialog is closed, it was canceled
+        }
     }
 }
 
@@ -97,6 +100,7 @@ impl ConfirmationDialog {
             cancel_text: Some("Cancel".into()),
             danger_mode: false,
             is_open: true,
+            status: None, // No action taken yet
         }
     }
 
@@ -127,17 +131,17 @@ impl ConfirmationDialog {
 
 impl ConfirmationDialog {
     /// Show the dialog and return the user's response
-    pub fn show_dialog(&mut self, ui: &mut Ui) -> InnerResponse<ConfirmationStatus> {
+    fn show_dialog(&mut self, ui: &mut Ui) -> InnerResponse<Option<ConfirmationStatus>> {
         let mut is_open = self.is_open;
 
         if !is_open {
             return InnerResponse::new(
-                ConfirmationStatus::Canceled,
+                None, // no change
                 ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
             );
         }
 
-        let mut final_response = ConfirmationStatus::None;
+        let mut final_response = None;
         let window_response = egui::Window::new(self.title.clone())
             .collapsible(false)
             .resizable(false)
@@ -166,7 +170,7 @@ impl ConfirmationDialog {
                             };
 
                             if ui.add(confirm_button).clicked() {
-                                final_response = ConfirmationStatus::Confirmed;
+                                final_response = Some(ConfirmationStatus::Confirmed);
                             }
 
                             // Add space only if both buttons are present
@@ -181,7 +185,7 @@ impl ConfirmationDialog {
                                 .fill(Color32::from_rgb(108, 117, 125)); // Gray for secondary
 
                             if ui.add(cancel_button).clicked() {
-                                final_response = ConfirmationStatus::Canceled;
+                                final_response = Some(ConfirmationStatus::Canceled);
                             }
                         }
                     });
@@ -191,19 +195,21 @@ impl ConfirmationDialog {
             });
 
         // Handle window being closed via X button - treat as cancel
-        if !is_open && matches!(final_response, ConfirmationStatus::None) {
-            final_response = ConfirmationStatus::Canceled;
+        if !is_open && final_response.is_none() {
+            final_response = Some(ConfirmationStatus::Canceled);
         }
 
         // Handle Escape key press - always treat as cancel
-        if matches!(final_response, ConfirmationStatus::None)
-            && ui.input(|i| i.key_pressed(egui::Key::Escape))
-        {
-            final_response = ConfirmationStatus::Canceled;
+        if final_response.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            final_response = Some(ConfirmationStatus::Canceled);
         }
 
-        // Update the dialog's open state
+        // Update the dialog's state
         self.is_open = is_open;
+        // if user actually did something, update the status
+        if final_response.is_some() {
+            self.status = final_response.clone();
+        }
 
         if let Some(window_response) = window_response {
             InnerResponse::new(final_response, window_response.response)

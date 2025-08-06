@@ -348,6 +348,7 @@ impl AppContext {
             wallet_index: Some(wallet_identity_index),
             top_ups: Default::default(),
             status: IdentityStatus::PendingCreation,
+            network: self.network,
         };
 
         if !alias_input.is_empty() {

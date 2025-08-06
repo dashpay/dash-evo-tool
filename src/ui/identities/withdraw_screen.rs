@@ -105,8 +105,8 @@ impl WithdrawalScreen {
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
-                .label("Amount:")
-                .max_button(true)
+                .with_label("Amount:")
+                .with_max_button(true)
         });
 
         // Check if input should be disabled when operation is in progress
@@ -123,9 +123,7 @@ impl WithdrawalScreen {
         let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.withdrawal_amount);
-        if let Some(error) = &response.inner.error_message {
-            ui.colored_label(egui::Color32::DARK_RED, error);
-        }
+        // errors are handled inside AmountInput
     }
 
     fn render_address_input(&mut self, ui: &mut Ui) {

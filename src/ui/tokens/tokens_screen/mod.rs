@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde_json;
 
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::balances::credits::{TokenAmount};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -56,13 +56,16 @@ use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -70,6 +73,8 @@ const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/inv_log_fu
 const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/log_function.png");
 const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/linear_function.png");
 const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/polynomial_function.png");
+
+const DEFAULT_DECIMALS: u8 = 8;
 
 pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     let image = ImageReader::new(std::io::Cursor::new(bytes))
@@ -1001,8 +1006,10 @@ pub struct TokensScreen {
     token_description_input: String,
     should_capitalize_input: bool,
     decimals_input: String,
-    base_supply_input: String,
-    max_supply_input: String,
+    base_supply_amount: Option<Amount>,
+    base_supply_input: Option<AmountInput>,
+    max_supply_amount: Option<Amount>,
+    max_supply_input: Option<AmountInput>,
     start_as_paused_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
@@ -1061,9 +1068,9 @@ pub struct TokensScreen {
     // --- FixedAmount ---
     pub fixed_amount_input: String,
 
-    // --- Random ---
-    pub random_min_input: String,
-    pub random_max_input: String,
+    // --- Random ---  -  not supported
+    // pub random_min_input: String,
+    // pub random_max_input: String,
 
     // --- StepDecreasingAmount ---
     pub step_count_input: String,
@@ -1355,11 +1362,11 @@ impl TokensScreen {
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: true,
-            decimals_input: 0.to_string(),
-            base_supply_input: TokenConfigurationV0::default_most_restrictive()
-                .base_supply()
-                .to_string(),
-            max_supply_input: String::new(),
+            decimals_input: DEFAULT_DECIMALS.to_string(),
+            base_supply_amount: None,
+            base_supply_input: None,
+            max_supply_amount: None,
+            max_supply_input: None,
             start_as_paused_input: false,
             show_advanced_keeps_history: false,
             token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
@@ -1406,8 +1413,8 @@ impl TokensScreen {
             perpetual_dist_interval_unit: IntervalTimeUnit::Day,
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
             fixed_amount_input: String::new(),
-            random_min_input: String::new(),
-            random_max_input: String::new(),
+            // random_min_input: String::new(),
+            // random_max_input: String::new(),
             step_count_input: String::new(),
             decrease_per_interval_numerator_input: String::new(),
             decrease_per_interval_denominator_input: String::new(),
@@ -2104,9 +2111,11 @@ impl TokensScreen {
         )];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
-        self.decimals_input = "8".to_string();
-        self.base_supply_input = "100000".to_string();
-        self.max_supply_input = "".to_string();
+        self.decimals_input = DEFAULT_DECIMALS.to_string(); //
+        self.base_supply_input = None;
+        self.base_supply_amount = None;
+        self.max_supply_input = None;
+        self.max_supply_amount = None;
         self.start_as_paused_input = false;
         self.should_capitalize_input = true;
         self.token_advanced_keeps_history =
@@ -2133,8 +2142,8 @@ impl TokensScreen {
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
         self.fixed_amount_input = "".to_string();
-        self.random_min_input = "".to_string();
-        self.random_max_input = "".to_string();
+        // self.random_min_input = "".to_string();
+        // self.random_max_input = "".to_string();
         self.step_count_input = "".to_string();
         self.decrease_per_interval_numerator_input = "".to_string();
         self.decrease_per_interval_denominator_input = "".to_string();
@@ -2396,6 +2405,46 @@ impl TokensScreen {
             self.confirm_remove_token_popup = false;
             self.token_to_remove = None;
         }
+    }
+
+    /// Renders the base supply amount input using AmountInput component
+    fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+        let input = self
+            .base_supply_input
+            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.base_supply_amount);
+    }
+
+    /// Renders the max supply amount input using AmountInput component
+    fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+
+        let input = self.max_supply_input.get_or_insert_with(|| {
+            let initial_amount = Amount::new(
+                TokenConfigurationV0::default_most_restrictive()
+                    .max_supply()
+                    .unwrap_or(0),
+                decimals,
+            );
+
+            AmountInput::new(initial_amount)
+        });
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.max_supply_amount);
     }
 }
 
@@ -2854,6 +2903,7 @@ impl ScreenWithWalletUnlock for TokensScreen {
 mod tests {
     use std::path::Path;
 
+    use crate::app_dir::copy_env_file_if_not_exists;
     use crate::database::Database;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -2892,6 +2942,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
+        copy_env_file_if_not_exists(); // Required by AppContext::new()
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -2920,6 +2971,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
+            network: Network::Dash,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -2935,9 +2987,11 @@ mod tests {
             TokenNameLanguage::English,
             true,
         )];
-        token_creator_ui.base_supply_input = "5000000".to_string();
-        token_creator_ui.max_supply_input = "10000000".to_string();
-        token_creator_ui.decimals_input = "8".to_string();
+        token_creator_ui.base_supply_input = None;
+        token_creator_ui.base_supply_amount = Some(Amount::new(5000000, 8));
+        token_creator_ui.max_supply_input = None;
+        token_creator_ui.max_supply_amount = Some(Amount::new(10000000, 8));
+        token_creator_ui.decimals_input = DEFAULT_DECIMALS.to_string();
         token_creator_ui.start_as_paused_input = true;
         token_creator_ui.token_advanced_keeps_history =
             TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
@@ -3005,7 +3059,7 @@ mod tests {
         // -------------------------------------------------
         // Groups
         // -------------------------------------------------
-        // We'll define 2 groups for testing: positions 2 (main) and 7
+        // We'll define 2 groups for testing: positions 0 (main) and 1
         token_creator_ui.groups_ui = vec![
             GroupConfigUI {
                 required_power_str: "2".to_string(),
@@ -3165,25 +3219,26 @@ mod tests {
         };
         assert_eq!(
             new_dest_id.to_string(Encoding::Base58),
-            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
         );
         assert!(dist_rules_v0.minting_allow_choosing_destination);
 
         // F) Check the Groups
-        //    (Positions 2 and 7, from above)
+        //    (Positions 0 and 1, from above)
         assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
-        let group2 = contract_v1.groups.get(&2).expect("Expected group pos=2");
+
+        let group0 = contract_v1.groups.get(&0).expect("Expected group pos=0");
         assert_eq!(
-            group2.required_power(),
+            group0.required_power(),
             2,
-            "Group #2 required_power mismatch"
+            "Group #0 required_power mismatch"
         );
-        let members = &group2.members();
+        let members = &group0.members();
         assert_eq!(members.len(), 2);
 
-        let group7 = contract_v1.groups.get(&7).expect("Expected group pos=7");
-        assert_eq!(group7.required_power(), 1);
-        assert_eq!(group7.members().len(), 0);
+        let group1 = contract_v1.groups.get(&1).expect("Expected group pos=1");
+        assert_eq!(group1.required_power(), 1);
+        assert_eq!(group1.members().len(), 0);
     }
 
     #[test]
@@ -3192,6 +3247,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
+        copy_env_file_if_not_exists(); // required by AppContext::new()
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3220,6 +3276,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
+            network: Network::Dash,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3238,9 +3295,10 @@ mod tests {
         // Enable perpetual distribution, select Random
         token_creator_ui.enable_perpetual_distribution = true;
         token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
-        token_creator_ui.perpetual_dist_interval_input = "60000".to_string();
-        token_creator_ui.random_min_input = "100".to_string();
-        token_creator_ui.random_max_input = "200".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
+        token_creator_ui.perpetual_dist_interval_input = "60".to_string();
+        token_creator_ui.perpetual_dist_interval_unit = IntervalTimeUnit::Second;
+        token_creator_ui.fixed_amount_input = "100".to_string();
 
         // Parse + build
         let build_args = token_creator_ui
@@ -3289,11 +3347,10 @@ mod tests {
             RewardDistributionType::TimeBasedDistribution { interval, function } => {
                 assert_eq!(*interval, 60000, "Expected 60s (in ms)");
                 match function {
-                    DistributionFunction::Random { min, max } => {
-                        assert_eq!(*min, 100);
-                        assert_eq!(*max, 200);
+                    DistributionFunction::FixedAmount { amount } => {
+                        assert_eq!(*amount, 100);
                     }
-                    _ => panic!("Expected DistributionFunction::Random"),
+                    _ => panic!("Expected DistributionFunction::FixedAmount"),
                 }
             }
             _ => panic!("Expected TimeBasedDistribution"),
@@ -3306,6 +3363,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
+        copy_env_file_if_not_exists(); // required by AppContext::new()
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3334,6 +3392,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
+            network: Network::Dash,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

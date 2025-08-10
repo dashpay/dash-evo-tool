@@ -23,6 +23,11 @@ pub struct ContractChooserState {
     pub right_click_contract_id: Option<String>,
     pub show_context_menu: bool,
     pub context_menu_position: egui::Pos2,
+    pub expanded_contracts: std::collections::HashSet<String>,
+    pub expanded_sections: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    pub expanded_doc_types: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    pub expanded_indexes: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    pub expanded_tokens: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl Default for ContractChooserState {
@@ -31,8 +36,107 @@ impl Default for ContractChooserState {
             right_click_contract_id: None,
             show_context_menu: false,
             context_menu_position: egui::Pos2::ZERO,
+            expanded_contracts: std::collections::HashSet::new(),
+            expanded_sections: std::collections::HashMap::new(),
+            expanded_doc_types: std::collections::HashMap::new(),
+            expanded_indexes: std::collections::HashMap::new(),
+            expanded_tokens: std::collections::HashMap::new(),
         }
     }
+}
+
+// Helper function to render a custom collapsing header with +/- button
+fn render_collapsing_header(
+    ui: &mut egui::Ui,
+    text: impl Into<String>,
+    is_expanded: bool,
+    is_selected: bool,
+    indent_level: usize,
+) -> bool {
+    let text = text.into();
+    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let indent = indent_level as f32 * 16.0;
+
+    let mut clicked = false;
+
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+
+        // +/- button
+        let button_text = if is_expanded { "−" } else { "+" };
+        let button_response = ui.add(
+            egui::Button::new(
+                RichText::new(button_text)
+                    .size(20.0)
+                    .color(DashColors::DASH_BLUE),
+            )
+            .fill(Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE),
+        );
+
+        if button_response.clicked() {
+            clicked = true;
+        }
+
+        // Label - make contract names (level 0) larger
+        let label_text = if indent_level == 0 {
+            // Contract names - make them the largest with heading font
+            if is_selected {
+                RichText::new(text)
+                    .size(16.0)
+                    .heading()
+                    .color(DashColors::DASH_BLUE)
+            } else {
+                RichText::new(text)
+                    .size(16.0)
+                    .heading()
+                    .color(DashColors::text_primary(dark_mode))
+            }
+        } else if indent_level == 1 {
+            // Section headers (Document Types, Tokens, Contract JSON) - medium size
+            if is_selected {
+                RichText::new(text)
+                    .size(14.0)
+                    .heading()
+                    .color(DashColors::DASH_BLUE)
+            } else {
+                RichText::new(text)
+                    .size(14.0)
+                    .heading()
+                    .color(DashColors::text_primary(dark_mode))
+            }
+        } else if indent_level == 2 {
+            // Document type names - smaller
+            if is_selected {
+                RichText::new(text)
+                    .size(13.0)
+                    .heading()
+                    .color(DashColors::DASH_BLUE)
+            } else {
+                RichText::new(text)
+                    .size(13.0)
+                    .heading()
+                    .color(DashColors::text_primary(dark_mode))
+            }
+        } else {
+            // Indexes and other sub-items - smallest
+            if is_selected {
+                RichText::new(text).size(12.0).heading().color(DashColors::DASH_BLUE)
+            } else {
+                RichText::new(text)
+                    .size(12.0)
+                    .heading()
+                    .color(DashColors::text_primary(dark_mode))
+            }
+        };
+
+        let label_response = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
+        if label_response.clicked() {
+            clicked = true;
+        }
+    });
+
+    clicked
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -105,373 +209,327 @@ pub fn add_contract_chooser_panel(
                         });
 
                         // List out each matching contract
-                        ui.vertical(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0; // Remove vertical spacing between contracts
+
                             for contract in filtered_contracts {
-                                ui.push_id(
-                                    contract.contract.id().to_string(Encoding::Base58),
-                                    |ui| {
-                                        ui.horizontal(|ui| {
-                                            let is_selected_contract =
-                                                *selected_data_contract == *contract;
+                                let contract_id = contract.contract.id().to_string(Encoding::Base58);
+                                let is_selected_contract = *selected_data_contract == *contract;
 
-                                            let name_or_id = contract.alias.clone().unwrap_or(
-                                                contract.contract.id().to_string(Encoding::Base58),
-                                            );
+                                // Format built-in contract names nicely
+                                let display_name = match contract.alias.as_deref() {
+                                    Some("dpns") => "DPNS".to_string(),
+                                    Some("keyword_search") => "Keyword Search".to_string(),
+                                    Some("token_history") => "Token History".to_string(),
+                                    Some("withdrawals") => "Withdrawals".to_string(),
+                                    Some(alias) => alias.to_string(),
+                                    None => contract_id.clone(),
+                                };
 
-                                            // Highlight the contract if selected
-                                            let contract_header_text = if is_selected_contract {
-                                                RichText::new(name_or_id)
-                                                    .color(Color32::from_rgb(21, 101, 192))
-                                            } else {
-                                                RichText::new(name_or_id)
-                                            };
+                                // Check if this contract is expanded
+                                let is_expanded = chooser_state.expanded_contracts.contains(&contract_id);
 
-                                            // Expand/collapse the contract info
-                                            let collapsing_response =
-                                                ui.collapsing(contract_header_text, |ui| {
-                                                    //
-                                                    // ===== Document Types Section =====
-                                                    //
-                                                    ui.collapsing("Document Types", |ui| {
-                                                        for (doc_name, doc_type) in
-                                                            contract.contract.document_types()
-                                                        {
-                                                            let is_selected_doc_type =
-                                                                *selected_document_type
-                                                                    == *doc_type;
+                                // Render the custom collapsing header for the contract
+                                if render_collapsing_header(ui, &display_name, is_expanded, is_selected_contract, 0) {
+                                    if is_expanded {
+                                        chooser_state.expanded_contracts.remove(&contract_id);
+                                    } else {
+                                        chooser_state.expanded_contracts.insert(contract_id.clone());
+                                    }
+                                }
 
-                                                            let doc_type_header_text =
-                                                                if is_selected_doc_type {
-                                                                    RichText::new(doc_name.clone())
-                                                                        .color(Color32::from_rgb(
-                                                                            21, 101, 192,
-                                                                        ))
-                                                                } else {
-                                                                    RichText::new(doc_name.clone())
-                                                                };
+                                // Show contract content if expanded
+                                if is_expanded {
+                                    ui.push_id(&contract_id, |ui| {
+                                        ui.vertical(|ui| {
+                                            //
+                                            // ===== Document Types Section =====
+                                            //
+                                            // Only show Document Types section if there are document types
+                                            if !contract.contract.document_types().is_empty() {
+                                                let doc_types_key = format!("{}_doc_types", contract_id);
+                                                let doc_types_expanded = chooser_state.expanded_sections
+                                                    .get(&contract_id)
+                                                    .map(|s| s.contains(&doc_types_key))
+                                                    .unwrap_or(false);
 
-                                                            let doc_resp =
-                                                ui.collapsing(doc_type_header_text, |ui| {
-                                                    // Show the indexes
-                                                    if doc_type.indexes().is_empty() {
-                                                        ui.label("No indexes defined");
+                                                if render_collapsing_header(ui, "Document Types", doc_types_expanded, false, 1) {
+                                                    let sections = chooser_state.expanded_sections
+                                                        .entry(contract_id.clone())
+                                                        .or_insert_with(std::collections::HashSet::new);
+                                                    if doc_types_expanded {
+                                                        sections.remove(&doc_types_key);
                                                     } else {
-                                                        for (index_name, index) in
-                                                            doc_type.indexes()
-                                                        {
-                                                            let is_selected_index = *selected_index
-                                                                == Some(index.clone());
-
-                                                            let index_header_text =
-                                                                if is_selected_index {
-                                                                    RichText::new(format!(
-                                                                        "Index: {}",
-                                                                        index_name
-                                                                    ))
-                                                                    .color(Color32::from_rgb(
-                                                                        21, 101, 192,
-                                                                    ))
-                                                                } else {
-                                                                    RichText::new(format!(
-                                                                        "Index: {}",
-                                                                        index_name
-                                                                    ))
-                                                                };
-
-                                                            let index_resp = ui.collapsing(
-                                                                index_header_text,
-                                                                |ui| {
-                                                                    // Show index properties if expanded
-                                                                    for prop in &index.properties {
-                                                                        ui.label(format!(
-                                                                            "{:?}",
-                                                                            prop
-                                                                        ));
-                                                                    }
-                                                                },
-                                                            );
-
-                                                            // If index was just clicked (opened)
-                                                            if index_resp.header_response.clicked()
-                                                                && index_resp
-                                                                    .body_response
-                                                                    .is_some()
-                                                            {
-                                                                *selected_index =
-                                                                    Some(index.clone());
-                                                                if let Ok(new_doc_type) = contract
-                                                                    .contract
-                                                                    .document_type_cloned_for_name(
-                                                                        doc_name,
-                                                                    )
-                                                                {
-                                                                    *selected_document_type =
-                                                                        new_doc_type;
-                                                                    *selected_data_contract =
-                                                                        contract.clone();
-
-                                                                    // Build the WHERE clause using all property names
-                                                                    let conditions: Vec<String> =
-                                                                        index
-                                                                            .property_names()
-                                                                            .iter()
-                                                                            .map(|property_name| {
-                                                                                format!(
-                                                                                    "`{}` = '___'",
-                                                                                    property_name
-                                                                                )
-                                                                            })
-                                                                            .collect();
-
-                                                                    let where_clause =
-                                                                        if conditions.is_empty() {
-                                                                            String::new()
-                                                                        } else {
-                                                                            format!(
-                                                                                " WHERE {}",
-                                                                                conditions
-                                                                                    .join(" AND ")
-                                                                            )
-                                                                        };
-
-                                                                    *document_query = format!(
-                                                                        "SELECT * FROM {}{}",
-                                                                        selected_document_type
-                                                                            .name(),
-                                                                        where_clause
-                                                                    );
-                                                                }
-                                                            }
-                                                            // If index was just collapsed
-                                                            else if index_resp
-                                                                .header_response
-                                                                .clicked()
-                                                                && index_resp
-                                                                    .body_response
-                                                                    .is_none()
-                                                            {
-                                                                *selected_index = None;
-                                                                *document_query = format!(
-                                                                    "SELECT * FROM {}",
-                                                                    selected_document_type.name()
-                                                                );
-                                                            }
-                                                        }
+                                                        sections.insert(doc_types_key.clone());
                                                     }
-                                                });
+                                                }
 
-                                                            // Document Type clicked
-                                                            if doc_resp.header_response.clicked()
-                                                                && doc_resp.body_response.is_some()
-                                                            {
-                                                                // Expand doc type
-                                                                if let Ok(new_doc_type) = contract
-                                                                    .contract
-                                                                    .document_type_cloned_for_name(
-                                                                        doc_name,
-                                                                    )
-                                                                {
-                                                                    *pending_document_type =
-                                                                        new_doc_type.clone();
-                                                                    *selected_document_type =
-                                                                        new_doc_type.clone();
-                                                                    *selected_data_contract =
-                                                                        contract.clone();
+                                                if doc_types_expanded {
+                                                ui.vertical(|ui| {
+                                                    for (doc_name, doc_type) in contract.contract.document_types() {
+                                                        let is_selected_doc_type = *selected_document_type == *doc_type;
+                                                        let doc_type_key = format!("{}_{}", contract_id, doc_name);
+
+                                                        let doc_expanded = chooser_state.expanded_doc_types
+                                                            .get(&contract_id)
+                                                            .map(|s| s.contains(&doc_type_key))
+                                                            .unwrap_or(false);
+
+                                                        if render_collapsing_header(ui, doc_name, doc_expanded, is_selected_doc_type, 2) {
+                                                            let doc_types = chooser_state.expanded_doc_types
+                                                                .entry(contract_id.clone())
+                                                                .or_insert_with(std::collections::HashSet::new);
+                                                            if doc_expanded {
+                                                                doc_types.remove(&doc_type_key);
+                                                                // Document Type collapsed
+                                                                *selected_index = None;
+                                                                *document_query = format!("SELECT * FROM {}", selected_document_type.name());
+                                                            } else {
+                                                                doc_types.insert(doc_type_key.clone());
+                                                                // Document Type expanded
+                                                                if let Ok(new_doc_type) = contract.contract.document_type_cloned_for_name(doc_name) {
+                                                                    *pending_document_type = new_doc_type.clone();
+                                                                    *selected_document_type = new_doc_type.clone();
+                                                                    *selected_data_contract = contract.clone();
                                                                     *selected_index = None;
-                                                                    *document_query = format!(
-                                                                        "SELECT * FROM {}",
-                                                                        selected_document_type
-                                                                            .name()
-                                                                    );
+                                                                    *document_query = format!("SELECT * FROM {}", selected_document_type.name());
 
                                                                     // Reinitialize field selection
-                                                                    pending_fields_selection
-                                                                        .clear();
+                                                                    pending_fields_selection.clear();
 
                                                                     // Mark doc-defined fields
-                                                                    for (field_name, _schema) in
-                                                                        new_doc_type
-                                                                            .properties()
-                                                                            .iter()
-                                                                    {
-                                                                        pending_fields_selection
-                                                                            .insert(
-                                                                                field_name.clone(),
-                                                                                true,
-                                                                            );
+                                                                    for (field_name, _schema) in new_doc_type.properties().iter() {
+                                                                        pending_fields_selection.insert(field_name.clone(), true);
                                                                     }
                                                                     // Show "internal" fields as unchecked by default,
                                                                     // except for $ownerId and $id, which are checked
-                                                                    for dash_field in
-                                                                        DOCUMENT_PRIVATE_FIELDS
-                                                                    {
-                                                                        let checked = *dash_field
-                                                                            == "$ownerId"
-                                                                            || *dash_field == "$id";
-                                                                        pending_fields_selection
-                                                                            .insert(
-                                                                                dash_field
-                                                                                    .to_string(),
-                                                                                checked,
-                                                                            );
+                                                                    for dash_field in DOCUMENT_PRIVATE_FIELDS {
+                                                                        let checked = *dash_field == "$ownerId" || *dash_field == "$id";
+                                                                        pending_fields_selection.insert(dash_field.to_string(), checked);
                                                                     }
                                                                 }
                                                             }
-                                                            // Document Type collapsed
-                                                            else if doc_resp
-                                                                .header_response
-                                                                .clicked()
-                                                                && doc_resp.body_response.is_none()
-                                                            {
-                                                                *selected_index = None;
-                                                                *document_query = format!(
-                                                                    "SELECT * FROM {}",
-                                                                    selected_document_type.name()
-                                                                );
-                                                            }
                                                         }
-                                                    });
 
-                                                    //
-                                                    // ===== Tokens Section =====
-                                                    //
-                                                    ui.collapsing("Tokens", |ui| {
-                                                        let tokens_map = contract.contract.tokens();
-                                                        if tokens_map.is_empty() {
-                                                            ui.label(
-                                                            "No tokens defined for this contract.",
-                                                        );
-                                                        } else {
-                                                            for (token_name, token) in tokens_map {
-                                                                // Each token is its own collapsible
-                                                                ui.collapsing(
-                                                                    token_name.to_string(),
-                                                                    |ui| {
-                                                                        // Now you can display base supply, max supply, etc.
-                                                                        ui.label(format!(
-                                                                            "Base Supply: {}",
-                                                                            token.base_supply()
-                                                                        ));
-                                                                        if let Some(max_supply) =
-                                                                            token.max_supply()
-                                                                        {
-                                                                            ui.label(format!(
-                                                                                "Max Supply: {}",
-                                                                                max_supply
-                                                                            ));
-                                                                        } else {
-                                                                            ui.label(
-                                                                                "Max Supply: None",
-                                                                            );
+                                                        if doc_expanded {
+                                                            ui.vertical(|ui| {
+                                                                // Show the indexes
+                                                                if doc_type.indexes().is_empty() {
+                                                                    ui.add_space(4.0);
+                                                                    ui.label("No indexes defined");
+                                                                } else {
+                                                                    for (index_name, index) in doc_type.indexes() {
+                                                                        let is_selected_index = *selected_index == Some(index.clone());
+                                                                        let index_key = format!("{}_{}_{}", contract_id, doc_name, index_name);
+
+                                                                        let index_expanded = chooser_state.expanded_indexes
+                                                                            .get(&contract_id)
+                                                                            .map(|s| s.contains(&index_key))
+                                                                            .unwrap_or(false);
+
+                                                                        let index_label = format!("Index: {}", index_name);
+                                                                        if render_collapsing_header(ui, &index_label, index_expanded, is_selected_index, 3) {
+                                                                            let indexes = chooser_state.expanded_indexes
+                                                                                .entry(contract_id.clone())
+                                                                                .or_insert_with(std::collections::HashSet::new);
+                                                                            if index_expanded {
+                                                                                indexes.remove(&index_key);
+                                                                                // Index collapsed
+                                                                                *selected_index = None;
+                                                                                *document_query = format!("SELECT * FROM {}", selected_document_type.name());
+                                                                            } else {
+                                                                                indexes.insert(index_key.clone());
+                                                                                // Index expanded
+                                                                                *selected_index = Some(index.clone());
+                                                                                if let Ok(new_doc_type) = contract.contract.document_type_cloned_for_name(doc_name) {
+                                                                                    *selected_document_type = new_doc_type;
+                                                                                    *selected_data_contract = contract.clone();
+
+                                                                                    // Build the WHERE clause using all property names
+                                                                                    let conditions: Vec<String> = index
+                                                                                        .property_names()
+                                                                                        .iter()
+                                                                                        .map(|property_name| {
+                                                                                            format!("`{}` = '___'", property_name)
+                                                                                        })
+                                                                                        .collect();
+
+                                                                                    let where_clause = if conditions.is_empty() {
+                                                                                        String::new()
+                                                                                    } else {
+                                                                                        format!(" WHERE {}", conditions.join(" AND "))
+                                                                                    };
+
+                                                                                    *document_query = format!(
+                                                                                        "SELECT * FROM {}{}",
+                                                                                        selected_document_type.name(),
+                                                                                        where_clause
+                                                                                    );
+                                                                                }
+                                                                            }
                                                                         }
 
-                                                                        // Add more details here
-                                                                    },
-                                                                );
+                                                                        if index_expanded {
+                                                                            ui.vertical(|ui| {
+                                                                                ui.add_space(4.0);
+                                                                                for prop in &index.properties {
+                                                                                    ui.horizontal(|ui| {
+                                                                                        ui.add_space(64.0);
+                                                                                        ui.label(format!("{:?}", prop));
+                                                                                    });
+                                                                                }
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                });
+                                                }
+                                            }
+
+                                            //
+                                            // ===== Tokens Section =====
+                                            //
+                                            // Only show Tokens section if there are tokens
+                                            let tokens_map = contract.contract.tokens();
+                                            if !tokens_map.is_empty() {
+                                                let tokens_key = format!("{}_tokens", contract_id);
+                                                let tokens_expanded = chooser_state.expanded_sections
+                                                    .get(&contract_id)
+                                                    .map(|s| s.contains(&tokens_key))
+                                                    .unwrap_or(false);
+
+                                                if render_collapsing_header(ui, "Tokens", tokens_expanded, false, 1) {
+                                                    let sections = chooser_state.expanded_sections
+                                                        .entry(contract_id.clone())
+                                                        .or_insert_with(std::collections::HashSet::new);
+                                                    if tokens_expanded {
+                                                        sections.remove(&tokens_key);
+                                                    } else {
+                                                        sections.insert(tokens_key.clone());
+                                                    }
+                                                }
+
+                                                if tokens_expanded {
+                                                    ui.vertical(|ui| {
+                                                        for (token_name, token) in tokens_map {
+                                                            let token_key = format!("{}_token_{}", contract_id, token_name);
+                                                            let token_expanded = chooser_state.expanded_tokens
+                                                                .get(&contract_id)
+                                                                .map(|s| s.contains(&token_key))
+                                                                .unwrap_or(false);
+
+                                                            if render_collapsing_header(ui, token_name.to_string(), token_expanded, false, 2) {
+                                                                let tokens = chooser_state.expanded_tokens
+                                                                    .entry(contract_id.clone())
+                                                                    .or_insert_with(std::collections::HashSet::new);
+                                                                if token_expanded {
+                                                                    tokens.remove(&token_key);
+                                                                } else {
+                                                                    tokens.insert(token_key.clone());
+                                                                }
+                                                            }
+
+                                                            if token_expanded {
+                                                                ui.vertical(|ui| {
+                                                                    ui.add_space(4.0);
+                                                                    ui.horizontal(|ui| {
+                                                                        ui.add_space(32.0);
+                                                                        ui.label(format!("Base Supply: {}", token.base_supply()));
+                                                                    });
+                                                                    ui.horizontal(|ui| {
+                                                                        ui.add_space(32.0);
+                                                                        if let Some(max_supply) = token.max_supply() {
+                                                                            ui.label(format!("Max Supply: {}", max_supply));
+                                                                        } else {
+                                                                            ui.label("Max Supply: None");
+                                                                        }
+                                                                    });
+                                                                });
                                                             }
                                                         }
                                                     });
+                                                }
+                                            }
 
-                                                    //
-                                                    // ===== Entire Contract JSON =====
-                                                    //
-                                                    ui.collapsing("Contract JSON", |ui| {
-                                                        match contract
-                                                            .contract
-                                                            .to_json(app_context.platform_version())
-                                                        {
-                                                            Ok(json_value) => {
-                                                                let pretty_str =
-                                                                    serde_json::to_string_pretty(
-                                                                        &json_value,
-                                                                    )
-                                                                    .unwrap_or_else(|_| {
-                                                                        "Error formatting JSON"
-                                                                            .to_string()
-                                                                    });
+                                            //
+                                            // ===== Entire Contract JSON =====
+                                            //
+                                            let json_key = format!("{}_json", contract_id);
+                                            let json_expanded = chooser_state.expanded_sections
+                                                .get(&contract_id)
+                                                .map(|s| s.contains(&json_key))
+                                                .unwrap_or(false);
 
-                                                                ui.add_space(2.0);
+                                            if render_collapsing_header(ui, "Contract JSON", json_expanded, false, 1) {
+                                                let sections = chooser_state.expanded_sections
+                                                    .entry(contract_id.clone())
+                                                    .or_insert_with(std::collections::HashSet::new);
+                                                if json_expanded {
+                                                    sections.remove(&json_key);
+                                                } else {
+                                                    sections.insert(json_key.clone());
+                                                }
+                                            }
 
-                                                                // A resizable region that the user can drag to expand/shrink
-                                                                egui::Resize::default()
-                                                                .id_salt(
-                                                                    "json_resize_area_for_contract",
-                                                                )
-                                                                .default_size([400.0, 400.0]) // initial w,h
+                                            if json_expanded {
+                                                ui.vertical(|ui| {
+                                                    match contract.contract.to_json(app_context.platform_version()) {
+                                                        Ok(json_value) => {
+                                                            let pretty_str = serde_json::to_string_pretty(&json_value)
+                                                                .unwrap_or_else(|_| "Error formatting JSON".to_string());
+
+                                                            ui.add_space(2.0);
+
+                                                            // A resizable region that the user can drag to expand/shrink
+                                                            egui::Resize::default()
+                                                                .id_salt(format!("json_resize_{}", contract_id))
+                                                                .default_size([400.0, 400.0])
                                                                 .show(ui, |ui| {
                                                                     egui::ScrollArea::vertical()
                                                                         .auto_shrink([false; 2])
                                                                         .show(ui, |ui| {
-                                                                            ui.monospace(
-                                                                                pretty_str,
-                                                                            );
+                                                                            ui.monospace(pretty_str);
                                                                         });
                                                                 });
 
-                                                                ui.add_space(3.0);
-                                                            }
-                                                            Err(e) => {
-                                                                ui.label(format!(
-                                                    "Error converting contract to JSON: {e}"
-                                                ));
-                                                            }
+                                                            ui.add_space(3.0);
                                                         }
-                                                    });
-                                                });
-
-                                            // Check for right-click on the contract header
-                                            if collapsing_response
-                                                .header_response
-                                                .secondary_clicked()
-                                            {
-                                                let contract_id = contract
-                                                    .contract
-                                                    .id()
-                                                    .to_string(Encoding::Base58);
-                                                chooser_state.right_click_contract_id =
-                                                    Some(contract_id);
-                                                chooser_state.show_context_menu = true;
-                                                chooser_state.context_menu_position = ui
-                                                    .ctx()
-                                                    .pointer_interact_pos()
-                                                    .unwrap_or(egui::Pos2::ZERO);
-                                            }
-
-                                            // Right‐aligned Remove button
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    ui.add_space(2.0); // Push down a few pixels
-                                                    if contract.alias != Some("dpns".to_string())
-                                                        && contract.alias
-                                                            != Some("token_history".to_string())
-                                                        && contract.alias
-                                                            != Some("withdrawals".to_string())
-                                                        && contract.alias
-                                                            != Some("keyword_search".to_string())
-                                                        && ui
-                                                            .add(
-                                                                egui::Button::new("X")
-                                                                    .min_size(egui::Vec2::new(
-                                                                        20.0, 20.0,
-                                                                    ))
-                                                                    .small(),
-                                                            )
-                                                            .clicked()
-                                                    {
-                                                        action |= AppAction::BackendTask(
-                                                            BackendTask::ContractTask(Box::new(
-                                                                ContractTask::RemoveContract(
-                                                                    contract.contract.id(),
-                                                                ),
-                                                            )),
-                                                        );
+                                                        Err(e) => {
+                                                            ui.label(format!("Error converting contract to JSON: {e}"));
+                                                        }
                                                     }
-                                                },
-                                            );
+                                                });
+                                            }
                                         });
-                                    },
-                                );
+
+                                        // Check for right-click on the contract header
+                                        // TODO: Add right-click support to custom header if needed
+
+                                        // Right‐aligned Remove button
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(8.0);
+                                            if contract.alias != Some("dpns".to_string())
+                                                && contract.alias != Some("token_history".to_string())
+                                                && contract.alias != Some("withdrawals".to_string())
+                                                && contract.alias != Some("keyword_search".to_string())
+                                                && ui.add(
+                                                    egui::Button::new("Remove")
+                                                        .min_size(egui::Vec2::new(60.0, 20.0))
+                                                        .small()
+                                                ).clicked()
+                                            {
+                                                action |= AppAction::BackendTask(
+                                                    BackendTask::ContractTask(Box::new(
+                                                        ContractTask::RemoveContract(contract.contract.id()),
+                                                    )),
+                                                );
+                                            }
+                                        });
+                                    });
+                                }
                             }
                         });
                     });

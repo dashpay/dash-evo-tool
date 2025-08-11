@@ -121,7 +121,10 @@ fn render_collapsing_header(
         } else {
             // Indexes and other sub-items - smallest
             if is_selected {
-                RichText::new(text).size(12.0).heading().color(DashColors::DASH_BLUE)
+                RichText::new(text)
+                    .size(12.0)
+                    .heading()
+                    .color(DashColors::DASH_BLUE)
             } else {
                 RichText::new(text)
                     .size(12.0)

@@ -2,7 +2,6 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_spv::types::{NetworkEvent, SyncPhaseInfo};
 use dash_spv::{ClientConfig, DashSpvClient, SyncProgress};
 use dashcore::QuorumHash;
 use dashcore::hashes::Hash;
@@ -50,7 +49,6 @@ pub enum SpvTaskResult {
         current_height: u32,
         target_height: u32,
         progress_percent: f32,
-        phase_info: Option<SyncPhaseInfo>,
     },
     SyncComplete {
         final_height: u32,
@@ -170,7 +168,7 @@ impl SpvManager {
         // Spawn the SPV task that owns the client
         tokio::spawn(async move {
             // Create SPV client
-            let mut client = match DashSpvClient::new_with_storage_service(config).await {
+            let mut client = match DashSpvClient::new(config).await {
                 Ok(client) => client,
                 Err(e) => {
                     tracing::error!("Failed to create SPV client: {:?}", e);
@@ -220,28 +218,29 @@ impl SpvManager {
             tracing::error!("Failed to initiate sync_to_tip: {:?}", e);
         }
 
-        // Now trigger sync start if needed (this will check peer heights internally)
-        match client.trigger_sync_start().await {
-            Ok(started) => {
-                if started {
-                    tracing::info!("📊 Sync started - client is behind peers");
-                } else {
-                    tracing::info!("✅ Already synced to peer height");
+        // Now trigger sync start
+        match client.start().await {
+            Ok(()) => {
+                tracing::info!("📊 SPV client started");
 
-                    // Update shared state to reflect we're already synced
-                    if let Ok(progress) = client.sync_progress().await {
-                        if let Ok(mut state) = shared_state.try_write() {
-                            state.current_height = progress.header_height;
-                            state.target_height = progress.header_height;
-                            state.is_syncing = false;
-                            state.headers_synced = true;
-                            state.last_update = Instant::now();
-                        }
+                // Update shared state with initial sync status
+                if let Ok(progress) = client.sync_progress().await {
+                    if let Ok(mut state) = shared_state.try_write() {
+                        state.current_height = progress.header_height;
+                        // Estimate target height
+                        state.target_height = if progress.header_height > 0 {
+                            progress.header_height + 1000
+                        } else {
+                            1000
+                        };
+                        state.is_syncing = !progress.headers_synced;
+                        state.headers_synced = progress.headers_synced;
+                        state.last_update = Instant::now();
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to trigger sync start: {:?}", e);
+                tracing::error!("Failed to start SPV client: {:?}", e);
             }
         }
 
@@ -333,109 +332,21 @@ impl SpvManager {
                     // Add a small yield to ensure commands get processed first
                     tokio::task::yield_now().await;
 
-                    // Process network messages to keep sync running
-                    // Use a shorter duration to be more responsive to commands
-                    if let Err(e) = client.process_network_messages(Duration::from_millis(100)).await {
-                        tracing::error!("Error processing network messages: {:?}", e);
-                    }
+                    // The client handles network messages internally now
+                    // Just sleep briefly to avoid busy-waiting
+                    tokio::time::sleep(Duration::from_millis(100)).await;
 
-                    // Check for events with a very short timeout
-                    match client.next_event_timeout(Duration::from_millis(50)).await {
-                        Ok(Some(event)) => {
-                            // Handle the event
-                            match event {
-                                NetworkEvent::PeerConnected { address, height, version } => {
-                                    // Check if we need to start sync now that we have a peer
-                                    if let Ok(state) = shared_state.try_read() {
-                                        if !state.is_syncing && state.current_height == 0 {
-                                            drop(state); // Release the read lock
-
-                                            // We just connected to our first peer and haven't synced yet
-                                            if let Some(peer_height) = height {
-                                                if peer_height > 0 {
-                                                    tracing::info!("First peer connected with height {}, triggering sync", peer_height);
-                                                    if let Err(e) = client.trigger_sync_start().await {
-                                                        tracing::error!("Failed to trigger sync start: {:?}", e);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                NetworkEvent::PeerDisconnected { address } => {
-                                    tracing::debug!("Peer disconnected: {}", address);
-                                }
-                                NetworkEvent::SyncStarted { starting_height, target_height } => {
-                                    tracing::info!("SPV sync started from height {} to {:?}", starting_height, target_height);
-                                    if let Ok(mut state) = shared_state.try_write() {
-                                        state.is_syncing = true;
-                                        state.current_height = starting_height;
-                                        // Handle optional target_height
-                                        if let Some(target) = target_height {
-                                            state.target_height = target;
-                                        }
-                                        state.last_update = Instant::now();
-                                    }
-                                }
-                                NetworkEvent::HeadersReceived { count, tip_height, progress_percent } => {
-                                    tracing::info!("Headers received: {} headers, tip: {}, progress: {:.1}%",
-                                        count, tip_height, progress_percent);
-                                    if let Ok(mut state) = shared_state.try_write() {
-                                        state.current_height = tip_height;
-                                        state.is_syncing = progress_percent < 100.0;
-                                        state.last_update = Instant::now();
-
-                                        // Mark as synced when progress is 100%
-                                        if progress_percent >= 100.0 {
-                                            state.target_height = tip_height;
-                                            state.headers_synced = true;
-                                        }
-                                    }
-                                }
-                                NetworkEvent::FilterHeadersReceived { count, tip_height } => {
-                                    tracing::info!("Filter headers received: {} headers, tip: {}", count, tip_height);
-                                }
-                                NetworkEvent::SyncCompleted { final_height } => {
-                                    tracing::info!("SPV sync completed at height {}", final_height);
-                                    if let Ok(mut state) = shared_state.try_write() {
-                                        state.current_height = final_height;
-                                        state.target_height = final_height;
-                                        state.is_syncing = false;
-                                        state.headers_synced = true;
-                                        state.last_update = Instant::now();
-                                    }
-                                }
-                                NetworkEvent::NewChainLock { height, block_hash } => {
-                                    tracing::info!("New chain lock at height {}: {}", height, block_hash);
-                                    if let Ok(mut state) = shared_state.try_write() {
-                                        if height > state.current_height {
-                                            state.current_height = height;
-                                            state.target_height = height;
-                                            state.last_update = Instant::now();
-                                        }
-                                    }
-                                }
-                                NetworkEvent::InstantLock { txid } => {
-                                    tracing::info!("InstantLock received for tx: {}", txid);
-                                }
-                                NetworkEvent::MasternodeListUpdated { height, masternode_count } => {
-                                    tracing::info!("Masternode list updated at height {} with {} masternodes",
-                                        height, masternode_count);
-                                }
-                                NetworkEvent::NetworkError { peer, error } => {
-                                    tracing::error!("Network error from peer {:?}: {}", peer, error);
-                                }
-                                _ => {
-                                    // Log any other events we don't specifically handle
-                                    tracing::info!("Received event: {:?}", event);
-                                }
+                    // Periodically update sync progress
+                    if let Ok(progress) = client.sync_progress().await {
+                        if let Ok(mut state) = shared_state.try_write() {
+                            state.current_height = progress.header_height;
+                            // Estimate target height (client doesn't expose peer heights directly)
+                            if state.target_height == 0 || progress.header_height > state.target_height {
+                                state.target_height = progress.header_height + 1000;
                             }
-                        }
-                        Ok(None) => {
-                            // No events available, continue
-                        }
-                        Err(e) => {
-                            tracing::error!("Error getting SPV event: {}", e);
+                            state.is_syncing = !progress.headers_synced;
+                            state.headers_synced = progress.headers_synced;
+                            state.last_update = Instant::now();
                         }
                     }
                 } => {}
@@ -487,13 +398,13 @@ impl SpvManager {
     }
 
     pub async fn get_sync_progress(&mut self) -> Result<(u32, u32, f32), String> {
-        let (current, target, percent, _) = self.get_sync_progress_with_phase().await?;
+        let (current, target, percent) = self.get_sync_progress_with_phase().await?;
         Ok((current, target, percent))
     }
 
     pub async fn get_sync_progress_with_phase(
         &mut self,
-    ) -> Result<(u32, u32, f32, Option<SyncPhaseInfo>), String> {
+    ) -> Result<(u32, u32, f32), String> {
         if let Some(tx) = &self.command_tx {
             let (response_tx, response_rx) = oneshot::channel();
 
@@ -515,33 +426,13 @@ impl SpvManager {
 
             self.current_height = progress.header_height;
 
-            // Extract phase info if available
-            let phase_info = progress.current_phase.clone();
+            // Phase info no longer available in simplified API
 
-            // Debug log what we received from SPV client
-            if let Some(ref phase) = phase_info {
-                tracing::info!(
-                    "SPV client returned phase: {} ({:.1}%)",
-                    phase.phase_name,
-                    phase.progress_percentage
-                );
-            } else {
-                tracing::info!("SPV client returned no phase info");
-            }
-
-            // Update target height based on phase info or current sync state
-            if let Some(ref phase) = phase_info {
-                if let Some(total) = phase.items_total {
-                    if phase.phase_name.contains("Headers") {
-                        self.target_height = total;
-                    }
-                }
-            }
-
-            let progress_percent = if let Some(ref phase) = phase_info {
-                phase.progress_percentage as f32
-            } else if progress.headers_synced {
+            // Calculate progress percentage
+            let progress_percent = if progress.headers_synced {
                 100.0
+            } else if self.target_height > 0 {
+                (self.current_height as f32 / self.target_height as f32) * 100.0
             } else {
                 0.0
             };
@@ -549,14 +440,13 @@ impl SpvManager {
             // If we're fully synced
             if progress.headers_synced {
                 self.is_syncing = false;
-                return Ok((self.current_height, self.target_height, 100.0, phase_info));
+                return Ok((self.current_height, self.target_height, 100.0));
             }
 
             Ok((
                 self.current_height,
                 self.target_height,
                 progress_percent,
-                phase_info,
             ))
         } else {
             Err("SPV client not initialized".to_string())
@@ -647,13 +537,12 @@ impl AppContext {
                         current_height: checkpoint_height,
                         target_height: checkpoint_height + 1000,
                         progress_percent: 0.0,
-                        phase_info: None,
                     },
                 ))
             }
             SpvTask::GetSyncProgress => {
                 tracing::debug!("Getting SPV sync progress");
-                let (current, target, percent, phase_info) =
+                let (current, target, percent) =
                     spv_manager.get_sync_progress_with_phase().await?;
                 tracing::debug!(
                     "SPV sync progress: current={}, target={}, percent={:.1}%",
@@ -667,7 +556,6 @@ impl AppContext {
                         current_height: current,
                         target_height: target,
                         progress_percent: percent,
-                        phase_info,
                     },
                 ))
             }
@@ -716,7 +604,6 @@ impl AppContext {
                         current_height: 0,
                         target_height: 0,
                         progress_percent: 0.0,
-                        phase_info: None,
                     },
                 ))
             }

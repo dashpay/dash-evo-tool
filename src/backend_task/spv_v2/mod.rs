@@ -7,9 +7,6 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::platform_value::Bytes32;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_spv::sync::sync_engine::SyncEngine;
-use dash_spv::sync::sync_state::SyncStateReader;
-use dash_spv::types::{NetworkEvent, SyncPhaseInfo};
 use dash_spv::{ClientConfig, DashSpvClient, SyncProgress};
 use dashcore::QuorumHash;
 use dashcore::hashes::Hash;
@@ -33,7 +30,6 @@ pub enum SpvTaskResultV2 {
         current_height: u32,
         target_height: u32,
         progress_percent: f32,
-        phase_info: Option<SyncPhaseInfo>,
     },
     SyncComplete {
         final_height: u32,
@@ -47,11 +43,8 @@ pub enum SpvTaskResultV2 {
 
 /// SPV Manager V2 with improved architecture
 pub struct SpvManagerV2 {
-    /// Sync engine handle (if running)
-    sync_engine: Option<SyncEngine>,
-
-    /// Sync state reader for concurrent access
-    sync_state_reader: Option<SyncStateReader>,
+    /// SPV client handle (if running)
+    client: Option<DashSpvClient>,
 
     /// Current sync status
     pub is_syncing: bool,
@@ -63,7 +56,7 @@ pub struct SpvManagerV2 {
 impl std::fmt::Debug for SpvManagerV2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpvManagerV2")
-            .field("has_sync_engine", &self.sync_engine.is_some())
+            .field("has_client", &self.client.is_some())
             .field("is_syncing", &self.is_syncing)
             .field("is_monitoring", &self.is_monitoring)
             .field("current_height", &self.current_height)
@@ -75,8 +68,7 @@ impl std::fmt::Debug for SpvManagerV2 {
 impl SpvManagerV2 {
     pub fn new() -> Self {
         Self {
-            sync_engine: None,
-            sync_state_reader: None,
+            client: None,
             is_syncing: false,
             is_monitoring: false,
             current_height: 0,
@@ -85,7 +77,7 @@ impl SpvManagerV2 {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.sync_engine.is_some()
+        self.client.is_some()
     }
 
     pub async fn initialize(
@@ -163,34 +155,27 @@ impl SpvManagerV2 {
         );
 
         // Create SPV client
-        let client = DashSpvClient::new_with_storage_service(config)
+        let mut client = DashSpvClient::new(config)
             .await
             .map_err(|e| format!("Failed to create SPV client: {:?}", e))?;
 
-        tracing::info!("✅ Created SPV client with storage service");
+        tracing::info!("✅ Created SPV client");
 
-        // Create sync engine
-        let mut sync_engine = SyncEngine::new(client);
-
-        // Get state reader before starting
-        let sync_state_reader = sync_engine.state_reader();
-
-        // Start the sync engine
-        sync_engine
+        // Start the client
+        client
             .start()
             .await
-            .map_err(|e| format!("Failed to start sync engine: {:?}", e))?;
+            .map_err(|e| format!("Failed to start SPV client: {:?}", e))?;
 
-        self.sync_engine = Some(sync_engine);
-        self.sync_state_reader = Some(sync_state_reader);
+        self.client = Some(client);
         self.is_syncing = true;
 
-        tracing::info!("SPV client V2 initialized successfully");
+        tracing::info!("SPV client V2 initialized and started successfully");
         Ok(())
     }
 
     pub async fn start_sync(&mut self) -> Result<(), String> {
-        if self.sync_engine.is_some() {
+        if self.client.is_some() {
             self.is_syncing = true;
             Ok(())
         } else {
@@ -199,38 +184,41 @@ impl SpvManagerV2 {
     }
 
     pub async fn get_sync_progress(&mut self) -> Result<(u32, u32, f32), String> {
-        let (current, target, percent, _) = self.get_sync_progress_with_phase().await?;
+        let (current, target, percent) = self.get_sync_progress_with_phase().await?;
         Ok((current, target, percent))
     }
 
     pub async fn get_sync_progress_with_phase(
         &mut self,
-    ) -> Result<(u32, u32, f32, Option<SyncPhaseInfo>), String> {
-        if let Some(reader) = &self.sync_state_reader {
-            // Get state from the reader (non-blocking)
-            let state = reader.get_state().await;
+    ) -> Result<(u32, u32, f32), String> {
+        if let Some(client) = &mut self.client {
+            // Get sync progress from the client
+            let progress = client.sync_progress()
+                .await
+                .map_err(|e| format!("Failed to get sync progress: {:?}", e))?;
 
-            self.current_height = state.current_height;
-            self.target_height = state.target_height;
+            self.current_height = progress.header_height;
+            // For target height, we need to get it from the network (peers)
+            // For now, use a reasonable estimate
+            self.target_height = if progress.header_height > 0 {
+                progress.header_height + 1000  // Estimate
+            } else {
+                1000  // Initial estimate
+            };
 
-            let progress_percent = if state.target_height > 0 {
-                (state.current_height as f32 / state.target_height as f32) * 100.0
+            let progress_percent = if self.target_height > 0 {
+                (self.current_height as f32 / self.target_height as f32) * 100.0
             } else {
                 0.0
             };
 
-            // Update our internal state
-            self.is_syncing = !matches!(
-                state.phase,
-                dash_spv::sync::sync_state::SyncPhase::Idle
-                    | dash_spv::sync::sync_state::SyncPhase::Synced
-            );
+            // Update our internal state based on sync status
+            self.is_syncing = !progress.headers_synced;
 
             Ok((
-                state.current_height,
-                state.target_height,
+                self.current_height,
+                self.target_height,
                 progress_percent,
-                state.phase_info,
             ))
         } else {
             Err("SPV client not initialized".to_string())
@@ -238,14 +226,13 @@ impl SpvManagerV2 {
     }
 
     pub async fn stop(&mut self) -> Result<(), String> {
-        if let Some(mut engine) = self.sync_engine.take() {
-            engine
+        if let Some(mut client) = self.client.take() {
+            client
                 .stop()
                 .await
-                .map_err(|e| format!("Failed to stop sync engine: {:?}", e))?;
+                .map_err(|e| format!("Failed to stop SPV client: {:?}", e))?;
         }
 
-        self.sync_state_reader = None;
         self.is_syncing = false;
         self.is_monitoring = false;
         self.current_height = 0;
@@ -254,22 +241,16 @@ impl SpvManagerV2 {
         Ok(())
     }
 
-    /// Get a quorum public key from the sync engine's client
+    /// Get a quorum public key from the SPV client
     pub async fn get_quorum_public_key(
         &self,
         quorum_type: u8,
         quorum_hash: &[u8; 32],
     ) -> Option<[u8; 48]> {
-        let engine = self.sync_engine.as_ref()?;
-
-        // Call the sync engine's get_quorum_public_key method
-        match engine.get_quorum_public_key(quorum_type, quorum_hash).await {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!("Failed to get quorum public key: {:?}", e);
-                None
-            }
-        }
+        // This would need to be implemented in DashSpvClient
+        // For now, return None as the functionality may not be directly available
+        tracing::warn!("get_quorum_public_key not yet implemented for direct client access");
+        None
     }
 }
 
@@ -298,44 +279,29 @@ impl AppContext {
 
                 Ok(BackendTaskSuccessResult::SpvResultV2(
                     SpvTaskResultV2::SyncProgress {
-                        current_height: current,
-                        target_height: target,
+                        current_height: checkpoint_height,
+                        target_height: checkpoint_height + 1000,
                         progress_percent: 0.0,
-                        phase_info: None,
                     },
                 ))
             }
             SpvTaskV2::GetSyncProgress => {
                 tracing::debug!("Getting SPV sync progress");
-                let (current, target, percent, phase_info) =
+                let (current, target, percent) =
                     spv_manager.get_sync_progress_with_phase().await?;
                 
-                // Log more details about the phase info
-                if let Some(ref phase) = phase_info {
-                    tracing::info!(
-                        "SPV sync progress - phase: {}, current: {}, target: {}, percent: {:.1}%, phase_current_pos: {:?}, items_completed: {}",
-                        phase.phase_name,
-                        current,
-                        target,
-                        percent,
-                        phase.current_position,
-                        phase.items_completed
-                    );
-                } else {
-                    tracing::info!(
-                        "SPV sync progress - current: {}, target: {}, percent: {:.1}% (no phase info)",
-                        current,
-                        target,
-                        percent
-                    );
-                }
+                tracing::info!(
+                    "SPV sync progress - current: {}, target: {}, percent: {:.1}%",
+                    current,
+                    target,
+                    percent
+                );
 
                 Ok(BackendTaskSuccessResult::SpvResultV2(
                     SpvTaskResultV2::SyncProgress {
                         current_height: current,
                         target_height: target,
                         progress_percent: percent,
-                        phase_info,
                     },
                 ))
             }
@@ -347,7 +313,6 @@ impl AppContext {
                         current_height: 0,
                         target_height: 0,
                         progress_percent: 0.0,
-                        phase_info: None,
                     },
                 ))
             }

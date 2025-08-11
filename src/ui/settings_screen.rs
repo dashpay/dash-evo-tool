@@ -15,7 +15,6 @@ use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use dash_spv::types::SyncPhaseInfo;
 use eframe::egui::{self, Context, Ui};
 use egui::Vec2;
 use num_format::{Locale, ToFormattedString};
@@ -50,7 +49,7 @@ pub struct SettingsScreen {
     spv_last_error: Option<String>,
     spv_is_initialized: bool,
     spv_last_progress_check: TimestampMillis,
-    spv_phase_info: Option<SyncPhaseInfo>,
+    spv_phase_info: Option<()>, // Placeholder for removed phase info
     // Checkpoint selection
     spv_selected_checkpoint: u32, // 0 = genesis, u32::MAX = latest
 }
@@ -82,7 +81,7 @@ impl SettingsScreen {
 
     fn render_spv_controls(&mut self, ui: &mut Ui, _action: &mut AppAction) {
         // Show progress if we're initialized and have any sync data
-        if self.spv_is_initialized && (self.spv_target_height > 0 || self.spv_phase_info.is_some())
+        if self.spv_is_initialized && self.spv_target_height > 0
         {
             ui.add_space(10.0);
             ui.separator();
@@ -128,77 +127,26 @@ impl SettingsScreen {
                 ui.add_space(8.0);
 
                 // Add progress bars for different sync phases
-                let phase_name = self.spv_phase_info.as_ref().map(|p| p.phase_name.as_str()).unwrap_or("");
+                let phase_name = "";
                 
                 // Display all sync information in a single grid
                 egui::Grid::new("spv_sync_info")
                     .num_columns(2)
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
-                        // Phase info if available
-                        if let Some(ref phase_info) = self.spv_phase_info {
-                            // Phase (first)
-                            ui.label(
-                                egui::RichText::new("Phase:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(&phase_info.phase_name);
-                            ui.end_row();
-
+                        // Show sync info
+                        {
                             // Synced height
                             ui.label(
                                 egui::RichText::new("Synced:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
-                            // Use spv_current_height which contains the correct blockchain height
-                            // phase_info.current_position seems to be incorrectly doubled when using checkpoints
                             let synced_value = self.spv_current_height;
                             ui.label(format!(
                                 "{} / {}",
                                 synced_value.to_formatted_string(&Locale::en),
                                 self.spv_target_height.to_formatted_string(&Locale::en)
                             ));
-                            ui.end_row();
-
-                            // Rate
-                            if phase_info.rate > 0.0 {
-                                ui.label(
-                                    egui::RichText::new("Rate:")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                                // Use rate_units if available, otherwise default to "/sec"
-                                let rate_display = if let Some(ref units) = phase_info.rate_units {
-                                    format!("{:.1} {}", phase_info.rate, units)
-                                } else {
-                                    format!("{:.1}/sec", phase_info.rate)
-                                };
-                                ui.label(rate_display);
-                                ui.end_row();
-                            }
-
-                            // // Details (last)
-                            // if let Some(ref details) = phase_info.details {
-                            //     ui.label(
-                            //         egui::RichText::new("Details:")
-                            //             .color(DashColors::text_secondary(dark_mode)),
-                            //     );
-                            //     ui.label(details);
-                            //     ui.end_row();
-                            // }
-                        } else {
-                            // If no phase info, show basic info
-                            ui.label(
-                                egui::RichText::new("Phase:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label("Initializing");
-                            ui.end_row();
-
-                            ui.label(
-                                egui::RichText::new("Target Height:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(self.spv_target_height.to_formatted_string(&Locale::en));
                             ui.end_row();
                         }
                         
@@ -212,16 +160,8 @@ impl SettingsScreen {
                             egui::RichText::new("Headers:")
                                 .color(DashColors::text_secondary(dark_mode))
                         );
-                        let headers_progress = if phase_name.contains("Headers") {
-                            // When syncing headers, calculate progress based on actual blockchain heights
-                            // This gives us accurate progress even when starting from a checkpoint
-                            if self.spv_target_height > 0 {
-                                (self.spv_current_height as f32 / self.spv_target_height as f32).min(1.0)
-                            } else {
-                                0.0_f32
-                            }
-                        } else if phase_name == "Fully Synced" || (phase_name.contains("Masternode") || phase_name.contains("Blocks")) {
-                            1.0_f32 // Headers complete if we're on later phases
+                        let headers_progress = if self.spv_target_height > 0 {
+                            (self.spv_current_height as f32 / self.spv_target_height as f32).min(1.0)
                         } else {
                             0.0_f32
                         };
@@ -233,17 +173,7 @@ impl SettingsScreen {
                             egui::RichText::new("Masternode Lists:")
                                 .color(DashColors::text_secondary(dark_mode))
                         );
-                        let mn_progress = if phase_name.contains("Masternode") {
-                            if let Some(ref phase_info) = self.spv_phase_info {
-                                (phase_info.progress_percentage / 100.0) as f32
-                            } else {
-                                0.0_f32
-                            }
-                        } else if phase_name == "Fully Synced" || phase_name.contains("Blocks") {
-                            1.0_f32 // MN lists complete if we're on later phases
-                        } else {
-                            0.0_f32
-                        };
+                        let mn_progress = 0.0_f32;
                         ui.add(egui::ProgressBar::new(mn_progress).show_percentage());
                         ui.end_row();
                         
@@ -252,17 +182,7 @@ impl SettingsScreen {
                             egui::RichText::new("Blocks:")
                                 .color(DashColors::text_secondary(dark_mode))
                         );
-                        let blocks_progress = if phase_name.contains("Blocks") || phase_name.contains("Filter") {
-                            if let Some(ref phase_info) = self.spv_phase_info {
-                                (phase_info.progress_percentage / 100.0) as f32
-                            } else {
-                                0.0_f32
-                            }
-                        } else if phase_name == "Fully Synced" {
-                            1.0_f32 // Blocks complete if fully synced
-                        } else {
-                            0.0_f32
-                        };
+                        let blocks_progress = 0.0_f32;
                         ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
                         ui.end_row();
                     });
@@ -727,7 +647,7 @@ impl SettingsScreen {
                             ui.label(egui::RichText::new("Initializing SPV client..."));
                         } else if self.spv_is_initialized {
                             // Check the phase to determine status
-                            if self.spv_phase_info.as_ref().map(|p| p.phase_name.as_str()) == Some("Fully Synced") {
+                            if self.spv_sync_progress >= 100.0 {
                                 // Show fully synced status only when dash-spv reports "Fully Synced" phase
                                 ui.colored_label(DashColors::SUCCESS, "Fully Synced - The SPV client can now be used for transacting and querying.");
                             } else {
@@ -1212,21 +1132,12 @@ impl ScreenLike for SettingsScreen {
                         current_height,
                         target_height,
                         progress_percent,
-                        phase_info,
                     } => {
-                        // Debug log the received phase info
-                        if let Some(ref phase) = phase_info {
-                            tracing::debug!(
-                                "Received phase info: {} ({:.1}%)",
-                                phase.phase_name,
-                                phase.progress_percentage
-                            );
-                        }
 
                         self.spv_current_height = current_height;
                         self.spv_target_height = target_height;
                         self.spv_sync_progress = progress_percent;
-                        self.spv_phase_info = phase_info;
+                        self.spv_phase_info = None;
                         self.spv_is_syncing = progress_percent < 100.0;
                         self.spv_is_initialized = true;
 
@@ -1258,78 +1169,33 @@ impl ScreenLike for SettingsScreen {
                         current_height,
                         target_height,
                         progress_percent,
-                        phase_info,
                     } => {
                         // Debug log all received values
                         tracing::info!(
-                            "SettingsScreen received SPV Progress Update - current: {}, target: {}, percent: {:.1}%, has_phase: {}",
+                            "SettingsScreen received SPV Progress Update - current: {}, target: {}, percent: {:.1}%",
                             current_height,
                             target_height,
-                            progress_percent,
-                            phase_info.is_some()
+                            progress_percent
                         );
-
-                        // Debug log the received phase info
-                        if let Some(ref phase) = phase_info {
-                            tracing::debug!(
-                                "Settings screen received phase: {} ({:.1}%)",
-                                phase.phase_name,
-                                phase.progress_percentage
-                            );
-                        } else {
-                            tracing::debug!("Settings screen received no phase info");
-                        }
-
-                        // Check if phase has changed
-                        let phase_changed = match (&self.spv_phase_info, &phase_info) {
-                            (None, Some(_)) => true,
-                            (Some(_), None) => true,
-                            (Some(old), Some(new)) => old.phase_name != new.phase_name,
-                            _ => false,
-                        };
 
                         // Only log significant changes
                         let height_changed = current_height != self.spv_current_height;
                         let progress_changed =
                             (progress_percent - self.spv_sync_progress).abs() > 1.0;
 
-                        if phase_changed {
-                            if let Some(ref phase) = phase_info {
-                                tracing::info!("🔄 Phase Change: {}", phase.phase_name);
-                                if let Some(ref details) = phase.details {
-                                    tracing::info!(
-                                        "{}: {} ({:.1}%)",
-                                        phase.phase_name,
-                                        details,
-                                        phase.progress_percentage
-                                    );
-                                }
-                            }
-                        } else if height_changed || progress_changed {
-                            if let Some(ref phase) = phase_info {
-                                tracing::debug!(
-                                    "{}: {}/{:?} items ({:.1}%) @ {:.1}/sec",
-                                    phase.phase_name,
-                                    phase.items_completed,
-                                    phase.items_total,
-                                    phase.progress_percentage,
-                                    phase.rate
-                                );
-                            } else {
-                                tracing::info!(
-                                    "SPV progress: {} / {} blocks ({:.1}%)",
-                                    current_height,
-                                    target_height,
-                                    progress_percent
-                                );
-                            }
+                        if height_changed || progress_changed {
+                            tracing::info!(
+                                "SPV progress: {} / {} blocks ({:.1}%)",
+                                current_height,
+                                target_height,
+                                progress_percent
+                            );
                         }
 
-                        // Check if this is a stop result (all values are 0 and we're not expecting to be initialized)
+                        // Check if this is a stop result (all values are 0)
                         if target_height == 0
                             && current_height == 0
                             && progress_percent == 0.0
-                            && phase_info.is_none()
                         {
                             // Only treat as stop if we're not in the middle of initializing
                             let ctx = self.current_app_context();
@@ -1368,7 +1234,7 @@ impl ScreenLike for SettingsScreen {
                             self.spv_is_syncing = progress_percent < 100.0 && target_height > current_height;
                             self.spv_is_initialized = true;
                             self.spv_last_error = None;
-                            self.spv_phase_info = phase_info;
+                            self.spv_phase_info = None;
                         }
                     }
                     SpvTaskResultV2::SyncComplete { final_height } => {

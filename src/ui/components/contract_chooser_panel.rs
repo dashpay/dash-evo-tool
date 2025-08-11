@@ -259,7 +259,7 @@ pub fn add_contract_chooser_panel(
                                                 if render_collapsing_header(ui, "Document Types", doc_types_expanded, false, 1) {
                                                     let sections = chooser_state.expanded_sections
                                                         .entry(contract_id.clone())
-                                                        .or_insert_with(std::collections::HashSet::new);
+                                                        .or_default();
                                                     if doc_types_expanded {
                                                         sections.remove(&doc_types_key);
                                                     } else {
@@ -281,7 +281,7 @@ pub fn add_contract_chooser_panel(
                                                         if render_collapsing_header(ui, doc_name, doc_expanded, is_selected_doc_type, 2) {
                                                             let doc_types = chooser_state.expanded_doc_types
                                                                 .entry(contract_id.clone())
-                                                                .or_insert_with(std::collections::HashSet::new);
+                                                                .or_default();
                                                             if doc_expanded {
                                                                 doc_types.remove(&doc_type_key);
                                                                 // Document Type collapsed
@@ -334,7 +334,7 @@ pub fn add_contract_chooser_panel(
                                                                         if render_collapsing_header(ui, &index_label, index_expanded, is_selected_index, 3) {
                                                                             let indexes = chooser_state.expanded_indexes
                                                                                 .entry(contract_id.clone())
-                                                                                .or_insert_with(std::collections::HashSet::new);
+                                                                                .or_default();
                                                                             if index_expanded {
                                                                                 indexes.remove(&index_key);
                                                                                 // Index collapsed
@@ -407,7 +407,7 @@ pub fn add_contract_chooser_panel(
                                                 if render_collapsing_header(ui, "Tokens", tokens_expanded, false, 1) {
                                                     let sections = chooser_state.expanded_sections
                                                         .entry(contract_id.clone())
-                                                        .or_insert_with(std::collections::HashSet::new);
+                                                        .or_default();
                                                     if tokens_expanded {
                                                         sections.remove(&tokens_key);
                                                     } else {
@@ -427,7 +427,7 @@ pub fn add_contract_chooser_panel(
                                                             if render_collapsing_header(ui, token_name.to_string(), token_expanded, false, 2) {
                                                                 let tokens = chooser_state.expanded_tokens
                                                                     .entry(contract_id.clone())
-                                                                    .or_insert_with(std::collections::HashSet::new);
+                                                                    .or_default();
                                                                 if token_expanded {
                                                                     tokens.remove(&token_key);
                                                                 } else {
@@ -469,7 +469,7 @@ pub fn add_contract_chooser_panel(
                                             if render_collapsing_header(ui, "Contract JSON", json_expanded, false, 1) {
                                                 let sections = chooser_state.expanded_sections
                                                     .entry(contract_id.clone())
-                                                    .or_insert_with(std::collections::HashSet::new);
+                                                    .or_default();
                                                 if json_expanded {
                                                     sections.remove(&json_key);
                                                 } else {

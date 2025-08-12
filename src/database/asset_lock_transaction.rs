@@ -1,10 +1,11 @@
+use crate::context::AppContext;
 use crate::database::Database;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
-    consensus::{deserialize, serialize},
     InstantLock, Network, Transaction,
+    consensus::{deserialize, serialize},
 };
-use rusqlite::params;
+use rusqlite::{Connection, params};
 
 impl Database {
     /// Stores an asset lock transaction and optional InstantLock into the database.
@@ -19,11 +20,7 @@ impl Database {
         let tx_bytes = serialize(tx);
         let txid = tx.txid().to_byte_array();
 
-        let islock_bytes = if let Some(islock) = islock {
-            Some(serialize(islock))
-        } else {
-            None
-        };
+        let islock_bytes = islock.map(serialize);
 
         let conn = self.conn.lock().unwrap();
 
@@ -53,6 +50,8 @@ impl Database {
     }
 
     /// Retrieves an asset lock transaction by its transaction ID.
+    #[allow(dead_code)] // May be used for querying asset locks
+    #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transaction(
         &self,
         txid: &[u8; 32],
@@ -91,6 +90,7 @@ impl Database {
     }
 
     /// Updates the chain locked height for an asset lock transaction.
+    #[allow(dead_code)] // May be used for tracking chain confirmation status
     pub fn update_asset_lock_chain_locked_height(
         &self,
         txid: &[u8; 32],
@@ -131,6 +131,43 @@ impl Database {
         Ok(())
     }
 
+    /// Deletes all asset lock transactions in Devnet variants and Regtest.
+    pub fn remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "DELETE FROM asset_lock_transaction
+         WHERE network LIKE 'devnet%' OR network = 'regtest'",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    /// Removes the identity ID and identity_id_potentially_in_creation for all asset lock transactions in Devnet.
+    pub fn remove_all_asset_locks_identity_id_for_devnet(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        if app_context.network != Network::Devnet {
+            return Ok(());
+        }
+        let network = app_context.network.to_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE asset_lock_transaction
+         SET identity_id = NULL,
+             identity_id_potentially_in_creation = NULL
+         WHERE network = ?",
+            params![network],
+        )?;
+
+        Ok(())
+    }
+
     /// Sets the identity ID for an asset lock transaction.
     pub fn set_asset_lock_identity_id_before_confirmation_by_network(
         &self,
@@ -148,6 +185,7 @@ impl Database {
     }
 
     /// Deletes an asset lock transaction by its transaction ID.
+    #[allow(dead_code)] // May be used for manual cleanup or testing purposes
     pub fn delete_asset_lock_transaction(&self, txid: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
@@ -160,6 +198,8 @@ impl Database {
     }
 
     /// Retrieves all asset lock transactions.
+    #[allow(dead_code)] // May be used for debugging or administrative views
+    #[allow(clippy::type_complexity)]
     pub fn get_all_asset_lock_transactions(
         &self,
         network: Network,
@@ -217,6 +257,8 @@ impl Database {
     }
 
     /// Retrieves asset lock transactions by identity ID.
+    #[allow(dead_code)] // May be used for identity-specific transaction history
+    #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transactions_by_identity_id(
         &self,
         identity_id: &[u8; 32],
@@ -271,5 +313,85 @@ impl Database {
         }
 
         Ok(results)
+    }
+
+    /// Migrates `asset_lock_transaction` so that both `identity_id` columns use
+    /// `ON DELETE SET NULL` instead of `ON DELETE CASCADE`.
+    ///
+    /// Safe to run multiple times: if the table already has the correct FKs it
+    /// exits early.
+    pub fn migrate_asset_lock_fk_to_set_null(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
+        {
+            // ── 1. Detect whether migration is needed ───────────────────────────────
+            let mut pragma = conn.prepare("PRAGMA foreign_key_list('asset_lock_transaction')")?;
+            let fk_rows = pragma
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(2)?, // table
+                        row.get::<_, String>(6)?, // on_delete action
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // If both identity-related FKs are already SET NULL, nothing to do.
+            let needs_migration = fk_rows
+                .iter()
+                .filter(|(tbl, _)| tbl == "identity")
+                .any(|(_, action)| action.to_uppercase() != "SET NULL");
+
+            if !needs_migration {
+                return Ok(());
+            }
+        }
+
+        // ── 2. Recreate table with correct FK actions inside a transaction ─────
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
+        conn.execute(
+            "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE asset_lock_transaction (
+                tx_id BLOB PRIMARY KEY,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                FOREIGN KEY (identity_id)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (identity_id_potentially_in_creation)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (wallet)
+                    REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT INTO asset_lock_transaction
+              (tx_id, transaction_data, amount, instant_lock_data,
+               chain_locked_height, identity_id, identity_id_potentially_in_creation,
+               wallet, network)
+             SELECT tx_id, transaction_data, amount, instant_lock_data,
+                    chain_locked_height, identity_id,
+                    identity_id_potentially_in_creation, wallet, network
+             FROM asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute("DROP TABLE asset_lock_transaction_old", [])?;
+
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+        Ok(())
     }
 }

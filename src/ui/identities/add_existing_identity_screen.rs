@@ -1,18 +1,19 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::{MessageType, ScreenLike};
+use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::Context;
 use egui::{Color32, ComboBox, RichText, Ui};
-use rand::prelude::IteratorRandom;
-use rand::thread_rng;
 use serde::Deserialize;
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -24,9 +25,7 @@ struct MasternodeInfo {
     #[serde(rename = "pro-tx-hash")]
     pro_tx_hash: String,
     owner: KeyInfo,
-    collateral: KeyInfo,
     voter: KeyInfo,
-    operator: OperatorInfo,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -34,32 +33,12 @@ struct HPMasternodeInfo {
     #[serde(rename = "protx-tx-hash")]
     protx_tx_hash: String,
     owner: KeyInfo,
-    collateral: KeyInfo,
     voter: KeyInfo,
     payout: KeyInfo,
-    operator: OperatorInfo,
-    #[serde(rename = "node_key")]
-    node_key: Option<NodeKeyInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct KeyInfo {
-    address: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OperatorInfo {
-    #[serde(rename = "public_key")]
-    public_key: String,
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct NodeKeyInfo {
-    id: String,
     #[serde(rename = "private_key")]
     private_key: String,
 }
@@ -83,12 +62,6 @@ pub enum AddIdentityStatus {
     Complete,
 }
 
-#[derive(Clone, PartialEq)]
-pub enum IdentityLoadMethod {
-    ByIdentifier,
-    FromWallet,
-}
-
 pub struct AddExistingIdentityScreen {
     identity_id_input: String,
     pub identity_type: IdentityType,
@@ -99,7 +72,6 @@ pub struct AddExistingIdentityScreen {
     keys_input: Vec<String>,
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
-    pub identity_load_method: IdentityLoadMethod,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     show_password: bool,
     wallet_password: String,
@@ -127,7 +99,6 @@ impl AddExistingIdentityScreen {
             keys_input: vec![String::new(), String::new(), String::new()],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
-            identity_load_method: IdentityLoadMethod::ByIdentifier,
             selected_wallet,
             show_password: false,
             wallet_password: "".to_string(),
@@ -138,7 +109,7 @@ impl AddExistingIdentityScreen {
         }
     }
 
-    fn render_by_identity(&mut self, ui: &mut egui::Ui) -> AppAction {
+    fn render_by_identity(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         if self.app_context.network == Network::Testnet && self.testnet_loaded_nodes.is_some() {
@@ -154,7 +125,7 @@ impl AddExistingIdentityScreen {
         egui::Grid::new("add_existing_identity_grid")
             .num_columns(2)
             .spacing([10.0, 10.0])
-            .striped(true)
+            .striped(false)
             .show(ui, |ui| {
                 ui.label("Identity ID / ProTxHash (Hex or Base58):");
                 ui.text_edit_singleline(&mut self.identity_id_input);
@@ -184,9 +155,7 @@ impl AddExistingIdentityScreen {
                 // Input for Alias
                 ui.horizontal(|ui| {
                     ui.label("Alias (optional):");
-                    let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                    let response = ui.add(info_icon)
-                        .on_hover_text("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
+                    let response = crate::ui::helpers::info_icon_button(ui, "Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.");
                     if response.clicked() {
                         self.show_pop_up_info = Some("Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.".to_string());
                     }
@@ -225,10 +194,7 @@ impl AddExistingIdentityScreen {
                             ui.horizontal(|ui| {
                                 ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
 
-                                let info_icon = egui::Label::new("ℹ").sense(egui::Sense::click());
-                                let response = ui
-                                    .add(info_icon)
-                                    .on_hover_text("You don't need to add all or even any private keys here. \
+                                let response = crate::ui::helpers::info_icon_button(ui, "You don't need to add all or even any private keys here. \
                                                     Private keys can be added later. However, without private keys, \
                                                     you won't be able to sign any transactions.");
 
@@ -275,7 +241,7 @@ impl AddExistingIdentityScreen {
         let button = egui::Button::new(RichText::new("Load Identity").color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
             .frame(true)
-            .rounding(3.0);
+            .corner_radius(3.0);
         if ui.add(button).clicked() {
             // Set the status to waiting and capture the current time
             let now = SystemTime::now()
@@ -288,7 +254,7 @@ impl AddExistingIdentityScreen {
         action
     }
 
-    fn render_wallet_selection(&mut self, ui: &mut Ui) {
+    fn _render_wallet_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets = &self.app_context.wallets.read().unwrap();
@@ -320,7 +286,7 @@ impl AddExistingIdentityScreen {
                             let is_selected = self
                                 .selected_wallet
                                 .as_ref()
-                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui
                                 .selectable_label(is_selected, wallet_alias.clone())
@@ -339,12 +305,12 @@ impl AddExistingIdentityScreen {
         });
     }
 
-    fn render_from_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
+    fn _render_from_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
         let mut action = AppAction::None;
 
         // Wallet selection
         if wallets_len > 1 {
-            self.render_wallet_selection(ui);
+            self._render_wallet_selection(ui);
         }
 
         if self.selected_wallet.is_none() {
@@ -449,6 +415,20 @@ impl AddExistingIdentityScreen {
 
             ui.add_space(20.0);
 
+            if ui.button("Load Another").clicked() {
+                self.identity_id_input.clear();
+                self.alias_input.clear();
+                self.voting_private_key_input.clear();
+                self.owner_private_key_input.clear();
+                self.payout_address_private_key_input.clear();
+                self.keys_input = vec![String::new(), String::new(), String::new()];
+                self.identity_index_input.clear();
+                self.error_message = None;
+                self.show_pop_up_info = None;
+                self.add_identity_status = AddIdentityStatus::NotStarted;
+            }
+            ui.add_space(5.0);
+
             if ui.button("Back to Identities Screen").clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
@@ -520,89 +500,71 @@ impl ScreenLike for AddExistingIdentityScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Load Existing Identity");
-            ui.add_space(10.0);
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenIdentities,
+        );
 
-            if self.add_identity_status == AddIdentityStatus::Complete {
-                action |= self.show_success(ui);
-                return;
-            }
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
 
-            // ui.heading(format!("1. Select a method to load the identity:"));
-            // ui.add_space(10.0);
-            // // Prepare tabs
-            // let tabs = vec![("By Identifier", IdentityLoadMethod::ByIdentifier)];
-            // // let wallets_len = {
-            // //     // Check if there are wallets
-            // //     let wallets = self.app_context.wallets.read().unwrap();
-            // //     let has_wallet = !wallets.is_empty();
-            // //     if has_wallet {
-            // //         tabs.push(("From Wallet", IdentityLoadMethod::FromWallet));
-            // //     }
-            // //     wallets.len()
-            // // };
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.heading("Load Existing Identity");
+                    ui.add_space(10.0);
 
-            // // Render tabs
-            // ui.horizontal(|ui| {
-            //     for (tab_name, tab_method) in &tabs {
-            //         let selected = self.identity_load_method == *tab_method;
-            //         if ui.selectable_label(selected, *tab_name).clicked() {
-            //             self.identity_load_method = tab_method.clone();
-            //         }
-            //     }
-            // });
+                    if self.add_identity_status == AddIdentityStatus::Complete {
+                        inner_action |= self.show_success(ui);
+                        return;
+                    }
 
-            // ui.add_space(10.0);
-            // ui.separator();
-            // ui.add_space(10.0);
+                    inner_action |= self.render_by_identity(ui);
 
-            match self.identity_load_method {
-                IdentityLoadMethod::ByIdentifier => action |= self.render_by_identity(ui),
-                IdentityLoadMethod::FromWallet => {
-                    // action |= self.render_from_wallet(ui, wallets_len)
-                }
-            }
-            ui.add_space(10.0);
+                    ui.add_space(10.0);
 
-            match &self.add_identity_status {
-                AddIdentityStatus::NotStarted => {
-                    // Do nothing
-                }
-                AddIdentityStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    let elapsed_seconds = now - start_time;
+                    match &self.add_identity_status {
+                        AddIdentityStatus::NotStarted => {
+                            // Do nothing
+                        }
+                        AddIdentityStatus::WaitingForResult(start_time) => {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Time went backwards")
+                                .as_secs();
+                            let elapsed_seconds = now - start_time;
 
-                    let display_time = if elapsed_seconds < 60 {
-                        format!(
-                            "{} second{}",
-                            elapsed_seconds,
-                            if elapsed_seconds == 1 { "" } else { "s" }
-                        )
-                    } else {
-                        let minutes = elapsed_seconds / 60;
-                        let seconds = elapsed_seconds % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
+                            let display_time = if elapsed_seconds < 60 {
+                                format!(
+                                    "{} second{}",
+                                    elapsed_seconds,
+                                    if elapsed_seconds == 1 { "" } else { "s" }
+                                )
+                            } else {
+                                let minutes = elapsed_seconds / 60;
+                                let seconds = elapsed_seconds % 60;
+                                format!(
+                                    "{} minute{} and {} second{}",
+                                    minutes,
+                                    if minutes == 1 { "" } else { "s" },
+                                    seconds,
+                                    if seconds == 1 { "" } else { "s" }
+                                )
+                            };
 
-                    ui.label(format!("Loading... Time taken so far: {}", display_time));
-                }
-                AddIdentityStatus::ErrorMessage(msg) => {
-                    ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
-                }
-                AddIdentityStatus::Complete => {
-                    // handled above
-                }
-            }
+                            ui.label(format!("Loading... Time taken so far: {}", display_time));
+                        }
+                        AddIdentityStatus::ErrorMessage(msg) => {
+                            ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
+                        }
+                        AddIdentityStatus::Complete => {
+                            // handled above
+                        }
+                    }
+                });
+
+            inner_action
         });
 
         // Show the popup window if `show_popup` is true

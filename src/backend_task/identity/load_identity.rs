@@ -1,25 +1,27 @@
 use super::BackendTaskSuccessResult;
-use crate::backend_task::identity::{verify_key_input, IdentityInputToLoad};
+use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
-use crate::model::qualified_identity::{DPNSNameInfo, IdentityType, QualifiedIdentity};
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::{
+    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+};
+use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
+use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::SecurityLevel;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
-use dash_sdk::Sdk;
 use egui::ahash::HashMap;
 use std::collections::BTreeMap;
 
@@ -173,6 +175,7 @@ impl AppContext {
                 .collect::<Result<Vec<PrivateKey>, String>>()?;
 
             let secp = Secp256k1::new();
+            #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (
                 HashMap<Vec<u8>, [u8; 32]>,
                 HashMap<[u8; 20], [u8; 32]>,
@@ -278,7 +281,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
@@ -301,10 +303,13 @@ impl AppContext {
                 .collect(),
             wallet_index: None, //todo
             top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: self.network,
         };
+        let wallet_info = qualified_identity.determine_wallet_info()?;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, None)
+        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
             .map_err(|e| format!("Database error: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(

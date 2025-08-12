@@ -1,11 +1,14 @@
 use crate::app::AppAction;
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
@@ -13,8 +16,6 @@ use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMe
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
@@ -25,8 +26,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 enum BroadcastStatus {
     Idle,
     ParsingError(String),
-    ValidContract(DataContract),
-    Broadcasting(u64), // store "start time" so we can show how long
+    ValidContract(Box<DataContract>),
+    Broadcasting(u64),
+    ProofError(u64),
     BroadcastError(String),
     Done,
 }
@@ -37,10 +39,8 @@ pub struct RegisterDataContractScreen {
     contract_alias_input: String,
     broadcast_status: BroadcastStatus,
 
-    pub show_identity_selector: bool,
-    pub show_key_selector: bool,
-    pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
-    pub selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    pub qualified_identities: Vec<QualifiedIdentity>,
+    pub selected_qualified_identity: Option<QualifiedIdentity>,
     pub selected_key: Option<IdentityPublicKey>,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -51,42 +51,17 @@ pub struct RegisterDataContractScreen {
 
 impl RegisterDataContractScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let security_level_requirements = vec![SecurityLevel::HIGH, SecurityLevel::CRITICAL];
+        let qualified_identities: Vec<QualifiedIdentity> =
+            app_context.load_local_user_identities().unwrap_or_default();
 
-        let qualified_identities: Vec<_> = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| {
-                let keys = e
-                    .identity
-                    .public_keys()
-                    .values()
-                    .filter(|key| {
-                        key.purpose() == Purpose::AUTHENTICATION // is this right?
-                            && security_level_requirements.contains(&key.security_level())
-                            && !key.is_disabled()
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if keys.is_empty() {
-                    None
-                } else {
-                    Some((e, keys))
-                }
-            })
-            .collect();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity.0, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
         } else {
             None
         };
-
-        let show_identity_selector = qualified_identities.len() > 1;
-        let show_key_selector = selected_qualified_identity.is_some();
 
         Self {
             app_context: app_context.clone(),
@@ -94,8 +69,6 @@ impl RegisterDataContractScreen {
             contract_alias_input: String::new(),
             broadcast_status: BroadcastStatus::Idle,
 
-            show_identity_selector,
-            show_key_selector,
             qualified_identities,
             selected_qualified_identity,
             selected_key: None,
@@ -104,148 +77,6 @@ impl RegisterDataContractScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message: None,
-        }
-    }
-
-    fn render_identity_id_and_key_selection(&mut self, ui: &mut egui::Ui) {
-        if self.qualified_identities.len() == 1 {
-            // Only one identity, display it directly
-            let qualified_identity = &self.qualified_identities[0];
-            ui.horizontal(|ui| {
-                ui.label("Identity ID:");
-                ui.label(
-                    qualified_identity
-                        .0
-                        .alias
-                        .as_ref()
-                        .unwrap_or(
-                            &qualified_identity
-                                .0
-                                .identity
-                                .id()
-                                .to_string(Encoding::Base58),
-                        )
-                        .clone(),
-                );
-            });
-            self.selected_qualified_identity = Some(qualified_identity.clone());
-        } else {
-            // Multiple identities, display ComboBox
-            ui.horizontal(|ui| {
-                ui.label("Identity ID:");
-
-                // Create a ComboBox for selecting a Qualified Identity
-                egui::ComboBox::from_label("")
-                    .selected_text(
-                        self.selected_qualified_identity
-                            .as_ref()
-                            .map(|qi| {
-                                qi.0.alias
-                                    .as_ref()
-                                    .unwrap_or(&qi.0.identity.id().to_string(Encoding::Base58))
-                                    .clone()
-                            })
-                            .unwrap_or_else(|| "Select an identity".to_string()),
-                    )
-                    .show_ui(ui, |ui| {
-                        // Loop through the qualified identities and display each as selectable
-                        for qualified_identity in &self.qualified_identities {
-                            // Display each QualifiedIdentity as a selectable item
-                            if ui
-                                .selectable_value(
-                                    &mut self.selected_qualified_identity,
-                                    Some(qualified_identity.clone()),
-                                    qualified_identity.0.alias.as_ref().unwrap_or(
-                                        &qualified_identity
-                                            .0
-                                            .identity
-                                            .id()
-                                            .to_string(Encoding::Base58),
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                self.selected_qualified_identity = Some(qualified_identity.clone());
-                                self.selected_wallet = get_selected_wallet(
-                                    &qualified_identity.0,
-                                    Some(&self.app_context),
-                                    None,
-                                    &mut self.error_message,
-                                );
-                                self.show_key_selector = true;
-                            }
-                        }
-                    });
-            });
-        }
-
-        // Key selection
-        if let Some(ref qid) = self.selected_qualified_identity {
-            // Attempt to list available keys (only auth keys in normal mode)
-            let keys = if self.app_context.developer_mode {
-                qid.0
-                    .identity
-                    .public_keys()
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else {
-                qid.0
-                    .available_authentication_keys()
-                    .into_iter()
-                    .filter_map(|k| {
-                        if k.identity_public_key.security_level() == SecurityLevel::CRITICAL
-                            || k.identity_public_key.security_level() == SecurityLevel::HIGH
-                        {
-                            Some(k.identity_public_key.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Key:");
-                egui::ComboBox::from_id_salt("contract_creator_key_selector")
-                    .selected_text(match &self.selected_key {
-                        Some(k) => format!(
-                            "Key {} (Purpose: {:?}, Security Level: {:?})",
-                            k.id(),
-                            k.purpose(),
-                            k.security_level()
-                        ),
-                        None => "Select Key".to_owned(),
-                    })
-                    .show_ui(ui, |ui| {
-                        for k in keys {
-                            let label = format!(
-                                "Key {} (Purpose: {:?}, Security Level: {:?})",
-                                k.id(),
-                                k.purpose(),
-                                k.security_level()
-                            );
-                            if ui
-                                .selectable_label(
-                                    Some(k.id()) == self.selected_key.as_ref().map(|kk| kk.id()),
-                                    label,
-                                )
-                                .clicked()
-                            {
-                                self.selected_key = Some(k.clone());
-
-                                // If the key belongs to a wallet, set that wallet reference:
-                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                    &qid.0,
-                                    None,
-                                    Some(&k),
-                                    &mut self.error_message,
-                                );
-                            }
-                        }
-                    });
-            });
         }
     }
 
@@ -264,20 +95,19 @@ impl RegisterDataContractScreen {
 
         match json_result {
             Ok(json_val) => {
-                let platform_version = PlatformVersion::latest();
+                let platform_version = self.app_context.platform_version();
                 match DataContract::from_json(json_val, true, platform_version) {
                     Ok(mut contract) => {
                         // ------------------------------------------
                         // 1) Overwrite the contract’s ownerId
                         // ------------------------------------------
-                        if let Some((qualified_identity, _keys)) = &self.selected_qualified_identity
-                        {
+                        if let Some(qualified_identity) = &self.selected_qualified_identity {
                             let new_owner_id = qualified_identity.identity.id();
                             contract.set_owner_id(new_owner_id);
                         }
 
                         // Mark it as a valid contract in our screen state
-                        self.broadcast_status = BroadcastStatus::ValidContract(contract);
+                        self.broadcast_status = BroadcastStatus::ValidContract(Box::new(contract));
                     }
                     Err(e) => {
                         self.broadcast_status =
@@ -295,10 +125,13 @@ impl RegisterDataContractScreen {
         ScrollArea::vertical()
             .max_height(ui.available_height() - 100.0)
             .show(ui, |ui| {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let response = ui.add(
                     TextEdit::multiline(&mut self.contract_json_input)
                         .desired_rows(6)
                         .desired_width(ui.available_width())
+                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
                         .code_editor(),
                 );
                 if response.changed() {
@@ -330,17 +163,17 @@ impl RegisterDataContractScreen {
                     egui::Button::new(RichText::new("Register Contract").color(Color32::WHITE))
                         .fill(Color32::from_rgb(0, 128, 255))
                         .frame(true)
-                        .rounding(3.0);
+                        .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     // Fire off a backend task
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(
+                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::RegisterDataContract(
-                            contract.clone(),
+                            (**contract).clone(),
                             self.contract_alias_input.clone(),
-                            self.selected_qualified_identity.clone().unwrap().0, // unwrap should be safe here
+                            self.selected_qualified_identity.clone().unwrap(), // unwrap should be safe here
                             self.selected_key.clone().unwrap(), // unwrap should be safe here
                         ),
-                    ));
+                    )));
                 }
             }
             BroadcastStatus::Broadcasting(start_time) => {
@@ -355,6 +188,15 @@ impl RegisterDataContractScreen {
                     elapsed
                 ));
             }
+            BroadcastStatus::ProofError(start_time) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let elapsed = now - start_time;
+                ui.label("Broadcasted but received proof error. ⚠");
+                ui.label(format!("Fetching contract from Platform and inserting into DET... {elapsed} seconds elapsed."));
+            }
             BroadcastStatus::BroadcastError(msg) => {
                 ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
             }
@@ -363,10 +205,8 @@ impl RegisterDataContractScreen {
             }
         }
 
-        match app_action {
-            AppAction::BackendTask(BackendTask::ContractTask(
-                ContractTask::RegisterDataContract(_, _, _, _),
-            )) => {
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
+            if let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -374,7 +214,6 @@ impl RegisterDataContractScreen {
                         .as_secs(),
                 );
             }
-            _ => {}
         }
 
         app_action
@@ -387,8 +226,22 @@ impl RegisterDataContractScreen {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
 
-            ui.heading("🎉");
-            ui.heading("Successfully registered data contract.");
+            if let Some(error_message) = &self.error_message {
+                if error_message.contains("proof error logged, contract inserted into the database")
+                {
+                    ui.heading("⚠");
+                    ui.heading("Transaction succeeded but received a proof error.");
+                    ui.add_space(10.0);
+                    ui.label("Please check if the contract was registered correctly.");
+                    ui.label(
+                        "If it was, this is just a Platform proofs bug and no need for concern.",
+                    );
+                    ui.label("Either way, please report to Dash Core Group.");
+                }
+            } else {
+                ui.heading("🎉");
+                ui.heading("Successfully registered data contract.");
+            }
 
             ui.add_space(20.0);
 
@@ -412,10 +265,31 @@ impl ScreenLike for RegisterDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                self.broadcast_status = BroadcastStatus::Done;
+                if message.contains("Nonce fetched successfully") {
+                    self.broadcast_status = BroadcastStatus::Broadcasting(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                } else if message.contains("Transaction returned proof error") {
+                    self.broadcast_status = BroadcastStatus::ProofError(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
+                } else {
+                    self.broadcast_status = BroadcastStatus::Done;
+                }
             }
             MessageType::Error => {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                if message.contains("proof error logged, contract inserted into the database") {
+                    self.error_message = Some(message.to_string());
+                    self.broadcast_status = BroadcastStatus::Done;
+                } else {
+                    self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                }
             }
             MessageType::Info => {
                 // You could display an info label, or do nothing
@@ -426,11 +300,8 @@ impl ScreenLike for RegisterDataContractScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         // If a separate result needs to be handled here, you can do so
         // For example, if success is a special message or we want to show it in the UI
-        match result {
-            BackendTaskSuccessResult::Message(_msg) => {
-                self.broadcast_status = BroadcastStatus::Done;
-            }
-            _ => {}
+        if let BackendTaskSuccessResult::Message(_msg) = result {
+            self.broadcast_status = BroadcastStatus::Done;
         }
     }
 
@@ -445,10 +316,15 @@ impl ScreenLike for RegisterDataContractScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenDocumentQuery,
+        );
+
+        action |= island_central_panel(ctx, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
-                action |= self.show_success(ui);
-                return;
+                return self.show_success(ui);
             }
 
             ui.heading("Register Data Contract");
@@ -458,32 +334,69 @@ impl ScreenLike for RegisterDataContractScreen {
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    "No qualified identities available to register a data contract.",
+                    "No identities loaded. Please load an identity first.",
                 );
-                return;
+                return AppAction::None;
+            }
+
+            // Check if any identity has suitable private keys for contract registration
+            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
+                qi.private_keys
+                    .identity_public_keys()
+                    .iter()
+                    .any(|key_ref| {
+                        let key = &key_ref.1.identity_public_key;
+                        // Contract registration requires Authentication keys with High or Critical security level
+                        key.purpose() == Purpose::AUTHENTICATION
+                            && (key.security_level() == SecurityLevel::HIGH
+                                || key.security_level() == SecurityLevel::CRITICAL)
+                    })
+            });
+
+            if !has_suitable_keys {
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    "No identities with high or critical authentication private keys loaded. Contract registration requires high or critical security level keys.",
+                );
+                return AppAction::None;
             }
 
             // Select the identity to register the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
-            self.render_identity_id_and_key_selection(ui);
+            add_identity_key_chooser(
+                ui,
+                &self.app_context,
+                self.qualified_identities.iter(),
+                &mut self.selected_qualified_identity,
+                &mut self.selected_key,
+                TransactionType::RegisterContract,
+            );
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!(
                     "Identity balance: {:.6}",
-                    identity.0.identity.balance() as f64 * 1e-11
+                    identity.identity.balance() as f64 * 1e-11
                 ));
             }
 
             if self.selected_key.is_none() {
-                action = AppAction::None;
-                return;
+                return AppAction::None;
             }
 
-            // Input for the alias
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
+
+            // Render wallet unlock if needed
+            if self.selected_wallet.is_some() {
+                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+                if needed_unlock && !just_unlocked {
+                    return AppAction::None;
+                }
+            }
+
+            // Input for the alias
             ui.heading("2. Contract alias for DET (optional)");
             ui.add_space(5.0);
             ui.text_edit_singleline(&mut self.contract_alias_input);
@@ -492,21 +405,26 @@ impl ScreenLike for RegisterDataContractScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            if self.selected_wallet.is_some() {
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                if needed_unlock && !just_unlocked {
-                    return;
-                }
-            }
-
             // Input for the contract
             ui.heading("3. Paste the contract JSON below");
             ui.add_space(5.0);
+
+            // Add link to dashpay.io
+            ui.horizontal(|ui| {
+                ui.label("Easily create a contract JSON here:");
+                ui.add(egui::Hyperlink::from_label_and_url(
+                    RichText::new("dashpay.io")
+                        .underline()
+                        .color(Color32::from_rgb(0, 128, 255)),
+                    "https://dashpay.io",
+                ));
+            });
+            ui.add_space(5.0);
+
             self.ui_input_field(ui);
 
             // Parse the contract and show the result
-            action |= self.ui_parsed_contract(ui);
+            self.ui_parsed_contract(ui)
         });
 
         action

@@ -1,122 +1,183 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::core::CoreTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::core::CoreTask;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
+use crate::ui::ScreenType;
+use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use egui::{Align, Color32, Context, Frame, Layout, Margin, RichText, Stroke, TopBottomPanel, Ui};
+use egui::{
+    Align, Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
+};
+use rust_embed::RustEmbed;
 use std::sync::Arc;
 
-fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>) -> AppAction {
+#[derive(RustEmbed)]
+#[folder = "icons/"]
+struct Assets;
+
+// Function to load an icon as a texture using embedded assets
+#[allow(dead_code)]
+fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
+    // Use ctx.data_mut to check if texture is already cached
+    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
+        .or_else(|| {
+            // Only do expensive operations if texture is not cached
+            if let Some(content) = Assets::get(path) {
+                // Load the image from the embedded bytes
+                if let Ok(image) = image::load_from_memory(&content.data) {
+                    let size = [image.width() as usize, image.height() as usize];
+                    let rgba_image = image.into_rgba8();
+                    let pixels = rgba_image.into_raw();
+
+                    let texture = ctx.load_texture(
+                        path,
+                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+                        Default::default(),
+                    );
+
+                    // Cache the texture
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
+
+                    Some(texture)
+                } else {
+                    eprintln!("Failed to load image from embedded data at path: {}", path);
+                    None
+                }
+            } else {
+                eprintln!("Image not found in embedded assets at path: {}", path);
+                None
+            }
+        })
+}
+
+fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
     let font_id = egui::FontId::proportional(22.0);
 
-    ui.add_space(2.0);
+    // Wrap in a container that can be positioned vertically
+    ui.allocate_ui(ui.available_size(), |ui| {
+        // Apply negative vertical offset to move text up
+        let offset = egui::vec2(0.0, -7.0);
 
-    egui::menu::bar(ui, |ui| {
-        ui.horizontal(|ui| {
-            let len = location.len();
-            for (index, (text, location_action)) in location.into_iter().enumerate() {
-                if ui
-                    .button(
-                        RichText::new(text)
-                            .font(font_id.clone())
-                            .color(Color32::WHITE),
-                    )
-                    .clicked()
-                {
-                    action = location_action;
-                }
-
-                // Add a separator (e.g., '>' symbol) between buttons, except for the last one
-                if index < len - 1 {
-                    ui.label(
-                        RichText::new(">")
-                            .font(font_id.clone())
-                            .color(Color32::WHITE),
-                    );
-                }
-            }
-        });
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                ui.cursor().min + offset,
+                ui.available_size(),
+            )),
+            |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let len = location.len();
+                        for (idx, (text, loc_action)) in location.into_iter().enumerate() {
+                            if ui
+                                .button(
+                                    RichText::new(text)
+                                        .font(font_id.clone())
+                                        .color(DashColors::text_primary(dark_mode)),
+                                )
+                                .clicked()
+                            {
+                                action = loc_action;
+                            }
+                            if idx < len - 1 {
+                                ui.label(
+                                    RichText::new(">")
+                                        .font(font_id.clone())
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
+                        }
+                    });
+                });
+            },
+        );
     });
-
     action
 }
 
 fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
     let mut action = AppAction::None;
+    let connected = app_context
+        .zmq_connection_status
+        .lock()
+        .map(|status| matches!(*status, ZMQConnectionEvent::Connected))
+        .unwrap_or(false);
 
-    // Determine connection status
-    let connected = {
-        if let Ok(status) = app_context.zmq_connection_status.lock() {
-            matches!(*status, ZMQConnectionEvent::Connected)
-        } else {
-            false
-        }
-    };
-
-    // Define circle properties
-    let circle_size = 14.0; // Increase size slightly for visibility
-    let color = if connected {
-        Color32::DARK_GREEN
+    // Get time for pulsating animation (only when connected)
+    let pulse_scale = if connected {
+        let time = ui.ctx().input(|i| i.time as f32);
+        1.0 + 0.2 * (time * 2.0).sin() // Pulsate between 1.0 and 1.2
     } else {
-        Color32::DARK_RED
+        1.0 // No pulsation when disconnected
     };
 
-    // Allocate space for the circle with some padding
-    ui.horizontal(|ui| {
-        ui.add_space(8.0); // Add padding before the circle for visibility
+    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let circle_size = 14.0;
+    let color = if connected {
+        DashColors::success_color(dark_mode)
+    } else {
+        DashColors::error_color(dark_mode)
+    };
 
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(circle_size, circle_size), egui::Sense::click());
+    // Wrap in a container that can be positioned vertically
+    ui.allocate_ui(ui.available_size(), |ui| {
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                ui.cursor().min,
+                ui.available_size(),
+            )),
+            |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(circle_size, circle_size),
+                        egui::Sense::click(),
+                    );
+                    let center = rect.center();
 
-        // Offset the circle's center by 5 pixels down
-        let circle_center = rect.center() + egui::vec2(0.0, 5.0);
+                    // Draw the background circle with pulsating effect
+                    let bg_radius = if connected {
+                        (circle_size / 2.0 + 3.0) * pulse_scale
+                    } else {
+                        circle_size / 2.0 // Same size as main circle when disconnected
+                    };
+                    ui.painter()
+                        .circle_filled(center, bg_radius, color.linear_multiply(0.3));
 
-        // Draw an outer glow
-        ui.painter().circle_filled(
-            circle_center,
-            circle_size / 2.0 + 3.0, // Adjust glow size
-            color.linear_multiply(0.3),
+                    // Draw the main circle
+                    ui.painter().circle_filled(center, circle_size / 2.0, color);
+
+                    // Request repaint for animation (only when connected and pulsating)
+                    if connected {
+                        app_context.repaint_animation(ui.ctx());
+                    }
+                    let tip = if connected {
+                        "Connected to Dash Core Wallet"
+                    } else {
+                        "Disconnected from Dash Core Wallet. Click to start it."
+                    };
+                    let resp = resp.on_hover_text(tip);
+
+                    if resp.clicked() && !connected {
+                        let settings = app_context.get_settings().ok().flatten();
+
+                        let (custom_path, overwrite) = settings
+                            .map(|s| (s.dash_qt_path, s.overwrite_dash_conf))
+                            .unwrap_or((None, true));
+                        if let Some(dash_qt_path) = custom_path {
+                            action |= AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::StartDashQT(app_context.network, dash_qt_path, overwrite),
+                            ));
+                        } else {
+                            tracing::debug!(
+                                "Dash-Qt path not set in settings, not starting Dash-Qt from connection indicator."
+                            );
+                        }
+                    }
+                });
+            },
         );
-
-        // Draw the main circle (the "light")
-        ui.painter()
-            .circle_filled(circle_center, circle_size / 2.0, color);
-
-        // Tooltip text
-        let tooltip_text = if connected {
-            "Connected to Dash Core Wallet"
-        } else {
-            "Disconnected from Dash Core Wallet. Click to start it."
-        };
-        response.clone().on_hover_text(tooltip_text);
-
-        let settings = app_context
-            .db
-            .get_settings()
-            .expect("Failed to db get settings");
-        let (custom_dash_qt_path, overwrite_dash_conf) = match settings {
-            Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
-                (db_custom_dash_qt_path, db_overwrite_dash_qt)
-            }
-            _ => {
-                // Default values: Use system default path and overwrite conf
-                (None, true)
-            }
-        };
-
-        // Handle click to start DashQT if disconnected
-        if response.clicked() && !connected {
-            let network = app_context.network;
-            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                network,
-                custom_dash_qt_path,
-                overwrite_dash_conf,
-            )));
-        }
     });
-
     action
 }
 
@@ -127,62 +188,239 @@ pub fn add_top_panel(
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-
-    let color = match app_context.network {
-        Network::Dash => Color32::from_rgb(21, 101, 192), // A blue color for mainnet
-        Network::Testnet => Color32::from_rgb(255, 165, 0), // Orange for testnet
-        Network::Devnet => Color32::from_rgb(255, 0, 0),  // Red for devnet
-        Network::Regtest => Color32::from_rgb(139, 69, 19), // Brownish for regtest
-        _ => Color32::BLACK,
+    let dark_mode = ctx.style().visuals.dark_mode;
+    let network_accent = match app_context.network {
+        Network::Dash => {
+            if dark_mode {
+                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode (20% darker)
+            } else {
+                DashColors::DASH_BLUE // Original: rgb(0, 141, 228)
+            }
+        }
+        Network::Testnet => {
+            if dark_mode {
+                Color32::from_rgb(204, 132, 0) // Muted orange for dark mode
+            } else {
+                Color32::from_rgb(255, 165, 0) // Original bright orange for light mode
+            }
+        }
+        Network::Devnet => {
+            if dark_mode {
+                Color32::from_rgb(111, 0, 0) // Muted dark red for dark mode (20% darker)
+            } else {
+                Color32::DARK_RED // Original: rgb(139, 0, 0)
+            }
+        }
+        Network::Regtest => {
+            if dark_mode {
+                Color32::from_rgb(111, 55, 15) // Muted brown for dark mode (20% darker)
+            } else {
+                Color32::from_rgb(139, 69, 19) // Original brown
+            }
+        }
+        _ => {
+            if dark_mode {
+                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode
+            } else {
+                DashColors::DASH_BLUE
+            }
+        }
     };
 
     TopBottomPanel::top("top_panel")
         .frame(
-            Frame::none()
-                .fill(color)
-                .inner_margin(Margin::symmetric(10.0, 10.0)),
+            Frame::new()
+                .fill(DashColors::background(dark_mode))
+                .inner_margin(Margin {
+                    left: 10,
+                    right: 10,
+                    top: 10,
+                    bottom: 10,
+                }),
         )
-        .exact_height(50.0)
+        .exact_height(76.0)
         .show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                action |= add_connection_indicator(ui, app_context);
+            // Create an island panel with rounded edges
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                .inner_margin(Margin {
+                    left: 20,
+                    right: 20,
+                    top: 10,
+                    bottom: 10,
+                })
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                .shadow(Shadow::elevated())
+                .show(ui, |ui| {
+                    // Load Dash logo
+                    // let dash_logo_texture: Option<TextureHandle> = load_icon(ctx, "dash.png");
 
-                // Left-aligned content with location view
-                action |= add_location_view(ui, location);
+                    ui.columns(3, |columns| {
+                        // Left column: connection indicator and location
+                        columns[0].with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_cross_align(Align::Center),
+                            |ui| {
+                                action |= add_connection_indicator(ui, app_context);
+                                action |= add_location_view(ui, location, dark_mode);
+                            },
+                        );
 
-                // Right-aligned content with buttons
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(5.0);
+                        // Center column: Placeholder for future logo placement
+                        columns[1].with_layout(
+                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                // Placeholder - logo moved back to left panel for now
+                                ui.label("");
+                            },
+                        );
 
-                    for (text, right_button_action) in right_buttons.into_iter().rev() {
-                        ui.add_space(3.0);
+                        // Right column: action buttons (right-aligned)
+                        columns[2].with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center)
+                                .with_cross_align(Align::Center),
+                            |ui| {
+                                // Separate contract and document-related actions
+                                let mut contract_actions = Vec::new();
+                                let mut doc_actions = Vec::new();
+                                let mut other_actions = Vec::new();
 
-                        let font_id = egui::FontId::proportional(16.0); // Adjust font size as needed
-                        let color = Color32::WHITE;
+                                for (text, act) in right_buttons.into_iter() {
+                                    match act {
+                                        DesiredAppAction::AddScreenType(ref screen_type) => {
+                                            match **screen_type {
+                                                ScreenType::AddContracts
+                                                | ScreenType::RegisterContract
+                                                | ScreenType::UpdateContract => {
+                                                    contract_actions.push((text, act));
+                                                }
+                                                ScreenType::CreateDocument
+                                                | ScreenType::DeleteDocument
+                                                | ScreenType::ReplaceDocument
+                                                | ScreenType::TransferDocument
+                                                | ScreenType::PurchaseDocument
+                                                | ScreenType::SetDocumentPrice => {
+                                                    doc_actions.push((text, act));
+                                                }
+                                                _ => {
+                                                    other_actions.push((text, act));
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            other_actions.push((text, act));
+                                        }
+                                    }
+                                }
 
-                        // Calculate text size using layout method
-                        let button_text = text.to_string();
-                        let text_size = ui
-                            .fonts(|fonts| {
-                                fonts.layout_no_wrap(button_text.clone(), font_id.clone(), color)
-                            })
-                            .size();
+                                // Grouped Documents menu
+                                if !doc_actions.is_empty() {
+                                    ui.add_space(3.0);
 
-                        let button_width = text_size.x + 12.0; // Add padding for the button
+                                    // give it the same style as your other buttons
+                                    let docs_btn = egui::Button::new(
+                                        RichText::new("Documents").color(Color32::WHITE),
+                                    )
+                                    .fill(network_accent)
+                                    .frame(true)
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                    .stroke(Stroke::NONE)
+                                    .min_size(egui::vec2(100.0, 30.0));
 
-                        let button = egui::Button::new(RichText::new(text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255)) // Button background color
-                            .frame(true) // Button frame
-                            .rounding(3.0) // Rounded corners
-                            .stroke(Stroke::new(1.0, Color32::WHITE)) // Border stroke
-                            .min_size(egui::vec2(button_width, 30.0));
+                                    let resp = ui.add(docs_btn);
+                                    let popup_id = ui.make_persistent_id("docs_popup");
 
-                        if ui.add(button).clicked() {
-                            action = right_button_action.create_action(app_context);
-                        }
-                    }
+                                    egui::Popup::new(
+                                        popup_id,
+                                        ui.ctx().clone(),
+                                        &resp,
+                                        resp.layer_id,
+                                    )
+                                    .open_memory(
+                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                    )
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, da) in doc_actions {
+                                            if ui.button(text).clicked() {
+                                                action = da.create_action(app_context);
+                                                // ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+
+                                // Grouped Contracts menu
+                                if !contract_actions.is_empty() {
+                                    ui.add_space(3.0);
+
+                                    let contracts_btn = egui::Button::new(
+                                        RichText::new("Contracts").color(Color32::WHITE),
+                                    )
+                                    .fill(network_accent)
+                                    .frame(true)
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                    .stroke(Stroke::NONE)
+                                    .min_size(egui::vec2(100.0, 30.0));
+
+                                    let popup_id = ui.auto_id_with("contracts_popup");
+                                    let resp = ui.add(contracts_btn);
+
+                                    egui::Popup::new(
+                                        popup_id,
+                                        ui.ctx().clone(),
+                                        &resp,
+                                        resp.layer_id,
+                                    )
+                                    .open_memory(
+                                        resp.clicked().then_some(egui::SetOpenCommand::Toggle),
+                                    )
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(150.0);
+                                        for (text, ca) in contract_actions {
+                                            if ui.button(text).clicked() {
+                                                action = ca.create_action(app_context);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+
+                                // Render other buttons normally
+                                for (text, btn_act) in other_actions.into_iter().rev() {
+                                    ui.add_space(3.0);
+                                    let font = egui::FontId::proportional(16.0);
+                                    let text_size = ui
+                                        .fonts(|f| {
+                                            f.layout_no_wrap(
+                                                text.to_string(),
+                                                font.clone(),
+                                                Color32::WHITE,
+                                            )
+                                        })
+                                        .size();
+                                    let width = text_size.x + 12.0;
+
+                                    let button = egui::Button::new(
+                                        RichText::new(text).color(Color32::WHITE),
+                                    )
+                                    .fill(network_accent)
+                                    .frame(true)
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                    .stroke(Stroke::NONE)
+                                    .min_size(egui::vec2(width, 30.0));
+
+                                    if ui.add(button).clicked() {
+                                        action = btn_act.create_action(app_context);
+                                    }
+                                }
+                            },
+                        );
+                    });
                 });
-            });
         });
 
     action

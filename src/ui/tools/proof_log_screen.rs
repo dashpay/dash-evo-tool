@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::proof_log_item::ProofLogItem;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -106,12 +107,12 @@ impl ProofLogScreen {
         // });
 
         // Scrollable area for the table
-        ScrollArea::vertical()
+        ScrollArea::both()
             .id_salt("proof_list_scroll_area")
             .show(ui, |ui| {
                 Grid::new("proof_log_table")
                     .num_columns(4)
-                    .striped(true)
+                    .striped(false)
                     .show(ui, |ui| {
                         // Table headers with sorting
                         if ui
@@ -330,10 +331,10 @@ impl ProofLogScreen {
                 let font_id = TextStyle::Monospace.resolve(ui.style());
                 let layout_job = Self::highlight_proof_text(&proof_display, &hashes, font_id);
 
-                let frame = Frame::none()
+                let frame = Frame::new()
                     .stroke(Stroke::new(1.0, Color32::BLACK))
                     .fill(Color32::TRANSPARENT)
-                    .rounding(2.0); // Set margins to zero
+                    .corner_radius(2.0); // Set margins to zero
 
                 frame.show(ui, |ui| {
                     ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
@@ -377,7 +378,7 @@ impl ScreenLike for ProofLogScreen {
 
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
             // Fetch proof items if not already fetched
             if self.proof_items.is_empty() {
                 ui.vertical_centered(|ui| {
@@ -385,7 +386,7 @@ impl ScreenLike for ProofLogScreen {
                     ui.heading("No proof items to display.");
                 });
                 self.fetch_proof_items();
-                return;
+                return AppAction::None;
             }
 
             ui.columns(2, |columns| {
@@ -407,6 +408,7 @@ impl ScreenLike for ProofLogScreen {
                         });
                 });
             });
+            AppAction::None
         });
 
         action

@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
@@ -63,14 +64,13 @@ impl TryFrom<u32> for DerivationPathReference {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
-use egui::epaint::tessellator::PathType;
 use zeroize::Zeroize;
 
 bitflags! {
@@ -128,6 +128,7 @@ pub struct Wallet {
     pub address_balances: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
+    #[allow(clippy::type_complexity)]
     pub unused_asset_locks: Vec<(
         Transaction,
         Address,
@@ -148,10 +149,19 @@ pub enum WalletSeed {
     Open(OpenWalletSeed),
     Closed(ClosedWalletSeed),
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct OpenKeyItem<const N: usize> {
     pub seed: [u8; N],
     pub wallet_info: ClosedKeyItem,
+}
+
+impl<const N: usize> Debug for OpenKeyItem<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hash = ClosedKeyItem::compute_seed_hash(&self.seed);
+        f.debug_struct("OpenKeyItem")
+            .field("seed_hash", &hex::encode(hash))
+            .finish()
+    }
 }
 
 // Type alias for OpenWalletSeed with a fixed seed size of 64 bytes
@@ -213,6 +223,9 @@ impl WalletSeed {
     }
 
     /// Closes the wallet by securely erasing the seed and transitioning to Closed state.
+    // Allow dead_code: This method provides explicit wallet closure functionality,
+    // useful for security-conscious applications requiring manual wallet management
+    #[allow(dead_code)]
     pub fn close(&mut self) {
         match self {
             WalletSeed::Open(open_seed) => {
@@ -229,6 +242,15 @@ impl WalletSeed {
     }
 }
 
+impl Drop for WalletSeed {
+    fn drop(&mut self) {
+        // Securely erase sensitive data
+        if let WalletSeed::Open(open_seed) = self {
+            open_seed.seed.zeroize();
+        }
+    }
+}
+
 impl Wallet {
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
@@ -238,14 +260,13 @@ impl Wallet {
     }
 
     pub fn has_unused_asset_lock(&self) -> bool {
-        self.unused_asset_locks.len() > 0
+        !self.unused_asset_locks.is_empty()
     }
 
     pub fn max_balance(&self) -> u64 {
         self.utxos
             .values()
-            .map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
-            .flatten()
+            .flat_map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
             .sum::<Duffs>()
     }
 
@@ -291,6 +312,9 @@ impl Wallet {
         }
     }
 
+    // Allow dead_code: This utility method finds wallets by seed hash in collections,
+    // useful for wallet lookup operations and multi-wallet management
+    #[allow(dead_code)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
@@ -312,6 +336,7 @@ impl Wallet {
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
         derivation_path: &DerivationPath,
+        network: Network,
     ) -> Result<Option<[u8; 32]>, String> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
@@ -320,7 +345,7 @@ impl Wallet {
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Attempt to derive the private key using the provided derivation path
                 let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, Network::Dash)
+                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
                     .map_err(|e| e.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }
@@ -332,11 +357,12 @@ impl Wallet {
     pub fn private_key_at_derivation_path(
         &self,
         derivation_path: &DerivationPath,
+        network: Network,
     ) -> Result<PrivateKey, String> {
         let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, Network::Dash)
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .map_err(|e| e.to_string())?;
-        return Ok(extended_private_key.to_priv());
+        Ok(extended_private_key.to_priv())
     }
 
     pub fn private_key_for_address(
@@ -401,7 +427,7 @@ impl Wallet {
                         .derive_pub(&secp, &derivation_path_extension)
                         .map_err(|e| e.to_string())?
                         .to_pub();
-                    known_public_key = Some(public_key.clone());
+                    known_public_key = Some(public_key);
                     break;
                 } else {
                     // Skip known addresses with no funds
@@ -415,7 +441,7 @@ impl Wallet {
                     .derive_pub(&secp, &derivation_path_extension)
                     .map_err(|e| e.to_string())?
                     .to_pub();
-                known_public_key = Some(public_key.clone());
+                known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
                     app_context
@@ -435,29 +461,14 @@ impl Wallet {
                             Some(false),
                         )
                         .map_err(|e| e.to_string())?;
-                    app_context
-                        .db
-                        .add_address_if_not_exists(
-                            &self.seed_hash(),
-                            &address,
-                            &derivation_path,
-                            DerivationPathReference::BIP44,
-                            DerivationPathType::CLEAR_FUNDS,
-                            None,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    self.watched_addresses.insert(
-                        derivation_path.clone(),
-                        AddressInfo {
-                            address: address.clone(),
-                            path_type: DerivationPathType::CLEAR_FUNDS,
-                            path_reference: DerivationPathReference::BIP44,
-                        },
-                    );
 
-                    // Add the address and its derivation path to `known_addresses`
-                    self.known_addresses
-                        .insert(address, derivation_path.clone());
+                    self.register_address(
+                        address,
+                        &derivation_path,
+                        DerivationPathType::CLEAR_FUNDS,
+                        DerivationPathReference::BIP44,
+                        app_context,
+                    )?;
                 }
                 found_unused_derivation_path = Some(derivation_path.clone());
                 break;
@@ -487,6 +498,7 @@ impl Wallet {
         Ok(extended_public_key.to_pub())
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map(
         &mut self,
         network: Network,
@@ -602,14 +614,24 @@ impl Wallet {
         path_reference: DerivationPathReference,
         app_context: &AppContext,
     ) -> Result<(), String> {
+        if !address.network().eq(&app_context.network) {
+            return Err(format!(
+                "address {} network {} does not match wallet network {}",
+                address,
+                address.network(),
+                app_context.network
+            ));
+        }
+
         app_context
             .db
             .add_address_if_not_exists(
                 &self.seed_hash(),
                 &address,
+                &app_context.network,
                 derivation_path,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                DerivationPathType::CREDIT_FUNDING,
+                path_reference,
+                path_type,
                 None,
             )
             .map_err(|e| e.to_string())?;
@@ -618,10 +640,16 @@ impl Wallet {
         self.watched_addresses.insert(
             derivation_path.clone(),
             AddressInfo {
-                address,
+                address: address.clone(),
                 path_type,
                 path_reference,
             },
+        );
+
+        tracing::trace!(
+            address = ?&address,
+            network = &address.network().to_string(),
+            "registered new address"
         );
         Ok(())
     }
@@ -652,6 +680,7 @@ impl Wallet {
         Ok(private_key)
     }
 
+    /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
         network: Network,
@@ -695,6 +724,9 @@ impl Wallet {
         ))
     }
 
+    // Allow dead_code: This method provides receive addresses with derivation paths,
+    // useful for advanced address management and BIP44 path tracking
+    #[allow(dead_code)]
     pub fn receive_address_with_derivation_path(
         &mut self,
         network: Network,
@@ -721,6 +753,9 @@ impl Wallet {
         ))
     }
 
+    // Allow dead_code: This method provides change addresses with derivation paths,
+    // useful for advanced address management and BIP44 path tracking
+    #[allow(dead_code)]
     pub fn change_address_with_derivation_path(
         &mut self,
         network: Network,

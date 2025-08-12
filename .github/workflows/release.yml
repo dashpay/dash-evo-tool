@@ -26,7 +26,7 @@ jobs:
       matrix:
         include:
           - name: "linux-x86_64"
-            runs-on: "ubuntu-20.04"
+            runs-on: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
             platform: "x86_64-linux"
           - name: "linux-arm64"
@@ -42,7 +42,7 @@ jobs:
             target: "aarch64-apple-darwin"
             platform: "arm64-mac"
           - name: "Windows"
-            runs-on: "ubuntu-20.04"
+            runs-on: "ubuntu-22.04"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
             ext: ".exe"
@@ -68,8 +68,6 @@ jobs:
       - name: Setup prerequisites
         run: |
           mkdir -p dash-evo-tool/
-          cp .env.example dash-evo-tool/.env
-          cp -r dash_core_configs/ dash-evo-tool/dash_core_configs
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1

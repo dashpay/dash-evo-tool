@@ -1,16 +1,19 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::core::CoreTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
-use egui::{Frame, Margin, RichText};
+use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -41,6 +44,11 @@ pub struct WalletsBalancesScreen {
     sort_order: SortOrder,
     selected_filters: HashSet<String>,
     refreshing: bool,
+    show_rename_dialog: bool,
+    rename_input: String,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>,
 }
 
 pub trait DerivationPathHelpers {
@@ -128,6 +136,11 @@ impl WalletsBalancesScreen {
             sort_order: SortOrder::Ascending,
             selected_filters,
             refreshing: false,
+            show_rename_dialog: false,
+            rename_input: String::new(),
+            wallet_password: String::new(),
+            show_password: false,
+            error_message: None,
         }
     }
 
@@ -138,10 +151,17 @@ impl WalletsBalancesScreen {
                 wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
             };
 
-            // Now the immutable borrow of `wallet` is dropped, and we can use `self` mutably
-            if let Err(e) = result {
-                self.display_message(&e, MessageType::Error);
+            match result {
+                Ok(address) => {
+                    let message = format!("Added new receiving address: {}", address);
+                    self.display_message(&message, MessageType::Success);
+                }
+                Err(e) => {
+                    self.display_message(&e, MessageType::Error);
+                }
             }
+        } else {
+            self.display_message("No wallet selected", MessageType::Error);
         }
     }
 
@@ -157,6 +177,7 @@ impl WalletsBalancesScreen {
         }
     }
 
+    #[allow(clippy::ptr_arg)]
     fn sort_address_data(&self, data: &mut Vec<AddressData>) {
         data.sort_by(|a, b| {
             let order = match self.sort_column {
@@ -178,21 +199,53 @@ impl WalletsBalancesScreen {
     }
 
     fn render_filter_selector(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            let filter_options = ["Funds", "Identity Creation", "System", "Unused Asset Locks"];
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let filter_options = [
+            ("Funds", "Show receiving and change addresses"),
+            (
+                "Identity Creation",
+                "Show addresses used for identity creation",
+            ),
+            ("System", "Show system-related addresses"),
+            (
+                "Unused Asset Locks",
+                "Show available asset locks for identity creation",
+            ),
+        ];
 
-            for filter_option in &filter_options {
+        // Single row layout
+        ui.horizontal(|ui| {
+            for (filter_option, description) in filter_options.iter() {
                 let is_selected = self.selected_filters.contains(*filter_option);
 
-                // Create RichText with a larger font size
-                let text = egui::RichText::new(*filter_option).size(14.0);
+                // Create a button with distinct styling
+                let button = if is_selected {
+                    egui::Button::new(
+                        RichText::new(*filter_option)
+                            .color(Color32::WHITE)
+                            .size(12.0),
+                    )
+                    .fill(egui::Color32::from_rgb(0, 128, 255))
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(3.0)
+                    .min_size(egui::vec2(0.0, 22.0))
+                } else {
+                    egui::Button::new(
+                        RichText::new(*filter_option)
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(12.0),
+                    )
+                    .fill(DashColors::glass_white(dark_mode))
+                    .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
+                    .corner_radius(3.0)
+                    .min_size(egui::vec2(0.0, 22.0))
+                };
 
-                let button = egui::SelectableLabel::new(is_selected, text);
-
-                // Set the desired button size
-                let button_size = egui::Vec2::new(100.0, 30.0);
-
-                if ui.add_sized(button_size, button).clicked() {
+                if ui
+                    .add(button)
+                    .on_hover_text(format!("{} (Shift+click for multiple)", description))
+                    .clicked()
+                {
                     let shift_held = ui.input(|i| i.modifiers.shift_only());
 
                     if shift_held {
@@ -213,30 +266,33 @@ impl WalletsBalancesScreen {
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self.app_context.has_wallet.load(Ordering::Relaxed) {
-                let wallets = &self.app_context.wallets.read().unwrap();
-                let wallet_aliases: Vec<String> = wallets
-                    .values()
-                    .map(|wallet| {
-                        wallet
-                            .read()
-                            .unwrap()
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    })
-                    .collect();
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        if self.app_context.has_wallet.load(Ordering::Relaxed) {
+            let wallets = &self.app_context.wallets.read().unwrap();
+            let wallet_aliases: Vec<String> = wallets
+                .values()
+                .map(|wallet| {
+                    wallet
+                        .read()
+                        .unwrap()
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| "Unnamed Wallet".to_string())
+                })
+                .collect();
 
-                let selected_wallet_alias = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
+            let selected_wallet_alias = self
+                .selected_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                .unwrap_or_else(|| "Select a wallet".to_string());
 
+            // Compact horizontal layout
+            ui.horizontal(|ui| {
                 // Display the ComboBox for wallet selection
                 ComboBox::from_label("")
                     .selected_text(selected_wallet_alias.clone())
+                    .width(200.0)
                     .show_ui(ui, |ui| {
                         for (idx, wallet) in wallets.values().enumerate() {
                             let wallet_alias = wallet_aliases[idx].clone();
@@ -244,7 +300,7 @@ impl WalletsBalancesScreen {
                             let is_selected = self
                                 .selected_wallet
                                 .as_ref()
-                                .map_or(false, |selected| Arc::ptr_eq(selected, wallet));
+                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
                             if ui
                                 .selectable_label(is_selected, wallet_alias.clone())
@@ -256,51 +312,32 @@ impl WalletsBalancesScreen {
                         }
                     });
 
-                ui.add_space(20.0);
-
-                // Text input for renaming the wallet
                 if let Some(selected_wallet) = &self.selected_wallet {
-                    {
-                        let mut wallet = selected_wallet.write().unwrap();
-                        let mut alias = wallet.alias.clone().unwrap_or_default();
+                    let wallet = selected_wallet.read().unwrap();
 
-                        // Limit the alias length to 64 characters
-                        if alias.len() > 64 {
-                            alias.truncate(64);
-                        }
-
-                        // Render a text field with a placeholder for the wallet alias
-                        let text_edit = egui::TextEdit::singleline(&mut alias)
-                            .hint_text("Enter wallet alias (max 64 chars)");
-
-                        // Render a text field to modify the wallet alias
-                        if ui.add(text_edit).changed() {
-                            // Update the wallet alias when the text field is modified
-                            wallet.alias = Some(alias.clone());
-
-                            // Update the alias in the database
-                            let seed_hash = wallet.seed_hash();
-                            self.app_context
-                                .db
-                                .set_wallet_alias(&seed_hash, Some(alias.clone()))
-                                .ok();
-                        }
-                    }
-
-                    ui.add_space(20.0);
-
-                    // Display total wallet balance next to the selector
-                    if let Some(selected_wallet) = &self.selected_wallet {
-                        let wallet = selected_wallet.read().unwrap();
-                        let total_balance = wallet.max_balance();
-                        let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH
-                        ui.label(format!("Total Balance: {:.8} DASH", dash_balance));
+                    if ui.button("Rename").clicked() {
+                        self.show_rename_dialog = true;
+                        self.rename_input = wallet.alias.clone().unwrap_or_default();
                     }
                 }
-            } else {
-                ui.label("No wallets available.");
-            }
-        });
+
+                // Balance and rename button on same row
+                if let Some(selected_wallet) = &self.selected_wallet {
+                    ui.separator();
+
+                    let wallet = selected_wallet.read().unwrap();
+                    let total_balance = wallet.max_balance();
+                    let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH
+                    ui.label(
+                        RichText::new(format!("Balance: {:.8} DASH", dash_balance))
+                            .strong()
+                            .color(DashColors::success_color(dark_mode)),
+                    );
+                }
+            });
+        } else {
+            ui.label("No wallets available.");
+        }
     }
 
     fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
@@ -384,162 +421,144 @@ impl WalletsBalancesScreen {
         // Sort the data
         self.sort_address_data(&mut address_data);
 
-        let mut allocated_space = if self.message.is_some() { 100.0 } else { 50.0 }; // Space for the message and "Add receiving address" button
-        if self.selected_filters.contains("Unused Asset Locks") {
-            if let Some(wallet) = &self.selected_wallet {
-                let wallet = wallet.read().unwrap();
-
-                if wallet.unused_asset_locks.is_empty() {
-                    allocated_space += 50.0;
-                } else {
-                    for _ in &wallet.unused_asset_locks {
-                        allocated_space += 20.0;
-                    }
-                }
-            }
-        }
+        // Space allocation for UI elements is handled by the layout system
 
         // Render the table
-        egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - allocated_space)
+        egui::ScrollArea::both()
             .id_salt("address_table")
             .show(ui, |ui| {
-                egui::Frame::group(ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .show(ui, |ui| {
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(Column::auto()) // Address
-                            .column(Column::initial(100.0)) // Balance
-                            .column(Column::initial(60.0)) // UTXOs
-                            .column(Column::initial(150.0)) // Total Received
-                            .column(Column::initial(100.0)) // Type
-                            .column(Column::initial(60.0)) // Index
-                            .column(Column::remainder()) // Derivation Path
-                            .header(30.0, |mut header| {
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Address {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Address ^",
-                                            SortOrder::Descending => "Address v",
-                                        }
-                                    } else {
-                                        "Address"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Address);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Balance {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Total Received (DASH) ^",
-                                            SortOrder::Descending => "Total Received (DASH) v",
-                                        }
-                                    } else {
-                                        "Total Received (DASH)"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Balance);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::UTXOs {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "UTXOs ^",
-                                            SortOrder::Descending => "UTXOs v",
-                                        }
-                                    } else {
-                                        "UTXOs"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::UTXOs);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::TotalReceived {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Balance (DASH) ^",
-                                            SortOrder::Descending => "Balance (DASH) v",
-                                        }
-                                    } else {
-                                        "Balance (DASH)"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::TotalReceived);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Type {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Type ^",
-                                            SortOrder::Descending => "Type v",
-                                        }
-                                    } else {
-                                        "Type"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Type);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::Index {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Index ^",
-                                            SortOrder::Descending => "Index v",
-                                        }
-                                    } else {
-                                        "Index"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::Index);
-                                    }
-                                });
-                                header.col(|ui| {
-                                    let label = if self.sort_column == SortColumn::DerivationPath {
-                                        match self.sort_order {
-                                            SortOrder::Ascending => "Full Path ^",
-                                            SortOrder::Descending => "Full Path v",
-                                        }
-                                    } else {
-                                        "Full Path"
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.toggle_sort(SortColumn::DerivationPath);
-                                    }
-                                });
-                            })
-                            .body(|mut body| {
-                                for data in &address_data {
-                                    body.row(25.0, |mut row| {
-                                        row.col(|ui| {
-                                            ui.label(data.address.to_string());
-                                        });
-                                        row.col(|ui| {
-                                            let dash_balance = data.balance as f64 * 1e-8;
-                                            ui.label(format!("{:.8}", dash_balance));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(format!("{}", data.utxo_count));
-                                        });
-                                        row.col(|ui| {
-                                            let dash_received = data.total_received as f64 * 1e-8;
-                                            ui.label(format!("{:.8}", dash_received));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(&data.address_type);
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(format!("{}", data.index));
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(format!("{}", data.derivation_path));
-                                        });
-                                    });
+                TableBuilder::new(ui)
+                    .striped(false)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto()) // Address
+                    .column(Column::initial(100.0)) // Balance
+                    .column(Column::initial(60.0)) // UTXOs
+                    .column(Column::initial(150.0)) // Total Received
+                    .column(Column::initial(100.0)) // Type
+                    .column(Column::initial(60.0)) // Index
+                    .column(Column::remainder()) // Derivation Path
+                    .header(30.0, |mut header| {
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Address {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Address ^",
+                                    SortOrder::Descending => "Address v",
                                 }
+                            } else {
+                                "Address"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Address);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Balance {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Total Received (DASH) ^",
+                                    SortOrder::Descending => "Total Received (DASH) v",
+                                }
+                            } else {
+                                "Total Received (DASH)"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Balance);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::UTXOs {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "UTXOs ^",
+                                    SortOrder::Descending => "UTXOs v",
+                                }
+                            } else {
+                                "UTXOs"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::UTXOs);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::TotalReceived {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Balance (DASH) ^",
+                                    SortOrder::Descending => "Balance (DASH) v",
+                                }
+                            } else {
+                                "Balance (DASH)"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::TotalReceived);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Type {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Type ^",
+                                    SortOrder::Descending => "Type v",
+                                }
+                            } else {
+                                "Type"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Type);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::Index {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Index ^",
+                                    SortOrder::Descending => "Index v",
+                                }
+                            } else {
+                                "Index"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::Index);
+                            }
+                        });
+                        header.col(|ui| {
+                            let label = if self.sort_column == SortColumn::DerivationPath {
+                                match self.sort_order {
+                                    SortOrder::Ascending => "Full Path ^",
+                                    SortOrder::Descending => "Full Path v",
+                                }
+                            } else {
+                                "Full Path"
+                            };
+                            if ui.button(label).clicked() {
+                                self.toggle_sort(SortColumn::DerivationPath);
+                            }
+                        });
+                    })
+                    .body(|mut body| {
+                        for data in &address_data {
+                            body.row(25.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(data.address.to_string());
+                                });
+                                row.col(|ui| {
+                                    let dash_balance = data.balance as f64 * 1e-8;
+                                    ui.label(format!("{:.8}", dash_balance));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data.utxo_count));
+                                });
+                                row.col(|ui| {
+                                    let dash_received = data.total_received as f64 * 1e-8;
+                                    ui.label(format!("{:.8}", dash_received));
+                                });
+                                row.col(|ui| {
+                                    ui.label(&data.address_type);
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data.index));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data.derivation_path));
+                                });
                             });
+                        }
                     });
             });
         action
@@ -547,28 +566,67 @@ impl WalletsBalancesScreen {
 
     fn render_bottom_options(&mut self, ui: &mut Ui) {
         if self.selected_filters.contains("Funds") {
-            // Add the button to add a receiving address
-            if ui.button("Add Receiving Address").clicked() {
-                self.add_receiving_address();
+            ui.add_space(10.0);
+
+            // Check if wallet is unlocked
+            let wallet_is_open = if let Some(wallet_guard) = &self.selected_wallet {
+                wallet_guard.read().unwrap().is_open()
+            } else {
+                false
+            };
+
+            if wallet_is_open {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(RichText::new("➕ Add Receiving Address").size(14.0))
+                        .clicked()
+                    {
+                        self.add_receiving_address();
+                    }
+                });
+            } else {
+                // Show wallet unlock UI
+                self.render_wallet_unlock_if_needed(ui);
             }
         }
     }
 
-    fn render_wallet_asset_locks(&mut self, ui: &mut Ui) {
-        if let Some(wallet) = &self.selected_wallet {
-            let wallet = wallet.read().unwrap();
+    fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
+        let mut app_action = AppAction::None;
+        if let Some(arc_wallet) = &self.selected_wallet {
+            let wallet = arc_wallet.read().unwrap();
 
-            if wallet.unused_asset_locks.is_empty() {
-                ui.label("No asset locks available.");
-                return;
-            }
-
-            ui.label("Asset Locks:");
-            egui::ScrollArea::vertical()
-                .id_salt("asset_locks_table")
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .corner_radius(5.0)
+                .inner_margin(Margin::same(15))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
+                    ui.add_space(10.0);
+
+                    if wallet.unused_asset_locks.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(20.0);
+                            ui.label(RichText::new("No asset locks found").color(Color32::GRAY).size(14.0));
+                            ui.add_space(10.0);
+                            ui.label(RichText::new("Asset locks are special transactions that can be used to create identities").color(Color32::GRAY).size(12.0));
+                            ui.add_space(15.0);
+                            if ui.button("Search for asset locks").clicked() {
+                                app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                                    CoreTask::RefreshWalletInfo(arc_wallet.clone()),
+                                ))
+                            };
+                            ui.add_space(20.0);
+                        });
+                    } else {
+                        egui::ScrollArea::both()
+                            .id_salt("asset_locks_table")
+                            .show(ui, |ui| {
+                                TableBuilder::new(ui)
+                        .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                         .column(Column::initial(200.0)) // Transaction ID
@@ -616,24 +674,33 @@ impl WalletsBalancesScreen {
                                 });
                             }
                         });
+                    });
+                    }
                 });
         } else {
             ui.label("No wallet selected.");
         }
+        app_action
     }
 
     fn render_no_wallets_view(&self, ui: &mut Ui) {
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color
-            .rounding(5.0) // rounded corners
-            .outer_margin(Margin::same(20.0)) // space around the frame
+            .corner_radius(5.0) // rounded corners
+            .outer_margin(Margin::same(20)) // space around the frame
             .shadow(ui.visuals().window_shadow) // drop shadow
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
-                    ui.label(RichText::new("No Wallets Loaded").strong().size(25.0));
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new("No Wallets Loaded")
+                            .strong()
+                            .size(25.0)
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
 
                     // A separator line for visual clarity
                     ui.add_space(5.0);
@@ -646,7 +713,12 @@ impl WalletsBalancesScreen {
                     ui.add_space(10.0);
 
                     // Subheading or emphasis
-                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.heading(
+                        RichText::new("Here’s what you can do:")
+                            .strong()
+                            .size(18.0)
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                     ui.add_space(5.0);
 
                     // Bullet points
@@ -680,15 +752,7 @@ impl WalletsBalancesScreen {
     }
 
     fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            // Automatically dismiss the message after 10 seconds
-            if elapsed.num_seconds() >= 10 {
-                self.dismiss_message();
-            }
-        }
+        // Messages no longer auto-expire, they must be dismissed manually
     }
 }
 
@@ -701,27 +765,27 @@ impl ScreenLike for WalletsBalancesScreen {
                     ("Refreshing...", DesiredAppAction::None),
                     (
                         "Import Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                     ),
                     (
                         "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                     ),
                 ],
                 false => vec![
                     (
                         "Refresh",
-                        DesiredAppAction::BackendTask(BackendTask::CoreTask(
+                        DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
                             CoreTask::RefreshWalletInfo(wallet.clone()),
-                        )),
+                        ))),
                     ),
                     (
                         "Import Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                     ),
                     (
                         "Create Wallet",
-                        DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                        DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                     ),
                 ],
             }
@@ -729,11 +793,11 @@ impl ScreenLike for WalletsBalancesScreen {
             vec![
                 (
                     "Import Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                 ),
                 (
                     "Create Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                 ),
             ]
         };
@@ -750,75 +814,176 @@ impl ScreenLike for WalletsBalancesScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.app_context.wallets.read().unwrap().is_empty() {
-                self.render_no_wallets_view(ui);
-                return;
-            }
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            ui.add_space(10.0);
-            self.render_wallet_selection(ui);
-            ui.add_space(20.0);
-
-            // Render the address table
-            if self.selected_wallet.is_some() {
-                self.render_filter_selector(ui);
-
-                ui.add_space(10.0);
-
-                if !(self.selected_filters.contains("Unused Asset Locks")
-                    && self.selected_filters.len() == 1)
-                {
-                    action |= self.render_address_table(ui);
-                }
-
-                ui.add_space(20.0);
-
-                if self.selected_filters.contains("Unused Asset Locks") {
-                    // Render the asset locks section
-                    self.render_wallet_asset_locks(ui);
-                    ui.add_space(10.0);
-                }
-
-                self.render_bottom_options(ui);
-            } else {
-                ui.label("No wallet selected.");
-            }
-
+            // Display messages at the top, outside of scroll area
             let message = self.message.clone();
-            if let Some((message, message_type, timestamp)) = message {
+            if let Some((message, message_type, _timestamp)) = message {
                 let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => egui::Color32::BLACK,
-                    MessageType::Success => egui::Color32::DARK_GREEN,
+                    MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
+                    MessageType::Info => DashColors::text_primary(dark_mode),
+                    MessageType::Success => egui::Color32::from_rgb(100, 255, 100),
                 };
 
+                // Display message in a prominent frame
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(message).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.dismiss_message();
+                                }
+                            });
+                        });
+                });
                 ui.add_space(10.0);
-                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
-                    ui.group(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(message).color(message_color));
-                            let now = Utc::now();
-                            let elapsed = now.signed_duration_since(timestamp);
-                            if ui
-                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
-                                .clicked()
-                            {
-                                // Update the state outside the closure
-                                self.dismiss_message();
+            }
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if self.app_context.wallets.read().unwrap().is_empty() {
+                        self.render_no_wallets_view(ui);
+                        return;
+                    }
+
+                    // Wallet Information Panel (fit content)
+                    ui.vertical(|ui| {
+                        ui.heading(
+                            RichText::new("Wallets").color(DashColors::text_primary(dark_mode)),
+                        );
+                        ui.add_space(5.0);
+                        ui.horizontal(|ui| {
+                            Frame::new()
+                                .fill(DashColors::surface(dark_mode))
+                                .corner_radius(5.0)
+                                .inner_margin(Margin::symmetric(15, 10))
+                                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                                .show(ui, |ui| {
+                                    self.render_wallet_selection(ui);
+                                });
+                        });
+                    });
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    if self.selected_wallet.is_some() {
+                        // Always show the filter selector
+                        ui.vertical(|ui| {
+                            ui.heading(
+                                RichText::new("Addresses")
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            ui.add_space(10.0);
+
+                            // Filter section
+                            self.render_filter_selector(ui);
+
+                            ui.add_space(5.0);
+                            ui.label(
+                                RichText::new("Tip: Hold Shift to select multiple filters")
+                                    .color(Color32::GRAY)
+                                    .size(10.0)
+                                    .italics(),
+                            );
+                        });
+                        ui.add_space(10.0);
+
+                        if !(self.selected_filters.contains("Unused Asset Locks")
+                            && self.selected_filters.len() == 1)
+                        {
+                            inner_action |= self.render_address_table(ui);
+                        }
+
+                        if self.selected_filters.contains("Unused Asset Locks") {
+                            ui.add_space(15.0);
+                            // Render the asset locks section
+                            inner_action |= self.render_wallet_asset_locks(ui);
+                        }
+
+                        ui.add_space(10.0);
+                        self.render_bottom_options(ui);
+                    } else {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(50.0);
+                            ui.label(
+                                RichText::new("Please select a wallet to view its details")
+                                    .size(16.0)
+                                    .color(Color32::GRAY),
+                            );
+                        });
+                    }
+                });
+
+            inner_action
+        });
+
+        // Rename dialog
+        if self.show_rename_dialog {
+            egui::Window::new("Rename Wallet")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label("Enter new wallet name:");
+                        ui.add_space(5.0);
+
+                        let text_edit = egui::TextEdit::singleline(&mut self.rename_input)
+                            .hint_text("Enter wallet name")
+                            .desired_width(250.0);
+                        ui.add(text_edit);
+
+                        ui.add_space(10.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                if let Some(selected_wallet) = &self.selected_wallet {
+                                    let mut wallet = selected_wallet.write().unwrap();
+
+                                    // Limit the alias length to 64 characters
+                                    if self.rename_input.len() > 64 {
+                                        self.rename_input.truncate(64);
+                                    }
+
+                                    wallet.alias = Some(self.rename_input.clone());
+
+                                    // Update the alias in the database
+                                    let seed_hash = wallet.seed_hash();
+                                    self.app_context
+                                        .db
+                                        .set_wallet_alias(
+                                            &seed_hash,
+                                            Some(self.rename_input.clone()),
+                                        )
+                                        .ok();
+                                }
+                                self.show_rename_dialog = false;
+                                self.rename_input.clear();
+                            }
+
+                            if ui.button("Cancel").clicked() {
+                                self.show_rename_dialog = false;
+                                self.rename_input.clear();
                             }
                         });
                     });
                 });
-                ui.add_space(10.0);
-            }
-        });
+        }
 
-        match action {
-            AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) => {
-                self.refreshing = true;
-            }
-            _ => {}
+        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) =
+            action
+        {
+            self.refreshing = true;
         }
 
         action
@@ -844,4 +1009,34 @@ impl ScreenLike for WalletsBalancesScreen {
     fn refresh_on_arrival(&mut self) {}
 
     fn refresh(&mut self) {}
+}
+
+impl ScreenWithWalletUnlock for WalletsBalancesScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
+    }
 }

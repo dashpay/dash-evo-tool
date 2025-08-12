@@ -1,31 +1,39 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
-
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
-
+use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, Screen, ScreenLike};
-
-use super::tokens_screen::IdentityTokenBalance;
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents possible states in the “destroy frozen funds” flow
 #[derive(PartialEq)]
@@ -42,14 +50,25 @@ pub struct DestroyFrozenFundsScreen {
     pub identity: QualifiedIdentity,
 
     /// Info on which token contract we’re dealing with
-    pub identity_token_balance: IdentityTokenBalance,
+    pub identity_token_info: IdentityTokenInfo,
 
     /// The key used to sign the operation
     selected_key: Option<IdentityPublicKey>,
 
+    group: Option<(GroupContractPosition, Group)>,
+    is_unilateral_group_member: bool,
+    pub group_action_id: Option<Identifier>,
+
+    /// Optional public note
+    pub public_note: Option<String>,
+
     /// The user must specify the identity ID whose frozen funds are to be destroyed
     /// Typically some Identity that has been frozen by the system or a group
-    frozen_identity_id: String,
+    pub frozen_identity_id: String,
+
+    /// All frozen identities that can be selected
+    /// TODO: We should filter them by frozen status, right now we just show all known identities
+    pub frozen_identities: Vec<QualifiedIdentity>,
 
     status: DestroyFrozenFundsStatus,
     error_message: Option<String>,
@@ -67,43 +86,124 @@ pub struct DestroyFrozenFundsScreen {
 }
 
 impl DestroyFrozenFundsScreen {
-    pub fn new(
-        identity_token_balance: IdentityTokenBalance,
-        app_context: &Arc<AppContext>,
-    ) -> Self {
-        // Locate the local identity that owns the token contract
-        let identity = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .find(|id| id.identity.id() == identity_token_balance.identity_id)
-            .expect("No local qualified identity found matching this token's identity.");
+    pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let possible_key = identity_token_info
+            .identity
+            .identity
+            .get_first_public_key_matching(
+                Purpose::AUTHENTICATION,
+                HashSet::from([SecurityLevel::CRITICAL]),
+                KeyType::all_key_types().into(),
+                false,
+            )
+            .cloned();
 
-        // Grab a suitable key
-        let identity_clone = identity.identity.clone();
-        let possible_key = identity_clone.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-                SecurityLevel::CRITICAL,
-            ]),
-            KeyType::all_key_types().into(),
-            false,
+        let mut error_message = None;
+
+        let group = match identity_token_info
+            .token_config
+            .destroy_frozen_funds_rules()
+            .authorized_to_make_change_action_takers()
+        {
+            AuthorizedActionTakers::NoOne => {
+                error_message = Some("Burning is not allowed on this token".to_string());
+                None
+            }
+            AuthorizedActionTakers::ContractOwner => {
+                if identity_token_info.data_contract.contract.owner_id()
+                    != identity_token_info.identity.identity.id()
+                {
+                    error_message = Some(
+                        "You are not allowed to burn this token. Only the contract owner is."
+                            .to_string(),
+                    );
+                }
+                None
+            }
+            AuthorizedActionTakers::Identity(identifier) => {
+                if identifier != &identity_token_info.identity.identity.id() {
+                    error_message = Some("You are not allowed to burn this token".to_string());
+                }
+                None
+            }
+            AuthorizedActionTakers::MainGroup => {
+                match identity_token_info.token_config.main_control_group() {
+                    None => {
+                        error_message = Some(
+                            "Invalid contract: No main control group, though one should exist"
+                                .to_string(),
+                        );
+                        None
+                    }
+                    Some(group_pos) => {
+                        match identity_token_info
+                            .data_contract
+                            .contract
+                            .expected_group(group_pos)
+                        {
+                            Ok(group) => Some((group_pos, group.clone())),
+                            Err(e) => {
+                                error_message = Some(format!("Invalid contract: {}", e));
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            AuthorizedActionTakers::Group(group_pos) => {
+                match identity_token_info
+                    .data_contract
+                    .contract
+                    .expected_group(*group_pos)
+                {
+                    Ok(group) => Some((*group_pos, group.clone())),
+                    Err(e) => {
+                        error_message = Some(format!("Invalid contract: {}", e));
+                        None
+                    }
+                }
+            }
+        };
+
+        let mut is_unilateral_group_member = false;
+        if group.is_some() {
+            if let Some((_, group)) = group.clone() {
+                let your_power = group
+                    .members()
+                    .get(&identity_token_info.identity.identity.id());
+
+                if let Some(your_power) = your_power {
+                    if your_power >= &group.required_power() {
+                        is_unilateral_group_member = true;
+                    }
+                }
+            }
+        };
+
+        // Attempt to get an unlocked wallet reference
+        let selected_wallet = get_selected_wallet(
+            &identity_token_info.identity,
+            None,
+            possible_key.as_ref(),
+            &mut error_message,
         );
 
-        // Possibly get an unlocked wallet
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
+        let all_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
 
         Self {
-            identity,
-            identity_token_balance,
-            selected_key: possible_key.cloned(),
+            identity: identity_token_info.identity.clone(),
             frozen_identity_id: String::new(),
+            frozen_identities: all_identities,
+            identity_token_info,
+            selected_key: possible_key,
+            group,
+            is_unilateral_group_member,
+            group_action_id: None,
+            public_note: None,
             status: DestroyFrozenFundsStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,
@@ -112,42 +212,16 @@ impl DestroyFrozenFundsScreen {
         }
     }
 
-    /// Renders a ComboBox or similar for selecting an authentication key
-    fn render_key_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("destroy_key_selector")
-                .selected_text(match &self.selected_key {
-                    Some(key) => format!("Key ID: {}", key.id()),
-                    None => "Select a key".to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
-                        // Show all loaded public keys
-                        for key in self.identity.identity.public_keys().values() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    } else {
-                        // Show only "available" auth keys
-                        for key_wrapper in self.identity.available_authentication_keys() {
-                            let key = &key_wrapper.identity_public_key;
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    }
-                });
-        });
-    }
-
     /// Renders the text input for specifying the “frozen identity”
     fn render_frozen_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Frozen Identity ID:");
-            ui.text_edit_singleline(&mut self.frozen_identity_id);
-        });
+        ui.add(
+            IdentitySelector::new(
+                "frozen_identity_selector",
+                &mut self.frozen_identity_id,
+                &self.frozen_identities,
+            )
+            .label("Frozen Identity ID:"),
+        );
     }
 
     /// Confirmation popup
@@ -193,27 +267,42 @@ impl DestroyFrozenFundsScreen {
                     self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
 
                     // Grab the data contract for this token from the app context
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|c| c.contract.id() == self.identity_token_balance.data_contract_id)
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    let data_contract =
+                        Arc::new(self.identity_token_info.data_contract.contract.clone());
+
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        })
+                    } else {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        })
+                    };
 
                     // Dispatch the actual backend destroy action
                     action = AppAction::BackendTasks(
                         vec![
-                            BackendTask::TokenTask(TokenTask::DestroyFrozenFunds {
+                            BackendTask::TokenTask(Box::new(TokenTask::DestroyFrozenFunds {
                                 actor_identity: self.identity.clone(),
                                 data_contract,
-                                token_position: self.identity_token_balance.token_position,
+                                token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: if self.group_action_id.is_some() {
+                                    None
+                                } else {
+                                    self.public_note.clone()
+                                },
                                 frozen_identity: frozen_id,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
+                                group_info,
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
                         BackendTasksExecutionMode::Sequential,
                     );
@@ -238,12 +327,39 @@ impl DestroyFrozenFundsScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully destroyed frozen funds!");
+            if self.group_action_id.is_some() {
+                // This destroy is already initiated by the group, we are just signing it
+                ui.heading("Group Destroy Frozen Funds Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Action to Destroy Frozen Funds Initiated.");
+            } else {
+                ui.heading("Frozen Funds Destroyed Successfully.");
+            }
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
-                action = AppAction::PopScreenAndRefresh;
+            if self.group_action_id.is_some() {
+                if ui.button("Back to Group Actions").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenMyTokenBalances,
+                    );
+                }
+            } else {
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
+                }
             }
         });
         action
@@ -274,7 +390,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
 
     fn refresh(&mut self) {
         // Reload the identity data if needed
-        if let Ok(all_identities) = self.app_context.load_local_qualified_identities() {
+        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
             if let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
@@ -285,23 +401,48 @@ impl ScreenLike for DestroyFrozenFundsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action;
+
+        // Build a top panel
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Destroy Frozen Funds", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Destroy Frozen Funds", AppAction::None),
+                ],
+                vec![],
+            );
+        }
+
+        // Left panel
+        action |= add_left_panel(
             ctx,
             &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (
-                    &self.identity_token_balance.token_name,
-                    AppAction::PopScreen,
-                ),
-                ("Destroy", AppAction::None),
-            ],
-            vec![],
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+
+        island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
             if self.status == DestroyFrozenFundsStatus::Complete {
-                action = self.show_success_screen(ui);
+                action |= self.show_success_screen(ui);
                 return;
             }
 
@@ -309,17 +450,20 @@ impl ScreenLike for DestroyFrozenFundsScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
+            let has_keys = if self.app_context.is_developer_mode() {
                 !self.identity.identity.public_keys().is_empty()
             } else {
-                !self.identity.available_authentication_keys().is_empty()
+                !self
+                    .identity
+                    .available_authentication_keys_with_critical_security_level()
+                    .is_empty()
             };
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::DARK_RED,
+                    DashColors::error_color(dark_mode),
                     format!(
-                        "No authentication keys found for this {} identity.",
+                        "No authentication keys with CRITICAL security level found for this {} identity.",
                         self.identity.identity_type,
                     ),
                 );
@@ -328,11 +472,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 // Show "Add key" or "Check keys" option
                 let first_key = self.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                        SecurityLevel::CRITICAL,
-                    ]),
+                    HashSet::from([SecurityLevel::CRITICAL]),
                     KeyType::all_key_types().into(),
                     false,
                 );
@@ -367,18 +507,16 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 // Key selection
                 ui.heading("1. Select the key to sign the Destroy operation");
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    self.render_key_selection(ui);
-                    ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
-                        .alias
-                        .as_deref()
-                        .unwrap_or_else(|| &identity_id_string);
-                    ui.label(format!("Identity: {}", identity_display));
-                });
+
+                let mut selected_identity = Some(self.identity.clone());
+                add_identity_key_chooser(
+                    ui,
+                    &self.app_context,
+                    std::iter::once(&self.identity),
+                    &mut selected_identity,
+                    &mut self.selected_key,
+                    TransactionType::TokenAction,
+                );
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -387,17 +525,68 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 // Frozen identity
                 ui.heading("2. Frozen identity to destroy funds from");
                 ui.add_space(5.0);
-                self.render_frozen_identity_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Destroy so you are not allowed to choose the identity.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!("Identity: {}", self.frozen_identity_id));
+                } else {
+                    self.render_frozen_identity_input(ui);
+                }
 
                 ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Destroy so you are not allowed to put a note.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Note: {}",
+                        self.public_note.clone().unwrap_or("None".to_string())
+                    ));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Public note (optional):");
+                        ui.add_space(10.0);
+                        let mut txt = self.public_note.clone().unwrap_or_default();
+                        if ui
+                            .text_edit_singleline(&mut txt)
+                            .on_hover_text(
+                                "A note about the transaction that can be seen by the public.",
+                            )
+                            .changed()
+                        {
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
+                        }
+                    });
+                }
+
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Destroy Frozen Funds",
+                    &self.group_action_id,
+                );
 
                 // Destroy button
-                let button = egui::Button::new(RichText::new("Destroy").color(Color32::WHITE))
-                    .fill(Color32::DARK_RED)
-                    .rounding(3.0);
+                if self.app_context.is_developer_mode() || !button_text.contains("Test") {
+                    ui.add_space(10.0);
+                    let button =
+                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
+                            .fill(Color32::from_rgb(0, 128, 255))
+                            .corner_radius(3.0);
 
-                if ui.add(button).clicked() {
-                    self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() {
+                        self.show_confirmation_popup = true;
+                    }
                 }
 
                 // If user pressed "Destroy," show a popup
@@ -423,7 +612,10 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                         ));
                     }
                     DestroyFrozenFundsStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     DestroyFrozenFundsStatus::Complete => {
                         // handled above

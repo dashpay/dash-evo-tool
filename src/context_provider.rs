@@ -72,7 +72,7 @@ impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
         data_contract_id: &dash_sdk::platform::Identifier,
-        platform_version: &PlatformVersion,
+        _platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
         let app_ctx = app_ctx_guard
@@ -83,6 +83,10 @@ impl ContextProvider for Provider {
             Ok(Some(app_ctx.dpns_contract.clone()))
         } else if data_contract_id == &app_ctx.token_history_contract.id() {
             Ok(Some(app_ctx.token_history_contract.clone()))
+        } else if data_contract_id == &app_ctx.withdraws_contract.id() {
+            Ok(Some(app_ctx.withdraws_contract.clone()))
+        } else if data_contract_id == &app_ctx.keyword_search_contract.id() {
+            Ok(Some(app_ctx.keyword_search_contract.clone()))
         } else {
             let dc = self
                 .db
@@ -93,6 +97,21 @@ impl ContextProvider for Provider {
 
             Ok(dc.map(|qc| Arc::new(qc.contract)))
         }
+    }
+
+    fn get_token_configuration(
+        &self,
+        token_id: &dash_sdk::platform::Identifier,
+    ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
+    {
+        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx = app_ctx_guard
+            .as_ref()
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
+
+        self.db
+            .get_token_config_for_id(token_id, app_ctx)
+            .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))
     }
 
     fn get_quorum_public_key(

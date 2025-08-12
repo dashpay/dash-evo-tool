@@ -1,10 +1,11 @@
-use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::PrivateKeyTarget;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::de::{BorrowDecoder, Decoder};
 use bincode::enc::Encoder;
 use bincode::error::{DecodeError, EncodeError};
 use bincode::{BorrowDecode, Decode, Encode};
+use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::bip32::ChildNumber;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -248,6 +249,9 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, Walle
 }
 
 impl KeyStorage {
+    // Allow dead_code: This method provides direct key access without password resolution,
+    // useful for cases where keys are already decrypted or for debugging purposes
+    #[allow(dead_code)]
     pub fn get(
         &self,
         key: &(PrivateKeyTarget, KeyID),
@@ -274,6 +278,7 @@ impl KeyStorage {
         &self,
         key: &(PrivateKeyTarget, KeyID),
         wallets: &[Arc<RwLock<Wallet>>],
+        network: Network,
     ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
         self.private_keys
             .get(key)
@@ -293,8 +298,13 @@ impl KeyStorage {
                             wallets,
                             *wallet_seed_hash,
                             derivation_path,
+                            network,
                         )?
-                        .ok_or("Wallet not present".to_string())?;
+                        .ok_or(format!(
+                            "Wallet for key at derivation path {} not present, we have {} wallets",
+                            derivation_path,
+                            wallets.len()
+                        ))?;
                         // match qualified_identity_public_key_data
                         //     .identity_public_key
                         //     .security_level()
@@ -311,12 +321,18 @@ impl KeyStorage {
             .transpose()
     }
 
+    // Allow dead_code: This method provides access to raw private key data,
+    // useful for inspecting key states and encryption status
+    #[allow(dead_code)]
     pub fn get_private_key_data(&self, key: &(PrivateKeyTarget, KeyID)) -> Option<&PrivateKeyData> {
         self.private_keys
             .get(key)
             .map(|(_, private_key_data)| private_key_data)
     }
 
+    // Allow dead_code: This method provides combined access to private key data and wallet info,
+    // useful for advanced key management and wallet integration scenarios
+    #[allow(dead_code)]
     pub fn get_private_key_data_and_wallet_info(
         &self,
         key: &(PrivateKeyTarget, KeyID),
@@ -361,6 +377,9 @@ impl KeyStorage {
         self.private_keys.contains_key(key)
     }
 
+    // Allow dead_code: This method returns all stored key identifiers,
+    // useful for key enumeration and management operations
+    #[allow(dead_code)]
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
     }

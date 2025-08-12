@@ -11,9 +11,12 @@ use dash_sdk::{
 use rusqlite::params;
 
 impl Database {
-    pub fn initialize_scheduled_votes_table(&self) -> rusqlite::Result<()> {
+    pub fn initialize_scheduled_votes_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
         // Create the scheduled_votes table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS scheduled_votes (
                 identity_id BLOB NOT NULL,
                 contested_name TEXT NOT NULL,
@@ -21,10 +24,70 @@ impl Database {
                 time INTEGER NOT NULL,
                 executed INTEGER NOT NULL DEFAULT 0,
                 network TEXT NOT NULL,
-                PRIMARY KEY (identity_id, contested_name)
+                PRIMARY KEY (identity_id, contested_name),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
             )",
             [],
         )?;
+        Ok(())
+    }
+
+    pub fn update_scheduled_votes_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
+        {
+            // Check if the foreign key already exists
+            let mut stmt = conn.prepare("PRAGMA foreign_key_list('scheduled_votes')")?;
+            let fk_exists = stmt
+                .query_map([], |row| row.get::<_, String>(2))?
+                .any(|table_name_result| table_name_result.ok().as_deref() == Some("identity"));
+
+            if fk_exists {
+                // Foreign key already exists, no need to alter the table
+                return Ok(());
+            }
+        }
+
+        // SQLite doesn't directly support adding foreign keys to existing tables.
+        // We need to recreate the table.
+
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
+        // Rename existing table
+        conn.execute(
+            "ALTER TABLE scheduled_votes RENAME TO scheduled_votes_old",
+            [],
+        )?;
+
+        // Create the new table with the foreign key constraint
+        conn.execute(
+            "CREATE TABLE scheduled_votes (
+            identity_id BLOB NOT NULL,
+            contested_name TEXT NOT NULL,
+            vote_choice TEXT NOT NULL,
+            time INTEGER NOT NULL,
+            executed INTEGER NOT NULL DEFAULT 0,
+            network TEXT NOT NULL,
+            PRIMARY KEY (identity_id, contested_name),
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+        )",
+            [],
+        )?;
+
+        // Copy data from old to new table
+        conn.execute(
+            "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network)
+         SELECT identity_id, contested_name, vote_choice, time, executed, network
+         FROM scheduled_votes_old",
+            [],
+        )?;
+
+        // Drop the old table
+        conn.execute("DROP TABLE scheduled_votes_old", [])?;
+
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
         Ok(())
     }
 
@@ -33,7 +96,7 @@ impl Database {
         app_context: &AppContext,
         votes: &Vec<ScheduledDPNSVote>,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for vote in votes {
@@ -53,7 +116,7 @@ impl Database {
         identity_id: &[u8],
         contested_name: &str,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM scheduled_votes WHERE identity_id = ? AND contested_name = ? AND network = ?",
@@ -68,7 +131,7 @@ impl Database {
         identity_id: &[u8],
         contested_name: String,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         self.execute(
             "UPDATE scheduled_votes SET executed = 1 WHERE identity_id = ? AND contested_name = ? AND network = ?",
             params![identity_id, contested_name, network],
@@ -80,7 +143,7 @@ impl Database {
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<Vec<ScheduledDPNSVote>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT * FROM scheduled_votes WHERE network = ?")?;
@@ -145,7 +208,7 @@ impl Database {
 
     /// Clear all scheduled votes from the db
     pub fn clear_all_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
@@ -157,7 +220,7 @@ impl Database {
     }
 
     pub fn clear_executed_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
         let conn = self.conn.lock().unwrap();
 
         conn.execute(

@@ -1,30 +1,44 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
-
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
-
-use super::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
-use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::tokens::TokenTask;
+use super::tokens_screen::IdentityTokenInfo;
+use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
+use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{self, Color32, Context, Ui};
+use egui::RichText;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Internal states for the mint process.
 #[derive(PartialEq)]
@@ -37,15 +51,18 @@ pub enum MintTokensStatus {
 
 /// A UI Screen for minting tokens from an existing token contract
 pub struct MintTokensScreen {
-    pub identity: QualifiedIdentity,
-    pub identity_token_balance: IdentityTokenBalance, // Info on which token contract to mint from
+    pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
+    pub public_note: Option<String>,
+    group: Option<(GroupContractPosition, Group)>,
+    is_unilateral_group_member: bool,
+    pub group_action_id: Option<Identifier>,
+    known_identities: Vec<QualifiedIdentity>,
 
-    /// If the contract allows it, you can optionally mint to a specific identity.
-    /// If omitted, minted tokens are credited to the issuer's identity.
-    recipient_identity_id: String,
+    pub recipient_identity_id: String,
 
-    amount_to_mint: String,
+    pub amount: Option<Amount>,
+    pub amount_input: Option<AmountInput>,
     status: MintTokensStatus,
     error_message: Option<String>,
 
@@ -62,44 +79,125 @@ pub struct MintTokensScreen {
 }
 
 impl MintTokensScreen {
-    pub fn new(
-        identity_token_balance: IdentityTokenBalance,
-        app_context: &Arc<AppContext>,
-    ) -> Self {
-        // Find the local qualified identity that corresponds to `identity_token_balance.identity_id`
-        let identity = app_context
+    pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let known_identities = app_context
             .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .find(|id| id.identity.id() == identity_token_balance.identity_id)
-            .expect("No local qualified identity found matching the token's identity");
+            .expect("Identities not loaded");
 
-        // Grab a default key if possible
-        let identity_clone = identity.identity.clone();
-        let possible_key = identity_clone.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-                SecurityLevel::CRITICAL,
-            ]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+        let possible_key = identity_token_info
+            .identity
+            .identity
+            .get_first_public_key_matching(
+                Purpose::AUTHENTICATION,
+                HashSet::from([SecurityLevel::CRITICAL]),
+                KeyType::all_key_types().into(),
+                false,
+            )
+            .cloned();
+
+        let mut error_message = None;
+
+        let group = match identity_token_info
+            .token_config
+            .manual_minting_rules()
+            .authorized_to_make_change_action_takers()
+        {
+            AuthorizedActionTakers::NoOne => {
+                error_message = Some("Minting is not allowed on this token".to_string());
+                None
+            }
+            AuthorizedActionTakers::ContractOwner => {
+                if identity_token_info.data_contract.contract.owner_id()
+                    != identity_token_info.identity.identity.id()
+                {
+                    error_message = Some(
+                        "You are not allowed to mint this token. Only the contract owner is."
+                            .to_string(),
+                    );
+                }
+                None
+            }
+            AuthorizedActionTakers::Identity(identifier) => {
+                if identifier != &identity_token_info.identity.identity.id() {
+                    error_message = Some("You are not allowed to mint this token".to_string());
+                }
+                None
+            }
+            AuthorizedActionTakers::MainGroup => {
+                match identity_token_info.token_config.main_control_group() {
+                    None => {
+                        error_message = Some(
+                            "Invalid contract: No main control group, though one should exist"
+                                .to_string(),
+                        );
+                        None
+                    }
+                    Some(group_pos) => {
+                        match identity_token_info
+                            .data_contract
+                            .contract
+                            .expected_group(group_pos)
+                        {
+                            Ok(group) => Some((group_pos, group.clone())),
+                            Err(e) => {
+                                error_message = Some(format!("Invalid contract: {}", e));
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+            AuthorizedActionTakers::Group(group_pos) => {
+                match identity_token_info
+                    .data_contract
+                    .contract
+                    .expected_group(*group_pos)
+                {
+                    Ok(group) => Some((*group_pos, group.clone())),
+                    Err(e) => {
+                        error_message = Some(format!("Invalid contract: {}", e));
+                        None
+                    }
+                }
+            }
+        };
+
+        let mut is_unilateral_group_member = false;
+        if group.is_some() {
+            if let Some((_, group)) = group.clone() {
+                let your_power = group
+                    .members()
+                    .get(&identity_token_info.identity.identity.id());
+
+                if let Some(your_power) = your_power {
+                    if your_power >= &group.required_power() {
+                        is_unilateral_group_member = true;
+                    }
+                }
+            }
+        };
 
         // Attempt to get an unlocked wallet reference
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key.clone(), &mut error_message);
+        let selected_wallet = get_selected_wallet(
+            &identity_token_info.identity,
+            None,
+            possible_key.as_ref(),
+            &mut error_message,
+        );
 
         Self {
-            identity,
-            identity_token_balance,
-            selected_key: possible_key.cloned(),
+            identity_token_info,
+            selected_key: possible_key,
+            public_note: None,
+            group,
+            is_unilateral_group_member,
+            group_action_id: None,
+            known_identities,
             recipient_identity_id: "".to_string(),
-            amount_to_mint: "".to_string(),
+            amount: None,
+            amount_input: None,
             status: MintTokensStatus::NotStarted,
-            error_message: None,
+            error_message,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             selected_wallet,
@@ -108,53 +206,39 @@ impl MintTokensScreen {
         }
     }
 
-    /// Renders a ComboBox or similar for selecting an authentication key
-    fn render_key_selection(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Select Key:");
-            egui::ComboBox::from_id_salt("mint_key_selector")
-                .selected_text(match &self.selected_key {
-                    Some(key) => format!("Key ID: {}", key.id()),
-                    None => "Select a key".to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    if self.app_context.developer_mode {
-                        // Show all loaded public keys
-                        for key in self.identity.identity.public_keys().values() {
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    } else {
-                        // Show only "available" auth keys
-                        for key_wrapper in self.identity.available_authentication_keys() {
-                            let key = &key_wrapper.identity_public_key;
-                            let label =
-                                format!("Key ID: {} (Purpose: {:?})", key.id(), key.purpose());
-                            ui.selectable_value(&mut self.selected_key, Some(key.clone()), label);
-                        }
-                    }
-                });
-        });
-    }
-
-    /// Renders a text input for the user to specify an amount to mint
+    /// Renders an amount input for the user to specify an amount to mint
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount to Mint:");
-            ui.text_edit_singleline(&mut self.amount_to_mint);
-
-            // Since it's minting, we often don't do "Max."
-            // But you could show a help text or put constraints if needed.
+        // Lazy initialization with proper token configuration
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            // Create appropriate Amount based on token configuration
+            let token_amount = Amount::from_token(&self.identity_token_info, 0);
+            AmountInput::new(token_amount).with_label("Amount to Mint:")
         });
+
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.status {
+            MintTokensStatus::WaitingForResult(_) | MintTokensStatus::Complete => false,
+            MintTokensStatus::NotStarted | MintTokensStatus::ErrorMessage(_) => true,
+        };
+
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
+
+        response.inner.update(&mut self.amount);
+        // errors are handled inside AmountInput
     }
 
     /// Renders an optional text input for the user to specify a "Recipient Identity"
     fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient (Optional):");
-            ui.text_edit_singleline(&mut self.recipient_identity_id);
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "mint_recipient_selector",
+                &mut self.recipient_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Recipient:")
+            .exclude(&[self.identity_token_info.identity.identity.id()]),
+        );
 
         // If empty, minted tokens go to the 'issuer' identity (self.identity).
     }
@@ -168,16 +252,15 @@ impl MintTokensScreen {
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount_to_mint.parse::<u64>().ok();
-                if amount_ok.is_none() {
+                let Some(amount) = &self.amount else {
                     self.error_message = Some("Please enter a valid amount.".into());
                     self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
                     self.show_confirmation_popup = false;
                     return;
-                }
+                };
 
                 let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
-                    Some(self.identity.identity.id())
+                    None
                 } else {
                     // Attempt to parse from base58 or hex
                     match Identifier::from_string_try_encodings(
@@ -197,7 +280,7 @@ impl MintTokensScreen {
 
                 ui.label(format!(
                     "Are you sure you want to mint {} token(s)?",
-                    self.amount_to_mint
+                    amount
                 ));
 
                 // If user provided a recipient:
@@ -207,7 +290,7 @@ impl MintTokensScreen {
                         recipient_id.to_string(Encoding::Base58)
                     ));
                 } else {
-                    ui.label("No recipient specified; tokens will be minted to your identity.");
+                    ui.label("No recipient specified; tokens will be minted to default identity.");
                 }
 
                 ui.add_space(10.0);
@@ -221,32 +304,41 @@ impl MintTokensScreen {
                         .as_secs();
                     self.status = MintTokensStatus::WaitingForResult(now);
 
-                    // Grab the data contract for this token from the app context
-                    let data_contract = self
-                        .app_context
-                        .get_contracts(None, None)
-                        .expect("Contracts not loaded")
-                        .iter()
-                        .find(|c| c.contract.id() == self.identity_token_balance.data_contract_id)
-                        .expect("Data contract not found")
-                        .contract
-                        .clone();
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        })
+                    } else {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        })
+                    };
 
                     // Dispatch the actual backend mint action
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(TokenTask::MintTokens {
-                                sending_identity: self.identity.clone(),
-                                data_contract,
-                                token_position: self.identity_token_balance.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                amount: amount_ok.unwrap(),
-                                recipient_id: maybe_identifier,
-                            }),
-                            BackendTask::TokenTask(TokenTask::QueryMyTokenBalances),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
+                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::MintTokens {
+                            sending_identity: self.identity_token_info.identity.clone(),
+                            data_contract: Arc::new(
+                                self.identity_token_info.data_contract.contract.clone(),
+                            ),
+                            token_position: self.identity_token_info.token_position,
+                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
+                            amount: amount.value(),
+                            recipient_id: maybe_identifier,
+                            group_info,
+                        },
+                    )));
                 }
 
                 // Cancel button
@@ -268,13 +360,39 @@ impl MintTokensScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Mint Successful!");
+            if self.group_action_id.is_some() {
+                // This mint is already initiated by the group, we are just signing it
+                ui.heading("Group Mint Signing Successful.");
+            } else if !self.is_unilateral_group_member && self.group.is_some() {
+                ui.heading("Group Mint Initiated.");
+            } else {
+                ui.heading("Mint Successful.");
+            }
 
             ui.add_space(20.0);
 
-            if ui.button("Back to Tokens").clicked() {
-                // Pop this screen and refresh
-                action = AppAction::PopScreenAndRefresh;
+            if self.group_action_id.is_some() {
+                if ui.button("Back to Group Actions").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenMyTokenBalances,
+                    );
+                }
+            } else {
+                if ui.button("Back to Tokens").clicked() {
+                    action = AppAction::PopScreenAndRefresh;
+                }
+
+                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
+                    action = AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                        Screen::GroupActionsScreen(GroupActionsScreen::new(
+                            &self.app_context.clone(),
+                        )),
+                    );
+                }
             }
         });
         action
@@ -301,75 +419,107 @@ impl ScreenLike for MintTokensScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_qualified_identities() {
+        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
             if let Some(updated_identity) = all_identities
                 .into_iter()
-                .find(|id| id.identity.id() == self.identity.identity.id())
+                .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
             {
-                self.identity = updated_identity;
+                self.identity_token_info.identity = updated_identity;
             }
         }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action;
+
         // Build a top panel
-        let mut action = add_top_panel(
+        if self.group_action_id.is_some() {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Contracts", AppAction::GoToMainScreen),
+                    ("Group Actions", AppAction::PopScreen),
+                    ("Mint", AppAction::None),
+                ],
+                vec![],
+            );
+        } else {
+            action = add_top_panel(
+                ctx,
+                &self.app_context,
+                vec![
+                    ("Tokens", AppAction::GoToMainScreen),
+                    (&self.identity_token_info.token_alias, AppAction::PopScreen),
+                    ("Mint", AppAction::None),
+                ],
+                vec![],
+            );
+        }
+
+        // Left panel
+        action |= add_left_panel(
             ctx,
             &self.app_context,
-            vec![
-                ("Tokens", AppAction::GoToMainScreen),
-                (
-                    &self.identity_token_balance.token_name,
-                    AppAction::PopScreen,
-                ),
-                ("Mint", AppAction::None),
-            ],
-            vec![],
+            crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        // Subscreen chooser
+        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+
+        let central_panel_action = island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
             // If we are in the "Complete" status, just show success screen
             if self.status == MintTokensStatus::Complete {
-                action = self.show_success_screen(ui);
-                return;
+                return self.show_success_screen(ui);
             }
 
             ui.heading("Mint Tokens");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.developer_mode {
-                !self.identity.identity.public_keys().is_empty()
+            let has_keys = if self.app_context.is_developer_mode() {
+                !self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .public_keys()
+                    .is_empty()
             } else {
-                !self.identity.available_authentication_keys().is_empty()
+                !self
+                    .identity_token_info
+                    .identity
+                    .available_authentication_keys_with_critical_security_level()
+                    .is_empty()
             };
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::DARK_RED,
+                    DashColors::error_color(dark_mode),
                     format!(
-                        "No authentication keys found for this {} identity.",
-                        self.identity.identity_type,
+                        "No authentication keys with CRITICAL security level found for this {} identity.",
+                        self.identity_token_info.identity.identity_type,
                     ),
                 );
                 ui.add_space(10.0);
 
                 // Show "Add key" or "Check keys" option
-                let first_key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                        SecurityLevel::CRITICAL,
-                    ]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
+                let first_key = self
+                    .identity_token_info
+                    .identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
 
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
+                            self.identity_token_info.identity.clone(),
                             key.clone(),
                             None,
                             &self.app_context,
@@ -380,7 +530,7 @@ impl ScreenLike for MintTokensScreen {
 
                 if ui.button("Add key").clicked() {
                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
+                        self.identity_token_info.identity.clone(),
                         &self.app_context,
                     )));
                 }
@@ -391,25 +541,23 @@ impl ScreenLike for MintTokensScreen {
 
                     if needed_unlock && !just_unlocked {
                         // Must unlock before we can proceed
-                        return;
+                        return AppAction::None;
                     }
                 }
 
                 // 1) Key selection
                 ui.heading("1. Select the key to sign the Mint transaction");
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    self.render_key_selection(ui);
-                    ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
-                        .alias
-                        .as_deref()
-                        .unwrap_or_else(|| &identity_id_string);
-                    ui.label(format!("Identity: {}", identity_display));
-                });
+
+                let mut selected_identity = Some(self.identity_token_info.identity.clone());
+                add_identity_key_chooser(
+                    ui,
+                    &self.app_context,
+                    std::iter::once(&self.identity_token_info.identity),
+                    &mut selected_identity,
+                    &mut self.selected_key,
+                    TransactionType::TokenAction,
+                );
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -418,24 +566,100 @@ impl ScreenLike for MintTokensScreen {
                 // 2) Amount to mint
                 ui.heading("2. Amount to mint");
                 ui.add_space(5.0);
-                self.render_amount_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Mint so you are not allowed to choose the amount.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount
+                            .as_ref()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default()
+                    ));
+                } else {
+                    self.render_amount_input(ui);
+                }
 
+                if self
+                    .identity_token_info
+                    .token_config
+                    .distribution_rules()
+                    .minting_allow_choosing_destination()
+                    || self.app_context.is_developer_mode()
+                {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    if self
+                        .identity_token_info
+                        .token_config
+                        .distribution_rules()
+                        .new_tokens_destination_identity()
+                        .is_some()
+                    {
+                        ui.heading("3. Recipient identity (optional)");
+                    } else {
+                        ui.heading("3. Recipient identity (required)");
+                    }
+                    ui.add_space(5.0);
+                    self.render_recipient_input(ui);
+                }
+
+                ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 
-                // 3) (Optional) recipient identity
-                ui.heading("3. (Optional) Recipient identity");
+                // Render text input for the public note
+                ui.heading("4. Public note (optional)");
                 ui.add_space(5.0);
-                self.render_recipient_input(ui);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Mint so you are not allowed to put a note.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!(
+                        "Note: {}",
+                        self.public_note.clone().unwrap_or("None".to_string())
+                    ));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Public note (optional):");
+                        ui.add_space(10.0);
+                        let mut txt = self.public_note.clone().unwrap_or_default();
+                        if ui
+                            .text_edit_singleline(&mut txt)
+                            .on_hover_text(
+                                "A note about the transaction that can be seen by the public.",
+                            )
+                            .changed()
+                        {
+                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
+                        }
+                    });
+                }
 
-                ui.add_space(10.0);
+                let button_text = render_group_action_text(
+                    ui,
+                    &self.group,
+                    &self.identity_token_info,
+                    "Mint",
+                    &self.group_action_id,
+                );
+
                 // Mint button
-                let button = egui::Button::new(RichText::new("Mint").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
-                    .rounding(3.0);
+                if self.app_context.is_developer_mode() || !button_text.contains("Test") {
+                    ui.add_space(10.0);
+                    let button =
+                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
+                            .fill(Color32::from_rgb(0, 128, 255))
+                            .corner_radius(3.0);
 
-                if ui.add(button).clicked() {
-                    self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() {
+                        self.show_confirmation_popup = true;
+                    }
                 }
 
                 // If the user pressed "Mint," show a popup
@@ -458,15 +682,21 @@ impl ScreenLike for MintTokensScreen {
                         ui.label(format!("Minting... elapsed: {} seconds", elapsed));
                     }
                     MintTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
                     MintTokensStatus::Complete => {
                         // handled above
                     }
                 }
             }
+
+            AppAction::None
         });
 
+        action |= central_panel_action;
         action
     }
 }

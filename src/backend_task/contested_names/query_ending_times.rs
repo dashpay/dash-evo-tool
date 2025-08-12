@@ -1,8 +1,8 @@
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
+use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::drive::query::VotePollsByEndDateDriveQuery;
 use dash_sdk::platform::FetchMany;
 use std::collections::BTreeMap;
@@ -10,13 +10,11 @@ use std::sync::Arc;
 
 use crate::app::TaskResult;
 use dash_sdk::Sdk;
-use tokio::sync::mpsc;
-
 impl AppContext {
     pub(super) async fn query_dpns_ending_times(
         self: &Arc<Self>,
         sdk: Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), String> {
         let now: DateTime<Utc> = Utc::now();
         let start_time_dt = now - Duration::weeks(2);
@@ -64,6 +62,7 @@ impl AppContext {
                     tracing::error!("Error fetching vote polls: {}", e);
                     if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
                         proof_bytes,
+                        path_query,
                         height,
                         time_ms,
                         error,
@@ -82,32 +81,28 @@ impl AppContext {
                             Err(e) => return Err(e),
                         };
 
-                        // // Encode the path_query using bincode
-                        // let verification_path_query_bytes =
-                        //     match bincode::encode_to_vec(&path_query, bincode::config::standard())
-                        //         .map_err(|encode_err| {
-                        //             tracing::error!("Error encoding path_query: {}", encode_err);
-                        //             format!("Error encoding path_query: {}", encode_err)
-                        //         }) {
-                        //         Ok(encoded_path_query) => encoded_path_query,
-                        //         Err(e) => return Err(e),
-                        //     };
+                        // Encode the path_query using bincode
+                        let verification_path_query_bytes =
+                            match bincode::encode_to_vec(path_query, bincode::config::standard())
+                                .map_err(|encode_err| {
+                                    tracing::error!("Error encoding path_query: {}", encode_err);
+                                    format!("Error encoding path_query: {}", encode_err)
+                                }) {
+                                Ok(encoded_path_query) => encoded_path_query,
+                                Err(e) => return Err(e),
+                            };
 
-                        if let Err(e) = self
-                            .db
+                        self.db
                             .insert_proof_log_item(ProofLogItem {
                                 request_type: RequestType::GetVotePollsByEndDate,
                                 request_bytes: encoded_query,
-                                verification_path_query_bytes: vec![],
+                                verification_path_query_bytes,
                                 height: *height,
                                 time_ms: *time_ms,
                                 proof_bytes: proof_bytes.clone(),
                                 error: Some(error.clone()),
                             })
-                            .map_err(|e| e.to_string())
-                        {
-                            return Err(e);
-                        }
+                            .map_err(|e| e.to_string())?
                     }
                     if e.to_string().contains("try another server")
                         || e.to_string().contains(
@@ -130,7 +125,7 @@ impl AppContext {
 
             contests_end_times.extend(new_end_times.clone());
 
-            if new_end_times.len() == 0 {
+            if new_end_times.is_empty() {
                 break;
             }
 

@@ -1,11 +1,10 @@
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
+use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Fetch, Identity};
-use dash_sdk::Sdk;
-use tokio::sync::mpsc;
 
 use super::BackendTaskSuccessResult;
 
@@ -14,19 +13,13 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        let refreshed_identity_id = qualified_identity.identity.id();
         // Fetch the latest state of the identity from Platform
-        let refreshed_identity =
-            Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| {
-                    format!(
-                        "Identity with id {} not found in Platform state",
-                        qualified_identity.identity.id().to_string(Encoding::Base58)
-                    )
-                })?;
+        let maybe_refreshed_identity = Identity::fetch_by_identifier(sdk, refreshed_identity_id)
+            .await
+            .map_err(|e| e.to_string())?;
 
         // Get local identities
         let mut local_qualified_identities = self
@@ -36,11 +29,11 @@ impl AppContext {
         // Find the local identity to update
         let outdated_identity_index = local_qualified_identities
             .iter()
-            .position(|qi| qi.identity.id() == refreshed_identity.id())
+            .position(|qi| qi.identity.id() == refreshed_identity_id)
             .ok_or_else(|| {
                 format!(
                     "Identity with id {} not found in local identities",
-                    refreshed_identity.id().to_string(Encoding::Base58)
+                    refreshed_identity_id.to_string(Encoding::Base58)
                 )
             })?;
 
@@ -49,10 +42,23 @@ impl AppContext {
             local_qualified_identities.remove(outdated_identity_index);
 
         // Update the identity
-        qualified_identity_to_update.identity = refreshed_identity;
+        match maybe_refreshed_identity {
+            Some(refreshed_identity) => {
+                qualified_identity_to_update.identity = refreshed_identity;
+                qualified_identity_to_update
+                    .status
+                    .update(IdentityStatus::Active);
+            }
+            None => {
+                // it is not found and the status allows refresh, update status to NotFound
+                qualified_identity_to_update
+                    .status
+                    .update(IdentityStatus::NotFound);
+            }
+        }
 
         // Insert the updated identity into local state
-        self.insert_local_qualified_identity(&qualified_identity_to_update, None)
+        self.update_local_qualified_identity(&qualified_identity_to_update)
             .map_err(|e| e.to_string())?;
 
         // Send refresh message to refresh the Identities Screen

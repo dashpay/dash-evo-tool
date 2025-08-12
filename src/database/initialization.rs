@@ -1,10 +1,10 @@
 use crate::database::Database;
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 5;
+pub const DEFAULT_DB_VERSION: u16 = 11;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -16,15 +16,15 @@ impl Database {
             self.set_default_version()?;
         } else {
             // If outdated, back up and either migrate or recreate the database.
-            if let Some(current_version) = self.is_outdated()? {
+            let current_version = self.db_schema_version()?;
+            if current_version != DEFAULT_DB_VERSION {
                 self.backup_db(db_file_path)?;
                 if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
-                    // The migration failed
-                    println!("Migration failed: {:?}", e);
-                    self.recreate_db(db_file_path)?;
-                    self.create_tables()?;
-                    self.set_default_version()?;
-                    println!("Database reinitialized with default settings.");
+                    let version_after_migration = self.db_schema_version()?;
+                    panic!(
+                        "Database migration from version {} to {} failed, database is at version {}. Error: {:?}",
+                        current_version, DEFAULT_DB_VERSION, version_after_migration, e
+                    );
                 }
             }
         }
@@ -32,35 +32,99 @@ impl Database {
         Ok(())
     }
 
-    fn apply_version_changes(&self, version: u16) -> rusqlite::Result<()> {
+    fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
+            10 => {
+                self.add_theme_preference_column(tx)?;
+            }
+            9 => {
+                self.delete_all_identities_in_all_devnets_and_regtest(tx)?;
+                self.delete_all_local_tokens_in_all_devnets_and_regtest(tx)?;
+                self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(tx)?;
+                self.remove_all_contracts_in_all_devnets_and_regtest(tx)?;
+                self.fix_identity_devnet_network_name(tx)?;
+            }
+            8 => {
+                self.change_contract_name_to_alias(tx)?;
+            }
+            7 => {
+                self.migrate_asset_lock_fk_to_set_null(tx)?;
+            }
+            6 => {
+                self.update_scheduled_votes_table(tx)?;
+                self.initialize_token_table(tx)?;
+                self.drop_identity_token_balances_table(tx)?;
+                self.initialize_identity_token_balances_table(tx)?;
+                self.initialize_identity_order_table(tx)?;
+                self.initialize_token_order_table(tx)?;
+            }
             5 => {
-                self.initialize_scheduled_votes_table()?;
+                self.initialize_scheduled_votes_table(tx)?;
             }
             4 => {
-                self.initialize_top_up_table()?;
+                self.initialize_top_up_table(tx)?;
             }
             3 => {
-                self.add_custom_dash_qt_columns()?;
+                self.add_custom_dash_qt_columns(tx)?;
             }
             2 => {
-                self.initialize_proof_log_table()?;
+                self.initialize_proof_log_table(tx)?;
             }
-            _ => {}
+            _ => {
+                tracing::warn!("No database changes for version {}", version);
+            }
         }
 
         Ok(())
     }
+    /// Migrates the database from the original version to the target version.
+    ///
+    /// This function performs the necessary migrations by applying changes for each version
+    /// from the original version up to the target version.
+    ///
+    /// It uses a transaction to ensure that system integrity is maintained during the migration process.
+    /// If any migration step fails, the transaction will be rolled back, and the user can safely
+    /// downgrade his app to the previous version.
+    ///
+    /// ## Returns
+    ///
+    /// `rusqlite::Result<()>` - Returns `Ok(true)` if the migration was successful, Ok(false) if no migration needed,
+    /// or an error if it failed.
     fn try_perform_migration(
         &self,
         original_version: u16,
         to_version: u16,
-    ) -> rusqlite::Result<()> {
-        for version in (original_version + 1)..=to_version {
-            self.apply_version_changes(version)?;
-            self.update_database_version(version)?;
+    ) -> Result<bool, String> {
+        match original_version.cmp(&to_version) {
+            std::cmp::Ordering::Equal => {
+                tracing::trace!(
+                    "No database migration needed, already at version {}",
+                    to_version
+                );
+                Ok(false)
+            }
+            std::cmp::Ordering::Greater => Err(format!(
+                "Database schema version {} is too new, max supported version: {}. Please update dash-evo-tool.",
+                original_version, to_version
+            )),
+            std::cmp::Ordering::Less => {
+                let mut conn = self
+                    .conn
+                    .lock()
+                    .expect("Failed to lock database connection");
+
+                for version in (original_version + 1)..=to_version {
+                    let tx = conn.transaction().map_err(|e| e.to_string())?;
+                    self.apply_version_changes(version, &tx)
+                        .map_err(|e| e.to_string())?;
+                    self.update_database_version(version, &tx)
+                        .map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                }
+                Ok(true)
+            }
         }
-        Ok(())
     }
 
     /// Checks if the `settings` table is empty or missing, indicating a first-time setup.
@@ -85,21 +149,27 @@ impl Database {
         }
     }
 
-    /// Checks if the version in the current database settings is below DEFAULT_DB_VERSION.
-    /// If outdated, returns the version in the current database settings
-    fn is_outdated(&self) -> rusqlite::Result<Option<u16>> {
+    /// Checks version of the database.
+    ///
+    /// Returns the current version as `Ok(Some(version))`.
+    ///
+    /// Note it returns Ok(Some(version)) even is the current database is above the default version.
+    /// This is to allow the app to detect when database version is too high and to prevent
+    /// the app from running with an unsupported database version.
+    fn db_schema_version(&self) -> rusqlite::Result<u16> {
         let conn = self.conn.lock().unwrap();
-        let version: u16 = conn
-            .query_row(
-                "SELECT database_version FROM settings WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0); // Default to version 0 if there's no version set
-        if version < DEFAULT_DB_VERSION {
-            Ok(Some(version))
-        } else {
-            Ok(None)
+        let result: rusqlite::Result<u16> = conn.query_row(
+            "SELECT database_version FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        );
+
+        match result {
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                tracing::debug!("No database version found, returning default version 0");
+                Ok(0)
+            }
+            x => x,
         }
     }
 
@@ -131,53 +201,11 @@ impl Database {
         Ok(())
     }
 
-    /// Recreates `data.db`, and refreshes the connection.
-    fn recreate_db(&self, db_file_path: &Path) -> rusqlite::Result<()> {
-        // Remove the existing database file if it exists
-        if db_file_path.exists() {
-            fs::remove_file(db_file_path).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-        }
-        // Create a new empty `data.db` file and set up the initial schema
-        let new_conn = Connection::open(db_file_path)?;
-
-        // Initialize the `settings` table in the new database
-        new_conn.execute(
-            "CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            password_check BLOB,
-            main_password_salt BLOB,
-            main_password_nonce BLOB,
-            network TEXT NOT NULL,
-            start_root_screen INTEGER NOT NULL,
-            database_version INTEGER NOT NULL
-        )",
-            [],
-        )?;
-
-        // Insert default settings for the new database
-        new_conn.execute(
-            "INSERT INTO settings (id, network, start_root_screen, database_version)
-         VALUES (1, ?, 0, ?)",
-            params![DEFAULT_NETWORK, DEFAULT_DB_VERSION],
-        )?;
-
-        // Update the connection in `self.conn` to use the new `data.db` file
-        let mut conn_lock = self.conn.lock().unwrap();
-        *conn_lock = new_conn;
-
-        Ok(())
-    }
-
     /// Creates all required tables with indexes if they don't already exist.
     fn create_tables(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
         // Create the settings table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             password_check BLOB,
@@ -187,13 +215,14 @@ impl Database {
             start_root_screen INTEGER NOT NULL,
             custom_dash_qt_path TEXT,
             overwrite_dash_conf INTEGER,
+            theme_preference TEXT DEFAULT 'System',
             database_version INTEGER NOT NULL
         )",
             [],
         )?;
 
         // Create the wallet table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet (
                 seed_hash BLOB NOT NULL PRIMARY KEY,
                 encrypted_seed BLOB NOT NULL,
@@ -210,7 +239,7 @@ impl Database {
         )?;
 
         // Create wallet addresses
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_addresses (
                 seed_hash BLOB NOT NULL,
                 address TEXT NOT NULL,
@@ -225,11 +254,11 @@ impl Database {
         )?;
 
         // Create indexes for wallet addresses table
-        self.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
-        self.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
 
         // Create the utxos table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS utxos (
                         txid BLOB NOT NULL,
                         vout INTEGER NOT NULL,
@@ -243,17 +272,17 @@ impl Database {
         )?;
 
         // Create indexes for utxos table
-        self.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address)",
             [],
         )?;
-        self.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
             [],
         )?;
 
         // Create asset lock transaction table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
                         tx_id BLOB PRIMARY KEY,
                         transaction_data BLOB NOT NULL,
@@ -264,19 +293,19 @@ impl Database {
                         identity_id_potentially_in_creation BLOB,
                         wallet BLOB NOT NULL,
                         network TEXT NOT NULL,
-                        FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
-                        FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id),
+                        FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
+                        FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
                         FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
                     )",
             [],
         )?;
 
         // Create the identities table
-        self.execute(
+        conn.execute(
                     "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
                         data BLOB,
-                        is_in_creation INTEGER NOT NULL DEFAULT 0,
+                        status INTEGER NOT NULL DEFAULT 0,
                         is_local INTEGER NOT NULL,
                         alias TEXT,
                         info TEXT,
@@ -291,14 +320,14 @@ impl Database {
                 )?;
 
         // Create the composite index for faster querying
-        self.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
              ON identity (is_local, network, identity_type)",
             [],
         )?;
 
         // Create the contested names table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS contested_name (
                         normalized_contested_name TEXT NOT NULL,
                         locked_votes INTEGER,
@@ -314,7 +343,7 @@ impl Database {
         )?;
 
         // Create the contestants table
-        self.execute(
+        conn.execute(
                     "CREATE TABLE IF NOT EXISTS contestant (
                         normalized_contested_name TEXT NOT NULL,
                         identity_id BLOB NOT NULL,
@@ -332,11 +361,11 @@ impl Database {
                 )?;
 
         // Create the contracts table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS contract (
                         contract_id BLOB,
                         contract BLOB,
-                        name TEXT,
+                        alias TEXT,
                         network TEXT NOT NULL,
                         PRIMARY KEY (contract_id, network)
                     )",
@@ -344,26 +373,127 @@ impl Database {
         )?;
 
         // Create indexes for the contracts table
-        self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_name_network ON contract (name, network)",
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alias_network ON contract (alias, network)",
             [],
         )?;
 
-        self.initialize_proof_log_table()?;
-        self.initialize_top_up_table()?;
-        self.initialize_scheduled_votes_table()?;
+        self.initialize_proof_log_table(&conn)?;
+        self.initialize_top_up_table(&conn)?;
+        self.initialize_scheduled_votes_table(&conn)?;
+        self.initialize_token_table(&conn)?;
+        self.initialize_identity_order_table(&conn)?;
+        self.initialize_token_order_table(&conn)?;
+        self.initialize_identity_token_balances_table(&conn)?;
 
         Ok(())
     }
 
     /// Ensures that the default database version is set in the settings table.
     fn set_default_version(&self) -> rusqlite::Result<()> {
+        // TODO: Discuss migration approach with the team.
+        // Suggested approach:
+        // we don't change `create_tables`, we just add migrations
+        // and rely on it to bring the database to the latest version.
+        // It means that we put `1` in the `settings` table as the initial version
+        self.set_db_version(DEFAULT_DB_VERSION)
+    }
+    fn set_db_version(&self, version: u16) -> rusqlite::Result<()> {
         self.execute(
             "INSERT INTO settings (id, network, start_root_screen, database_version)
              VALUES (1, ?, 0, ?)
              ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
-            params![DEFAULT_NETWORK, DEFAULT_DB_VERSION],
+            params![DEFAULT_NETWORK, version],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::database::initialization::DEFAULT_DB_VERSION;
+    use rusqlite::params;
+
+    #[test]
+    /// Given a new database file,
+    /// when `initialize` is called,
+    /// then it should create the settings table with the default version.
+    fn test_initialize_database() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+        db.initialize(&db_file_path).unwrap();
+
+        // Check if the settings table is created and has the default version
+        let conn = db.conn.lock().unwrap();
+        let version: u16 = conn
+            .query_row(
+                "SELECT database_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, super::DEFAULT_DB_VERSION);
+    }
+
+    // Given a database with a missing `asset_lock_transaction` table,
+    // when I run the migration number 9,
+    // then it fails and reverts the database schema to the previous version,
+    #[test]
+    fn test_migration_failure_rolls_back() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        // Identities from regtest are deleted during migration 9
+        const NETWORK: &str = "regtest";
+
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        // drop the `asset_lock_transaction` table to simulate a migration failure
+        let conn = db.conn.lock().unwrap();
+        conn.execute("DROP TABLE asset_lock_transaction", [])
+            .expect("Failed to drop asset_lock_transaction table");
+        // check that we don't have any identities yet
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
+            .expect("Failed to count identities");
+        assert_eq!(count, 0);
+
+        // add some identity to ensure the database is not empty
+        conn.execute(
+            "INSERT INTO identity (id, is_local, alias, network) VALUES (?, ?, ?, ?)",
+            rusqlite::params![vec![1u8; 32], 1, "test_identity", NETWORK],
+        )
+        .expect("Failed to insert test identity");
+        drop(conn);
+
+        // change version to 8 to force migration number 9
+        const START_VERSION: u16 = 8;
+        db.set_db_version(START_VERSION).unwrap();
+
+        // Simulate a migration failure by trying to apply an invalid change
+        let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION);
+        assert!(result.is_err());
+        println!("Migration failed as expected: {}", result.unwrap_err());
+
+        // Check that the database version has not changed
+        let version: u16 = db.db_schema_version().unwrap();
+        assert_eq!(version, START_VERSION);
+
+        // check that the identity was not deleted
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM identity WHERE network = ?",
+                params![NETWORK],
+                |row| row.get(0),
+            )
+            .expect("Failed to count identities");
+        assert_eq!(
+            count, 1,
+            "Identity should not be deleted during migration failure"
+        );
     }
 }

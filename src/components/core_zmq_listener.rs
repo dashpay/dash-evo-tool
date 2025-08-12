@@ -5,8 +5,8 @@ use dash_sdk::dpp::prelude::CoreBlockHeight;
 use std::error::Error;
 use std::io::Cursor;
 use std::sync::{
+    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
 };
 use std::thread;
 use std::time::Duration;
@@ -26,7 +26,9 @@ use tokio::time::timeout;
 use zeromq::{Socket, SocketRecv, SubSocket};
 
 pub struct CoreZMQListener {
+    #[allow(dead_code)] // Used for stopping the listener
     should_stop: Arc<AtomicBool>,
+    #[allow(dead_code)] // Handle to the background thread
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -57,7 +59,7 @@ impl CoreZMQListener {
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
-        sender: mpsc::Sender<(ZMQMessage, Network)>,
+        sender: crate::utils::egui_mpsc::SenderSync<(ZMQMessage, Network)>,
         tx_zmq_status: Option<Sender<ZMQConnectionEvent>>,
     ) -> Result<Self, Box<dyn Error>> {
         let should_stop = Arc::new(AtomicBool::new(false));
@@ -292,7 +294,7 @@ impl CoreZMQListener {
     pub fn spawn_listener(
         network: Network,
         endpoint: &str,
-        sender: mpsc::Sender<(ZMQMessage, Network)>,
+        sender: crate::utils::egui_mpsc::SenderSync<(ZMQMessage, Network)>,
         tx_zmq_status: Option<Sender<ZMQConnectionEvent>>,
     ) -> Result<Self, Box<dyn Error>> {
         let should_stop = Arc::new(AtomicBool::new(false));
@@ -441,6 +443,7 @@ impl CoreZMQListener {
     }
 
     /// Stops the listener by signaling the thread and waiting for it to finish.
+    #[allow(dead_code)] // May be used for clean shutdown
     pub fn stop(&mut self) {
         self.should_stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {

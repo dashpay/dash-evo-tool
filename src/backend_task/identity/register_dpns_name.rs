@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
+use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
+    Sdk,
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
@@ -12,10 +14,8 @@ use dash_sdk::{
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
     drive::query::{WhereClause, WhereOperator},
-    platform::{transition::put_document::PutDocument, Document, DocumentQuery, FetchMany},
-    Sdk,
+    platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
-use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
 impl AppContext {
@@ -50,7 +50,7 @@ impl AppContext {
             entropy.as_slice(),
         );
 
-        let salt: [u8; 32] = rng.gen();
+        let salt: [u8; 32] = rng.r#gen();
         let mut salted_domain_buffer: Vec<u8> = vec![];
         salted_domain_buffer.extend(salt);
         salted_domain_buffer
@@ -129,8 +129,9 @@ impl AppContext {
             .put_to_platform_and_wait_for_response(
                 sdk,
                 preorder_document_type.to_owned_document_type(),
-                entropy.0,
+                Some(entropy.0),
                 public_key.clone(),
+                None,
                 &qualified_identity,
                 None,
             )
@@ -141,8 +142,9 @@ impl AppContext {
             .put_to_platform_and_wait_for_response(
                 sdk,
                 domain_document_type.to_owned_document_type(),
-                entropy.0,
+                Some(entropy.0),
                 public_key.clone(),
+                None,
                 &qualified_identity,
                 None,
             )
@@ -195,7 +197,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 

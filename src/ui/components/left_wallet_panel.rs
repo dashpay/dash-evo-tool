@@ -11,6 +11,7 @@ use std::sync::Arc;
 struct Assets;
 
 // Function to load an icon as a texture using embedded assets
+#[allow(dead_code)]
 fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
     // Attempt to retrieve the embedded file
     if let Some(content) = Assets::get(path) {
@@ -35,9 +36,10 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
     }
 }
 
+#[allow(dead_code)]
 pub fn add_left_panel(
     ctx: &Context,
-    app_context: &Arc<AppContext>,
+    _app_context: &Arc<AppContext>,
     selected_screen: RootScreenType,
 ) -> AppAction {
     let mut action = AppAction::None;
@@ -47,13 +49,13 @@ pub fn add_left_panel(
         ("I", RootScreenType::RootScreenIdentities, "identity.png"),
         (
             "C",
-            RootScreenType::RootScreenDPNSContestedNames,
+            RootScreenType::RootScreenDPNSActiveContests,
             "voting.png",
         ),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         (
             "T",
-            RootScreenType::RootScreenTransitionVisualizerScreen,
+            RootScreenType::RootScreenToolsTransitionVisualizerScreen,
             "tools.png",
         ),
         ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
@@ -64,13 +66,13 @@ pub fn add_left_panel(
     SidePanel::left("left_panel")
         .default_width(panel_width)
         .frame(
-            Frame::none()
+            Frame::new()
                 .fill(ctx.style().visuals.panel_fill)
                 .inner_margin(Margin {
-                    left: 10.0,
-                    right: 10.0,
-                    top: 10.0,
-                    bottom: 0.0,
+                    left: 10,
+                    right: 10,
+                    top: 10,
+                    bottom: 0,
                 }),
         )
         .show(ctx, |ui| {

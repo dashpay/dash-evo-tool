@@ -1,4 +1,5 @@
 use crate::model::wallet::Wallet;
+use crate::ui::components::styled::StyledCheckbox;
 use eframe::epaint::Color32;
 use egui::Ui;
 use std::sync::{Arc, RwLock};
@@ -6,6 +7,9 @@ use zeroize::Zeroize;
 
 pub trait ScreenWithWalletUnlock {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>>;
+    // Allow dead_code: This method provides read-only access to wallet passwords,
+    // useful for password validation and UI state management
+    #[allow(dead_code)]
     fn wallet_password_ref(&self) -> &String;
     fn wallet_password_mut(&mut self) -> &mut String;
     fn show_password(&self) -> bool;
@@ -22,10 +26,8 @@ pub trait ScreenWithWalletUnlock {
                     self.set_error_message(Some(e));
                 }
                 false
-            } else if wallet.is_open() {
-                false
             } else {
-                true
+                !wallet.is_open()
             }
         } else {
             true
@@ -66,14 +68,19 @@ pub trait ScreenWithWalletUnlock {
                 let wallet_password_mut = self.wallet_password_mut(); // Mutable reference to the password
 
                 ui.horizontal(|ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     let password_input = ui.add(
                         egui::TextEdit::singleline(wallet_password_mut)
                             .password(!local_show_password)
-                            .hint_text("Enter password"),
+                            .hint_text("Enter password")
+                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .background_color(crate::ui::theme::DashColors::input_background(
+                                dark_mode,
+                            )),
                     );
 
                     // Checkbox to toggle password visibility
-                    ui.checkbox(&mut local_show_password, "Show Password");
+                    StyledCheckbox::new(&mut local_show_password, "Show Password").show(ui);
 
                     if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {

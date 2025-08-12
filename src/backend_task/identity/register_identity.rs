@@ -1,25 +1,23 @@
 use crate::app::TaskResult;
-use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::OutPoint;
+use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::native_bls::NativeBlsModule;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
-use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, Identity};
-use dash_sdk::Error;
+use dash_sdk::{Error, Sdk};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 impl AppContext {
     // pub(crate) async fn broadcast_and_retrieve_asset_lock(
@@ -108,7 +106,7 @@ impl AppContext {
     pub(super) async fn register_identity(
         &self,
         input: IdentityRegistrationInfo,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityRegistrationInfo {
             alias_input,
@@ -165,7 +163,7 @@ impl AppContext {
                         AssetLockProof::Instant(instant_asset_lock_proof.clone())
                     }
                 } else {
-                    asset_lock_proof
+                    asset_lock_proof.as_ref().clone()
                 };
                 (asset_lock_proof, private_key, tx_id)
             }
@@ -349,16 +347,17 @@ impl AppContext {
             )]),
             wallet_index: Some(wallet_identity_index),
             top_ups: Default::default(),
+            status: IdentityStatus::PendingCreation,
+            network: self.network,
         };
 
         if !alias_input.is_empty() {
             qualified_identity.alias = Some(alias_input);
         }
 
-        self.insert_local_qualified_identity_in_creation(
+        self.insert_local_qualified_identity(
             &qualified_identity,
-            wallet_id.as_slice(),
-            wallet_identity_index,
+            &Some((wallet_id, wallet_identity_index)),
         )
         .map_err(|e| e.to_string())?;
         self.db
@@ -368,57 +367,39 @@ impl AppContext {
             )
             .map_err(|e| e.to_string())?;
 
-        let updated_identity = match identity
-            .put_to_platform_and_wait_for_response(
+        match self
+            .put_new_identity_to_platform(
                 &sdk,
-                asset_lock_proof.clone(),
+                &identity,
+                asset_lock_proof,
                 &asset_lock_proof_private_key,
-                &qualified_identity,
-                None,
+                qualified_identity.clone(),
             )
             .await
         {
-            Ok(updated_identity) => updated_identity,
-            Err(e) => {
-                if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    identity
-                        .put_to_platform_and_wait_for_response(
-                            &sdk,
-                            asset_lock_proof.clone(),
-                            &asset_lock_proof_private_key,
-                            &qualified_identity,
-                            None,
-                        )
-                        .await
-                        .map_err(|e| {
-                            let identity_create_transition =
-                                IdentityCreateTransition::try_from_identity_with_signer(
-                                    &identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    &qualified_identity,
-                                    &NativeBlsModule,
-                                    0,
-                                    PlatformVersion::latest(),
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e.to_string(),
-                                identity_create_transition
-                            )
-                        })?
-                } else {
-                    return Err(e.to_string());
-                }
+            Ok(updated_identity) => {
+                qualified_identity.identity = updated_identity;
+                qualified_identity.status = IdentityStatus::Unknown; // force refresh of the status
             }
-        };
+            Err(e) => {
+                // we failed, set the status accordingly and terminate the process
+                qualified_identity
+                    .status
+                    .update(IdentityStatus::FailedCreation);
 
-        qualified_identity.identity = updated_identity;
+                self.insert_local_qualified_identity(
+                    &qualified_identity,
+                    &Some((wallet_id, wallet_identity_index)),
+                )
+                .map_err(|e| e.to_string())?;
+
+                return Err(e);
+            }
+        }
 
         self.insert_local_qualified_identity(
             &qualified_identity,
-            Some((wallet_id.as_slice(), wallet_identity_index)),
+            &Some((wallet_id, wallet_identity_index)),
         )
         .map_err(|e| e.to_string())?;
         {
@@ -434,12 +415,68 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         sender
-            .send(TaskResult::Success(BackendTaskSuccessResult::None))
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::None,
+            )))
             .await
             .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
             qualified_identity,
         ))
+    }
+
+    async fn put_new_identity_to_platform(
+        &self,
+        sdk: &Sdk,
+        identity: &Identity,
+        asset_lock_proof: AssetLockProof,
+        asset_lock_proof_private_key: &PrivateKey,
+        qualified_identity: QualifiedIdentity,
+    ) -> Result<Identity, String> {
+        match identity
+            .put_to_platform_and_wait_for_response(
+                sdk,
+                asset_lock_proof.clone(),
+                asset_lock_proof_private_key,
+                &qualified_identity,
+                None,
+            )
+            .await
+        {
+            Ok(updated_identity) => Ok(updated_identity),
+            Err(e) => {
+                if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
+                    identity
+                        .put_to_platform_and_wait_for_response(
+                            sdk,
+                            asset_lock_proof.clone(),
+                            asset_lock_proof_private_key,
+                            &qualified_identity,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| {
+                            let identity_create_transition =
+                                IdentityCreateTransition::try_from_identity_with_signer(
+                                    identity,
+                                    asset_lock_proof,
+                                    asset_lock_proof_private_key.inner.as_ref(),
+                                    &qualified_identity,
+                                    &NativeBlsModule,
+                                    0,
+                                    self.platform_version(),
+                                )
+                                .expect("expected to make transition");
+                            format!(
+                                "error: {}, transaction is {:?}",
+                                e, identity_create_transition
+                            )
+                        })
+                } else {
+                    Err(e.to_string())
+                }
+            }
+        }
     }
 }

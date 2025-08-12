@@ -1,23 +1,27 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, ScreenLike};
+use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::Identifier;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Context};
 use egui::{Color32, RichText, Ui};
-use rand::rngs::StdRng;
-use rand::SeedableRng;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -42,6 +46,9 @@ pub struct AddKeyScreen {
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,
+    contract_id_input: String,
+    document_type_input: String,
+    enable_contract_bounds: bool,
 }
 
 impl AddKeyScreen {
@@ -69,6 +76,9 @@ impl AddKeyScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message,
+            contract_id_input: String::new(),
+            document_type_input: String::new(),
+            enable_contract_bounds: false,
         }
     }
 
@@ -86,6 +96,33 @@ impl AddKeyScreen {
                     self.add_key_status =
                         AddKeyStatus::ErrorMessage(format!("Issue verifying private key: {}", err));
                 } else {
+                    // Handle contract bounds if enabled
+                    let contract_bounds = if self.enable_contract_bounds
+                        && !self.contract_id_input.is_empty()
+                    {
+                        match Identifier::from_string(&self.contract_id_input, Encoding::Base58) {
+                            Ok(contract_id) => {
+                                if self.document_type_input.is_empty() {
+                                    Some(ContractBounds::SingleContract { id: contract_id })
+                                } else {
+                                    Some(ContractBounds::SingleContractDocumentType {
+                                        id: contract_id,
+                                        document_type_name: self.document_type_input.clone(),
+                                    })
+                                }
+                            }
+                            Err(e) => {
+                                self.add_key_status = AddKeyStatus::ErrorMessage(format!(
+                                    "Invalid contract ID: {}",
+                                    e
+                                ));
+                                return app_action;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     let new_key = IdentityPublicKeyV0 {
                         id: self.identity.identity.get_public_key_max_id() + 1,
                         key_type: self.key_type,
@@ -94,7 +131,7 @@ impl AddKeyScreen {
                         data: public_key_data_result.unwrap().into(),
                         read_only: false,
                         disabled_at: None,
-                        contract_bounds: None,
+                        contract_bounds,
                     };
 
                     // Validate the private key against the public key
@@ -113,7 +150,7 @@ impl AddKeyScreen {
                         app_action = AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
-                                new_qualified_key.into(),
+                                new_qualified_key,
                                 private_key_bytes,
                             ),
                         ));
@@ -143,7 +180,7 @@ impl AddKeyScreen {
         // Generate a random private key based on the selected key type
         if let Ok((_, private_key_bytes)) = self
             .key_type
-            .random_public_and_private_key_data(&mut rng, self.app_context.platform_version)
+            .random_public_and_private_key_data(&mut rng, self.app_context.platform_version())
         {
             self.private_key_input = hex::encode(private_key_bytes);
         } else {
@@ -174,6 +211,9 @@ impl AddKeyScreen {
                     IdentityTask::RefreshIdentity(self.identity.clone()),
                 ));
                 self.private_key_input = String::new();
+                self.contract_id_input = String::new();
+                self.document_type_input = String::new();
+                self.enable_contract_bounds = false;
                 self.add_key_status = AddKeyStatus::NotStarted;
             }
         });
@@ -186,7 +226,7 @@ impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {
         if let Some(refreshed_identity) = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .expect("Expected to load local identities")
             .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
@@ -224,45 +264,82 @@ impl ScreenLike for AddKeyScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenIdentities,
+        );
+
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
             // Show the success screen if the key was added successfully
             if self.add_key_status == AddKeyStatus::Complete {
-                action = self.show_success(ui);
-                return;
+                inner_action |= self.show_success(ui);
+                return inner_action;
             }
 
             ui.heading("Add New Key");
             ui.add_space(10.0);
 
             if self.add_key_status == AddKeyStatus::Complete {
-                action |= self.show_success(ui);
-                return;
+                inner_action |= self.show_success(ui);
+                return inner_action;
             }
 
             if self.selected_wallet.is_some() {
                 let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
 
                 if needed_unlock && !just_unlocked {
-                    return;
+                    return inner_action;
                 }
             }
 
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
                 .spacing([10.0, 10.0])
-                .striped(true)
+                .striped(false)
                 .show(ui, |ui| {
                     // Purpose
                     ui.label("Purpose:");
                     egui::ComboBox::from_id_salt("purpose_selector")
                         .selected_text(format!("{:?}", self.purpose))
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.purpose,
-                                Purpose::AUTHENTICATION,
-                                "AUTHENTICATION",
-                            );
-                            ui.selectable_value(&mut self.purpose, Purpose::TRANSFER, "TRANSFER");
+                            if self.enable_contract_bounds {
+                                // When contract bounds are enabled, only allow ENCRYPTION and DECRYPTION
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::ENCRYPTION,
+                                    "ENCRYPTION",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::DECRYPTION,
+                                    "DECRYPTION",
+                                );
+                            } else {
+                                // When contract bounds are disabled, show all purpose options
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::AUTHENTICATION,
+                                    "AUTHENTICATION",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::TRANSFER,
+                                    "TRANSFER",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::ENCRYPTION,
+                                    "ENCRYPTION",
+                                );
+                                ui.selectable_value(
+                                    &mut self.purpose,
+                                    Purpose::DECRYPTION,
+                                    "DECRYPTION",
+                                );
+                            }
                         });
                     ui.end_row();
 
@@ -271,7 +348,14 @@ impl ScreenLike for AddKeyScreen {
                     egui::ComboBox::from_id_salt("security_level_selector")
                         .selected_text(format!("{:?}", self.security_level))
                         .show_ui(ui, |ui| {
-                            if self.purpose == Purpose::AUTHENTICATION {
+                            if self.enable_contract_bounds {
+                                // When contract bounds are enabled, only allow MEDIUM
+                                ui.selectable_value(
+                                    &mut self.security_level,
+                                    SecurityLevel::MEDIUM,
+                                    "MEDIUM",
+                                );
+                            } else if self.purpose == Purpose::AUTHENTICATION {
                                 ui.selectable_value(
                                     &mut self.security_level,
                                     SecurityLevel::CRITICAL,
@@ -337,6 +421,36 @@ impl ScreenLike for AddKeyScreen {
                         self.generate_random_private_key();
                     }
                     ui.end_row();
+
+                    // Contract Bounds Toggle
+                    ui.label("Enable Contract Bounds:");
+                    let prev_contract_bounds = self.enable_contract_bounds;
+                    ui.checkbox(&mut self.enable_contract_bounds, "");
+
+                    // If contract bounds was just enabled, set required values
+                    if self.enable_contract_bounds && !prev_contract_bounds {
+                        self.purpose = Purpose::ENCRYPTION;
+                        self.security_level = SecurityLevel::MEDIUM;
+                    }
+                    ui.end_row();
+
+                    // Contract ID Input (only shown if contract bounds are enabled)
+                    if self.enable_contract_bounds {
+                        ui.label("Contract ID:");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.contract_id_input);
+                            ui.label(RichText::new("(required)").size(10.0).color(Color32::GRAY));
+                        });
+                        ui.end_row();
+
+                        // Document Type Input
+                        ui.label("Document Type Name:");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.document_type_input);
+                            ui.label(RichText::new("(optional)").size(10.0).color(Color32::GRAY));
+                        });
+                        ui.end_row();
+                    }
                 });
             ui.add_space(20.0);
 
@@ -347,7 +461,7 @@ impl ScreenLike for AddKeyScreen {
             let button = egui::Button::new(RichText::new("Add Key").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
-                .rounding(3.0);
+                .corner_radius(3.0);
             if ui.add(button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
@@ -355,7 +469,7 @@ impl ScreenLike for AddKeyScreen {
                     .expect("Time went backwards")
                     .as_secs();
                 self.add_key_status = AddKeyStatus::WaitingForResult(now);
-                action |= self.validate_and_add_key();
+                inner_action |= self.validate_and_add_key();
             }
             ui.add_space(10.0);
 
@@ -397,6 +511,8 @@ impl ScreenLike for AddKeyScreen {
                     // handled above
                 }
             }
+
+            inner_action
         });
 
         action

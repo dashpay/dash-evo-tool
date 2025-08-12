@@ -4,22 +4,16 @@ use rusqlite::params;
 use std::ops::Range;
 
 impl Database {
-    pub fn drop_proof_log_table(&self) -> rusqlite::Result<()> {
-        // Acquire a lock on the database connection
-        let conn = self.conn.lock().unwrap();
-
+    #[allow(dead_code)] // May be used for database migrations or testing cleanup
+    pub fn drop_proof_log_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         // Execute the SQL command to drop the proof_log table
         conn.execute("DROP TABLE IF EXISTS proof_log", [])?;
         Ok(())
     }
 
-    pub fn remake_proof_log_table(&self) -> rusqlite::Result<()> {
-        self.drop_proof_log_table()?;
-        self.initialize_proof_log_table()
-    }
-    pub fn initialize_proof_log_table(&self) -> rusqlite::Result<()> {
+    pub fn initialize_proof_log_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         // Create the proof log tree
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS proof_log (
                         proof_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         request_type INTEGER NOT NULL,
@@ -34,25 +28,25 @@ impl Database {
         )?;
 
         // Create an index on request_type and time for combined queries
-        self.execute(
+        conn.execute(
     "CREATE INDEX IF NOT EXISTS idx_proof_log_request_type_time ON proof_log (request_type, time_ms)",
     [],
     )?;
 
         // Create an index on time for queries ordered by time
-        self.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proof_log_time ON proof_log (time_ms)",
             [],
         )?;
 
         // Index for error, request_type, and time
-        self.execute(
+        conn.execute(
     "CREATE INDEX IF NOT EXISTS idx_proof_log_error_request_type_time ON proof_log (error, request_type, time_ms)",
     [],
     )?;
 
         // Index for error and time
-        self.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proof_log_error_time ON proof_log (error, time_ms)",
             [],
         )?;

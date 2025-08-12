@@ -1,18 +1,19 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser_with_doc_type};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel, TimestampMillis};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::identity::{Purpose, TimestampMillis};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Context;
 use egui::{Color32, RichText, Ui};
@@ -32,8 +33,9 @@ pub enum RegisterDpnsNameStatus {
 
 pub struct RegisterDpnsNameScreen {
     pub show_identity_selector: bool,
-    pub qualified_identities: Vec<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
-    pub selected_qualified_identity: Option<(QualifiedIdentity, Vec<IdentityPublicKey>)>,
+    pub qualified_identities: Vec<QualifiedIdentity>,
+    pub selected_qualified_identity: Option<QualifiedIdentity>,
+    pub selected_key: Option<IdentityPublicKey>,
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
@@ -45,41 +47,13 @@ pub struct RegisterDpnsNameScreen {
 
 impl RegisterDpnsNameScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let security_level_of_contract = app_context
-            .dpns_contract
-            .document_type_for_name("domain")
-            .unwrap()
-            .security_level_requirement();
-        let security_level_requirements = SecurityLevel::CRITICAL..=security_level_of_contract;
-
-        let qualified_identities: Vec<_> = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| {
-                let keys = e
-                    .identity
-                    .public_keys()
-                    .values()
-                    .filter(|key| {
-                        key.purpose() == Purpose::AUTHENTICATION
-                            && security_level_requirements.contains(&key.security_level())
-                            && !key.is_disabled()
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if keys.is_empty() {
-                    None
-                } else {
-                    Some((e, keys))
-                }
-            })
-            .collect();
+        let qualified_identities: Vec<_> =
+            app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(&identity.0, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
         } else {
             None
         };
@@ -89,6 +63,7 @@ impl RegisterDpnsNameScreen {
             show_identity_selector,
             qualified_identities,
             selected_qualified_identity,
+            selected_key: None,
             name_input: String::new(),
             register_dpns_name_status: RegisterDpnsNameStatus::NotStarted,
             app_context: app_context.clone(),
@@ -104,103 +79,48 @@ impl RegisterDpnsNameScreen {
         if let Some(qi) = self
             .qualified_identities
             .iter()
-            .find(|(qi, _)| qi.identity.id() == &identity_id)
+            .find(|qi| qi.identity.id() == identity_id)
         {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
+            self.selected_key = None; // Reset key selection
             // Update the selected wallet
-            self.selected_wallet = get_selected_wallet(
-                &qi.0,
-                Some(&self.app_context),
-                None,
-                &mut self.error_message,
-            );
+            self.selected_wallet =
+                get_selected_wallet(qi, Some(&self.app_context), None, &mut self.error_message);
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
             self.selected_qualified_identity = None;
+            self.selected_key = None;
             self.selected_wallet = None;
         }
     }
 
     fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) {
-        if self.qualified_identities.len() == 1 {
-            // Only one identity, display it directly
-            let qualified_identity = &self.qualified_identities[0];
-            ui.horizontal(|ui| {
-                ui.label("Identity ID:");
-                ui.label(
-                    qualified_identity
-                        .0
-                        .alias
-                        .as_ref()
-                        .unwrap_or(
-                            &qualified_identity
-                                .0
-                                .identity
-                                .id()
-                                .to_string(Encoding::Base58),
-                        )
-                        .clone(),
-                );
-            });
-            self.selected_qualified_identity = Some(qualified_identity.clone());
-        } else {
-            // Multiple identities, display ComboBox
-            ui.horizontal(|ui| {
-                ui.label("Identity ID:");
-
-                // Create a ComboBox for selecting a Qualified Identity
-                egui::ComboBox::from_label("")
-                    .selected_text(
-                        self.selected_qualified_identity
-                            .as_ref()
-                            .map(|qi| {
-                                qi.0.alias
-                                    .as_ref()
-                                    .unwrap_or(&qi.0.identity.id().to_string(Encoding::Base58))
-                                    .clone()
-                            })
-                            .unwrap_or_else(|| "Select an identity".to_string()),
-                    )
-                    .show_ui(ui, |ui| {
-                        // Loop through the qualified identities and display each as selectable
-                        for qualified_identity in &self.qualified_identities {
-                            // Display each QualifiedIdentity as a selectable item
-                            if ui
-                                .selectable_value(
-                                    &mut self.selected_qualified_identity,
-                                    Some(qualified_identity.clone()),
-                                    qualified_identity.0.alias.as_ref().unwrap_or(
-                                        &qualified_identity
-                                            .0
-                                            .identity
-                                            .id()
-                                            .to_string(Encoding::Base58),
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                self.selected_qualified_identity = Some(qualified_identity.clone());
-                                self.selected_wallet = get_selected_wallet(
-                                    &qualified_identity.0,
-                                    Some(&self.app_context),
-                                    None,
-                                    &mut self.error_message,
-                                );
-                            }
-                        }
-                    });
-            });
-        }
+        add_identity_key_chooser_with_doc_type(
+            ui,
+            &self.app_context,
+            self.qualified_identities.iter(),
+            &mut self.selected_qualified_identity,
+            &mut self.selected_key,
+            TransactionType::DocumentAction,
+            self.app_context
+                .dpns_contract
+                .document_type_cloned_for_name("domain")
+                .ok()
+                .as_ref(),
+        );
     }
 
     fn register_dpns_name_clicked(&mut self) -> AppAction {
         let Some(qualified_identity) = self.selected_qualified_identity.as_ref() else {
             return AppAction::None;
         };
+        let Some(_selected_key) = self.selected_key.as_ref() else {
+            return AppAction::None;
+        };
         let dpns_name_input = RegisterDpnsNameInput {
-            qualified_identity: qualified_identity.0.clone(),
+            qualified_identity: qualified_identity.clone(),
             name_input: self.name_input.trim().to_string(),
         };
 
@@ -217,7 +137,7 @@ impl RegisterDpnsNameScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully registered dpns name.");
+            ui.heading("Successfully registered DPNS name.");
 
             ui.add_space(20.0);
 
@@ -264,20 +184,48 @@ impl ScreenLike for RegisterDpnsNameScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
-                action |= self.show_success(ui);
-                return;
-            }
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenDPNSOwnedNames,
+        );
 
-            ui.heading("Register DPNS Name");
-            ui.add_space(10.0);
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
+                        inner_action |= self.show_success(ui);
+                        return;
+                    }
+
+                    ui.heading("Register DPNS Name");
+                    ui.add_space(10.0);
 
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    "No qualified identities available to register a DPNS name.",
+                    "No identities loaded. Please load an identity first.",
+                );
+                return;
+            }
+
+            // Check if any identity has suitable private keys for DPNS registration
+            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
+                qi.private_keys.identity_public_keys().iter().any(|key_ref| {
+                    let key = &key_ref.1.identity_public_key;
+                    // DPNS registration requires Authentication keys
+                    key.purpose() == Purpose::AUTHENTICATION
+                })
+            });
+
+            if !has_suitable_keys {
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    "No identities with authentication private keys loaded. Please load identity keys to register a DPNS name.",
                 );
                 return;
             }
@@ -288,7 +236,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             self.render_identity_id_selection(ui);
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
-                ui.label(format!("Identity balance: {:.6}", identity.0.identity.balance() as f64 * 1e-11));
+                ui.label(format!("Identity balance: {:.6}", identity.identity.balance() as f64 * 1e-11));
             }
 
             ui.add_space(10.0);
@@ -311,28 +259,50 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ui.text_edit_singleline(&mut self.name_input);
             });
 
-            // Display if the name is contested and the estimated cost
+            // Display validation status and cost information
             let name = self.name_input.trim();
-            if !name.is_empty() && name.len() >= 3 {
+            if !name.is_empty() {
                 ui.add_space(10.0);
-                if is_contested_name(&name.to_lowercase()) {
-                    ui.colored_label(
-                        egui::Color32::DARK_RED,
-                        "This is a contested name.",
-                    );
-                    ui.colored_label(
-                        egui::Color32::DARK_RED,
-                        "Cost ≈ 0.2006 Dash",
-                    );
-                } else {
-                    ui.colored_label(
-                        egui::Color32::DARK_GREEN,
-                        "This is not a contested name.",
-                    );
-                    ui.colored_label(
-                        egui::Color32::DARK_GREEN,
-                        "Cost ≈ 0.0006 Dash",
-                    );
+
+                // Validate the name
+                let validation_result = validate_dpns_name(name);
+
+                match validation_result {
+                    DpnsNameValidationResult::Valid => {
+                        ui.colored_label(
+                            egui::Color32::DARK_GREEN,
+                            "Valid name format",
+                        );
+
+                        // Show contested status and cost if valid
+                        if is_contested_name(&name.to_lowercase()) {
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                "This is a contested name.",
+                            );
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                "Cost ≈ 0.2006 Dash",
+                            );
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::DARK_GREEN,
+                                "This is not a contested name.",
+                            );
+                            ui.colored_label(
+                                egui::Color32::DARK_GREEN,
+                                "Cost ≈ 0.0006 Dash",
+                            );
+                        }
+                    }
+                    _ => {
+                        if let Some(error_msg) = validation_result.error_message() {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                error_msg,
+                            );
+                        }
+                    }
                 }
             }
 
@@ -342,18 +312,20 @@ impl ScreenLike for RegisterDpnsNameScreen {
             let mut new_style = (**ui.style()).clone();
             new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
             ui.set_style(new_style);
+            let name_is_valid = validate_dpns_name(self.name_input.trim()) == DpnsNameValidationResult::Valid;
+            let button_enabled = self.selected_qualified_identity.is_some() && self.selected_key.is_some() && name_is_valid;
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(Color32::from_rgb(0, 128, 255))
                 .frame(true)
-                .rounding(3.0);
-            if ui.add(button).clicked() {
+                .corner_radius(3.0);
+            if ui.add_enabled(button_enabled, button).clicked() {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("Time went backwards")
                     .as_secs();
                 self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult(now);
-                action = self.register_dpns_name_clicked();
+                inner_action = self.register_dpns_name_clicked();
             }
 
             ui.add_space(10.0);
@@ -424,6 +396,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.label("  • Less than 20 characters long (i.e. “alice”, “quantumexplorer”)");
             ui.label("  • AND");
             ui.label("  • Contain no numbers or only contain the number(s) 0 and/or 1 (i.e. “bob”, “carol01”)");
+                });
+            inner_action
         });
 
         action
@@ -466,11 +440,69 @@ pub fn is_contested_name(name: &str) -> bool {
         return false;
     }
     for c in name.chars() {
-        if c.is_digit(10) {
-            if c != '0' && c != '1' {
-                return false;
-            }
+        if c.is_ascii_digit() && c != '0' && c != '1' {
+            return false;
         }
     }
     true
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DpnsNameValidationResult {
+    Valid,
+    TooShort,
+    TooLong,
+    InvalidCharacter(char),
+    StartsWithHyphen,
+    EndsWithHyphen,
+}
+
+pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
+    if name.len() < 3 {
+        return DpnsNameValidationResult::TooShort;
+    }
+
+    if name.len() > 63 {
+        return DpnsNameValidationResult::TooLong;
+    }
+
+    if name.starts_with('-') {
+        return DpnsNameValidationResult::StartsWithHyphen;
+    }
+
+    if name.ends_with('-') {
+        return DpnsNameValidationResult::EndsWithHyphen;
+    }
+
+    for c in name.chars() {
+        if !c.is_ascii_alphanumeric() && c != '-' {
+            return DpnsNameValidationResult::InvalidCharacter(c);
+        }
+    }
+
+    DpnsNameValidationResult::Valid
+}
+
+impl DpnsNameValidationResult {
+    pub fn error_message(&self) -> Option<String> {
+        match self {
+            DpnsNameValidationResult::Valid => None,
+            DpnsNameValidationResult::TooShort => {
+                Some("Name must be at least 3 characters long".to_string())
+            }
+            DpnsNameValidationResult::TooLong => {
+                Some("Name must be no more than 63 characters long".to_string())
+            }
+            DpnsNameValidationResult::InvalidCharacter(c) => Some(format!(
+                "Invalid character '{}'. Only letters, numbers, and hyphens are allowed",
+                c
+            )),
+            DpnsNameValidationResult::StartsWithHyphen => {
+                Some("Name cannot start with a hyphen".to_string())
+            }
+            DpnsNameValidationResult::EndsWithHyphen => {
+                Some("Name cannot end with a hyphen".to_string())
+            }
+        }
+    }
 }

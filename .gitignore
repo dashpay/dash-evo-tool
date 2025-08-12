@@ -2,11 +2,16 @@
 # will have compiled files and executables
 debug/
 target/
+build-test/
+
+# Build artifacts
+*.snap
 
 # Dot env file
 .env
 .env.backups
 .testnet_nodes.yml
+test_db
 
 # Visual Studo Code configuration
 .vscode/
@@ -23,3 +28,5 @@ target/
 .DS_Store
 .idea/
 **/.DS_Store
+explorer.log
+.gitaipconfig

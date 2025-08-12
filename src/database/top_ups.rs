@@ -1,10 +1,10 @@
 use crate::database::Database;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 impl Database {
-    pub fn initialize_top_up_table(&self) -> rusqlite::Result<()> {
+    pub fn initialize_top_up_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         // Create the top_up table
-        self.execute(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS top_up (
                 identity_id BLOB NOT NULL,
                 top_up_index INTEGER NOT NULL,
@@ -17,6 +17,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for generating sequential top-up indices
     pub fn get_next_top_up_index(&self, identity_id: &[u8]) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();
         let max_index: Option<u64> = conn

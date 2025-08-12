@@ -1,4 +1,4 @@
-use crate::app_dir::app_user_data_file_path;
+use crate::{VERSION, app_dir::app_user_data_file_path};
 use std::panic;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -6,13 +6,13 @@ use tracing_subscriber::EnvFilter;
 pub fn initialize_logger() {
     // Initialize log file, with improved error handling
     let log_file_path = app_user_data_file_path("det.log").expect("should create log file path");
-    let log_file = match std::fs::File::create(log_file_path) {
+    let log_file = match std::fs::File::create(&log_file_path) {
         Ok(file) => file,
         Err(e) => panic!("Failed to create log file: {:?}", e),
     };
 
     let filter = EnvFilter::try_new(
-        "error,info,debug,dash_sdk=debug,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug",
+        "info,dash_evo_tool=trace,dash_sdk=debug,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn",
     )
         .unwrap_or_else(|e| panic!("Failed to create EnvFilter: {:?}", e));
 
@@ -48,5 +48,9 @@ pub fn initialize_logger() {
         default_panic_hook(panic_info);
     }));
 
-    info!("Logger initialized successfully");
+    info!(
+        version = VERSION,
+        log_file = ?log_file_path,
+        "Dash-Evo-Tool logging initialized successfully"
+    );
 }

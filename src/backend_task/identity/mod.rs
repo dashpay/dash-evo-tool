@@ -16,9 +16,11 @@ use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, Wallet
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
+use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
@@ -28,12 +30,9 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::ProtocolError;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
-use dash_sdk::Sdk;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
@@ -196,14 +195,14 @@ pub type IdentityIndex = u32;
 pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterIdentityFundingMethod {
-    UseAssetLock(Address, AssetLockProof, Transaction),
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
-    UseAssetLock(Address, AssetLockProof, Transaction),
+    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
     FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
 }
@@ -246,8 +245,9 @@ pub struct RegisterDpnsNameInput {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum IdentityTask {
+pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
+    #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
@@ -439,7 +439,7 @@ impl AppContext {
         &self,
         task: IdentityTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
@@ -458,7 +458,7 @@ impl AppContext {
             IdentityTask::RefreshIdentity(qualified_identity) => self
                 .refresh_identity(sdk, qualified_identity, sender)
                 .await
-                .map_err(|e| format!("Error refreshing identity: {:?}", e)),
+                .map_err(|e| format!("Error refreshing identity: {}", e)),
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
                 self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
                     .await

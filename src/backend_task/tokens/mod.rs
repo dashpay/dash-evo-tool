@@ -1,134 +1,216 @@
 use super::BackendTaskSuccessResult;
+use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use dash_sdk::platform::Fetch;
 use dash_sdk::{
+    Sdk,
     dpp::{
+        ProtocolError,
         data_contract::{
+            TokenConfiguration, TokenContractPosition,
             associated_token::{
                 token_configuration::v0::TokenConfigurationV0,
-                token_configuration_convention::{
-                    TokenConfigurationConvention,
+                token_configuration_convention::TokenConfigurationConvention,
+                token_configuration_localization::{
+                    TokenConfigurationLocalization, v0::TokenConfigurationLocalizationV0,
                 },
+                token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
+                token_keeps_history_rules::TokenKeepsHistoryRules,
+                token_marketplace_rules::{
+                    TokenMarketplaceRules,
+                    v0::{TokenMarketplaceRulesV0, TokenTradeMode},
+                },
             },
             change_control_rules::{
-                authorized_action_takers::AuthorizedActionTakers, ChangeControlRules,
+                ChangeControlRules, authorized_action_takers::AuthorizedActionTakers,
             },
             config::DataContractConfig,
             group::Group,
             v1::DataContractV1,
-            TokenConfiguration, TokenContractPosition,
         },
         identity::accessors::IdentityGettersV0,
-        ProtocolError,
     },
-    platform::{DataContract, Identifier, IdentityPublicKey},
-    Sdk,
+    platform::{
+        DataContract, Identifier, IdentityPublicKey,
+        proto::get_documents_request::get_documents_request_v0::Start,
+    },
 };
 use std::{collections::BTreeMap, sync::Arc};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::v0::TokenConfigurationLocalizationV0;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
-use tokio::sync::mpsc;
 
 mod burn_tokens;
+mod claim_tokens;
 mod destroy_frozen_funds;
 mod freeze_tokens;
 mod mint_tokens;
 mod pause_tokens;
+mod purchase_tokens;
 mod query_my_token_balances;
+mod query_token_non_claimed_perpetual_distribution_rewards;
+mod query_token_pricing;
 mod query_tokens;
 mod resume_tokens;
+mod set_token_price;
 mod transfer_tokens;
 mod unfreeze_tokens;
+mod update_token_config;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TokenTask {
+#[allow(clippy::large_enum_variant)]
+pub enum TokenTask {
     RegisterTokenContract {
         identity: QualifiedIdentity,
-        signing_key: IdentityPublicKey,
-        token_name: String,
+        signing_key: Box<IdentityPublicKey>,
+        token_names: Vec<(String, String, String)>,
+        contract_keywords: Vec<String>,
+        token_description: Option<String>,
         should_capitalize: bool,
-        decimals: u16,
-        base_supply: u64,
-        max_supply: Option<u64>,
+        decimals: u8,
+        base_supply: TokenAmount,
+        max_supply: Option<TokenAmount>,
         start_paused: bool,
-        keeps_history: bool,
-        main_control_group: Option<u16>,
+        allow_transfers_to_frozen_identities: bool,
+        keeps_history: TokenKeepsHistoryRules,
+        main_control_group: Option<GroupContractPosition>,
 
         // Manual Mint
         manual_minting_rules: ChangeControlRules,
         manual_burning_rules: ChangeControlRules,
         freeze_rules: ChangeControlRules,
-        unfreeze_rules: ChangeControlRules,
-        destroy_frozen_funds_rules: ChangeControlRules,
-        emergency_action_rules: ChangeControlRules,
-        max_supply_change_rules: ChangeControlRules,
-        conventions_change_rules: ChangeControlRules,
+        unfreeze_rules: Box<ChangeControlRules>,
+        destroy_frozen_funds_rules: Box<ChangeControlRules>,
+        emergency_action_rules: Box<ChangeControlRules>,
+        max_supply_change_rules: Box<ChangeControlRules>,
+        conventions_change_rules: Box<ChangeControlRules>,
 
         // Main Control Group Change
         main_control_group_change_authorized: AuthorizedActionTakers,
 
         distribution_rules: TokenDistributionRules,
-        groups: BTreeMap<u16, Group>,
+        groups: BTreeMap<GroupContractPosition, Group>,
+        document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+        marketplace_trade_mode: u8,
+        marketplace_rules: ChangeControlRules,
     },
     QueryMyTokenBalances,
-    QueryTokensByKeyword(String),
-    QueryTokensByKeywordPage(String, Option<Identifier>),
+    QueryIdentityTokenBalance(IdentityTokenIdentifier),
+    QueryDescriptionsByKeyword(String, Option<Start>),
+    FetchTokenByContractId(Identifier),
+    FetchTokenByTokenId(Identifier),
+    SaveTokenLocally(TokenInfo),
+    QueryTokenPricing(Identifier),
     MintTokens {
         sending_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
-        amount: u64,
+        public_note: Option<String>,
+        amount: TokenAmount,
         recipient_id: Option<Identifier>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     TransferTokens {
         sending_identity: QualifiedIdentity,
         recipient_id: Identifier,
-        amount: u64,
-        data_contract: DataContract,
-        token_position: u16,
+        amount: TokenAmount,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
     },
     BurnTokens {
         owner_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
-        amount: u64,
+        public_note: Option<String>,
+        amount: TokenAmount,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     DestroyFrozenFunds {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         frozen_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     FreezeTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         freeze_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     UnfreezeTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         unfreeze_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     PauseTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
     ResumeTokens {
         actor_identity: QualifiedIdentity,
-        data_contract: DataContract,
-        token_position: u16,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
+    },
+    ClaimTokens {
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
+        actor_identity: QualifiedIdentity,
+        distribution_type: TokenDistributionType,
+        signing_key: IdentityPublicKey,
+        public_note: Option<String>,
+    },
+    EstimatePerpetualTokenRewardsWithExplanation {
+        identity_id: Identifier,
+        token_id: Identifier,
+    },
+    UpdateTokenConfig {
+        identity_token_info: Box<IdentityTokenInfo>,
+        change_item: TokenConfigurationChangeItem,
+        signing_key: IdentityPublicKey,
+        public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
+    },
+    PurchaseTokens {
+        identity: QualifiedIdentity,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
+        signing_key: IdentityPublicKey,
+        amount: TokenAmount,
+        total_agreed_price: Credits,
+    },
+    SetDirectPurchasePrice {
+        identity: QualifiedIdentity,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
+        signing_key: IdentityPublicKey,
+        token_pricing_schedule: Option<TokenPricingSchedule>,
+        public_note: Option<String>,
+        group_info: Option<GroupStateTransitionInfoStatus>,
     },
 }
 
@@ -137,18 +219,21 @@ impl AppContext {
         self: &Arc<Self>,
         task: TokenTask,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match &task {
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,
-                token_name,
+                token_names,
+                contract_keywords,
+                token_description,
                 should_capitalize,
                 decimals,
                 base_supply,
                 max_supply,
                 start_paused,
+                allow_transfers_to_frozen_identities,
                 keeps_history,
                 main_control_group,
                 manual_minting_rules,
@@ -162,39 +247,48 @@ impl AppContext {
                 main_control_group_change_authorized,
                 distribution_rules,
                 groups,
+                document_schemas,
+                marketplace_trade_mode,
+                marketplace_rules,
             } => {
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(
-                        identity.identity.id().clone(),
-                        token_name.clone(),
+                        identity.identity.id(),
+                        token_names.clone(),
+                        contract_keywords.to_vec(),
+                        token_description.clone(),
                         *should_capitalize,
                         *decimals,
                         *base_supply,
                         *max_supply,
                         *start_paused,
+                        *allow_transfers_to_frozen_identities,
                         *keeps_history,
                         *main_control_group,
                         manual_minting_rules.clone(),
                         manual_burning_rules.clone(),
                         freeze_rules.clone(),
-                        unfreeze_rules.clone(),
-                        destroy_frozen_funds_rules.clone(),
-                        emergency_action_rules.clone(),
-                        max_supply_change_rules.clone(),
-                        conventions_change_rules.clone(),
-                        main_control_group_change_authorized.clone(),
+                        unfreeze_rules.as_ref().clone(),
+                        destroy_frozen_funds_rules.as_ref().clone(),
+                        emergency_action_rules.as_ref().clone(),
+                        max_supply_change_rules.as_ref().clone(),
+                        conventions_change_rules.as_ref().clone(),
+                        *main_control_group_change_authorized,
                         distribution_rules.clone(),
                         groups.clone(),
+                        document_schemas.clone(),
+                        *marketplace_trade_mode,
+                        marketplace_rules.clone(),
                     )
                     .map_err(|e| format!("Error building contract V1: {e}"))?;
 
-                // 2) Call your existing function that registers the contract
                 self.register_data_contract(
                     data_contract,
-                    token_name.clone(),
+                    token_names[0].0.clone(),
                     identity.clone(),
-                    signing_key.clone(),
+                    signing_key.as_ref().clone(),
                     sdk,
+                    sender,
                 )
                 .await
                 .map(|_| {
@@ -208,42 +302,34 @@ impl AppContext {
                 .query_my_token_balances(sdk, sender)
                 .await
                 .map_err(|e| format!("Failed to fetch token balances: {e}")),
-            TokenTask::QueryTokensByKeyword(_query) => {
-                // Placeholder
-                Ok(BackendTaskSuccessResult::Message("QueryTokens".to_string()))
-
-                // Actually do this
-                // self.query_tokens(query, sdk, sender).await
-            }
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 amount,
                 recipient_id,
+                group_info,
             } => self
                 .mint_tokens(
                     sending_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     *amount,
-                    recipient_id.clone(),
+                    *recipient_id,
+                    *group_info,
                     sdk,
                     sender,
                 )
                 .await
                 .map_err(|e| format!("Failed to mint tokens: {e}")),
-            TokenTask::QueryTokensByKeywordPage(_query, _cursor) => {
-                // Placeholder
-                Ok(BackendTaskSuccessResult::Message(
-                    "QueryTokensByKeywordPage".to_string(),
-                ))
-
-                // Actually do this
-                // self.query_tokens_page(query, cursor, sdk, sender).await
-            }
+            TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
+                .query_descriptions_by_keyword(keyword, cursor, sdk)
+                .await
+                .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
             TokenTask::TransferTokens {
                 sending_identity,
                 recipient_id,
@@ -251,14 +337,16 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
             } => self
                 .transfer_tokens(
-                    &sending_identity,
+                    sending_identity,
                     *recipient_id,
                     *amount,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     sdk,
                     sender,
                 )
@@ -269,14 +357,18 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 amount,
+                group_info,
             } => self
                 .burn_tokens(
                     owner_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
                     *amount,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -287,14 +379,18 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 frozen_identity,
+                group_info,
             } => self
                 .destroy_frozen_funds(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
-                    frozen_identity.clone(),
+                    public_note.clone(),
+                    *frozen_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -305,14 +401,18 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 freeze_identity,
+                group_info,
             } => self
                 .freeze_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
-                    freeze_identity.clone(),
+                    public_note.clone(),
+                    *freeze_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -323,14 +423,18 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
                 unfreeze_identity,
+                group_info,
             } => self
                 .unfreeze_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
-                    unfreeze_identity.clone(),
+                    public_note.clone(),
+                    *unfreeze_identity,
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -341,12 +445,16 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
+                group_info,
             } => self
                 .pause_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
@@ -357,17 +465,190 @@ impl AppContext {
                 data_contract,
                 token_position,
                 signing_key,
+                public_note,
+                group_info,
             } => self
                 .resume_tokens(
                     actor_identity,
-                    data_contract,
+                    data_contract.clone(),
                     *token_position,
                     signing_key.clone(),
+                    public_note.clone(),
+                    *group_info,
                     sdk,
                     sender,
                 )
                 .await
                 .map_err(|e| format!("Failed to resume tokens: {e}")),
+            TokenTask::ClaimTokens {
+                data_contract,
+                token_position,
+                actor_identity,
+                distribution_type,
+                signing_key,
+                public_note,
+            } => self
+                .claim_tokens(
+                    data_contract.clone(),
+                    *token_position,
+                    actor_identity,
+                    *distribution_type,
+                    signing_key.clone(),
+                    public_note.clone(),
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to claim tokens: {e}")),
+            TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
+                identity_id,
+                token_id,
+            } => self
+                .query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
+                    *identity_id,
+                    *token_id,
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to get estimated rewards with explanation: {e}")),
+            TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
+                .query_token_balance(
+                    sdk,
+                    identity_token_pair.identity_id,
+                    identity_token_pair.token_id,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to fetch token balance: {e}")),
+            TokenTask::FetchTokenByContractId(contract_id) => {
+                match DataContract::fetch_by_identifier(sdk, *contract_id).await {
+                    Ok(Some(data_contract)) => {
+                        Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
+                    }
+                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                        "Contract not found".to_string(),
+                    )),
+                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
+                }
+            }
+            TokenTask::FetchTokenByTokenId(token_id) => {
+                use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
+                use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
+
+                match TokenContractInfo::fetch(sdk, *token_id).await {
+                    Ok(Some(token_contract_info)) => {
+                        // Extract the contract ID and token position from token_contract_info
+                        let (contract_id, token_position) = match &token_contract_info {
+                            TokenContractInfo::V0(info) => {
+                                (info.contract_id(), info.token_contract_position())
+                            }
+                        };
+
+                        // Fetch the full contract
+                        match DataContract::fetch_by_identifier(sdk, contract_id).await {
+                            Ok(Some(data_contract)) => {
+                                // Return the contract with the specific token position
+                                Ok(BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+                                    data_contract,
+                                    token_position,
+                                ))
+                            }
+                            Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                                "Contract not found for token".to_string(),
+                            )),
+                            Err(e) => Err(format!("Error fetching contract for token: {}", e)),
+                        }
+                    }
+                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
+                        "Token not found".to_string(),
+                    )),
+                    Err(e) => Err(format!("Error fetching token info: {}", e)),
+                }
+            }
+            TokenTask::SaveTokenLocally(token_info) => {
+                let token_config_bytes = bincode::encode_to_vec(
+                    &token_info.token_configuration,
+                    bincode::config::standard(),
+                )
+                .map_err(|e| format!("error encoding token configuration: {}", e))?;
+
+                self.db
+                    .insert_token(
+                        &token_info.token_id,
+                        &token_info.token_name,
+                        &token_config_bytes,
+                        &token_info.data_contract_id,
+                        token_info.token_position,
+                        self,
+                    )
+                    .map_err(|e| format!("error saving token: {}", e))?;
+
+                Ok(BackendTaskSuccessResult::Message(
+                    "Saved token to db".to_string(),
+                ))
+            }
+            TokenTask::UpdateTokenConfig {
+                identity_token_info,
+                change_item,
+                signing_key,
+                public_note,
+                group_info,
+            } => self
+                .update_token_config(
+                    *identity_token_info.clone(),
+                    change_item.clone(),
+                    signing_key,
+                    public_note.clone(),
+                    *group_info,
+                    sdk,
+                )
+                .await
+                .map_err(|e| format!("Failed to update token config: {e}")),
+            TokenTask::PurchaseTokens {
+                identity,
+                data_contract,
+                token_position,
+                signing_key,
+                amount,
+                total_agreed_price,
+            } => self
+                .purchase_tokens(
+                    identity,
+                    data_contract.clone(),
+                    *token_position,
+                    signing_key.clone(),
+                    *amount,
+                    *total_agreed_price,
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to purchase tokens: {e}")),
+            TokenTask::SetDirectPurchasePrice {
+                identity,
+                data_contract,
+                token_position,
+                signing_key,
+                token_pricing_schedule,
+                public_note,
+                group_info,
+            } => self
+                .set_direct_purchase_price(
+                    identity,
+                    data_contract.clone(),
+                    *token_position,
+                    signing_key.clone(),
+                    public_note.clone(),
+                    token_pricing_schedule.clone(),
+                    *group_info,
+                    sdk,
+                    sender,
+                )
+                .await
+                .map_err(|e| format!("Failed to set direct purchase price: {e}")),
+            TokenTask::QueryTokenPricing(token_id) => self
+                .query_token_pricing(*token_id, sdk, sender)
+                .await
+                .map_err(|e| format!("Failed to query token pricing: {e}")),
         }
     }
 
@@ -377,16 +658,21 @@ impl AppContext {
     /// - the specified owner_id
     /// - an empty set of documents, groups, schema_defs
     /// - a single token in tokens[0] with fields derived from your parameters.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn build_data_contract_v1_with_one_token(
         &self,
         owner_id: Identifier,
-        token_name: String,
+        token_names: Vec<(String, String, String)>,
+        contract_keywords: Vec<String>,
+        token_description: Option<String>,
         should_capitalize: bool,
-        decimals: u16,
+        decimals: u8,
         base_supply: u64,
         max_supply: Option<u64>,
         start_as_paused: bool,
-        keeps_history: bool,
+        allow_transfer_to_frozen_balance: bool,
+        keeps_history: TokenKeepsHistoryRules,
         main_control_group: Option<u16>,
         manual_minting_rules: ChangeControlRules,
         manual_burning_rules: ChangeControlRules,
@@ -399,51 +685,84 @@ impl AppContext {
         main_control_group_change_authorized: AuthorizedActionTakers,
         distribution_rules: TokenDistributionRules,
         groups: BTreeMap<u16, Group>,
+        document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+        marketplace_trade_mode: u8,
+        marketplace_rules: ChangeControlRules,
     ) -> Result<DataContract, ProtocolError> {
-        // 1) Create the V1 struct
+        // 1) Create the V1 struct first to get the contract ID
+        let contract_id = Identifier::random();
         let mut contract_v1 = DataContractV1 {
-            id: Identifier::random(),
+            id: contract_id,
             version: 1,
             owner_id,
-            document_types: BTreeMap::new(),
-            config: DataContractConfig::default_for_version(self.platform_version)?,
+            document_types: BTreeMap::new(), // Initialize empty, will populate below
+            config: DataContractConfig::default_for_version(self.platform_version())?,
             schema_defs: None,
+            groups,
+            tokens: BTreeMap::new(),
+            keywords: contract_keywords,
             created_at: None,
             updated_at: None,
             created_at_block_height: None,
             updated_at_block_height: None,
             created_at_epoch: None,
             updated_at_epoch: None,
-            groups: BTreeMap::new(),
-            tokens: BTreeMap::new(),
+            description: token_description.clone(),
         };
 
-        // 2) Build a single TokenConfiguration in V0 format
-        let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
-        let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
-        conv_v0.decimals = decimals as u16;
-        conv_v0.localizations.insert(
-            "en".to_string(),
-            TokenConfigurationLocalizationV0 {
-                should_capitalize,
-                singular_form: token_name.to_string(),
-                plural_form: format!("{}s", token_name),
-            }.into(),
-        );
+        // 2) Parse document schemas if provided and add them to the contract
+        if let Some(schemas) = document_schemas {
+            for (name, schema_json) in schemas {
+                // Convert serde_json::Value to platform_value::Value
+                let platform_value = schema_json.into();
 
-        let keeps_history_rules = TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0 {
-            keeps_transfer_history: keeps_history,
-            keeps_minting_history: keeps_history,
-            keeps_burning_history: keeps_history,
-            keeps_direct_pricing_history: keeps_history,
-            keeps_freezing_history: keeps_history,
-            keeps_direct_purchase_history: keeps_history,
-        });
+                // Convert JSON schema to DocumentType using the proper parameters
+                let mut validation_operations = Vec::new();
+                match dash_sdk::dpp::data_contract::document_type::DocumentType::try_from_schema(
+                    contract_id,
+                    &name,
+                    platform_value,
+                    None, // schema_defs
+                    &contract_v1.tokens,
+                    &contract_v1.config,
+                    true, // validate_required
+                    &mut validation_operations,
+                    self.platform_version(),
+                ) {
+                    Ok(document_type) => {
+                        contract_v1.document_types.insert(name, document_type);
+                    }
+                    Err(e) => {
+                        return Err(ProtocolError::Generic(format!(
+                            "Failed to convert document schema '{}' to DocumentType: {}",
+                            name, e
+                        )));
+                    }
+                }
+            }
+        }
+
+        // 3) Build a single TokenConfiguration in V0 format
+        let mut token_config_v0 = TokenConfigurationV0::default_most_restrictive();
+
+        let TokenConfigurationConvention::V0(ref mut conv_v0) = token_config_v0.conventions;
+        conv_v0.decimals = decimals;
+        for (token_name, token_plural, language) in token_names {
+            conv_v0.localizations.insert(
+                language,
+                TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
+                    should_capitalize,
+                    singular_form: token_name,
+                    plural_form: token_plural,
+                }),
+            );
+        }
 
         token_config_v0.base_supply = base_supply;
         token_config_v0.max_supply = max_supply;
         token_config_v0.start_as_paused = start_as_paused;
-        token_config_v0.keeps_history = keeps_history_rules;
+        token_config_v0.allow_transfer_to_frozen_balance = allow_transfer_to_frozen_balance;
+        token_config_v0.keeps_history = keeps_history;
         token_config_v0.main_control_group = main_control_group;
         token_config_v0.manual_minting_rules = manual_minting_rules;
         token_config_v0.manual_burning_rules = manual_burning_rules;
@@ -455,16 +774,26 @@ impl AppContext {
         token_config_v0.conventions_change_rules = conventions_change_rules;
         token_config_v0.main_control_group_can_be_modified = main_control_group_change_authorized;
         token_config_v0.distribution_rules = distribution_rules;
+        token_config_v0.description = token_description;
 
-        // Wrap in the enum
+        // Set marketplace rules
+        // Map the u8 value to TokenTradeMode (0 = NotTradeable)
+        let trade_mode = match marketplace_trade_mode {
+            0 => TokenTradeMode::NotTradeable,
+            _ => TokenTradeMode::NotTradeable, // Default to NotTradeable for any unknown value
+        };
+
+        token_config_v0.marketplace_rules = TokenMarketplaceRules::V0(TokenMarketplaceRulesV0 {
+            trade_mode,
+            trade_mode_change_rules: marketplace_rules,
+        });
+
         let token_config = TokenConfiguration::V0(token_config_v0);
 
         // 7) Insert this token config at position 0
         contract_v1
             .tokens
             .insert(TokenContractPosition::from(0u16), token_config);
-
-        contract_v1.groups = groups;
 
         // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))

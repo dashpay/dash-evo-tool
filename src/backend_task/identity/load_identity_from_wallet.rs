@@ -5,9 +5,10 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::WalletArcRef;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -18,7 +19,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::types::identity::PublicKeyHash;
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
-use dash_sdk::Sdk;
 use std::collections::BTreeMap;
 
 impl AppContext {
@@ -29,16 +29,14 @@ impl AppContext {
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, String> {
         let public_key = {
-            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            let wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
         };
 
-        let Some(identity) = Identity::fetch(
-            &sdk,
-            PublicKeyHash(public_key.pubkey_hash().to_byte_array()),
-        )
-        .await
-        .map_err(|e| e.to_string())?
+        let Some(identity) =
+            Identity::fetch(sdk, PublicKeyHash(public_key.pubkey_hash().to_byte_array()))
+                .await
+                .map_err(|e| e.to_string())?
         else {
             return Ok(BackendTaskSuccessResult::None);
         };
@@ -90,7 +88,6 @@ impl AppContext {
                         })
                     })
                     .collect::<Vec<DPNSNameInfo>>()
-                    .into()
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
@@ -144,11 +141,16 @@ impl AppContext {
             )]),
             wallet_index: Some(identity_index),
             top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: self.network,
         };
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, None)
-            .map_err(|e| format!("Database error: {}", e))?;
+        self.insert_local_qualified_identity(
+            &qualified_identity,
+            &Some((wallet_seed_hash, identity_index)),
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(
             "Successfully loaded identity".to_string(),

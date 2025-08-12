@@ -1,29 +1,27 @@
 use crate::app::TaskResult;
-use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::context::AppContext;
+use dash_sdk::Error;
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::OutPoint;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
-use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::ProtocolError;
-use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
+use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::platform::Fetch;
-use dash_sdk::Error;
+use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn top_up_identity(
         &self,
         input: IdentityTopUpInfo,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityTopUpInfo {
             mut qualified_identity,
@@ -80,7 +78,7 @@ impl AppContext {
                                 AssetLockProof::Instant(instant_asset_lock_proof.clone())
                             }
                         } else {
-                            asset_lock_proof
+                            asset_lock_proof.as_ref().clone()
                         };
                     (asset_lock_proof, private_key, tx_id, None)
                 }
@@ -287,14 +285,13 @@ impl AppContext {
                                     asset_lock_proof,
                                     asset_lock_proof_private_key.inner.as_ref(),
                                     0,
-                                    PlatformVersion::latest(),
+                                    self.platform_version(),
                                     None,
                                 )
                                 .expect("expected to make transition");
                             format!(
                                 "error: {}, transaction is {:?}",
-                                e.to_string(),
-                                identity_create_transition
+                                e, identity_create_transition
                             )
                         })?
                 } else {
@@ -335,7 +332,9 @@ impl AppContext {
         }
 
         sender
-            .send(TaskResult::Success(BackendTaskSuccessResult::None))
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::None,
+            )))
             .await
             .map_err(|e| e.to_string())?;
 

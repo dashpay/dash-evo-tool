@@ -4,14 +4,15 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::secp256k1::Message;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
-use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dash_sdk::dpp::dashcore::{
     Address, Network, OutPoint, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut,
 };
 use std::collections::BTreeMap;
 
 impl Wallet {
+    #[allow(clippy::type_complexity)]
     pub fn registration_asset_lock_transaction(
         &mut self,
         network: Network,
@@ -42,6 +43,7 @@ impl Wallet {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn top_up_asset_lock_transaction(
         &mut self,
         network: Network,
@@ -74,6 +76,7 @@ impl Wallet {
         )
     }
 
+    #[allow(clippy::type_complexity)]
     fn asset_lock_transaction_from_private_key(
         &mut self,
         network: Network,
@@ -138,9 +141,9 @@ impl Wallet {
 
         // Collect inputs from UTXOs
         let inputs = utxos
-            .iter()
-            .map(|(utxo, _)| TxIn {
-                previous_output: utxo.clone(),
+            .keys()
+            .map(|utxo| TxIn {
+                previous_output: *utxo,
                 ..Default::default()
             })
             .collect();
@@ -183,6 +186,7 @@ impl Wallet {
             .collect();
 
         // Now we can drop the cache to end the immutable borrow
+        #[allow(clippy::drop_non_drop)]
         drop(cache);
 
         let mut check_utxos = utxos.clone();
@@ -199,7 +203,10 @@ impl Wallet {
 
                 let private_key = self
                     .private_key_for_address(&input_address, network)?
-                    .ok_or("Expected address to be in wallet")?;
+                    .ok_or(format!(
+                        "Expected address {} to be in wallet",
+                        input_address
+                    ))?;
 
                 // Sign the message with the private key
                 let sig = secp.sign_ecdsa(&message, &private_key.inner);
@@ -248,6 +255,7 @@ impl Wallet {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn top_up_asset_lock_transaction_for_utxo(
         &mut self,
         network: Network,
@@ -304,7 +312,10 @@ impl Wallet {
         // we need to get all inputs from utxos to add them to the transaction
 
         let mut tx_in = TxIn::default();
-        tx_in.previous_output = utxo.clone();
+        #[allow(clippy::field_reassign_with_default)]
+        {
+            tx_in.previous_output = utxo;
+        }
 
         let sighash_u32 = 1u32;
 
@@ -332,6 +343,7 @@ impl Wallet {
             .collect();
 
         // Now we can drop the cache to end the immutable borrow
+        #[allow(clippy::drop_non_drop)]
         drop(cache);
 
         tx.input
@@ -343,7 +355,10 @@ impl Wallet {
 
                 let private_key = self
                     .private_key_for_address(&input_address, network)?
-                    .ok_or("Expected address to be in wallet")?;
+                    .ok_or(format!(
+                        "Expected address {} to be in wallet for input",
+                        input_address
+                    ))?;
 
                 // Sign the message with the private key
                 let sig = secp.sign_ecdsa(&message, &private_key.inner);

@@ -1,46 +1,79 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
-
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::platform::tokens::builders::unfreeze::TokenUnfreezeTransitionBuilder;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::transition::fungible_tokens::unfreeze::TokenUnfreezeTransitionBuilder;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
-use dash_sdk::Sdk;
-use tokio::sync::mpsc;
+use dash_sdk::{Error, Sdk};
+use std::sync::Arc;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn unfreeze_tokens(
         &self,
         actor_identity: &QualifiedIdentity,
-        data_contract: &DataContract,
+        data_contract: Arc<DataContract>,
         token_position: u16,
         signing_key: IdentityPublicKey,
+        public_note: Option<String>,
         unfreeze_identity: Identifier,
+        group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
-        _sender: mpsc::Sender<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let builder = TokenUnfreezeTransitionBuilder::new(
-            data_contract,
+        let mut builder = TokenUnfreezeTransitionBuilder::new(
+            data_contract.clone(),
             token_position,
             actor_identity.identity.id(),
             unfreeze_identity,
         );
 
-        // Optionally chain .with_public_note(...).with_settings(...), etc.
+        if let Some(note) = public_note {
+            builder = builder.with_public_note(note);
+        }
+
+        if let Some(group_info) = group_info {
+            builder = builder.with_using_group_info(group_info);
+        }
+
+        if let Some(options) = self.state_transition_options() {
+            builder = builder.with_state_transition_creation_options(options);
+        }
 
         let state_transition = builder
-            .sign(sdk, &signing_key, actor_identity, self.platform_version)
+            .sign(sdk, &signing_key, actor_identity, self.platform_version())
             .await
-            .map_err(|e| format!("Error signing Unfreeze Tokens transition: {:?}", e))?;
+            .map_err(|e| format!("Error signing Unfreeze Tokens transition: {}", e))?;
 
         // Broadcast
         let _proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| format!("Error broadcasting Unfreeze Tokens transition: {}", e))?;
+            .map_err(|e| match e {
+                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes,
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    format!(
+                        "Error broadcasting Unfreeze Tokens transition: {}, proof error logged",
+                        proof_error
+                    )
+                }
+                e => format!("Error broadcasting Unfreeze Tokens transition: {}", e),
+            })?;
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(

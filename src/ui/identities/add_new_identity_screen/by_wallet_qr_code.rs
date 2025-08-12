@@ -1,8 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
 use crate::backend_task::identity::{
     IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
-use crate::backend_task::BackendTask;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };
@@ -120,11 +120,7 @@ impl AddNewIdentityScreen {
 
     pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         // Extract the step from the RwLock to minimize borrow scope
-        let step = self.step.read().unwrap().clone();
-
-        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
-            return AppAction::None;
-        };
+        let step = *self.step.read().unwrap();
 
         ui.add_space(10.0);
 
@@ -140,7 +136,15 @@ impl AddNewIdentityScreen {
 
         self.render_funding_amount_input(ui);
 
-        ui.with_layout(
+        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
+            return AppAction::None;
+        };
+
+        if amount_dash <= 0.0 {
+            return AppAction::None;
+        }
+
+        let response = ui.with_layout(
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
@@ -205,6 +209,7 @@ impl AddNewIdentityScreen {
         });
 
         ui.add_space(40.0);
-        AppAction::None
+
+        response.inner
     }
 }

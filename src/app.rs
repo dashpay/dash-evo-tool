@@ -9,26 +9,33 @@ use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::logging::initialize_logger;
-use crate::ui::contracts_documents::document_query_screen::DocumentQueryScreen;
+use crate::model::settings::Settings;
+use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
+use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
+use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
+use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
+use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
+use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
-use eframe::{egui, App};
+use eframe::{App, egui};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
@@ -36,14 +43,14 @@ use tokio::sync::mpsc as tokiompsc;
 #[derive(Debug, From)]
 pub enum TaskResult {
     Refresh,
-    Success(BackendTaskSuccessResult),
+    Success(Box<BackendTaskSuccessResult>),
     Error(String),
 }
 
 impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
     fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
         match value {
-            Ok(value) => TaskResult::Success(value),
+            Ok(value) => TaskResult::Success(Box::new(value)),
             Err(e) => TaskResult::Error(e),
         }
     }
@@ -58,22 +65,29 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub mainnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub testnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub devnet_core_zmq_listener: CoreZMQListener,
+    #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub local_core_zmq_listener: CoreZMQListener,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
-    pub task_result_sender: tokiompsc::Sender<TaskResult>, // Channel sender for sending task results
+    pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
+    pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
+    #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
-    AddScreenType(ScreenType),
-    BackendTask(BackendTask),
+    AddScreenType(Box<ScreenType>),
+    BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
 }
@@ -88,7 +102,7 @@ impl DesiredAppAction {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
             }
             DesiredAppAction::BackendTask(backend_task) => {
-                AppAction::BackendTask(backend_task.clone())
+                AppAction::BackendTask((**backend_task).clone())
             }
             DesiredAppAction::BackendTasks(tasks, mode) => {
                 AppAction::BackendTasks(tasks.clone(), mode.clone())
@@ -113,6 +127,7 @@ pub enum AppAction {
     SwitchNetwork(Network),
     SetMainScreen(RootScreenType),
     SetMainScreenThenPopScreen(RootScreenType),
+    SetMainScreenThenGoToMainScreen(RootScreenType),
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
@@ -132,7 +147,7 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(ctx: egui::Context) -> Self {
         create_app_user_data_directory_if_not_exists()
             .expect("Failed to create app user_data directory");
         copy_env_file_if_not_exists();
@@ -141,29 +156,53 @@ impl AppState {
         let db = Arc::new(Database::new(&db_file_path).unwrap());
         db.initialize(&db_file_path).unwrap();
 
-        let settings = db.get_settings().expect("expected to get settings");
+        let settings = db
+            .get_settings()
+            .expect("expected to get settings")
+            .map(Settings::from)
+            .unwrap_or_default();
+        let password_info = settings.password_info;
+        let theme_preference = settings.theme_mode;
+        let overwrite_dash_conf = settings.overwrite_dash_conf;
 
-        let password_info = settings
-            .clone()
-            .map(|(_, _, password_info, _, _)| password_info)
-            .flatten();
+        let subtasks = Arc::new(TaskManager::new());
+        let mainnet_app_context = match AppContext::new(
+            Network::Dash,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        ) {
+            Some(context) => context,
+            None => {
+                eprintln!(
+                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                );
+                std::process::exit(1);
+            }
+        };
+        let testnet_app_context = AppContext::new(
+            Network::Testnet,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        );
+        let devnet_app_context = AppContext::new(
+            Network::Devnet,
+            db.clone(),
+            password_info.clone(),
+            subtasks.clone(),
+        );
+        let local_app_context = AppContext::new(
+            Network::Regtest,
+            db.clone(),
+            password_info,
+            subtasks.clone(),
+        );
 
-        let mainnet_app_context =
-            match AppContext::new(Network::Dash, db.clone(), password_info.clone()) {
-                Some(context) => context,
-                None => {
-                    eprintln!(
-                        "Error: Failed to create the AppContext. Expected Dash config for mainnet."
-                    );
-                    std::process::exit(1);
-                }
-            };
-        let testnet_app_context =
-            AppContext::new(Network::Testnet, db.clone(), password_info.clone());
-        let devnet_app_context =
-            AppContext::new(Network::Devnet, db.clone(), password_info.clone());
-        let local_app_context = AppContext::new(Network::Regtest, db.clone(), password_info);
+        // load fonts
+        ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
 
+        // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
         let mut dpns_active_contests_screen =
             DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
@@ -176,7 +215,10 @@ impl AppState {
         let mut transition_visualizer_screen =
             TransitionVisualizerScreen::new(&mainnet_app_context);
         let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
+        let mut document_visualizer_screen = DocumentVisualizerScreen::new(&mainnet_app_context);
+        let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
+        let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
@@ -185,23 +227,12 @@ impl AppState {
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
-        let (custom_dash_qt_path, overwrite_dash_conf) = match settings.clone() {
-            Some((.., db_custom_dash_qt_path, db_overwrite_dash_qt)) => {
-                (db_custom_dash_qt_path, db_overwrite_dash_qt)
-            }
-            _ => {
-                // Default values: Use system default path and overwrite conf
-                (None, true)
-            }
-        };
-
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
             local_app_context.as_ref(),
             Network::Dash,
-            custom_dash_qt_path,
             overwrite_dash_conf,
         );
 
@@ -209,135 +240,149 @@ impl AppState {
 
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
-        let mut selected_main_screen = RootScreenType::RootScreenIdentities;
+        let selected_main_screen = settings.root_screen_type;
+        let chosen_network = settings.network;
+        network_chooser_screen.current_network = chosen_network;
 
-        let mut chosen_network = Network::Dash;
-
-        if let Some((network, screen_type, _password_info, _, _)) = settings {
-            selected_main_screen = screen_type;
-            chosen_network = network;
-            network_chooser_screen.current_network = chosen_network;
-
-            if chosen_network == Network::Testnet && testnet_app_context.is_some() {
-                let testnet_app_context = testnet_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(testnet_app_context);
-                dpns_active_contests_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&testnet_app_context, DPNSSubscreen::ScheduledVotes);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
-                proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
-                document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-                wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
-                proof_log_screen = ProofLogScreen::new(testnet_app_context);
-                masternode_list_diff_screen = MasternodeListDiffScreen::new(&testnet_app_context);
-                tokens_balances_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
-                token_search_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
-                token_creator_screen =
-                    TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
-            } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
-                let devnet_app_context = devnet_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(devnet_app_context);
-                dpns_active_contests_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&devnet_app_context, DPNSSubscreen::ScheduledVotes);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
-                proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
-                document_query_screen = DocumentQueryScreen::new(devnet_app_context);
-                wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
-                proof_log_screen = ProofLogScreen::new(devnet_app_context);
-                masternode_list_diff_screen = MasternodeListDiffScreen::new(&devnet_app_context);
-                tokens_balances_screen =
-                    TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
-                token_search_screen =
-                    TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
-                token_creator_screen =
-                    TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
-            } else if chosen_network == Network::Regtest && local_app_context.is_some() {
-                let local_app_context = local_app_context.as_ref().unwrap();
-                identities_screen = IdentitiesScreen::new(local_app_context);
-                dpns_active_contests_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Active);
-                dpns_past_contests_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Past);
-                dpns_my_usernames_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::Owned);
-                dpns_scheduled_votes_screen =
-                    DPNSScreen::new(&local_app_context, DPNSSubscreen::ScheduledVotes);
-                transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
-                proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
-                document_query_screen = DocumentQueryScreen::new(local_app_context);
-                wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
-                proof_log_screen = ProofLogScreen::new(local_app_context);
-                masternode_list_diff_screen = MasternodeListDiffScreen::new(&local_app_context);
-                tokens_balances_screen =
-                    TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
-                token_search_screen =
-                    TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
-                token_creator_screen =
-                    TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
-            }
+        if chosen_network == Network::Testnet && testnet_app_context.is_some() {
+            let testnet_app_context = testnet_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(testnet_app_context);
+            dpns_active_contests_screen =
+                DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(testnet_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(testnet_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(testnet_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
+            document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
+            contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
+            document_query_screen = DocumentQueryScreen::new(testnet_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
+            proof_log_screen = ProofLogScreen::new(testnet_app_context);
+            platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
+            masternode_list_diff_screen = MasternodeListDiffScreen::new(&testnet_app_context);
+            tokens_balances_screen =
+                TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
+            token_search_screen =
+                TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
+            token_creator_screen =
+                TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
+        } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
+            let devnet_app_context = devnet_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(devnet_app_context);
+            dpns_active_contests_screen =
+                DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(devnet_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(devnet_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(devnet_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
+            document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
+            document_query_screen = DocumentQueryScreen::new(devnet_app_context);
+            masternode_list_diff_screen = MasternodeListDiffScreen::new(devnet_app_context);
+            contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
+            proof_log_screen = ProofLogScreen::new(devnet_app_context);
+            platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
+            tokens_balances_screen =
+                TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
+            token_search_screen =
+                TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
+            token_creator_screen =
+                TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
+        } else if chosen_network == Network::Regtest && local_app_context.is_some() {
+            let local_app_context = local_app_context.as_ref().unwrap();
+            identities_screen = IdentitiesScreen::new(local_app_context);
+            dpns_active_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
+            dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
+            dpns_my_usernames_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
+            dpns_scheduled_votes_screen =
+                DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
+            transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
+            proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
+            document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
+            contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
+            document_query_screen = DocumentQueryScreen::new(local_app_context);
+            wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
+            masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
+            proof_log_screen = ProofLogScreen::new(local_app_context);
+            platform_info_screen = PlatformInfoScreen::new(local_app_context);
+            tokens_balances_screen =
+                TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
+            token_search_screen =
+                TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
+            token_creator_screen =
+                TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
-        let (task_result_sender, task_result_receiver) = tokiompsc::channel(256);
+        let (task_result_sender, task_result_receiver) =
+            tokiompsc::channel(256).with_egui_ctx(ctx.clone());
 
         // Create a channel for communication with the InstantSendListener
-        let (core_message_sender, core_message_receiver) = mpsc::channel();
+        let (core_message_sender, core_message_receiver) =
+            mpsc::channel().with_egui_ctx(ctx.clone());
 
+        let mainnet_core_zmq_endpoint = mainnet_app_context
+            .config
+            .read()
+            .unwrap()
+            .core_zmq_endpoint
+            .clone()
+            .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
         let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Dash,
-            "tcp://127.0.0.1:23708",
+            &mainnet_core_zmq_endpoint,
             core_message_sender.clone(), // Clone the sender for each listener
             Some(mainnet_app_context.sx_zmq_status.clone()),
         )
         .expect("Failed to create mainnet InstantSend listener");
 
-        let testnet_tx_zmq_status_option = match testnet_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let testnet_tx_zmq_status_option = testnet_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
+        let testnet_core_zmq_endpoint = testnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
+            .unwrap_or_else(|| "tcp://127.0.0.1:23709".to_string());
         let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Testnet,
-            "tcp://127.0.0.1:23709",
+            &testnet_core_zmq_endpoint,
             core_message_sender.clone(), // Use the original sender or create a new one if needed
             testnet_tx_zmq_status_option,
         )
         .expect("Failed to create testnet InstantSend listener");
 
-        let devnet_tx_zmq_status_option = match devnet_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let devnet_tx_zmq_status_option = devnet_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
+        let devnet_core_zmq_endpoint = devnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
+            .unwrap_or_else(|| "tcp://127.0.0.1:23710".to_string());
         let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Devnet,
-            "tcp://127.0.0.1:23710",
+            &devnet_core_zmq_endpoint,
             core_message_sender.clone(),
             devnet_tx_zmq_status_option,
         )
         .expect("Failed to create devnet InstantSend listener");
 
-        let local_tx_zmq_status_option = match local_app_context {
-            Some(ref context) => Some(context.sx_zmq_status.clone()),
-            None => None,
-        };
+        let local_tx_zmq_status_option = local_app_context
+            .as_ref()
+            .map(|context| context.sx_zmq_status.clone());
 
+        let local_core_zmq_endpoint = local_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
+            .unwrap_or_else(|| "tcp://127.0.0.1:20302".to_string());
         let local_core_zmq_listener = CoreZMQListener::spawn_listener(
             Network::Regtest,
-            "tcp://127.0.0.1:20302",
+            &local_core_zmq_endpoint,
             core_message_sender,
             local_tx_zmq_status_option,
         )
@@ -378,8 +423,20 @@ impl AppState {
                     Screen::ProofVisualizerScreen(proof_visualizer_screen),
                 ),
                 (
+                    RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+                    Screen::DocumentVisualizerScreen(document_visualizer_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsContractVisualizerScreen,
+                    Screen::ContractVisualizerScreen(contract_visualizer_screen),
+                ),
+                (
                     RootScreenType::RootScreenToolsProofLogScreen,
                     Screen::ProofLogScreen(proof_log_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsPlatformInfoScreen,
+                    Screen::PlatformInfoScreen(platform_info_screen),
                 ),
                 (
                     RootScreenType::RootScreenDocumentQuery,
@@ -395,15 +452,15 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,
-                    Screen::TokensScreen(tokens_balances_screen),
+                    Screen::TokensScreen(Box::new(tokens_balances_screen)),
                 ),
                 (
                     RootScreenType::RootScreenTokenSearch,
-                    Screen::TokensScreen(token_search_screen),
+                    Screen::TokensScreen(Box::new(token_search_screen)),
                 ),
                 (
                     RootScreenType::RootScreenTokenCreator,
-                    Screen::TokensScreen(token_creator_screen),
+                    Screen::TokensScreen(Box::new(token_creator_screen)),
                 ),
             ]
             .into(),
@@ -421,8 +478,28 @@ impl AppState {
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
+            theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            subtasks,
         }
+    }
+
+    /// Allows enabling or disabling animations globally for the app.
+    ///
+    /// Default is enabled.
+    pub fn with_animations(self, enabled: bool) -> Self {
+        self.mainnet_app_context.enable_animations(enabled);
+        if let Some(context) = self.devnet_app_context.as_ref() {
+            context.enable_animations(enabled)
+        }
+        if let Some(context) = self.testnet_app_context.as_ref() {
+            context.enable_animations(enabled)
+        }
+        if let Some(context) = self.local_app_context.as_ref() {
+            context.enable_animations(enabled)
+        }
+
+        self
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
@@ -436,10 +513,9 @@ impl AppState {
     }
 
     // Handle the backend task and send the result through the channel
-    pub fn handle_backend_task(&self, task: BackendTask) {
+    fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task, sender.clone()).await;
 
@@ -451,7 +527,7 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    pub fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
 
@@ -538,6 +614,9 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply Dash theme with user preference
+        crate::ui::theme::apply_theme(ctx, self.theme_preference);
+
         if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
             if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
                 *status = event;
@@ -548,29 +627,41 @@ impl App for AppState {
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
             // Handle the result on the main thread
             match task_result {
-                TaskResult::Success(message) => match message {
-                    BackendTaskSuccessResult::None => {}
-                    BackendTaskSuccessResult::Refresh => {
-                        self.visible_screen_mut().refresh();
+                TaskResult::Success(message) => {
+                    let unboxed_message = *message;
+                    match unboxed_message {
+                        BackendTaskSuccessResult::None => {}
+                        BackendTaskSuccessResult::Refresh => {
+                            self.visible_screen_mut().refresh();
+                        }
+                        BackendTaskSuccessResult::Message(ref msg) => {
+                            self.visible_screen_mut()
+                                .display_message(msg, MessageType::Success);
+                        }
+                        BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
+                            self.theme_preference = new_theme;
+                            self.visible_screen_mut().display_message(
+                                "Theme preference updated successfully",
+                                MessageType::Success,
+                            );
+                        }
+                        BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
+                            let _ = self.current_app_context().mark_vote_executed(
+                                vote.voter_id.as_slice(),
+                                vote.contested_name.clone(),
+                            );
+                            self.visible_screen_mut().display_message(
+                                "Successfully cast scheduled vote",
+                                MessageType::Success,
+                            );
+                            self.visible_screen_mut().refresh();
+                        }
+                        _ => {
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                     }
-                    BackendTaskSuccessResult::Message(message) => {
-                        self.visible_screen_mut()
-                            .display_message(&message, MessageType::Success);
-                    }
-                    BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                        let _ = self
-                            .current_app_context()
-                            .mark_vote_executed(vote.voter_id.as_slice(), vote.contested_name);
-                        self.visible_screen_mut().display_message(
-                            "Successfully cast scheduled vote",
-                            MessageType::Success,
-                        );
-                        self.visible_screen_mut().refresh();
-                    }
-                    _ => {
-                        self.visible_screen_mut().display_task_result(message);
-                    }
-                },
+                }
                 TaskResult::Error(message) => {
                     self.visible_screen_mut()
                         .display_message(&message, MessageType::Error);
@@ -672,7 +763,7 @@ impl App for AppState {
                 .filter(|v| {
                     v.unix_timestamp <= current_time
                         && !v.executed_successfully
-                        && !(v.unix_timestamp + 120000 < current_time) // Don't cast votes more than 2 minutes behind current time
+                        && (v.unix_timestamp + 120000 >= current_time) // Don't cast votes more than 2 minutes behind current time
                 })
                 .collect();
 
@@ -697,16 +788,18 @@ impl App for AppState {
                             .unwrap();
                         if let Screen::DPNSScreen(screen) = dpns_screen {
                             screen.scheduled_vote_cast_in_progress = true;
-                            screen
+                            if let Some((_, s)) = screen
                                 .scheduled_votes
                                 .lock()
                                 .unwrap()
                                 .iter_mut()
                                 .find(|(v, _)| v == &vote)
-                                .map(|(_, s)| *s = ScheduledVoteCastingStatus::InProgress);
+                            {
+                                *s = ScheduledVoteCastingStatus::InProgress;
+                            }
                         }
                         let task = BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::CastScheduledVote(vote, voter.clone()),
+                            ContestedResourceTask::CastScheduledVote(vote, Box::new(voter.clone())),
                         );
                         self.handle_backend_task(task);
                     } else {
@@ -715,9 +808,6 @@ impl App for AppState {
                 }
             }
         }
-
-        // Use a timer to repaint the UI every 0.05 seconds
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
         let action = self.visible_screen_mut().ui(ctx);
 
@@ -757,6 +847,14 @@ impl App for AppState {
                     .update_settings(root_screen_type)
                     .ok();
             }
+            AppAction::SetMainScreenThenGoToMainScreen(root_screen_type) => {
+                self.selected_main_screen = root_screen_type;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context()
+                    .update_settings(root_screen_type)
+                    .ok();
+                self.screen_stack = vec![];
+            }
             AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
                 self.selected_main_screen = root_screen_type;
                 self.active_root_screen_mut().refresh_on_arrival();
@@ -783,5 +881,20 @@ impl App for AppState {
             }
             AppAction::Custom(_) => {}
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Signal all background tasks to cancel
+        tracing::debug!("App received on_exit event, cancelling all background tasks");
+
+        // if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.subtasks.cancellation_token.is_cancelled() {
+            self.subtasks.shutdown().unwrap_or_else(|e| {
+                tracing::debug!("Failed to shutdown subtasks: {}", e);
+            });
+        } else {
+            tracing::debug!("Shutdown already in progress, ignoring close request");
+        }
+        // }
     }
 }

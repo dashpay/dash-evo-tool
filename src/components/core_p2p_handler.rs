@@ -1,23 +1,19 @@
-use crate::app_dir::app_user_data_file_path;
 use chrono::Utc;
 use dash_sdk::dpp::dashcore::Network;
-use dashcoretemp::bip158::BlockFilter;
 use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::network::constants::ServiceFlags;
 use dashcoretemp::network::message::{NetworkMessage, RawNetworkMessage};
-use dashcoretemp::network::message_blockdata::GetBlocksMessage;
 use dashcoretemp::network::message_qrinfo::QRInfo;
 use dashcoretemp::network::message_sml::{GetMnListDiff, MnListDiff};
 use dashcoretemp::network::{message_network, message_qrinfo, Address};
-use dashcoretemp::transaction::special_transaction::coinbase::CoinbasePayload;
-use dashcoretemp::{BlockHash, MerkleBlock, Transaction};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use dashcoretemp::BlockHash;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
+use rand::prelude::StdRng;
+use rand::{Rng, SeedableRng};
 
 #[derive(Debug)]
 pub struct CoreP2PHandler {
@@ -208,11 +204,11 @@ impl CoreP2PHandler {
                 address: Default::default(),
                 port: self.stream.local_addr().map_err(|e| e.to_string())?.port(),
             },
-            nonce: rng.gen(),
+            nonce: rng.r#gen(),
             user_agent: "/dash-evo-tool:0.9/".to_string(),
             start_height: 0,
             relay: false,
-            mn_auth_challenge: rng.gen(),
+            mn_auth_challenge: rng.r#gen(),
             masternode_connection: false,
         });
 

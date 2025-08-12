@@ -1,5 +1,5 @@
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use native_dialog::MessageDialog;
+use native_dialog::DialogBuilder;
 
 pub fn check_cpu_compatibility() {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -10,36 +10,40 @@ pub fn check_cpu_compatibility() {
 
         if let Some(feature_info) = cpuid.get_feature_info() {
             if !feature_info.has_avx() {
-                MessageDialog::new()
-                    .set_type(native_dialog::MessageType::Error)
+                DialogBuilder::message()
+                    .set_level(native_dialog::MessageLevel::Error)
                     .set_title("Compatibility Error")
                     .set_text(
                         "Your CPU does not support AVX instructions. Please use a compatible CPU.",
                     )
-                    .show_alert()
+                    .alert()
+                    .show()
                     .unwrap();
+
                 std::process::exit(1);
             }
             let avx2_supported = cpuid
                 .get_extended_feature_info()
-                .map_or(false, |ext_info| ext_info.has_avx2());
+                .is_some_and(|ext_info| ext_info.has_avx2());
             if !avx2_supported {
-                MessageDialog::new()
-                    .set_type(native_dialog::MessageType::Error)
+                DialogBuilder::message()
+                    .set_level(native_dialog::MessageLevel::Error)
                     .set_title("Compatibility Error")
                     .set_text(
                         "Your CPU does not support AVX2 instructions. Please use a compatible CPU.",
                     )
-                    .show_alert()
+                    .alert()
+                    .show()
                     .unwrap();
                 std::process::exit(1);
             }
         } else {
-            MessageDialog::new()
-                .set_type(native_dialog::MessageType::Error)
+            DialogBuilder::message()
+                .set_level(native_dialog::MessageLevel::Error)
                 .set_title("Compatibility Error")
-                .set_text("Unable to determine CPU features.")
-                .show_alert()
+                .set_text("Unable to determine CPU features. Please ensure your CPU is compatible.")
+                .alert()
+                .show()
                 .unwrap();
             std::process::exit(1);
         }

@@ -1,10 +1,12 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::ScreenLike;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
 use eframe::egui::Context;
 
-use crate::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
+use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::wallets::add_new_wallet_screen::{
     DASH_BIP44_ACCOUNT_0_PATH_MAINNET, DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
@@ -12,8 +14,8 @@ use crate::ui::wallets::add_new_wallet_screen::{
 use bip39::Mnemonic;
 use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use egui::{Color32, ComboBox, Direction, Grid, Layout, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -61,7 +63,6 @@ impl ImportWalletScreen {
                     let (encrypted_message, salt, nonce) =
                         encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
                     self.app_context
-                        .db
                         .update_main_password(&salt, &nonce, &encrypted_message)
                         .map_err(|e| e.to_string())?;
                 }
@@ -113,7 +114,13 @@ impl ImportWalletScreen {
             self.app_context
                 .db
                 .store_wallet(&wallet, &self.app_context.network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    if e.to_string().contains("UNIQUE constraint failed: wallet.seed_hash") {
+                        "This wallet has already been imported for another network. Each wallet can only be imported once per network. If you want to use this wallet on a different network, please switch networks first.".to_string()
+                    } else {
+                        e.to_string()
+                    }
+                })?;
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
@@ -156,24 +163,32 @@ impl ImportWalletScreen {
             self.seed_phrase_words
                 .resize(self.selected_seed_phrase_length, "".to_string());
 
-            // Seed phrase input grid
-            let available_width = ui.available_width();
-            let columns = 4; // Adjust the number of columns as needed
-            let rows = (self.selected_seed_phrase_length + columns - 1) / columns;
-            let column_width = available_width / columns as f32;
+            // Seed phrase input grid with shorter inputs
+            let columns = 4; // 4 columns
+            let _rows = self.selected_seed_phrase_length.div_ceil(columns);
+            let input_width = 120.0; // Fixed width for each input
 
             Grid::new("seed_phrase_input_grid")
                 .num_columns(columns)
-                .spacing((10.0, 10.0))
-                .min_col_width(column_width)
+                .spacing((15.0, 10.0))
                 .show(ui, |ui| {
                     for i in 0..self.selected_seed_phrase_length {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}:", i + 1));
+                            ui.label(format!("{:2}:", i + 1));
 
                             let mut word = self.seed_phrase_words[i].clone();
 
-                            let response = ui.text_edit_singleline(&mut word);
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let response = ui.add_sized(
+                                Vec2::new(input_width, 20.0),
+                                egui::TextEdit::singleline(&mut word)
+                                    .text_color(crate::ui::theme::DashColors::text_primary(
+                                        dark_mode,
+                                    ))
+                                    .background_color(
+                                        crate::ui::theme::DashColors::input_background(dark_mode),
+                                    ),
+                            );
 
                             if response.changed() {
                                 // Update the seed_phrase_words[i]
@@ -221,9 +236,17 @@ impl ScreenLike for ImportWalletScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Add the scroll area to make the content scrollable
-            egui::ScrollArea::vertical()
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenWalletsBalances,
+        );
+
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
+
+            // Add the scroll area to make the content scrollable both vertically and horizontally
+            egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
                 .show(ui, |ui| {
                     ui.add_space(10.0);
@@ -234,8 +257,39 @@ impl ScreenLike for ImportWalletScreen {
                     ui.heading("1. Select the seed phrase length and enter all words.");
                     self.render_seed_phrase_input(ui);
 
-                    if self.seed_phrase.is_none() && self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                        self.seed_phrase = Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()).ok();
+                    // Check seed phrase validity whenever all words are filled
+                    if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
+                        match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                            Ok(mnemonic) => {
+                                self.seed_phrase = Some(mnemonic);
+                                // Clear any existing seed phrase error
+                                if let Some(ref mut error) = self.error {
+                                    if error.contains("Invalid seed phrase") {
+                                        self.error = None;
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                self.seed_phrase = None;
+                                self.error = Some("Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.".to_string());
+                            }
+                        }
+                    } else {
+                        // Clear seed phrase and error if not all words are filled
+                        self.seed_phrase = None;
+                        if let Some(ref mut error) = self.error {
+                            if error.contains("Invalid seed phrase") {
+                                self.error = None;
+                            }
+                        }
+                    }
+
+                    // Display error message if seed phrase is invalid
+                    if let Some(ref error_msg) = self.error {
+                        if error_msg.contains("Invalid seed phrase") {
+                            ui.add_space(10.0);
+                            ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
+                        }
                     }
 
                     if self.seed_phrase.is_none() {
@@ -244,7 +298,7 @@ impl ScreenLike for ImportWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("4. Select a wallet name to remember it. (This will not go to the blockchain)");
+                    ui.heading("2. Select a wallet name to remember it. (This will not go to the blockchain)");
 
                     ui.add_space(8.0);
 
@@ -255,7 +309,7 @@ impl ScreenLike for ImportWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("5. Add a password that must be used to unlock the wallet. (Optional but recommended)");
+                    ui.heading("3. Add a password that must be used to unlock the wallet. (Optional but recommended)");
 
                     ui.add_space(8.0);
 
@@ -289,11 +343,11 @@ impl ScreenLike for ImportWalletScreen {
 
                         // Since score ranges from 0 to 4, adjust percentage accordingly
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
-                        let color = match self.password_strength as i32 {
-                            0..=25 => Color32::RED,
-                            26..=50 => Color32::YELLOW,
-                            51..=75 => Color32::LIGHT_GREEN,
-                            _ => Color32::GREEN,
+                        let fill_color = match self.password_strength as i32 {
+                            0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
+                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
+                            51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
+                            _ => Color32::from_rgb(90, 200, 90),           // Medium green
                         };
                         ui.add(
                             egui::ProgressBar::new(strength_percentage as f32)
@@ -306,7 +360,7 @@ impl ScreenLike for ImportWalletScreen {
                                     51..=75 => "Strong".to_string(),
                                     _ => "Very Strong".to_string(),
                                 })
-                                .fill(color),
+                                .fill(fill_color),
                         );
                     });
 
@@ -323,7 +377,7 @@ impl ScreenLike for ImportWalletScreen {
 
                     ui.add_space(20.0);
 
-                    ui.heading("6. Save the wallet.");
+                    ui.heading("4. Save the wallet.");
                     ui.add_space(5.0);
 
                     // Centered "Save Wallet" button at the bottom
@@ -332,7 +386,7 @@ impl ScreenLike for ImportWalletScreen {
                             RichText::new("Save Wallet").strong().size(30.0),
                         )
                             .min_size(Vec2::new(300.0, 60.0))
-                            .rounding(10.0)
+                            .corner_radius(10.0)
                             .stroke(Stroke::new(1.5, Color32::WHITE))
                             .sense(if self.seed_phrase.is_some() {
                                 egui::Sense::click()
@@ -343,7 +397,7 @@ impl ScreenLike for ImportWalletScreen {
                         if ui.add(save_button).clicked() {
                             match self.save_wallet() {
                                 Ok(save_wallet_action) => {
-                                    action = save_wallet_action;
+                                    inner_action = save_wallet_action;
                                 }
                                 Err(e) => {
                                     self.error = Some(e)
@@ -352,23 +406,9 @@ impl ScreenLike for ImportWalletScreen {
                         }
                     });
                 });
-        });
 
-        // Display error popup if there's an error
-        if let Some(error_message) = self.error.as_ref() {
-            let error_message = error_message.clone();
-            egui::Window::new("Error")
-                .resizable(false)
-                .collapsible(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::new(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.label(error_message);
-                    ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
-                    }
-                });
-        }
+            inner_action
+        });
 
         action
     }

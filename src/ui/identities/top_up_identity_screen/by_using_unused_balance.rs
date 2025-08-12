@@ -39,7 +39,7 @@ impl TopUpIdentityScreen {
         self.top_up_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = self.step.read().unwrap().clone();
+        let step = *self.step.read().unwrap();
 
         let Ok(_) = self.funding_amount.parse::<f64>() else {
             return action;
@@ -52,7 +52,7 @@ impl TopUpIdentityScreen {
         let button = egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))
             .frame(true)
-            .rounding(3.0);
+            .corner_radius(3.0);
         if ui.add(button).clicked() {
             self.error_message = None;
             action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);

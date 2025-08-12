@@ -9,34 +9,52 @@ use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
+use crate::model::settings::Settings;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
-use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
 use crate::ui::RootScreenType;
+use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
+use crate::utils::tasks::TaskManager;
+use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
+use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
+use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
-use dash_sdk::dpp::identity::Identity;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
-use dash_sdk::dpp::system_data_contracts::{load_system_data_contract, SystemDataContract};
+use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
+use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
+use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::version::v8::PLATFORM_V8;
+use dash_sdk::dpp::version::v9::PLATFORM_V9;
 use dash_sdk::platform::{DataContract, Identifier};
-use dash_sdk::Sdk;
+use dash_sdk::query_types::IndexMap;
+use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+
+const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// A guard that ensures settings cache invalidation happens atomically
+///
+/// This guard holds a write lock on the cached settings, preventing reads
+/// until the database update is complete and the cache is properly invalidated.
+type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) network: Network,
-    pub(crate) developer_mode: bool,
+    developer_mode: AtomicBool,
+    #[allow(dead_code)] // May be used for devnet identification
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
@@ -47,12 +65,23 @@ pub struct AppContext {
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
+    pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
+    #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
-    pub(crate) platform_version: &'static PlatformVersion,
+    /// Whether to animate the UI elements.
+    ///
+    /// This is used to control animations in the UI, such as loading spinners or transitions.
+    /// Disable for automated tests.
+    animate: AtomicBool,
+    /// Cached settings to avoid expensive database reads
+    /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation
+    cached_settings: RwLock<Option<Settings>>,
+    // subtasks started by the app context, used for graceful shutdown
+    pub(crate) subtasks: Arc<TaskManager>,
 }
 
 impl AppContext {
@@ -60,6 +89,7 @@ impl AppContext {
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
+        subtasks: Arc<TaskManager>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -77,18 +107,22 @@ impl AppContext {
             Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
 
         let sdk = initialize_sdk(&network_config, network, provider.clone());
+        let platform_version = sdk.version();
 
-        let dpns_contract =
-            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
-                .expect("expected to load dpns contract");
+        let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+            .expect("expected to load dpns contract");
 
         let withdrawal_contract =
-            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+            load_system_data_contract(SystemDataContract::Withdrawals, platform_version)
                 .expect("expected to get withdrawal contract");
 
         let token_history_contract =
-            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+            load_system_data_contract(SystemDataContract::TokenHistory, platform_version)
                 .expect("expected to get token history contract");
+
+        let keyword_search_contract =
+            load_system_data_contract(SystemDataContract::KeywordSearch, platform_version)
+                .expect("expected to get keyword search contract");
 
         let addr = format!(
             "http://{}:{}",
@@ -124,9 +158,17 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
+        let animate = match config.developer_mode.unwrap_or(false) {
+            true => {
+                tracing::debug!("developer_mode is enabled, disabling animations");
+                AtomicBool::new(false)
+            }
+            false => AtomicBool::new(true), // Animations are enabled by default
+        };
+
         let app_context = AppContext {
             network,
-            developer_mode: false,
+            developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
             devnet_name: None,
             db,
             sdk: sdk.into(),
@@ -136,19 +178,69 @@ impl AppContext {
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
             token_history_contract: Arc::new(token_history_contract),
+            keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
-            platform_version: PlatformVersion::latest(),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
+            animate,
+            cached_settings: RwLock::new(None),
+            subtasks,
         };
 
         let app_context = Arc::new(app_context);
         provider.bind_app_context(app_context.clone());
 
         Some(app_context)
+    }
+
+    /// Enables animations in the UI.
+    ///
+    /// This is used to control whether UI elements should animate, such as loading spinners or transitions.
+    pub fn enable_animations(&self, animate: bool) {
+        self.animate.store(animate, Ordering::Relaxed);
+    }
+
+    pub fn enable_developer_mode(&self, enable: bool) {
+        self.developer_mode.store(enable, Ordering::Relaxed);
+        // Animations are reverse of developer mode
+        self.enable_animations(!enable);
+    }
+
+    pub fn is_developer_mode(&self) -> bool {
+        self.developer_mode.load(Ordering::Relaxed)
+    }
+
+    /// Repaints the UI if animations are enabled.
+    ///
+    /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
+    pub(super) fn repaint_animation(&self, ctx: &Context) {
+        if self.animate.load(Ordering::Relaxed) {
+            // Request a repaint after a short delay to allow for animations
+            ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
+        }
+    }
+
+    pub fn platform_version(&self) -> &'static PlatformVersion {
+        default_platform_version(&self.network)
+    }
+
+    pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
+        if self.is_developer_mode() {
+            Some(StateTransitionCreationOptions {
+                signing_options: StateTransitionSigningOptions {
+                    allow_signing_with_any_security_level: true,
+                    allow_signing_with_any_purpose: true,
+                },
+                batch_feature_version: None,
+                method_feature_version: None,
+                base_feature_version: None,
+            })
+        } else {
+            None
+        }
     }
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
@@ -160,14 +252,13 @@ impl AppContext {
             cfg_lock.clone()
         };
 
+        // Note: developer_mode is now global and managed separately
+
         // 2. Rebuild the RPC client with the new password
         let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
-        let new_client = dash_sdk::dashcore_rpc::Client::new(
+        let new_client = Client::new(
             &addr,
-            dash_sdk::dashcore_rpc::Auth::UserPass(
-                cfg.core_rpc_user.clone(),
-                cfg.core_rpc_password.clone(),
-            ),
+            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
         )
         .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
 
@@ -195,26 +286,11 @@ impl AppContext {
         Ok(())
     }
 
-    pub(crate) fn network_string(&self) -> String {
-        match self.network {
-            Network::Dash => "dash".to_string(),
-            Network::Testnet => "testnet".to_string(),
-            Network::Devnet => format!("devnet:{}", self.devnet_name.clone().unwrap_or_default()),
-            Network::Regtest => "local".to_string(),
-            _ => "unknown".to_string(),
-        }
-    }
-
-    pub fn insert_local_identity(&self, identity: &Identity) -> Result<()> {
-        self.db
-            .insert_local_qualified_identity(&identity.clone().into(), None, self)
-    }
-
     /// Inserts a local qualified identity into the database
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: Option<(&[u8], u32)>,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
     ) -> Result<()> {
         self.db.insert_local_qualified_identity(
             qualified_identity,
@@ -233,28 +309,25 @@ impl AppContext {
     }
 
     /// Sets the alias for an identity
-    pub fn set_alias(&self, identifier: &Identifier, new_alias: Option<&str>) -> Result<()> {
-        self.db.set_alias(identifier, new_alias)
+    pub fn set_identity_alias(
+        &self,
+        identifier: &Identifier,
+        new_alias: Option<&str>,
+    ) -> Result<()> {
+        self.db.set_identity_alias(identifier, new_alias)
+    }
+
+    pub fn set_contract_alias(
+        &self,
+        contract_id: &Identifier,
+        new_alias: Option<&str>,
+    ) -> Result<()> {
+        self.db.set_contract_alias(contract_id, new_alias)
     }
 
     /// Gets the alias for an identity
-    pub fn get_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
-        self.db.get_alias(identifier)
-    }
-
-    /// This is for before we know if Platform will accept the identity
-    pub fn insert_local_qualified_identity_in_creation(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-        wallet_id: &[u8],
-        identity_index: u32,
-    ) -> Result<()> {
-        self.db.insert_local_qualified_identity_in_creation(
-            qualified_identity,
-            wallet_id,
-            identity_index,
-            self,
-        )
+    pub fn get_identity_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
+        self.db.get_identity_alias(identifier)
     }
 
     /// Fetches all local qualified identities from the database
@@ -263,9 +336,82 @@ impl AppContext {
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
+    /// Fetches all local qualified identities from the database
+    #[allow(dead_code)] // May be used for loading identities in wallets
+    pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
+        let wallets = self.wallets.read().unwrap();
+        self.db
+            .get_local_qualified_identities_in_wallets(self, &wallets)
+    }
+
+    pub fn get_identity_by_id(
+        &self,
+        identity_id: &Identifier,
+    ) -> Result<Option<QualifiedIdentity>> {
+        let wallets = self.wallets.read().unwrap();
+        // Get the identity from the database
+        let result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
+
+        Ok(result)
+    }
+
     /// Fetches all voting identities from the database
     pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         self.db.get_local_voting_identities(self)
+    }
+
+    /// Fetches all local user identities from the database
+    pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
+        let identities = self.db.get_local_user_identities(self)?;
+
+        Ok(identities
+            .into_iter()
+            .map(|(mut identity, wallet_hash)| {
+                if let Some(wallet_id) = wallet_hash {
+                    // Load wallets for each identity
+                    self.load_wallet_for_identity(
+                        &mut identity,
+                        &[wallet_id],
+                    )
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            identity = %identity.identity.id(),
+                            error = ?e,
+                            "cannot load wallet for identity when loading local user identities",
+                        )
+                    })
+                } else {
+                    tracing::debug!(
+                        identity = %identity.identity.id(),
+                        "no wallet hash found for identity when loading local user identities",
+                    );
+                }
+                identity
+            })
+            .collect())
+    }
+
+    fn load_wallet_for_identity(
+        &self,
+        identity: &mut QualifiedIdentity,
+        wallet_hashes: &[WalletSeedHash],
+    ) -> Result<()> {
+        let wallets = self.wallets.read().unwrap();
+        for wallet_hash in wallet_hashes {
+            if let Some(wallet) = wallets.get(wallet_hash) {
+                identity
+                    .associated_wallets
+                    .insert(*wallet_hash, wallet.clone());
+            } else {
+                tracing::warn!(
+                    wallet = %hex::encode(wallet_hash),
+                    identity = %identity.identity.id(),
+                    "wallet not found for identity when loading local user identities",
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Fetches all contested names from the database including past and active ones
@@ -280,12 +426,12 @@ impl AppContext {
 
     /// Inserts scheduled votes into the database
     pub fn insert_scheduled_votes(&self, scheduled_votes: &Vec<ScheduledDPNSVote>) -> Result<()> {
-        self.db.insert_scheduled_votes(self, &scheduled_votes)
+        self.db.insert_scheduled_votes(self, scheduled_votes)
     }
 
     /// Fetches all scheduled votes from the database
     pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
-        self.db.get_scheduled_votes(&self)
+        self.db.get_scheduled_votes(self)
     }
 
     /// Clears all scheduled votes from the database
@@ -299,9 +445,10 @@ impl AppContext {
     }
 
     /// Deletes a scheduled vote from the database
+    #[allow(clippy::ptr_arg)]
     pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
         self.db
-            .delete_scheduled_vote(self, identity_id, &contested_name)
+            .delete_scheduled_vote(self, identity_id, contested_name)
     }
 
     /// Marks a scheduled vote as executed in the database
@@ -336,26 +483,77 @@ impl AppContext {
 
     /// Updates the `start_root_screen` in the settings table
     pub fn update_settings(&self, root_screen_type: RootScreenType) -> Result<()> {
+        let _guard = self.invalidate_settings_cache();
+
         self.db
             .insert_or_update_settings(self.network, root_screen_type)
     }
 
-    /// Retrieves the current `RootScreenType` from the settings
-    pub fn get_settings(
+    /// Updates the main password settings
+    pub fn update_main_password(
         &self,
-    ) -> Result<
-        Option<(
-            Network,
-            RootScreenType,
-            Option<PasswordInfo>,
-            Option<String>,
-            bool,
-        )>,
-    > {
-        self.db.get_settings()
+        salt: &[u8],
+        nonce: &[u8],
+        password_check: &[u8],
+    ) -> Result<()> {
+        let _guard = self.invalidate_settings_cache();
+
+        self.db.update_main_password(salt, nonce, password_check)
     }
 
-    /// Retrieves all contracts from the database plus the DPNS contract from app context.
+    /// Updates the Dash Core execution settings
+    pub fn update_dash_core_execution_settings(
+        &self,
+        custom_dash_qt_path: Option<std::path::PathBuf>,
+        overwrite_dash_conf: bool,
+    ) -> Result<()> {
+        let _guard = self.invalidate_settings_cache();
+
+        self.db
+            .update_dash_core_execution_settings(custom_dash_qt_path, overwrite_dash_conf)
+    }
+
+    /// Invalidates the settings cache and returns a guard
+    ///
+    /// The cache is invalidated immediately and the guard prevents concurrent access
+    /// until the database operation is complete. This ensures atomicity and prevents
+    /// race conditions regardless of whether the database operation succeeds or fails.
+    pub fn invalidate_settings_cache(&self) -> SettingsCacheGuard {
+        let mut guard = self.cached_settings.write().unwrap();
+        *guard = None;
+        guard
+    }
+
+    /// Retrieves the current settings
+    ///
+    /// ## Cached
+    ///
+    /// This function uses a cache to avoid expensive database operations.
+    /// The cache is invalidated when settings are updated.
+    ///
+    /// Use [`AppContext::invalidate_settings_cache`] to invalidate the cache.
+    pub fn get_settings(&self) -> Result<Option<Settings>> {
+        // First, try to read from cache
+        {
+            let cache = self.cached_settings.read().unwrap();
+            if let Some(ref settings) = *cache {
+                return Ok(Some(settings.clone()));
+            }
+        }
+
+        // Cache miss, read from database
+        let settings = self.db.get_settings()?.map(Settings::from);
+
+        // Update cache with the fresh data
+        {
+            let mut cache = self.cached_settings.write().unwrap();
+            *cache = settings.clone();
+        }
+
+        Ok(settings)
+    }
+
+    /// Retrieves all contracts from the database plus the system contracts from app context.
     pub fn get_contracts(
         &self,
         limit: Option<u32>,
@@ -367,18 +565,69 @@ impl AppContext {
         // Add the DPNS contract to the list
         let dpns_contract = QualifiedContract {
             contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
-            alias: Some("dpns".to_string()), // You can adjust the alias as needed
+            alias: Some("dpns".to_string()),
         };
 
-        // Insert the DPNS contract at the beginning
+        // Insert the DPNS contract at 0
         contracts.insert(0, dpns_contract);
+
+        // Add the token history contract to the list
+        let token_history_contract = QualifiedContract {
+            contract: Arc::clone(&self.token_history_contract).as_ref().clone(),
+            alias: Some("token_history".to_string()),
+        };
+
+        // Insert the token history contract at 1
+        contracts.insert(1, token_history_contract);
+
+        // Add the withdrawal contract to the list
+        let withdraws_contract = QualifiedContract {
+            contract: Arc::clone(&self.withdraws_contract).as_ref().clone(),
+            alias: Some("withdrawals".to_string()),
+        };
+
+        // Insert the withdrawal contract at 2
+        contracts.insert(2, withdraws_contract);
+
+        // Add the keyword search contract to the list
+        let keyword_search_contract = QualifiedContract {
+            contract: Arc::clone(&self.keyword_search_contract).as_ref().clone(),
+            alias: Some("keyword_search".to_string()),
+        };
+
+        // Insert the keyword search contract at 3
+        contracts.insert(3, keyword_search_contract);
 
         Ok(contracts)
     }
 
+    pub fn get_contract_by_id(
+        &self,
+        contract_id: &Identifier,
+    ) -> Result<Option<QualifiedContract>> {
+        // Get the contract from the database
+        self.db.get_contract_by_id(*contract_id, self)
+    }
+
+    pub fn get_unqualified_contract_by_id(
+        &self,
+        contract_id: &Identifier,
+    ) -> Result<Option<DataContract>> {
+        // Get the contract from the database
+        self.db.get_unqualified_contract_by_id(*contract_id, self)
+    }
+
     // Remove contract from the database by ID
     pub fn remove_contract(&self, contract_id: &Identifier) -> Result<()> {
-        self.db.remove_contract(contract_id.as_bytes(), &self)
+        self.db.remove_contract(contract_id.as_bytes(), self)
+    }
+
+    pub fn replace_contract(
+        &self,
+        contract_id: Identifier,
+        new_contract: &DataContract,
+    ) -> Result<()> {
+        self.db.replace_contract(contract_id, new_contract, self)
     }
 
     pub(crate) fn received_transaction_finality(
@@ -386,7 +635,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<Vec<(OutPoint, TxOut, Address)>> {
+    ) -> Result<Vec<(OutPoint, TxOut, Address)>> {
         // Initialize a vector to collect wallet outpoints
         let mut wallet_outpoints = Vec::new();
 
@@ -423,10 +672,10 @@ impl AppContext {
                     .utxos
                     .entry(address.clone())
                     .or_insert_with(HashMap::new) // Initialize inner HashMap if needed
-                    .insert(out_point.clone(), tx_out.clone()); // Insert the TxOut at the OutPoint
+                    .insert(out_point, tx_out.clone()); // Insert the TxOut at the OutPoint
 
                 // Collect the outpoint
-                wallet_outpoints.push((out_point.clone(), tx_out.clone(), address.clone()));
+                wallet_outpoints.push((out_point, tx_out.clone(), address.clone()));
 
                 wallet
                     .address_balances
@@ -450,7 +699,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> rusqlite::Result<()> {
+    ) -> Result<()> {
         // Extract the asset lock payload from the transaction
         let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
             return Ok(());
@@ -463,13 +712,13 @@ impl AppContext {
                 tx.clone(),
                 0,
             )))
-        } else if let Some(chain_locked_height) = chain_locked_height {
-            Some(AssetLockProof::Chain(ChainAssetLockProof {
-                core_chain_locked_height: chain_locked_height,
-                out_point: OutPoint::new(tx.txid(), 0),
-            }))
         } else {
-            None
+            chain_locked_height.map(|chain_locked_height| {
+                AssetLockProof::Chain(ChainAssetLockProof {
+                    core_chain_locked_height: chain_locked_height,
+                    out_point: OutPoint::new(tx.txid(), 0),
+                })
+            })
         };
 
         {
@@ -531,7 +780,9 @@ impl AppContext {
         Ok(())
     }
 
-    pub fn identity_token_balances(&self) -> Result<Vec<IdentityTokenBalance>> {
+    pub fn identity_token_balances(
+        &self,
+    ) -> Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>> {
         self.db.get_identity_token_balances(self)
     }
 
@@ -541,5 +792,73 @@ impl AppContext {
         identity_id: Identifier,
     ) -> Result<()> {
         self.db.remove_token_balance(&token_id, &identity_id, self)
+    }
+
+    pub fn insert_token(
+        &self,
+        token_id: &Identifier,
+        token_name: &str,
+        token_configuration: TokenConfiguration,
+        contract_id: &Identifier,
+        token_position: u16,
+    ) -> Result<()> {
+        let config = config::standard();
+        let Some(serialized_token_configuration) =
+            bincode::encode_to_vec(&token_configuration, config).ok()
+        else {
+            // We should always be able to serialize
+            return Ok(());
+        };
+
+        self.db.insert_token(
+            token_id,
+            token_name,
+            serialized_token_configuration.as_slice(),
+            contract_id,
+            token_position,
+            self,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn remove_token(&self, token_id: &Identifier) -> Result<()> {
+        self.db.remove_token(token_id, self)
+    }
+
+    #[allow(dead_code)] // May be used for storing token balances
+    pub fn insert_token_identity_balance(
+        &self,
+        token_id: &Identifier,
+        identity_id: &Identifier,
+        balance: u64,
+    ) -> Result<()> {
+        self.db
+            .insert_identity_token_balance(token_id, identity_id, balance, self)?;
+
+        Ok(())
+    }
+
+    pub fn get_contract_by_token_id(
+        &self,
+        token_id: &Identifier,
+    ) -> Result<Option<QualifiedContract>> {
+        let contract_id = self
+            .db
+            .get_contract_id_by_token_id(token_id, self)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        self.db.get_contract_by_id(contract_id, self)
+    }
+}
+
+/// Returns the default platform version for the given network.
+pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
+    // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
+    match network {
+        Network::Dash => &PLATFORM_V8,
+        Network::Testnet => &PLATFORM_V9,
+        Network::Devnet => &PLATFORM_V9,
+        Network::Regtest => &PLATFORM_V9,
+        _ => panic!("unsupported network"),
     }
 }

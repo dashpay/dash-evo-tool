@@ -1,16 +1,17 @@
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 impl Database {
     /// Updates the alias of a specified identity.
-    pub fn set_alias(
+    pub fn set_identity_alias(
         &self,
         identifier: &Identifier,
         new_alias: Option<&str>,
@@ -30,7 +31,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
+    pub fn get_identity_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
         let conn = self.conn.lock().unwrap();
 
@@ -43,7 +44,7 @@ impl Database {
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: Option<(&[u8], u32)>,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let id = qualified_identity.identity.id().to_vec();
@@ -51,14 +52,16 @@ impl Database {
         let alias = qualified_identity.alias.clone();
         let identity_type = format!("{:?}", qualified_identity.identity_type);
 
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
+
+        let status = qualified_identity.status.as_u8();
 
         if let Some((wallet, wallet_index)) = wallet_and_identity_id_info {
             // If wallet information is provided, insert with wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
-             (id, data, is_local, alias, identity_type, network, wallet, wallet_index)
-             VALUES (?, ?, 1, ?, ?, ?, ?, ?)",
+             (id, data, is_local, alias, identity_type, network, wallet, wallet_index, status)
+             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
                 params![
                     id,
                     data,
@@ -66,10 +69,12 @@ impl Database {
                     identity_type,
                     network,
                     wallet,
-                    wallet_index
+                    wallet_index,
+                    status,
                 ],
             )?;
         } else {
+            tracing::warn!(identity_id=?id, alias, network, "saving identity without wallet; this needs investigating");
             // If wallet information is not provided, insert without wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
@@ -94,51 +99,22 @@ impl Database {
         let identity_type = format!("{:?}", qualified_identity.identity_type);
 
         // Get the network string from the app context
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
+
+        let status = qualified_identity.status.as_u8();
 
         // Execute the update statement
         self.execute(
             "UPDATE identity
-         SET data = ?, alias = ?, identity_type = ?, network = ?, is_local = 1
+         SET data = ?, alias = ?, identity_type = ?, network = ?, is_local = 1, status = ?
          WHERE id = ?",
-            params![data, alias, identity_type, network, id],
+            params![data, alias, identity_type, network, status, id],
         )?;
 
         Ok(())
     }
 
-    pub fn insert_local_qualified_identity_in_creation(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-        wallet_id: &[u8],
-        identity_index: u32,
-        app_context: &AppContext,
-    ) -> rusqlite::Result<()> {
-        let id = qualified_identity.identity.id().to_vec();
-        let data = qualified_identity.to_bytes();
-        let alias = qualified_identity.alias.clone();
-        let identity_type = format!("{:?}", qualified_identity.identity_type);
-
-        let network = app_context.network_string();
-
-        self.execute(
-            "INSERT OR REPLACE INTO identity
-         (id, data, is_local, alias, identity_type, network, is_in_creation, wallet, wallet_index)
-         VALUES (?, ?, 1, ?, ?, ?, 1, ?, ?)",
-            params![
-                id,
-                data,
-                alias,
-                identity_type,
-                network,
-                wallet_id,
-                identity_index
-            ],
-        )?;
-
-        Ok(())
-    }
-
+    #[allow(dead_code)] // May be used for caching remote identities from network queries
     pub fn insert_remote_identity_if_not_exists(
         &self,
         identifier: &Identifier,
@@ -151,7 +127,7 @@ impl Database {
             qualified_identity.map_or("".to_string(), |qi| format!("{:?}", qi.identity_type));
         let data = qualified_identity.map(|qi| qi.to_bytes());
 
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         // Check if the identity already exists
         let conn = self.conn.lock().unwrap();
@@ -176,13 +152,72 @@ impl Database {
         app_context: &AppContext,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
 
         // Prepare the main statement to select identities, including wallet_index
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT data, alias, wallet_index, status FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+        )?;
+
+        // Prepare the statement to select top-ups (will be used multiple times)
+        let mut top_up_stmt =
+            conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
+
+        // Iterate over each identity
+        let identity_iter = stmt.query_map(params![network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let wallet_index: Option<u32> = row.get(2)?;
+            let status: u8 = row.get(3)?;
+
+            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            identity.alias = alias;
+            identity.wallet_index = wallet_index;
+
+            identity.status = IdentityStatus::from_u8(status);
+            identity.network = app_context.network;
+
+            // Associate wallets
+            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+
+            // Retrieve the identity_id as bytes
+            let identity_id = identity.identity.id().to_buffer();
+
+            // Query the top_up table for this identity_id
+            let mut top_ups = BTreeMap::new();
+            let mut rows = top_up_stmt.query(params![identity_id])?;
+
+            while let Some(top_up_row) = rows.next()? {
+                let top_up_index: u32 = top_up_row.get(0)?;
+                let amount: u64 = top_up_row.get(1)?;
+                top_ups.insert(top_up_index, amount);
+            }
+
+            // Assign the top_ups to the identity
+            identity.top_ups = top_ups;
+
+            Ok(identity)
+        })?;
+
+        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
+        identities
+    }
+
+    #[allow(dead_code)] // May be used for filtering identities that belong to specific wallets
+    pub fn get_local_qualified_identities_in_wallets(
+        &self,
+        app_context: &AppContext,
+        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+    ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
+        let network = app_context.network.to_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Prepare the main statement to select identities, including wallet_index
+        let mut stmt = conn.prepare(
+            "SELECT data, alias, wallet_index FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL AND wallet_index IS NOT NULL",
         )?;
 
         // Prepare the statement to select top-ups (will be used multiple times)
@@ -198,6 +233,7 @@ impl Database {
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
+            identity.network = app_context.network;
 
             // Associate wallets
             identity.associated_wallets = wallets.clone(); //todo: use less wallets
@@ -211,7 +247,7 @@ impl Database {
 
             while let Some(top_up_row) = rows.next()? {
                 let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u32 = top_up_row.get(1)?;
+                let amount: u64 = top_up_row.get(1)?;
                 top_ups.insert(top_up_index, amount);
             }
 
@@ -225,11 +261,67 @@ impl Database {
         identities
     }
 
+    pub fn get_identity_by_id(
+        &self,
+        identifier: &Identifier,
+        app_context: &AppContext,
+        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+    ) -> rusqlite::Result<Option<QualifiedIdentity>> {
+        let network = app_context.network.to_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Prepare the main statement to select identities, including wallet_index
+        let mut stmt = conn.prepare(
+            "SELECT data, alias, wallet_index FROM identity WHERE id = ? AND is_local = 1 AND network = ? AND data IS NOT NULL",
+        )?;
+
+        // Prepare the statement to select top-ups (will be used multiple times)
+        let mut top_up_stmt =
+            conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
+
+        // Iterate over each identity
+        let identity_iter = stmt.query_map(params![identifier.to_buffer(), network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let wallet_index: Option<u32> = row.get(2)?;
+
+            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            identity.alias = alias;
+            identity.wallet_index = wallet_index;
+            identity.network = app_context.network;
+
+            // Associate wallets
+            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+
+            // Retrieve the identity_id as bytes
+            let identity_id = identity.identity.id().to_buffer();
+
+            // Query the top_up table for this identity_id
+            let mut top_ups = BTreeMap::new();
+            let mut rows = top_up_stmt.query(params![identity_id])?;
+
+            while let Some(top_up_row) = rows.next()? {
+                let top_up_index: u32 = top_up_row.get(0)?;
+                let amount: u64 = top_up_row.get(1)?;
+                top_ups.insert(top_up_index, amount);
+            }
+
+            // Assign the top_ups to the identity
+            identity.top_ups = top_ups;
+
+            Ok(identity)
+        })?;
+
+        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
+        Ok(identities?.into_iter().next())
+    }
+
     pub fn get_local_voting_identities(
         &self,
         app_context: &AppContext,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -237,7 +329,8 @@ impl Database {
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
-            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            identity.network = app_context.network;
 
             Ok(identity)
         })?;
@@ -246,24 +339,31 @@ impl Database {
         identities
     }
 
+    /// Retrieves all local user identities along with their associated wallet IDs.
+    ///
+    /// Caller should insert wallet references into associated_wallets before using the identities.
+    #[allow(clippy::let_and_return)]
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
-        let network = app_context.network_string();
+    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>> {
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
+            "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identity_iter = stmt.query_map(params![network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+        let identities: Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>, rusqlite::Error> =
+            stmt.query_map(params![network], |row| {
+                let data: Vec<u8> = row.get(0)?;
+                let wallet_id: Option<WalletSeedHash> = row.get(1)?;
+                let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+                identity.network = app_context.network;
 
-            Ok(identity)
-        })?;
+                Ok((identity, wallet_id))
+            })?
+            .collect();
 
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
         identities
     }
 
@@ -274,7 +374,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let id = identifier.to_vec();
-        let network = app_context.network_string();
+        let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
 
@@ -287,27 +387,67 @@ impl Database {
         Ok(())
     }
 
+    /// Deletes all local qualified identities in Devnet variants and Regtest.
+    pub fn delete_all_identities_in_all_devnets_and_regtest(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "DELETE FROM identity WHERE (network LIKE 'devnet%' OR network = 'regtest')",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    /// Deletes a local qualified identity with the given identifier from the database.
+    pub fn delete_all_local_qualified_identities_in_devnet(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        if app_context.network != Network::Devnet {
+            return Ok(());
+        }
+        let network = app_context.network.to_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Perform the deletion only if the identity is marked as local
+        conn.execute(
+            "DELETE FROM identity WHERE network = ? AND is_local = 1",
+            params![network],
+        )?;
+
+        Ok(())
+    }
+
     /// Creates the identity_order table if it doesn't already exist
     /// with two columns: `pos` (int) and `identity_id` (blob).
     /// pos is the "position" in the custom ordering.
-    fn ensure_identity_order_table_exists(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identity_order (
-                pos INTEGER NOT NULL,
-                identity_id BLOB NOT NULL,
-                PRIMARY KEY(pos),
-                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE)",
+    pub fn initialize_identity_order_table(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<()> {
+        // Drop the table if it already exists
+        conn.execute("DROP TABLE IF EXISTS identity_order", [])?;
+
+        // Recreate with foreign key enforcement
+        conn.execute(
+            "CREATE TABLE identity_order (
+            pos INTEGER NOT NULL,
+            identity_id BLOB NOT NULL,
+            PRIMARY KEY(pos),
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+        )",
+            [],
         )?;
+
         Ok(())
     }
 
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
     pub fn save_identity_order(&self, all_ids: Vec<Identifier>) -> rusqlite::Result<()> {
-        // Make sure table exists
-        self.ensure_identity_order_table_exists()?;
-
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
 
@@ -331,9 +471,6 @@ impl Database {
     /// Loads the user’s custom identity order (the entire list).
     /// If an identity in the order doesn't exist in the identity table, it is removed.
     pub fn load_identity_order(&self) -> rusqlite::Result<Vec<Identifier>> {
-        // Make sure table exists
-        self.ensure_identity_order_table_exists()?;
-
         let conn = self.conn.lock().unwrap();
 
         // Read all rows sorted by pos
@@ -377,5 +514,64 @@ impl Database {
         }
 
         Ok(final_list)
+    }
+
+    /// Fixes bug in identity table where network name for devnet was stored as `devnet:` instead of `devnet`.
+    pub fn fix_identity_devnet_network_name(&self, conn: &Connection) -> rusqlite::Result<()> {
+        const TABLES: [&str; 11] = [
+            "asset_lock_transaction",
+            "contestant",
+            "contested_name",
+            "contract",
+            "identity",
+            "identity_token_balances",
+            "scheduled_votes",
+            "settings",
+            "token",
+            "utxos",
+            "wallet",
+        ];
+
+        for t in TABLES {
+            conn.execute(
+                &format!(
+                    "UPDATE {} SET network = 'devnet' WHERE network = 'devnet:'",
+                    t
+                ),
+                [],
+            )?;
+
+            conn.execute(
+                &format!(
+                    "UPDATE {} SET network = 'regtest' WHERE network = 'local'",
+                    t
+                ),
+                [],
+            )?;
+        }
+
+        tracing::debug!("Updated network names in database");
+
+        Ok(())
+    }
+
+    pub fn rename_identity_column_is_in_creation_to_status(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        // Rename the column in the identity table
+        conn.execute(
+            "ALTER TABLE identity RENAME COLUMN is_in_creation TO status",
+            [],
+        )?;
+
+        // Update the status values to match the new enum
+        conn.execute(
+            "UPDATE identity SET status = 2 WHERE status = 0", // Active was 0, now it's 2
+            [],
+        )?;
+        tracing::debug!("Renamed column 'is_in_creation' to 'status' in identity table");
+
+        Ok(())
     }
 }

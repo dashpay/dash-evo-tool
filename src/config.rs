@@ -14,6 +14,8 @@ pub struct Config {
     pub testnet_config: Option<NetworkConfig>,
     pub devnet_config: Option<NetworkConfig>,
     pub local_config: Option<NetworkConfig>,
+    /// Global developer mode setting
+    pub developer_mode: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +40,8 @@ pub struct NetworkConfig {
     pub core_rpc_password: String,
     /// URL of the Insight API
     pub insight_api_url: String,
+    /// ZMQ endpoint for Core blockchain events (e.g., tcp://127.0.0.1:23708)
+    pub core_zmq_endpoint: Option<String>,
     /// Devnet network name if one exists
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
@@ -101,6 +105,15 @@ impl Config {
             )
             .map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
+            if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
+                writeln!(
+                    env_file,
+                    "{}core_zmq_endpoint={}",
+                    prefix, core_zmq_endpoint
+                )
+                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            }
+
             if let Some(devnet_name) = &config.devnet_name {
                 // Only write devnet name if it exists
                 writeln!(env_file, "{}devnet_name={}", prefix, devnet_name)
@@ -145,6 +158,12 @@ impl Config {
         if let Some(ref local_config) = self.local_config {
             // `envy::prefixed("LOCAL_")` expects "LOCAL_..."
             write_network_config("LOCAL_", local_config)?;
+        }
+
+        // Save global developer mode
+        if let Some(developer_mode) = self.developer_mode {
+            writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
+                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
         }
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
@@ -233,11 +252,17 @@ impl Config {
             );
         }
 
+        // Load global developer mode
+        let developer_mode = std::env::var("DEVELOPER_MODE")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok());
+
         Ok(Config {
             mainnet_config,
             testnet_config,
             devnet_config,
             local_config,
+            developer_mode,
         })
     }
 
@@ -261,6 +286,7 @@ impl Config {
 
 impl NetworkConfig {
     /// Check if configuration is set
+    #[allow(dead_code)] // May be used for validation
     pub fn is_valid(&self) -> bool {
         !self.core_rpc_user.is_empty()
             && !self.core_rpc_password.is_empty()
@@ -275,6 +301,7 @@ impl NetworkConfig {
     }
 
     /// Insight API URI
+    #[allow(dead_code)] // May be used for insight API access
     pub fn insight_api_uri(&self) -> Uri {
         Uri::from_str(&self.insight_api_url).expect("invalid insight API URL")
     }

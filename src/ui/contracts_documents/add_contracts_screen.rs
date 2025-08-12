@@ -1,7 +1,9 @@
 use crate::app::AppAction;
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -14,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_CONTRACTS: usize = 10;
 
+#[derive(PartialEq)]
 enum AddContractsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
@@ -25,6 +28,9 @@ pub struct AddContractsScreen {
     pub app_context: Arc<AppContext>,
     contract_ids_input: Vec<String>,
     add_contracts_status: AddContractsStatus,
+    maybe_found_contracts: Vec<String>,
+    alias_inputs: Option<Vec<String>>,
+    last_alias_result: Option<(usize, Result<String, String>)>,
 }
 
 impl AddContractsScreen {
@@ -33,6 +39,9 @@ impl AddContractsScreen {
             app_context: app_context.clone(),
             contract_ids_input: vec!["".to_string()],
             add_contracts_status: AddContractsStatus::NotStarted,
+            maybe_found_contracts: vec![],
+            alias_inputs: None,
+            last_alias_result: None,
         }
     }
 
@@ -75,8 +84,8 @@ impl AddContractsScreen {
                         .expect("Time went backwards")
                         .as_secs(),
                 );
-                AppAction::BackendTask(BackendTask::ContractTask(ContractTask::FetchContracts(
-                    identifiers,
+                AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchContracts(identifiers),
                 )))
             }
             Err(e) => {
@@ -98,10 +107,10 @@ impl AddContractsScreen {
             ui.add_space(5.0);
         }
 
-        if self.contract_ids_input.len() < MAX_CONTRACTS {
-            if ui.button("Add Another Contract Field").clicked() {
-                self.add_contract_field();
-            }
+        if self.contract_ids_input.len() < MAX_CONTRACTS
+            && ui.button("Add Another Contract Field").clicked()
+        {
+            self.add_contract_field();
         }
     }
 
@@ -118,13 +127,115 @@ impl AddContractsScreen {
             ui.add_space(10.0);
             let mut not_found = vec![];
 
-            if let AddContractsStatus::Complete(options) = &self.add_contracts_status {
-                for id_string in self.contract_ids_input.clone() {
-                    let trimmed_id_string = id_string.trim().to_string();
-                    if options.contains(&trimmed_id_string.to_string()) {
-                        ui.colored_label(Color32::DARK_GREEN, trimmed_id_string);
-                    } else {
-                        not_found.push(trimmed_id_string);
+            // Store alias input state for each contract ID
+            if self.alias_inputs.is_none() {
+                // Initialize alias_inputs with empty strings for each contract
+                self.alias_inputs = Some(
+                    self.contract_ids_input
+                        .iter()
+                        .map(|_| String::new())
+                        .collect::<Vec<_>>(),
+                );
+            }
+            let alias_inputs = self.alias_inputs.as_mut().unwrap();
+
+            // Clone the options to avoid borrowing self.add_contracts_status during the UI closure
+            let options = self.maybe_found_contracts.clone();
+
+            use egui::{Grid, vec2};
+
+            let mut clicked_idx: Option<usize> = None; // remember which row’s button was hit
+
+            Grid::new("found_contracts_grid")
+                .striped(false)
+                .num_columns(3)
+                .min_col_width(150.0)
+                .spacing(vec2(12.0, 6.0)) // [horiz, vert] spacing between cells
+                .show(ui, |ui| {
+                    for (idx, id_string) in self.contract_ids_input.iter().enumerate() {
+                        let trimmed = id_string.trim().to_string();
+
+                        if options.contains(&trimmed) {
+                            // ─ column 1: contract ID label ───────────────────────────────
+                            ui.colored_label(Color32::DARK_GREEN, &trimmed);
+
+                            // ─ column 2: editable alias field ───────────────────────────
+                            ui.text_edit_singleline(&mut alias_inputs[idx]);
+
+                            // ─ column 3: action button ──────────────────────────────────
+                            if ui.button("Set Alias").clicked() {
+                                clicked_idx = Some(idx);
+                            }
+
+                            ui.end_row(); // ← tells the grid we’ve finished this row
+                        } else {
+                            not_found.push(trimmed);
+                        }
+                    }
+                });
+
+            // ─ handle the button click AFTER the grid so we can borrow &mut self safely ──
+            if let Some(idx) = clicked_idx {
+                let trimmed_id_string = self.contract_ids_input[idx].trim();
+                let alias = alias_inputs[idx].trim();
+                if alias.is_empty() {
+                    self.last_alias_result = Some((idx, Err("Alias cannot be empty.".into())));
+                } else {
+                    // Set the alias in the local db
+                    let identifier_result =
+                        Identifier::from_string(trimmed_id_string, Encoding::Base58).or_else(
+                            |_| {
+                                // Try hex if base58 fails
+                                hex::decode(trimmed_id_string)
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|bytes| {
+                                        Identifier::from_bytes(&bytes).map_err(|e| e.to_string())
+                                    })
+                            },
+                        );
+                    match identifier_result {
+                        Ok(identifier) => match self.app_context.get_contract_by_id(&identifier) {
+                            Ok(Some(contract)) => {
+                                match self
+                                    .app_context
+                                    .set_contract_alias(&contract.contract.id(), Some(alias))
+                                {
+                                    Ok(_) => {
+                                        self.last_alias_result = Some((
+                                            idx,
+                                            Ok(format!("Alias set successfully ({})", alias)),
+                                        ));
+                                        alias_inputs[idx].clear();
+                                    }
+                                    Err(e) => {
+                                        self.last_alias_result =
+                                            Some((idx, Err(format!("Failed to set alias: {}", e))));
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.last_alias_result = Some((
+                                    idx,
+                                    Err(format!("Contract not found for ID {}", trimmed_id_string)),
+                                ));
+                            }
+                        },
+                        Err(e) => {
+                            self.last_alias_result =
+                                Some((idx, Err(format!("Invalid ID format: {}", e))));
+                        }
+                    }
+                }
+            }
+
+            // Show alias set result message if any
+            if let Some((_, ref result)) = self.last_alias_result {
+                match result {
+                    Ok(msg) => {
+                        ui.colored_label(Color32::DARK_GREEN, msg);
+                    }
+                    Err(msg) => {
+                        ui.colored_label(Color32::DARK_RED, msg);
                     }
                 }
             }
@@ -144,10 +255,11 @@ impl AddContractsScreen {
                 egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
-                    .rounding(3.0);
+                    .corner_radius(3.0);
             if ui.add(button).clicked() {
                 // Return to previous screen
                 action = AppAction::PopScreenAndRefresh;
+                self.last_alias_result = None;
             }
         });
 
@@ -185,7 +297,8 @@ impl ScreenLike for AddContractsScreen {
                     })
                     .cloned()
                     .collect();
-                self.add_contracts_status = AddContractsStatus::Complete(maybe_contracts);
+                self.add_contracts_status = AddContractsStatus::Complete(maybe_contracts.clone());
+                self.maybe_found_contracts = maybe_contracts;
             }
             _ => {
                 // Nothing
@@ -204,7 +317,13 @@ impl ScreenLike for AddContractsScreen {
             vec![],
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            crate::ui::RootScreenType::RootScreenDocumentQuery,
+        );
+
+        action |= island_central_panel(ctx, |ui| {
             ui.heading("Add Contracts");
             ui.add_space(10.0);
 
@@ -224,9 +343,9 @@ impl ScreenLike for AddContractsScreen {
                         egui::Button::new(RichText::new("Add Contracts").color(Color32::WHITE))
                             .fill(Color32::from_rgb(0, 128, 255))
                             .frame(true)
-                            .rounding(3.0);
+                            .corner_radius(3.0);
                     if ui.add(button).clicked() {
-                        action = self.add_contracts_clicked();
+                        return self.add_contracts_clicked();
                     }
                 }
                 AddContractsStatus::WaitingForResult(start_time) => {
@@ -260,9 +379,10 @@ impl ScreenLike for AddContractsScreen {
                     ));
                 }
                 AddContractsStatus::Complete(_) => {
-                    action = self.show_success_screen(ui);
+                    return self.show_success_screen(ui);
                 }
             }
+            AppAction::None
         });
 
         action

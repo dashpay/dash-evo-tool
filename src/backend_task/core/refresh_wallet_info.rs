@@ -44,7 +44,7 @@ impl AppContext {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error fetching balance for address {}: {:?}", address, e);
+                    eprintln!("Error fetching balance for address {}: {}", address, e);
                 }
             }
         }
@@ -75,7 +75,7 @@ impl AppContext {
                 .map_err(|e| e.to_string())?;
             self.db
                 .insert_utxo(
-                    &outpoint.txid.as_ref(),          // txid: &[u8]
+                    outpoint.txid.as_ref(),           // txid: &[u8]
                     outpoint.vout,                    // vout: i64
                     &address,                         // address: &str
                     tx_out.value,                     // value: i64

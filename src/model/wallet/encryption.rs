@@ -1,8 +1,7 @@
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::{self, Argon2};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use bip39::rand::{RngCore, rngs::OsRng};
 
 const SALT_SIZE: usize = 16; // 128-bit salt
 const NONCE_SIZE: usize = 12; // 96-bit nonce for AES-GCM
@@ -30,6 +29,7 @@ pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, Strin
 }
 
 /// Encrypt the seed using AES-256-GCM.
+#[allow(clippy::type_complexity)]
 pub fn encrypt_message(
     message: &[u8],
     password: &str,
@@ -67,6 +67,7 @@ impl ClosedKeyItem {
     }
 
     /// Encrypt the seed using AES-256-GCM.
+    #[allow(clippy::type_complexity)]
     pub(crate) fn encrypt_seed(
         seed: &[u8],
         password: &str,

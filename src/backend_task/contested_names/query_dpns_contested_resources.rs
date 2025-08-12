@@ -2,21 +2,21 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::ContestedResource;
-use dash_sdk::Sdk;
 use std::sync::Arc;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 impl AppContext {
     pub(super) async fn query_dpns_contested_resources(
         self: &Arc<Self>,
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), String> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
@@ -45,13 +45,14 @@ impl AppContext {
             // Initialize retry counter
             let mut retries = 0;
 
-            let contested_resources = match ContestedResource::fetch_many(&sdk, query.clone()).await
+            let contested_resources = match ContestedResource::fetch_many(sdk, query.clone()).await
             {
                 Ok(contested_resources) => contested_resources,
                 Err(e) => {
                     tracing::error!("Error fetching contested resources: {}", e);
                     if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
                         proof_bytes,
+                        path_query,
                         height,
                         time_ms,
                         error,
@@ -68,25 +69,25 @@ impl AppContext {
                                 Err(e) => return Err(e),
                             };
 
-                        // // Encode the path_query using bincode
-                        // let verification_path_query_bytes =
-                        //     match bincode::encode_to_vec(&path_query, bincode::config::standard())
-                        //         .map_err(|encode_err| {
-                        //             tracing::error!("Error encoding path_query: {}", encode_err);
-                        //             format!("Error encoding path_query: {}", encode_err)
-                        //         }) {
-                        //         Ok(encoded_path_query) => encoded_path_query,
-                        //         Err(e) => {
-                        //             return Err(format!("Contested resource query failed: {}", e))
-                        //         }
-                        //     };
+                        // Encode the path_query using bincode
+                        let verification_path_query_bytes =
+                            match bincode::encode_to_vec(path_query, bincode::config::standard())
+                                .map_err(|encode_err| {
+                                    tracing::error!("Error encoding path_query: {}", encode_err);
+                                    format!("Error encoding path_query: {}", encode_err)
+                                }) {
+                                Ok(encoded_path_query) => encoded_path_query,
+                                Err(e) => {
+                                    return Err(format!("Contested resource query failed: {}", e));
+                                }
+                            };
 
                         if let Err(e) = self
                             .db
                             .insert_proof_log_item(ProofLogItem {
                                 request_type: RequestType::GetContestedResources,
                                 request_bytes: encoded_query,
-                                verification_path_query_bytes: vec![],
+                                verification_path_query_bytes,
                                 height: *height,
                                 time_ms: *time_ms,
                                 proof_bytes: proof_bytes.clone(),
@@ -140,15 +141,15 @@ impl AppContext {
 
             let new_names_to_be_updated = self
                 .db
-                .insert_name_contests_as_normalized_names(contested_resources_as_strings, &self)
-                .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e.to_string()))?;
+                .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)
+                .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e))?;
 
             names_to_be_updated.extend(new_names_to_be_updated);
 
             sender.send(TaskResult::Refresh).await.map_err(|e| {
                 format!(
                     "Contested resource query failed. Sender failed to send TaskResult: {}",
-                    e.to_string()
+                    e
                 )
             })?;
 
@@ -240,14 +241,16 @@ impl AppContext {
         }
 
         sender
-            .send(TaskResult::Success(BackendTaskSuccessResult::Message(
-                "Successfully refreshed DPNS contests".to_string(),
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::Message(
+                    "Successfully refreshed DPNS contests".to_string(),
+                ),
             )))
             .await
             .map_err(|e| {
                 format!(
                     "Successfully refreshed DPNS contests but sender failed to send TaskResult: {}",
-                    e.to_string()
+                    e
                 )
             })?;
         Ok(())

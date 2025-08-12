@@ -3,27 +3,29 @@ pub mod qualified_identity_public_key;
 
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::wallet::{Wallet, WalletSeed, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
-use dash_sdk::dashcore_rpc::dashcore::{signer, PubkeyHash};
+use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
+use dash_sdk::dpp::dashcore::bip32::ChildNumber;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
+use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
-use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::BinaryData;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
-use dash_sdk::dpp::{bls_signatures, ed25519_dalek, ProtocolError};
+use dash_sdk::dpp::{ProtocolError, bls_signatures, ed25519_dalek};
 use dash_sdk::platform::IdentityPublicKey;
+use egui::Color32;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
@@ -36,6 +38,7 @@ pub enum IdentityType {
 }
 
 impl IdentityType {
+    #[allow(dead_code)] // May be used for voting calculations
     pub fn vote_strength(&self) -> u64 {
         match self {
             IdentityType::User => 1,
@@ -64,6 +67,7 @@ impl Display for IdentityType {
 }
 
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
     PrivateKeyOnMainIdentity,
     PrivateKeyOnVoterIdentity,
@@ -85,6 +89,125 @@ pub struct DPNSNameInfo {
     pub acquired_at: u64,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// Identity status is unknown, refresh is required.
+    #[default]
+    Unknown = 0,
+    /// Identity creation is in progress, but not yet completed. It can be also an error condition.
+    PendingCreation = 1,
+    /// Identity is in a normal state, fully functional.
+    Active = 2,
+    /// Identity not found on the platform, either failed creation or invalid.
+    NotFound = 3,
+    /// Identity creation failed, it can be due to various reasons.
+    FailedCreation = 4,
+}
+impl From<u8> for IdentityStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => IdentityStatus::Unknown,
+            1 => IdentityStatus::PendingCreation,
+            2 => IdentityStatus::Active,
+            3 => IdentityStatus::NotFound,
+            4 => IdentityStatus::FailedCreation,
+            _ => IdentityStatus::Unknown, // Default to Unknown for any other value
+        }
+    }
+}
+
+impl From<IdentityStatus> for u8 {
+    fn from(status: IdentityStatus) -> Self {
+        match status {
+            IdentityStatus::Unknown => 0,
+            IdentityStatus::PendingCreation => 1,
+            IdentityStatus::Active => 2,
+            IdentityStatus::NotFound => 3,
+            IdentityStatus::FailedCreation => 4,
+        }
+    }
+}
+
+impl Display for IdentityStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityStatus::Unknown => write!(f, "Unknown"),
+            IdentityStatus::PendingCreation => write!(f, "Pending Creation"),
+            IdentityStatus::Active => write!(f, "Active"),
+            IdentityStatus::NotFound => write!(f, "Not Found"),
+            IdentityStatus::FailedCreation => write!(f, "Creation Failed"),
+        }
+    }
+}
+
+impl From<IdentityStatus> for Color32 {
+    fn from(value: IdentityStatus) -> Self {
+        match value {
+            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
+        }
+    } //
+}
+
+impl IdentityStatus {
+    /// Returns identity status as a u8 value, for serialization
+    pub fn as_u8(&self) -> u8 {
+        (*self).into()
+    }
+    /// Constructs identity status from an u8 value, for deserialization
+    pub fn from_u8(x: u8) -> Self {
+        Self::from(x)
+    }
+
+    /// Returns true if the identity status can be updated to the `to` status.
+    pub fn can_update(&self, to: &Self) -> bool {
+        use IdentityStatus::*;
+        let from = self;
+        if from == to {
+            return true; // No change needed
+        }
+
+        match (from, to) {
+            // PendingCreation can be updated to FailedCreation or Active
+            (PendingCreation, FailedCreation) => true,
+            (PendingCreation, Active) => true,
+
+            // FailedCreation can be updated to Active (but it's unlikely)
+            (FailedCreation, Active) => true,
+
+            // Active might disappear - update to NotFound
+            (Active, NotFound) => true,
+
+            // Unknown can be updated to Active or NotFound
+            (Unknown, Active) => true,
+            (Unknown, NotFound) => true,
+
+            // NotFound can be updated to Active or Unknown
+            (NotFound, Active) => true,
+
+            _ => false,
+        }
+    }
+
+    /// Update identity status to the `to` status if the update is allowed.
+    ///
+    /// See [`IdentityStatus::can_update`] for the rules of updating.
+    pub fn update(&mut self, to: Self) {
+        if self.can_update(&to) {
+            *self = to;
+        } else {
+            tracing::trace!(
+                "Invalid attempt to  update identity status from {:?} to {:?}",
+                self,
+                to
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QualifiedIdentity {
     pub identity: Identity,
@@ -98,7 +221,15 @@ pub struct QualifiedIdentity {
     pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
     /// The index used to register the identity
     pub wallet_index: Option<u32>,
-    pub top_ups: BTreeMap<u32, u32>,
+    pub top_ups: BTreeMap<u32, u64>,
+    pub status: IdentityStatus,
+    pub network: Network,
+}
+
+impl AsRef<QualifiedIdentity> for QualifiedIdentity {
+    fn as_ref(&self) -> &QualifiedIdentity {
+        self
+    }
 }
 
 impl PartialEq for QualifiedIdentity {
@@ -131,6 +262,9 @@ impl Encode for QualifiedIdentity {
         self.private_keys.encode(encoder)?;
         self.dpns_names.encode(encoder)?;
         // `decrypted_wallets` is skipped
+
+        // we don't encode/decode status - it's stored in the database
+        // self.status.encode(encoder)?;
         Ok(())
     }
 }
@@ -152,6 +286,8 @@ impl Decode for QualifiedIdentity {
             associated_wallets: BTreeMap::new(), // Initialize with an empty vector
             wallet_index: None,
             top_ups: Default::default(),
+            status: IdentityStatus::Unknown, // Loaded from the database, not encoded
+            network: Network::Dash,          // Loaded from the database, not encoded
         })
     }
 }
@@ -174,8 +310,9 @@ impl Signer for QualifiedIdentity {
                     .cloned()
                     .collect::<Vec<_>>()
                     .as_slice(),
+                self.network,
             )
-            .map_err(|e| ProtocolError::Generic(e))?
+            .map_err(ProtocolError::Generic)?
             .ok_or(ProtocolError::Generic(format!(
                 "Key {} ({}) not found in identity {:?}",
                 identity_public_key.id(),
@@ -201,7 +338,9 @@ impl Signer for QualifiedIdentity {
                     .into())
             }
             KeyType::EDDSA_25519_HASH160 => {
-                let key: [u8; 32] = private_key.clone().try_into().expect("expected 32 bytes");
+                #[allow(clippy::useless_conversion)]
+                let key: [u8; 32] = private_key.try_into().expect("expected 32 bytes");
+                #[allow(clippy::unnecessary_fallible_conversions)]
                 let pk = ed25519_dalek::SigningKey::try_from(&key).map_err(|_e| {
                     ProtocolError::Generic(
                         "eddsa 25519 private key from bytes isn't correct".to_string(),
@@ -246,6 +385,7 @@ impl QualifiedIdentity {
             .unwrap_or(self.identity.id().to_string(Encoding::Base58))
     }
 
+    #[allow(dead_code)] // May be used for compact UI displays
     pub fn display_short_string(&self) -> String {
         self.alias.clone().unwrap_or_else(|| {
             let id_str = self.identity.id().to_string(Encoding::Base58);
@@ -348,6 +488,75 @@ impl QualifiedIdentity {
         keys
     }
 
+    pub fn available_authentication_keys_non_master(&self) -> Vec<&QualifiedIdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for (_, public_key) in self.private_keys.identity_public_keys() {
+            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                && public_key.identity_public_key.security_level() != SecurityLevel::MASTER
+            {
+                keys.push(public_key);
+            }
+        }
+
+        keys
+    }
+
+    #[allow(dead_code)] // May be used for high-security operations
+    pub fn available_authentication_keys_with_high_security_level(
+        &self,
+    ) -> Vec<&QualifiedIdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for (_, public_key) in self.private_keys.identity_public_keys() {
+            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                && public_key.identity_public_key.security_level() == SecurityLevel::HIGH
+            {
+                keys.push(public_key);
+            }
+        }
+
+        keys
+    }
+
+    pub fn available_authentication_keys_with_critical_security_level(
+        &self,
+    ) -> Vec<&QualifiedIdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for (_, public_key) in self.private_keys.identity_public_keys() {
+            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                && public_key.identity_public_key.security_level() == SecurityLevel::CRITICAL
+            {
+                keys.push(public_key);
+            }
+        }
+
+        keys
+    }
+
+    #[allow(dead_code)]
+    pub fn available_authentication_keys_with_critical_or_high_security_level(
+        &self,
+    ) -> Vec<&QualifiedIdentityPublicKey> {
+        let mut keys = vec![];
+
+        // Check the main identity's public keys
+        for (_, public_key) in self.private_keys.identity_public_keys() {
+            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                && (public_key.identity_public_key.security_level() == SecurityLevel::CRITICAL
+                    || public_key.identity_public_key.security_level() == SecurityLevel::HIGH)
+            {
+                keys.push(public_key);
+            }
+        }
+
+        keys
+    }
+
     pub fn available_authentication_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
@@ -360,22 +569,53 @@ impl QualifiedIdentity {
 
         keys
     }
-}
 
-impl From<Identity> for QualifiedIdentity {
-    fn from(value: Identity) -> Self {
-        QualifiedIdentity {
-            identity: value,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            wallet_index: None,
-            top_ups: Default::default(),
-        }
+    /// Returns the wallet info for the first public key that is in a wallet.
+    ///
+    /// If more than one public key is in a wallet, it returns the first one found.
+    ///
+    /// ## Returns
+    /// A tuple containing the wallet seed hash and the index of the identity in the wallet.
+    pub fn determine_wallet_info(&self) -> Result<Option<(WalletSeedHash, u32)>, String> {
+        let wallet_info = self
+            .private_keys
+            .identity_public_keys()
+            .into_iter()
+            .filter_map(|(_, public_key)| {
+                if let Some(wallet_derivation_path) = &public_key.in_wallet_at_derivation_path {
+                    let seed_hash = wallet_derivation_path.wallet_seed_hash;
+                    let derivation_path = &wallet_derivation_path.derivation_path;
+                    // second to last element is the wallet index
+                    if derivation_path.len() < 2 {
+                        return None; // Not enough elements to get wallet index
+                    }
+                    // Get the wallet index from the second to last element
+                    let wallet_index = match derivation_path[derivation_path.len() - 2] {
+                        ChildNumber::Hardened { index } => Some(index),
+                        ChildNumber::Normal { index } => Some(index),
+                        _ => {
+                            tracing::debug!(
+                                ?derivation_path,
+                                "determine wallet: unexpected derivation path format, skipping key"
+                            );
+                            None
+                        }
+                    }?;
+                    // consistency check; if we get a different index here, this is non-recoverable error and we should panic
+                    // to avoid unexpected behavior and loss of access to private keys
+                    if self.wallet_index.is_some_and(|v| v != wallet_index) {
+                        panic!(
+                            "Inconsistent wallet index found: {:?} vs {:?}",
+                            self.wallet_index, wallet_index
+                        );
+                    };
+                    Some((seed_hash, wallet_index))
+                } else {
+                    None
+                }
+            })
+            .next();
+
+        Ok(wallet_info)
     }
 }

@@ -2,35 +2,35 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
-use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
-use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::Vote;
+use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
+use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
 use dash_sdk::platform::transition::vote::PutVote;
-use dash_sdk::Sdk;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 impl AppContext {
     pub(super) async fn vote_on_dpns_name(
         self: &Arc<Self>,
-        name: &String,
+        name: &str,
         vote_choice: ResourceVoteChoice,
-        voters: &Vec<QualifiedIdentity>,
+        voters: &[QualifiedIdentity],
         sdk: &Sdk,
-        sender: mpsc::Sender<TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Send a refresh task to the frontend
         // In particular, use this to show the cast is in progress on Scheduled Votes Screen
         sender
             .send(TaskResult::Refresh)
             .await
-            .map_err(|e| format!("Error voting: {}", e.to_string()))?;
+            .map_err(|e| format!("Error voting: {}", e))?;
 
         // Fetch DPNS contract and document type information
         let data_contract = self.dpns_contract.as_ref();
@@ -43,7 +43,7 @@ impl AppContext {
         };
 
         // Hardcoded values for DPNS
-        let index_values = [Value::from("dash"), Value::Text(name.clone())];
+        let index_values = [Value::from("dash"), Value::Text(name.to_owned())];
 
         // Create the vote poll to use in the vote
         let vote_poll = ContestedDocumentResourceVotePoll {
@@ -70,7 +70,7 @@ impl AppContext {
                     .put_to_platform_and_wait_for_response(
                         qualified_identity.identity.id(),
                         public_key,
-                        &sdk,
+                        sdk,
                         qualified_identity,
                         None,
                     )
@@ -78,11 +78,11 @@ impl AppContext {
                     .map(|_| ())
                     .map_err(|e| format!("Error voting: {}", e));
 
-                vote_results.push((name.clone(), vote_choice, result));
+                vote_results.push((name.to_owned(), vote_choice, result));
             } else {
                 return Err(format!(
-                    "Error voting: No associated voter identity for qualified identity: {:?}",
-                    qualified_identity.identity.id()
+                    "Error voting: No associated voter identity for qualified identity: {}",
+                    qualified_identity.identity.id().to_string(Encoding::Base58)
                 ));
             }
         }

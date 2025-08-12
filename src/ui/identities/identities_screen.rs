@@ -1,17 +1,15 @@
 use super::withdraw_screen::WithdrawalScreen;
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
-use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::{
-    PrivateKeyData, WalletDerivationPath,
-};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -21,7 +19,7 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::Purpose;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
@@ -58,7 +56,6 @@ enum IdentitiesRefreshingStatus {
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
-    pub show_more_keys_popup: Option<QualifiedIdentity>,
     pub identity_to_remove: Option<QualifiedIdentity>,
     pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
     sort_column: IdentitiesSortColumn,
@@ -82,7 +79,6 @@ impl IdentitiesScreen {
         let mut screen = Self {
             identities,
             app_context: app_context.clone(),
-            show_more_keys_popup: None,
             identity_to_remove: None,
             wallet_seed_hash_cache: Default::default(),
             sort_column: IdentitiesSortColumn::Alias,
@@ -225,9 +221,12 @@ impl IdentitiesScreen {
 
         let mut alias = qualified_identity.alias.clone().unwrap_or_default();
 
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         let text_edit = egui::TextEdit::singleline(&mut alias)
             .hint_text(placeholder_text)
-            .desired_width(100.0);
+            .desired_width(100.0)
+            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+            .background_color(crate::ui::theme::DashColors::input_background(dark_mode));
 
         if ui.add(text_edit).changed() {
             // If user edits alias, we do not necessarily turn on "custom order."
@@ -242,9 +241,9 @@ impl IdentitiesScreen {
             } else {
                 identity_to_update.alias = Some(alias);
             }
-            match self.app_context.set_alias(
+            match self.app_context.set_identity_alias(
                 &identity_to_update.identity.id(),
-                identity_to_update.alias.as_ref().map(|s| s.as_str()),
+                identity_to_update.alias.as_deref(),
             ) {
                 Ok(_) => {}
                 Err(e) => {
@@ -370,59 +369,44 @@ impl IdentitiesScreen {
             .on_hover_text(format!("{}", qualified_identity.identity.balance()));
     }
 
-    fn show_public_key(
-        &self,
-        ui: &mut Ui,
-        identity: &QualifiedIdentity,
-        key: &IdentityPublicKey,
-        encrypted_private_key: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
-    ) -> AppAction {
-        let button_color = if encrypted_private_key.is_some() {
-            Color32::from_rgb(167, 232, 232)
-        } else {
-            Color32::from_rgb(169, 169, 169)
+    fn format_key_name(&self, key: &IdentityPublicKey) -> String {
+        let purpose_letter = match key.purpose() {
+            Purpose::AUTHENTICATION => "A",
+            Purpose::ENCRYPTION => "E",
+            Purpose::DECRYPTION => "D",
+            Purpose::TRANSFER => "T",
+            Purpose::SYSTEM => "S",
+            Purpose::VOTING => "V",
+            Purpose::OWNER => "O",
         };
-
-        let name = match key.purpose() {
-            Purpose::AUTHENTICATION => format!("A{}", key.id()),
-            Purpose::ENCRYPTION => format!("En{}", key.id()),
-            Purpose::DECRYPTION => format!("De{}", key.id()),
-            Purpose::TRANSFER => format!("T{}", key.id()),
-            Purpose::SYSTEM => format!("S{}", key.id()),
-            Purpose::VOTING => format!("V{}", key.id()),
-            Purpose::OWNER => format!("O{}", key.id()),
+        let security_level = match key.security_level() {
+            SecurityLevel::MASTER => "Master",
+            SecurityLevel::CRITICAL => "Critical",
+            SecurityLevel::HIGH => "High",
+            SecurityLevel::MEDIUM => "Medium",
         };
-
-        let button = egui::Button::new(name)
-            .fill(button_color)
-            .frame(true)
-            .rounding(3.0)
-            .min_size(egui::Vec2::new(30.0, 18.0));
-
-        if ui.add(button).clicked() {
-            AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                identity.clone(),
-                key.clone(),
-                encrypted_private_key,
-                &self.app_context,
-            )))
-        } else {
-            AppAction::None
-        }
+        format!("{} - {} - {}", key.id(), purpose_letter, security_level)
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color
-            .rounding(5.0) // rounded corners
-            .outer_margin(Margin::same(20.0)) // space around the frame
+            .corner_radius(5.0) // rounded corners
+            .outer_margin(Margin::same(20)) // space around the frame
             .shadow(ui.visuals().window_shadow) // drop shadow
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
-                    ui.label(RichText::new("No Identities Loaded").strong().size(25.0));
+                    ui.label(
+                        RichText::new("No Identities Loaded")
+                            .strong()
+                            .size(25.0)
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                    );
 
                     // A separator line for visual clarity
                     ui.add_space(5.0);
@@ -438,7 +422,12 @@ impl IdentitiesScreen {
                     ui.add_space(10.0);
 
                     // Subheading or emphasis
-                    ui.heading(RichText::new("Here’s what you can do:").strong().size(18.0));
+                    ui.heading(
+                        RichText::new("Here’s what you can do:")
+                            .strong()
+                            .size(18.0)
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                    );
                     ui.add_space(5.0);
 
                     // Bullet points
@@ -464,6 +453,39 @@ impl IdentitiesScreen {
             });
     }
 
+    /// Ensures that all identities have their status known (not `Unknown`).
+    ///
+    /// Returns Some `AppAction` if any identity needs to be refreshed,
+    /// otherwise returns None.
+    pub fn ensure_identities_status(&self, identities: &[QualifiedIdentity]) -> Option<AppAction> {
+        if self.refreshing_status != IdentitiesRefreshingStatus::NotRefreshing {
+            // avoid refresh loop
+            return None;
+        }
+
+        let backend_tasks: Vec<BackendTask> = identities
+            .iter()
+            .filter_map(|qi| {
+                if qi.status == IdentityStatus::Unknown {
+                    Some(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
+                        qi.clone(),
+                    )))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !backend_tasks.is_empty() {
+            Some(AppAction::BackendTasks(
+                backend_tasks,
+                BackendTasksExecutionMode::Concurrent,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn render_identities_view(
         &mut self,
         ui: &mut Ui,
@@ -471,46 +493,29 @@ impl IdentitiesScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
+        // Refresh identities if needed
+        if let Some(action) = self.ensure_identities_status(identities) {
+            return action;
+        }
+
         let mut local_identities = identities.to_vec();
         if !self.use_custom_order {
             self.sort_vec(&mut local_identities);
         }
 
-        // Allocate space for refreshing status
-        let refreshing_height = 33.0;
-        let mut max_scroll_height =
-            if let IdentitiesRefreshingStatus::Refreshing(_) = self.refreshing_status {
-                ui.available_height() - refreshing_height
-            } else {
-                ui.available_height()
-            };
+        // Space allocation for UI elements is handled by the layout system
 
-        // Allocate space for backend message
-        let backend_message_height = 47.0;
-        if let Some((_, _, _)) = self.backend_message.clone() {
-            max_scroll_height -= backend_message_height;
-        }
-
-        egui::ScrollArea::vertical().max_height(max_scroll_height).show(ui, |ui| {
-            Frame::group(ui.style())
-                .fill(ui.visuals().panel_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().widgets.inactive.bg_stroke.color,
-                ))
-                .inner_margin(Margin::same(8.0))
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
+        egui::ScrollArea::both().show(ui, |ui| {
+            TableBuilder::new(ui)
+                        .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
                         .column(Column::initial(80.0).resizable(true))   // Name
                         .column(Column::initial(330.0).resizable(true))  // Identity ID
                         .column(Column::initial(60.0).resizable(true))   // In Wallet
                         .column(Column::initial(80.0).resizable(true))   // Type
-                        .column(Column::initial(80.0).resizable(true))   // Keys
                         .column(Column::initial(140.0).resizable(true))  // Balance
-                        .column(Column::initial(120.0).resizable(true))  // Actions (wider for up/down)
+                        .column(Column::initial(160.0).resizable(true))  // Actions (wider for more buttons)
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 if ui.button("Name").clicked() {
@@ -533,15 +538,12 @@ impl IdentitiesScreen {
                                 }
                             });
                             header.col(|ui| {
-                                ui.heading("Keys");
-                            });
-                            header.col(|ui| {
                                 if ui.button("Balance").clicked() {
                                     self.toggle_sort(IdentitiesSortColumn::Balance);
                                 }
                             });
                             header.col(|ui| {
-                                ui.heading("Actions");
+                                ui.heading("");
                             });
                         })
                         .body(|mut body| {
@@ -553,169 +555,282 @@ impl IdentitiesScreen {
                                     .as_ref()
                                     .map(|(id, _)| id.public_keys());
 
-                                body.row(25.0, |mut row| {
-                                    row.col(|ui| {
-                                        self.show_alias(ui, qualified_identity);
-                                    });
-                                    row.col(|ui| {
-                                        Self::show_identity_id(ui, qualified_identity);
-                                    });
-                                    row.col(|ui| {
-                                        self.show_in_wallet(ui, qualified_identity);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(format!("{}", qualified_identity.identity_type));
-                                    });
-                                    row.col(|ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 3.0;
+                                // Check if identity is active
+                                let is_active = qualified_identity.status == IdentityStatus::Active;
 
-                                            let mut total_keys_shown = 0;
-                                            let max_keys_to_show = 3;
-                                            let mut more_keys_available = false;
+                                body.row(30.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.vertical_centered(|ui| {
+                                            ui.horizontal_centered(|ui| {
+                                                // Disable UI elements if identity is not active
+                                                ui.add_enabled_ui(is_active, |ui| {
+                                                    self.show_alias(ui, qualified_identity);
+                                                });
+                                            });
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.vertical_centered(|ui| {
+                                            ui.horizontal_centered(|ui| {
+                                                ui.add_enabled_ui(is_active, |ui| {
+                                                    Self::show_identity_id(ui, qualified_identity);
+                                                });
+                                            });
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.vertical_centered(|ui| {
+                                            ui.horizontal_centered(|ui| {
+                                                ui.add_enabled_ui(is_active, |ui| {
+                                                    self.show_in_wallet(ui, qualified_identity);
+                                                });
+                                            });
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.vertical_centered(|ui| {
+                                            ui.horizontal_centered(|ui| {
+                                                // Show identity type and status
+                                                let type_text = format!("{}", qualified_identity.identity_type);
+                                                let status = qualified_identity.status;
+                                                // Always show status information (don't disable this column)
+                                                ui.add_enabled_ui(true, |ui|{
+                                                    if is_active {
+                                                        ui.label(type_text);
+                                                    } else{
+                                                        ui.label(RichText::new(status.to_string()).color(status));
+                                                    };
+                                                });
+                                            });
+                                        });
+                                    });
 
-                                            let public_keys_vec: Vec<_> = public_keys.iter().collect();
-                                            for (key_id, key) in public_keys_vec.iter() {
-                                                if total_keys_shown < max_keys_to_show {
-                                                    let holding_private_key = qualified_identity
-                                                        .private_keys
-                                                        .get_cloned_private_key_data_and_wallet_info(&(
-                                                            PrivateKeyOnMainIdentity,
-                                                            **key_id,
-                                                        ));
-                                                    action |= self.show_public_key(
-                                                        ui,
-                                                        qualified_identity,
-                                                        *key,
-                                                        holding_private_key,
-                                                    );
-                                                    total_keys_shown += 1;
-                                                } else {
-                                                    more_keys_available = true;
-                                                    break;
-                                                }
-                                            }
+                                    row.col(|ui| {
+                                        ui.add_enabled_ui(is_active, |ui| {
+                                            Self::show_balance(ui, qualified_identity);
 
-                                            if let Some(voting_identity_public_keys) =
-                                                voter_identity_public_keys
-                                            {
-                                                if total_keys_shown < max_keys_to_show {
-                                                    let voter_vec: Vec<_> = voting_identity_public_keys.iter().collect();
-                                                    for (key_id, key) in voter_vec.iter() {
-                                                        if total_keys_shown < max_keys_to_show {
-                                                            let holding_private_key =
-                                                                qualified_identity
-                                                                    .private_keys
-                                                                    .get_cloned_private_key_data_and_wallet_info(&(
-                                                                        PrivateKeyOnVoterIdentity,
-                                                                        **key_id,
-                                                                    ));
-                                                            action |= self.show_public_key(
-                                                                ui,
-                                                                qualified_identity,
-                                                                *key,
-                                                                holding_private_key,
+                                            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                ui.add_space(-1.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 3.0;
+
+                                                    // Actions dropdown button
+                                                    let actions_button = egui::Button::new("Actions")
+                                                        .fill(ui.visuals().widgets.inactive.bg_fill)
+                                                        .frame(true)
+                                                        .corner_radius(3.0)
+                                                        .min_size(egui::vec2(60.0, 20.0));
+
+                                                    let actions_response = ui.add(actions_button).on_hover_text("Manage identity credits");
+
+                                                    let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                        egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
+                                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .show(|ui| {
+                                                        ui.set_min_width(150.0);
+
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💸 Withdraw")).on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
                                                             );
-                                                            total_keys_shown += 1;
-                                                        } else {
-                                                            more_keys_available = true;
-                                                            break;
                                                         }
-                                                    }
-                                                } else {
-                                                    more_keys_available = true;
-                                                }
-                                            }
 
-                                            if more_keys_available {
-                                                if ui.button("...").on_hover_text("Show more keys").clicked() {
-                                                    self.show_more_keys_popup =
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
+
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📤 Transfer")).on_hover_text("Transfer credits from this identity to another identity").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::TransferScreen(TransferScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
+                                                    });
+                                            });
+                                            });
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        // we always enable the actions column to be able to delete/reorder invalid identities
+                                        ui.add_enabled_ui(true, |ui| {
+                                            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                            ui.add_space(-1.0);
+
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 3.0;
+
+                                                // Keys dropdown button
+                                                let has_keys = !public_keys.is_empty() || voter_identity_public_keys.is_some();
+                                                if has_keys {
+                                                    let button = egui::Button::new("Keys")
+                                                        .fill(ui.visuals().widgets.inactive.bg_fill)
+                                                        .frame(true)
+                                                        .corner_radius(3.0)
+                                                        .min_size(egui::vec2(50.0, 20.0));
+
+                                                    let button_response = ui.add(button).on_hover_text("View and manage keys for this identity");
+
+                                                    let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                    egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
+                                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .show(|ui| {
+                                                            ui.set_min_width(200.0);
+
+                                                            // Main Identity Keys
+                                                            if !public_keys.is_empty() {
+                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                                ui.label(RichText::new("Main Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
+                                                                ui.separator();
+
+                                                                for (key_id, key) in public_keys.iter() {
+                                                                    let holding_private_key = qualified_identity.private_keys
+                                                                        .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
+
+                                                                    let button_color = if holding_private_key.is_some() {
+                                                                        if dark_mode {
+                                                                            Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
+                                                                        } else {
+                                                                            Color32::from_rgb(167, 232, 232) // Light blue for light mode
+                                                                        }
+                                                                    } else {
+                                                                        crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
+                                                                    };
+
+                                                                    let text_color = if holding_private_key.is_some() {
+                                                                        Color32::BLACK // Black text on light blue background
+                                                                    } else {
+                                                                        crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
+                                                                    };
+
+                                                                    let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
+                                                                        .fill(button_color)
+                                                                        .frame(true);
+
+                                                                    if ui.add(button).clicked() {
+                                                                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                                                            qualified_identity.clone(),
+                                                                            key.clone(),
+                                                                            holding_private_key,
+                                                                            &self.app_context,
+                                                                        )));
+                                                                       ui.close_kind(egui::UiKind::Menu);
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Voter Identity Keys
+                                                            if let Some((voter_identity, _)) = qualified_identity.associated_voter_identity.as_ref() {
+                                                                let voter_public_keys = voter_identity.public_keys();
+                                                                if !voter_public_keys.is_empty() {
+                                                                    if !public_keys.is_empty() {
+                                                                        ui.add_space(5.0);
+                                                                    }
+                                                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                                    ui.label(RichText::new("Voter Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
+                                                                    ui.separator();
+
+                                                                    for (key_id, key) in voter_public_keys.iter() {
+                                                                        let holding_private_key = qualified_identity.private_keys
+                                                                            .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
+
+                                                                        let button_color = if holding_private_key.is_some() {
+                                                                            if dark_mode {
+                                                                                Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
+                                                                            } else {
+                                                                                Color32::from_rgb(167, 232, 232) // Light blue for light mode
+                                                                            }
+                                                                        } else {
+                                                                            crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
+                                                                        };
+
+                                                                        let text_color = if holding_private_key.is_some() {
+                                                                            Color32::BLACK // Black text on light blue background
+                                                                        } else {
+                                                                            crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
+                                                                        };
+
+                                                                        let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
+                                                                            .fill(button_color)
+                                                                            .frame(true);
+
+                                                                        if ui.add(button).clicked() {
+                                                                            action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                                                                qualified_identity.clone(),
+                                                                                key.clone(),
+                                                                                holding_private_key,
+                                                                                &self.app_context,
+                                                                            )));
+                                                                           ui.close_kind(egui::UiKind::Menu);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Add Key button
+                                                            if qualified_identity.can_sign_with_master_key().is_some() {
+                                                                ui.separator();
+                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                                let add_button = egui::Button::new("➕ Add Key")
+                                                                    .fill(crate::ui::theme::DashColors::glass_white(dark_mode))
+                                                                    .frame(true);
+
+                                                                    if ui.add(add_button).on_hover_text("Add a new key to this identity").clicked() {
+                                                                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                                                                        qualified_identity.clone(),
+                                                                        &self.app_context,
+                                                                    )));
+                                                                   ui.close_kind(egui::UiKind::Menu);
+                                                                }
+                                                            }
+                                                        },
+                                                    );
+                                                }
+
+                                                // Remove
+                                                if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
+                                                    self.identity_to_remove =
                                                         Some(qualified_identity.clone());
                                                 }
-                                            }
 
-                                            if qualified_identity.can_sign_with_master_key().is_some()
-                                                && ui.button("+").on_hover_text("Add key").clicked()
-                                            {
-                                                action = AppAction::AddScreen(Screen::AddKeyScreen(
-                                                    AddKeyScreen::new(
-                                                        qualified_identity.clone(),
-                                                        &self.app_context,
-                                                    ),
-                                                ));
-                                            }
-                                        });
-                                    });
-                                    row.col(|ui| {
-                                        Self::show_balance(ui, qualified_identity);
+                                                // Up arrow
+                                                let up_btn = ui.button("⬆").on_hover_text("Move this identity up in the list");
+                                                // Down arrow
+                                                let down_btn = ui.button("⬇").on_hover_text("Move this identity down in the list");
 
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-
-                                        if ui.button("Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                        if ui.button("Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                        if ui.button("Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
-                                            action = AppAction::AddScreen(
-                                                Screen::TransferScreen(TransferScreen::new(
-                                                    qualified_identity.clone(),
-                                                    &self.app_context,
-                                                )),
-                                            );
-                                        }
-                                    });
-                                    row.col(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-
-                                        ui.horizontal(|ui| {
-                                            // Remove
-                                            if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
-                                                self.identity_to_remove =
-                                                    Some(qualified_identity.clone());
-                                            }
-                                        });
-
-                                        ui.horizontal(|ui| {
-                                            // Up arrow
-                                            let up_btn = ui.button("⬆").on_hover_text("Move this identity up in the list");
-                                            // Down arrow
-                                            let down_btn = ui.button("⬇").on_hover_text("Move this identity down in the list");
-
-                                            if up_btn.clicked() {
-                                                // If we are currently sorted (not custom),
-                                                // unify the IndexMap to reflect that ephemeral sort
-                                                if !self.use_custom_order {
-                                                    self.update_index_map_to_current_ephemeral(local_identities.clone());
+                                                if up_btn.clicked() {
+                                                    // If we are currently sorted (not custom),
+                                                    // unify the IndexMap to reflect that ephemeral sort
+                                                    if !self.use_custom_order {
+                                                        self.update_index_map_to_current_ephemeral(local_identities.clone());
+                                                    }
+                                                    // Now do the swap
+                                                    self.use_custom_order = true;
+                                                    self.move_identity_up(&identity.id());
                                                 }
-                                                // Now do the swap
-                                                self.use_custom_order = true;
-                                                self.move_identity_up(&identity.id());
-                                            }
-                                            if down_btn.clicked() {
-                                                if !self.use_custom_order {
-                                                    self.update_index_map_to_current_ephemeral(local_identities.clone());
+                                                if down_btn.clicked() {
+                                                    if !self.use_custom_order {
+                                                        self.update_index_map_to_current_ephemeral(local_identities.clone());
+                                                    }
+                                                    self.use_custom_order = true;
+                                                    self.move_identity_down(&identity.id());
                                                 }
-                                                self.use_custom_order = true;
-                                                self.move_identity_down(&identity.id());
-                                            }
+                                            });
+                                        });
                                         });
                                     });
                                 });
                             }
                         });
-                });
         });
 
         action
@@ -772,56 +887,6 @@ impl IdentitiesScreen {
         }
     }
 
-    fn show_more_keys(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let Some(qualified_identity) = self.show_more_keys_popup.as_ref() else {
-            return action;
-        };
-
-        let identity = &qualified_identity.identity;
-        let public_keys = identity.public_keys();
-        let public_keys_vec: Vec<_> = public_keys.iter().collect();
-        let main_identity_rest_keys = public_keys_vec.iter().skip(3);
-
-        ui.label(format!(
-            "{}...",
-            identity
-                .id()
-                .to_string(Encoding::Base58)
-                .chars()
-                .take(8)
-                .collect::<String>()
-        ));
-        for (key_id, key) in main_identity_rest_keys {
-            let holding_private_key = qualified_identity
-                .private_keys
-                .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, **key_id));
-            action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
-        }
-
-        if let Some((voter_identity, _)) = qualified_identity.associated_voter_identity.as_ref() {
-            let voter_public_keys = voter_identity.public_keys();
-            let voter_public_keys_vec: Vec<_> = voter_public_keys.iter().collect();
-
-            ui.label("Voter Identity Keys:");
-            for (key_id, key) in voter_public_keys_vec.iter() {
-                let holding_private_key = qualified_identity
-                    .private_keys
-                    .get_cloned_private_key_data_and_wallet_info(&(
-                        PrivateKeyOnVoterIdentity,
-                        **key_id,
-                    ));
-                action |= self.show_public_key(ui, qualified_identity, *key, holding_private_key);
-            }
-        }
-
-        if ui.button("Close").clicked() {
-            self.show_more_keys_popup = None;
-        }
-
-        action
-    }
-
     fn dismiss_message(&mut self) {
         self.backend_message = None;
     }
@@ -856,8 +921,6 @@ impl ScreenLike for IdentitiesScreen {
             self.reorder_map_to(saved_ids);
             self.use_custom_order = true;
         }
-
-        self.show_more_keys_popup = None;
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
@@ -884,24 +947,24 @@ impl ScreenLike for IdentitiesScreen {
             vec![
                 (
                     "Import Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::ImportWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
                 ),
                 (
                     "Create Wallet",
-                    DesiredAppAction::AddScreenType(ScreenType::AddNewWallet),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewWallet)),
                 ),
             ]
         } else {
             vec![(
                 "Create Identity",
-                DesiredAppAction::AddScreenType(ScreenType::AddNewIdentity),
+                DesiredAppAction::AddScreenType(Box::new(ScreenType::AddNewIdentity)),
             )]
         };
         right_buttons.push((
             "Load Identity",
-            DesiredAppAction::AddScreenType(ScreenType::AddExistingIdentity),
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::AddExistingIdentity)),
         ));
-        if self.identities.lock().unwrap().len() > 0 {
+        if !self.identities.lock().unwrap().is_empty() {
             // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity
             let backend_tasks: Vec<BackendTask> = self
                 .identities
@@ -933,16 +996,17 @@ impl ScreenLike for IdentitiesScreen {
             guard.values().cloned().collect::<Vec<_>>()
         };
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        action |= island_central_panel(ctx, |ui| {
+            let mut inner_action = AppAction::None;
             if identities_vec.is_empty() {
                 self.render_no_identities_view(ui);
             } else {
-                action |= self.render_identities_view(ui, &identities_vec);
+                inner_action |= self.render_identities_view(ui, &identities_vec);
             }
 
-            // If we are refreshing, show a spinner at the bottom
+            // Show either refreshing indicator or message, but not both
             if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(5.0);
+                ui.add_space(25.0); // Space above
                 let now = Utc::now().timestamp() as u64;
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
@@ -950,45 +1014,31 @@ impl ScreenLike for IdentitiesScreen {
                     ui.label(format!("Refreshing... Time taken so far: {}", elapsed));
                     ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
                 });
-                ui.add_space(10.0);
-            }
-
-            let message = self.backend_message.clone();
-            if let Some((message, message_type, timestamp)) = message {
+                ui.add_space(2.0); // Space below
+            } else if let Some((message, message_type, timestamp)) = self.backend_message.clone() {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::DARK_RED,
                     MessageType::Info => egui::Color32::BLACK,
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
-                ui.add_space(7.0);
-                ui.allocate_ui(egui::Vec2::new(ui.available_width(), 30.0), |ui| {
-                    ui.group(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(message).color(message_color));
-                            let now = Utc::now();
-                            let elapsed = now.signed_duration_since(timestamp);
-                            if ui
-                                .button(format!("Dismiss ({})", 10 - elapsed.num_seconds()))
-                                .clicked()
-                            {
-                                // Update the state outside the closure
-                                self.dismiss_message();
-                            }
-                        });
-                    });
-                });
-                ui.add_space(10.0);
-            }
-        });
+                ui.add_space(25.0); // Same space as refreshing indicator
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
 
-        if self.show_more_keys_popup.is_some() {
-            egui::Window::new("More Keys")
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    action |= self.show_more_keys(ui);
+                    // Calculate remaining seconds
+                    let now = Utc::now();
+                    let elapsed = now.signed_duration_since(timestamp);
+                    let remaining = (10 - elapsed.num_seconds()).max(0);
+
+                    // Add the message with auto-dismiss countdown
+                    let full_msg = format!("{} ({}s)", message, remaining);
+                    ui.label(egui::RichText::new(full_msg).color(message_color));
                 });
-        }
+                ui.add_space(2.0); // Same space below as refreshing indicator
+            }
+            inner_action
+        });
 
         if self.identity_to_remove.is_some() {
             self.show_identity_to_remove(ctx);
@@ -997,12 +1047,14 @@ impl ScreenLike for IdentitiesScreen {
         match action {
             AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {
                 self.refreshing_status =
-                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64)
+                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.backend_message = None // Clear any existing message
             }
             AppAction::BackendTasks(_, _) => {
                 // Going to assume this is only going to be Refresh All
                 self.refreshing_status =
-                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64)
+                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.backend_message = None // Clear any existing message
             }
             _ => {}
         }

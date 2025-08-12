@@ -380,7 +380,6 @@ impl Database {
             token_position,
         ) in rows_data
         {
-
             let token_id = token_id_res.expect("Failed to parse token_identifier");
             let token_config = token_config.expect("Missing token_config").0;
             let identity_id = identity_id_res.expect("Failed to parse identity_id");

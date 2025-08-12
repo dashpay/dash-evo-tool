@@ -1,19 +1,19 @@
 use chrono::Utc;
 use dash_sdk::dpp::dashcore::Network;
+use dashcoretemp::BlockHash;
 use dashcoretemp::consensus::{deserialize, serialize};
 use dashcoretemp::network::constants::ServiceFlags;
 use dashcoretemp::network::message::{NetworkMessage, RawNetworkMessage};
 use dashcoretemp::network::message_qrinfo::QRInfo;
 use dashcoretemp::network::message_sml::{GetMnListDiff, MnListDiff};
-use dashcoretemp::network::{message_network, message_qrinfo, Address};
-use dashcoretemp::BlockHash;
+use dashcoretemp::network::{Address, message_network, message_qrinfo};
+use rand::prelude::StdRng;
+use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
-use rand::prelude::StdRng;
-use rand::{Rng, SeedableRng};
 
 #[derive(Debug)]
 pub struct CoreP2PHandler {

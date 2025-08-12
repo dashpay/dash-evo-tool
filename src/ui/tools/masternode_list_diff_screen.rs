@@ -1,23 +1,23 @@
 use crate::app::AppAction;
-use crate::backend_task::core::CoreItem;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::core::CoreItem;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dashcore_rpc::json::QuorumType;
 use dash_sdk::dashcore_rpc::RpcApi;
-use dash_sdk::dpp::dashcore::consensus::{serialize as serialize2};
-use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dashcore_rpc::json::QuorumType;
 use dash_sdk::dpp::dashcore::Network as Network2;
+use dash_sdk::dpp::dashcore::consensus::serialize as serialize2;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
     Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction,
 };
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use dashcoretemp::bls_sig_utils::BLSSignature;
-use dashcoretemp::consensus::{deserialize, serialize, Decodable};
+use dashcoretemp::consensus::{Decodable, deserialize, serialize};
 use dashcoretemp::hashes::Hash as tempHash;
 use dashcoretemp::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dashcoretemp::network::message_sml::MnListDiff;
@@ -27,16 +27,15 @@ use dashcoretemp::sml::masternode_list::MasternodeList;
 use dashcoretemp::sml::masternode_list_engine::{
     MasternodeListEngine, MasternodeListEngineBlockContainer,
 };
-use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
 use dashcoretemp::sml::masternode_list_entry::EntryMasternodeType;
+use dashcoretemp::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
 use dashcoretemp::sml::quorum_entry::qualified_quorum_entry::{
     QualifiedQuorumEntry, VerifyingChainLockSignaturesType,
 };
 use dashcoretemp::sml::quorum_validation_error::{ClientDataRetrievalError, QuorumValidationError};
 use dashcoretemp::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use dashcoretemp::{
-    BlockHash, ChainLock as ChainLock2, InstantLock as InstantLock2, Network,
-    ProTxHash, QuorumHash,
+    BlockHash, ChainLock as ChainLock2, InstantLock as InstantLock2, Network, ProTxHash, QuorumHash,
 };
 use eframe::egui::{self, Context, ScrollArea, Ui};
 use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
@@ -236,9 +235,14 @@ impl MasternodeListDiffScreen {
                     block_hash,
                     block_hash.reverse()
                 );
-                return match self.app_context.core_client.read().unwrap().get_block_header_info(
-                    &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                ) {
+                return match self
+                    .app_context
+                    .core_client
+                    .read()
+                    .unwrap()
+                    .get_block_header_info(
+                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                    ) {
                     Ok(block_hash) => Ok(block_hash.height as CoreBlockHeight),
                     Err(e) => Err(e.to_string()),
                 };
@@ -267,9 +271,14 @@ impl MasternodeListDiffScreen {
                     block_hash,
                     block_hash.reverse()
                 );
-                return match self.app_context.core_client.read().unwrap().get_block_header_info(
-                    &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                ) {
+                return match self
+                    .app_context
+                    .core_client
+                    .read()
+                    .unwrap()
+                    .get_block_header_info(
+                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                    ) {
                     Ok(result) => {
                         self.block_height_cache
                             .insert(*block_hash, result.height as CoreBlockHeight);
@@ -297,7 +306,8 @@ impl MasternodeListDiffScreen {
             let block = self
                 .app_context
                 .core_client
-                .read().unwrap()
+                .read()
+                .unwrap()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
                 .map_err(|e| e.to_string())?;
             let Some(coinbase) = block
@@ -335,7 +345,8 @@ impl MasternodeListDiffScreen {
             let block = self
                 .app_context
                 .core_client
-                .read().unwrap()
+                .read()
+                .unwrap()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
                 .map_err(|e| e.to_string())?;
             let Some(coinbase) = block
@@ -362,7 +373,13 @@ impl MasternodeListDiffScreen {
         else {
             let Some(block_hash) = self.block_hash_cache.get(&height) else {
                 println!("asking core for hash of {}", height);
-                return match self.app_context.core_client.read().unwrap().get_block_hash(height) {
+                return match self
+                    .app_context
+                    .core_client
+                    .read()
+                    .unwrap()
+                    .get_block_hash(height)
+                {
                     Ok(block_hash) => Ok(BlockHash::from_byte_array(block_hash.to_byte_array())),
                     Err(e) => Err(e.to_string()),
                 };
@@ -389,7 +406,13 @@ impl MasternodeListDiffScreen {
 
         // If not cached, retrieve from core client and insert into cache.
         println!("Asking core for hash of {} and caching it", height);
-        match self.app_context.core_client.read().unwrap().get_block_hash(height) {
+        match self
+            .app_context
+            .core_client
+            .read()
+            .unwrap()
+            .get_block_hash(height)
+        {
             Ok(core_block_hash) => {
                 let block_hash = BlockHash::from_byte_array(core_block_hash.to_byte_array());
                 self.block_hash_cache.insert(height, block_hash);
@@ -528,7 +551,13 @@ impl MasternodeListDiffScreen {
     fn parse_heights(&mut self) -> Result<((u32, BlockHash), (u32, BlockHash)), String> {
         let base = if self.base_block_height.is_empty() {
             self.base_block_height = "0".to_string();
-            match self.app_context.core_client.read().unwrap().get_block_hash(0) {
+            match self
+                .app_context
+                .core_client
+                .read()
+                .unwrap()
+                .get_block_hash(0)
+            {
                 Ok(block_hash) => (0, BlockHash::from_byte_array(block_hash.to_byte_array())),
                 Err(e) => {
                     return Err(e.to_string());
@@ -536,7 +565,13 @@ impl MasternodeListDiffScreen {
             }
         } else {
             match self.base_block_height.trim().parse() {
-                Ok(start) => match self.app_context.core_client.read().unwrap().get_block_hash(start) {
+                Ok(start) => match self
+                    .app_context
+                    .core_client
+                    .read()
+                    .unwrap()
+                    .get_block_hash(start)
+                {
                     Ok(block_hash) => (
                         start,
                         BlockHash::from_byte_array(block_hash.to_byte_array()),
@@ -551,12 +586,19 @@ impl MasternodeListDiffScreen {
             }
         };
         let end = if self.end_block_height.is_empty() {
-            match self.app_context.core_client.read().unwrap().get_best_block_hash() {
+            match self
+                .app_context
+                .core_client
+                .read()
+                .unwrap()
+                .get_best_block_hash()
+            {
                 Ok(block_hash) => {
                     match self
                         .app_context
                         .core_client
-                        .read().unwrap()
+                        .read()
+                        .unwrap()
                         .get_block_header_info(&block_hash)
                     {
                         Ok(header) => {
@@ -577,7 +619,13 @@ impl MasternodeListDiffScreen {
             }
         } else {
             match self.end_block_height.trim().parse() {
-                Ok(end) => match self.app_context.core_client.read().unwrap().get_block_hash(end) {
+                Ok(end) => match self
+                    .app_context
+                    .core_client
+                    .read()
+                    .unwrap()
+                    .get_block_hash(end)
+                {
                     Ok(block_hash) => (end, BlockHash::from_byte_array(block_hash.to_byte_array())),
                     Err(e) => {
                         return Err(e.to_string());
@@ -677,7 +725,13 @@ impl MasternodeListDiffScreen {
                     return;
                 }
             };
-            let validation_hash = match self.app_context.core_client.read().unwrap().get_block_hash(height - 8) {
+            let validation_hash = match self
+                .app_context
+                .core_client
+                .read()
+                .unwrap()
+                .get_block_hash(height - 8)
+            {
                 Ok(block_hash) => block_hash,
                 Err(e) => {
                     self.error = Some(e.to_string());
@@ -706,7 +760,13 @@ impl MasternodeListDiffScreen {
                     .network
                     .known_genesis_block_hash()
                 {
-                    None => match self.app_context.core_client.read().unwrap().get_block_hash(0) {
+                    None => match self
+                        .app_context
+                        .core_client
+                        .read()
+                        .unwrap()
+                        .get_block_hash(0)
+                    {
                         Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
                         Err(e) => {
                             self.error = Some(e.to_string());
@@ -1113,18 +1173,19 @@ impl MasternodeListDiffScreen {
         self.feed_qr_info_and_get_dmls(qr_info, Some(p2p_handler))
     }
 
-    fn feed_qr_info_and_get_dmls(&mut self, qr_info: QRInfo, core_p2phandler: Option<CoreP2PHandler>) {
-
+    fn feed_qr_info_and_get_dmls(
+        &mut self,
+        qr_info: QRInfo,
+        core_p2phandler: Option<CoreP2PHandler>,
+    ) {
         let mut p2p_handler = match core_p2phandler {
-            None => {
-                match CoreP2PHandler::new(self.app_context.network, None) {
-                    Ok(p2p_handler) => p2p_handler,
-                    Err(e) => {
-                        self.error = Some(e);
-                        return;
-                    }
+            None => match CoreP2PHandler::new(self.app_context.network, None) {
+                Ok(p2p_handler) => p2p_handler,
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
                 }
-            }
+            },
             Some(core_p2phandler) => core_p2phandler,
         };
 
@@ -1134,15 +1195,19 @@ impl MasternodeListDiffScreen {
             let app_context = &self.app_context;
 
             move |block_hash: &BlockHash| {
-                if block_hash.as_byte_array() == &[0;32] {
+                if block_hash.as_byte_array() == &[0; 32] {
                     return Ok(0);
                 }
                 if let Some(height) = block_height_cache.get(block_hash) {
                     return Ok(*height);
                 }
-                match app_context.core_client.read().unwrap().get_block_header_info(
-                    &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                ) {
+                match app_context
+                    .core_client
+                    .read()
+                    .unwrap()
+                    .get_block_header_info(
+                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                    ) {
                     Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
                     Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
                         *block_hash,
@@ -1151,12 +1216,10 @@ impl MasternodeListDiffScreen {
             }
         };
 
-        if let Err(e) = self.masternode_list_engine.feed_qr_info(
-            qr_info,
-            false,
-            true,
-            Some(get_height_fn),
-        ) {
+        if let Err(e) =
+            self.masternode_list_engine
+                .feed_qr_info(qr_info, false, true, Some(get_height_fn))
+        {
             self.error = Some(e.to_string());
             return;
         }
@@ -1234,10 +1297,16 @@ impl MasternodeListDiffScreen {
     }
 
     fn load_masternode_list_engine(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Binary", &["dat"]).pick_file() {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Binary", &["dat"])
+            .pick_file()
+        {
             match std::fs::read(&path) {
                 Ok(bytes) => {
-                    match bincode::decode_from_slice::<MasternodeListEngine, _>(&bytes, bincode::config::standard()) {
+                    match bincode::decode_from_slice::<MasternodeListEngine, _>(
+                        &bytes,
+                        bincode::config::standard(),
+                    ) {
                         Ok((engine, _)) => {
                             self.masternode_list_engine = engine;
                         }
@@ -2534,7 +2603,10 @@ impl MasternodeListDiffScreen {
                                         self.feed_qr_info_and_get_dmls(qr_info, None);
                                     }
                                     Err(_) => {
-                                        match bincode::decode_from_slice::<QRInfo, _>(&bytes, bincode::config::standard()) {
+                                        match bincode::decode_from_slice::<QRInfo, _>(
+                                            &bytes,
+                                            bincode::config::standard(),
+                                        ) {
                                             Ok((qr_info, _)) => {
                                                 let key = qr_info.mn_list_diff_tip.block_hash;
                                                 self.qr_infos.insert(key, qr_info);
@@ -2545,7 +2617,6 @@ impl MasternodeListDiffScreen {
                                         }
                                     }
                                 }
-
                             }
                             Err(e) => {
                                 eprintln!("Failed to read file: {}", e);
@@ -2810,7 +2881,12 @@ impl MasternodeListDiffScreen {
                         "Signature {}: {} for indexes [{}]",
                         i,
                         hex::encode(cl_sig.signature),
-                        cl_sig.index_set.iter().map(|index| index.to_string()).collect::<Vec<_>>().join("-")
+                        cl_sig
+                            .index_set
+                            .iter()
+                            .map(|index| index.to_string())
+                            .collect::<Vec<_>>()
+                            .join("-")
                     ));
                 }
             });
@@ -3166,9 +3242,20 @@ impl MasternodeListDiffScreen {
             .rotated_quorums_per_cycle
             .get(&cycle_hash)
         else {
-            ui.label(format!("Engine does not know of cycle {} at height {}, we know of cycles [{}]", cycle_hash, self.get_height_or_error_as_string(&cycle_hash), self
-                .masternode_list_engine
-                .rotated_quorums_per_cycle.keys().map(|key| format!("{}, {}", self.get_height_or_error_as_string(key),  key.to_string())).join(", ")));
+            ui.label(format!(
+                "Engine does not know of cycle {} at height {}, we know of cycles [{}]",
+                cycle_hash,
+                self.get_height_or_error_as_string(&cycle_hash),
+                self.masternode_list_engine
+                    .rotated_quorums_per_cycle
+                    .keys()
+                    .map(|key| format!(
+                        "{}, {}",
+                        self.get_height_or_error_as_string(key),
+                        key.to_string()
+                    ))
+                    .join(", ")
+            ));
             return;
         };
         if cycle_quorums.is_empty() {
@@ -3710,9 +3797,11 @@ impl MasternodeListDiffScreen {
                         }
                     };
 
-                    let Some(qr_info) =
-                        self.fetch_rotated_quorum_info(&mut p2p_handler, masternode_list.block_hash, chain_lock.block_hash.to_byte_array().into())
-                    else {
+                    let Some(qr_info) = self.fetch_rotated_quorum_info(
+                        &mut p2p_handler,
+                        masternode_list.block_hash,
+                        chain_lock.block_hash.to_byte_array().into(),
+                    ) else {
                         return;
                     };
 

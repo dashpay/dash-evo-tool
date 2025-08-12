@@ -893,11 +893,9 @@ impl ScreenLike for AddNewIdentityScreen {
             WalletFundedScreenStep::ChooseFundingMethod => {}
             WalletFundedScreenStep::WaitingOnFunds => {
                 if let Some(funding_address) = self.funding_address.as_ref() {
-                    if let BackendTaskSuccessResult::CoreItem(CoreItem::InstantLockedTransaction(
-                        _,
-                        outpoints_with_addresses,
-                        _,
-                    )) = backend_task_success_result
+                    if let BackendTaskSuccessResult::CoreItem(
+                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
+                    ) = backend_task_success_result
                     {
                         for (outpoint, tx_out, address) in outpoints_with_addresses {
                             if funding_address == &address {
@@ -911,11 +909,9 @@ impl ScreenLike for AddNewIdentityScreen {
             WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
-                if let BackendTaskSuccessResult::CoreItem(CoreItem::InstantLockedTransaction(
-                    tx,
-                    _,
-                    _,
-                )) = backend_task_success_result
+                if let BackendTaskSuccessResult::CoreItem(
+                    CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
+                ) = backend_task_success_result
                 {
                     if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
                         tx.special_transaction_payload

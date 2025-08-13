@@ -319,85 +319,81 @@ impl TokensScreen {
                             ui.indent("advanced_section", |ui| {
                                 // Use `Grid` to align labels and text edits
                                 egui::Grid::new("advanced_token_info_grid")
-                            .num_columns(2)
-                            .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                            .show(ui, |ui| {
+                                    .num_columns(2)
+                                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                                    .show(ui, |ui| {
+                                        // Start as paused
+                                        ui.horizontal(|ui| {
+                                            StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
+                                            crate::ui::helpers::info_icon_button(ui, "When enabled, the token will be created in a paused state, meaning transfers will be disabled by default. All other token features—such as distributions and manual minting—remain fully functional. To allow transfers in the future, the token must be unpaused via an emergency action. It is strongly recommended to enable emergency actions if this option is selected, unless the intention is to permanently disable transfers.");
+                                        });
+                                        ui.end_row();
 
-                                    // Start as paused
-                                    ui.horizontal(|ui| {
-                                        StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
+                                        self.history_row(ui);
+                                        ui.end_row();
 
-                                        crate::ui::helpers::info_icon_button(ui, "When enabled, the token will be created in a paused state, meaning transfers will be disabled by default. All other token features—such as distributions and manual minting—remain fully functional. To allow transfers in the future, the token must be unpaused via an emergency action. It is strongly recommended to enable emergency actions if this option is selected, unless the intention is to permanently disable transfers.");
+                                        // Name should be capitalized
+                                        ui.horizontal(|ui| {
+                                            StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
+                                            crate::ui::helpers::info_icon_button(ui, "This is used only as helper information to client applications that will use token. This informs them on whether to capitalize the token name or not by default.");
+                                        });
+                                        ui.end_row();
+
+                                        // Decimals
+                                        ui.horizontal(|ui| {
+                                            ui.label("Max Decimals:");
+                                            // Restrict input to digits only
+                                            let response = ui.add(
+                                                TextEdit::singleline(&mut self.decimals_input).desired_width(50.0)
+                                            );
+
+                                            // Optionally filter out non-digit input
+                                            if response.changed() {
+                                                self.decimals_input.retain(|c| c.is_ascii_digit());
+                                                self.decimals_input.truncate(2);
+                                            }
+
+                                            let token_name = self.token_names_input
+                                                .first()
+                                                .as_ref()
+                                                .and_then(|(_, name, _, _)| if name.is_empty() { None} else { Some(name.as_str())})
+                                                .unwrap_or("<Token Name>");
+
+                                            let message = if self.decimals_input == "0" {
+                                                format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
+                                            } else {
+                                                format!("Fractional Token (i.e. 0.2 {})", token_name)
+                                            };
+
+                                            ui.label(RichText::new(message).color(Color32::GRAY));
+                                            crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
+                                        });
+                                        ui.end_row();
+
+                                        // Marketplace Trade Mode
+                                        ui.horizontal(|ui| {
+                                            ui.label("Marketplace Trade Mode:");
+                                            ComboBox::from_id_salt("marketplace_trade_mode_selector")
+                                                .selected_text("Not Tradeable")
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut self.marketplace_trade_mode,
+                                                        0,
+                                                        "Not Tradeable",
+                                                    );
+                                                    // Future trade modes can be added here when SDK supports them
+                                                });
+
+                                            crate::ui::helpers::info_icon_button(ui,
+                                                "Currently, all tokens are created as 'Not Tradeable'. \
+                                                Future updates will add more trade mode options.\n\n\
+                                                IMPORTANT: If you want to enable marketplace trading in the future, \
+                                                make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
+                                                section to something other than 'No One'. Otherwise, trading can never be enabled."
+                                            );
+                                        });
+                                        ui.end_row();
                                     });
-                                    ui.end_row();
-
-                                    self.history_row(ui);
-                                    ui.end_row();
-
-                                    // Name should be capitalized
-                                    ui.horizontal(|ui| {
-                                        StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
-
-                                        crate::ui::helpers::info_icon_button(ui, "This is used only as helper information to client applications that will use token. This informs them on whether to capitalize the token name or not by default.");
-                                    });
-                                    ui.end_row();
-
-                                    // Decimals
-                                    ui.horizontal(|ui| {
-                                        ui.label("Max Decimals:");
-                                        // Restrict input to digits only
-                                        let response = ui.add(
-                                            TextEdit::singleline(&mut self.decimals_input).desired_width(50.0)
-                                        );
-
-                                        // Optionally filter out non-digit input
-                                        if response.changed() {
-                                            self.decimals_input.retain(|c| c.is_ascii_digit());
-                                            self.decimals_input.truncate(2);
-                                        }
-
-                                        let token_name = self.token_names_input
-                                            .first()
-                                            .as_ref()
-                                            .and_then(|(_, name, _, _)| if name.is_empty() { None} else { Some(name.as_str())})
-                                            .unwrap_or("<Token Name>");
-
-                                        let message = if self.decimals_input == "0" {
-                                            format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
-                                        } else {
-                                            format!("Fractional Token (i.e. 0.2 {})", token_name)
-                                        };
-
-                                        ui.label(RichText::new(message).color(Color32::GRAY));
-
-                                        crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
-                                    });
-                                    ui.end_row();
-
-                                    // Marketplace Trade Mode
-                                    ui.horizontal(|ui| {
-                                        ui.label("Marketplace Trade Mode:");
-                                        ComboBox::from_id_salt("marketplace_trade_mode_selector")
-                                            .selected_text("Not Tradeable")
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut self.marketplace_trade_mode,
-                                                    0,
-                                                    "Not Tradeable",
-                                                );
-                                                // Future trade modes can be added here when SDK supports them
-                                            });
-
-                                        crate::ui::helpers::info_icon_button(ui,
-                                            "Currently, all tokens are created as 'Not Tradeable'. \
-                                            Future updates will add more trade mode options.\n\n\
-                                            IMPORTANT: If you want to enable marketplace trading in the future, \
-                                            make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
-                                            section to something other than 'No One'. Otherwise, trading can never be enabled."
-                                        );
-                                    });
-                                    ui.end_row();
-                                });
                             });
                         }
 
@@ -425,7 +421,7 @@ impl TokensScreen {
                             ui.add_space(3.0);
 
                             ui.horizontal(|ui| {
-                                ui.add_space(20.0); // Indentation
+                                ui.add_space(40.0); // Indentation
                                 ui.label("Preset:");
 
                                 ComboBox::from_id_salt("preset_selector")

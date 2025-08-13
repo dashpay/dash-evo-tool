@@ -179,7 +179,7 @@ impl MasternodeListDiffScreen {
                     MasternodeListEngine::default_for_network(Network::Dash)
                 }
             }
-            _ => MasternodeListEngine::default_for_network(Network::Dash),
+            _ => MasternodeListEngine::default_for_network(app_context.network),
         };
 
         Self {
@@ -814,11 +814,10 @@ impl MasternodeListDiffScreen {
         };
 
         if base_block_height == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
-            //todo put correct network
             self.masternode_list_engine = match MasternodeListEngine::initialize_with_diff_to_height(
                 list_diff.clone(),
                 block_height,
-                Network::Dash,
+                self.app_context.network,
             ) {
                 Ok(masternode_list_engine) => masternode_list_engine,
                 Err(e) => {
@@ -1002,7 +1001,8 @@ impl MasternodeListDiffScreen {
     // }
 
     fn clear(&mut self) {
-        self.masternode_list_engine = MasternodeListEngine::default_for_network(Network::Dash);
+        self.masternode_list_engine =
+            MasternodeListEngine::default_for_network(self.app_context.network);
 
         self.mnlist_diffs = Default::default();
         self.selected_dml_diff_key = None;
@@ -1022,22 +1022,22 @@ impl MasternodeListDiffScreen {
                     MasternodeListEngine::initialize_with_diff_to_height(
                         oldest_diff.clone(),
                         *end,
-                        Network::Dash,
+                        self.app_context.network,
                     )
                     .map(|engine| (engine, Some(((*start, *end), oldest_diff.clone()))))
                     .unwrap_or((
-                        MasternodeListEngine::default_for_network(Network::Dash),
+                        MasternodeListEngine::default_for_network(self.app_context.network),
                         None,
                     ))
                 } else {
                     (
-                        MasternodeListEngine::default_for_network(Network::Dash),
+                        MasternodeListEngine::default_for_network(self.app_context.network),
                         None,
                     )
                 }
             } else {
                 (
-                    MasternodeListEngine::default_for_network(Network::Dash),
+                    MasternodeListEngine::default_for_network(self.app_context.network),
                     None,
                 )
             };

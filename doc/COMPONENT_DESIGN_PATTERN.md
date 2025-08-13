@@ -89,6 +89,7 @@ impl ComponentResponse for MyComponentResponse {
 - [ ] Keep internal state private
 - [ ] **Be self-contained**: Handle validation, error display, hints, and formatting internally (preferably with configurable error display)
 - [ ] **Own your UX**: Component should manage its complete user experience
+- [ ] Colors should be defined in `ComponentStyles` and optimized for light and dark mode
 
 ### ❌ Anti-Patterns to Avoid
 - Public mutable fields

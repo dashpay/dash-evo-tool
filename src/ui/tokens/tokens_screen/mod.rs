@@ -3292,6 +3292,9 @@ mod tests {
             true,
         )];
 
+        // Set base supply
+        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
+
         // Enable perpetual distribution, select Random
         token_creator_ui.enable_perpetual_distribution = true;
         token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;

@@ -303,9 +303,16 @@ impl ScreenLike for KeyInfoScreen {
                                 .num_columns(2)
                                 .spacing([10.0, 10.0])
                                 .show(ui, |ui| {
-                                    ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
+                                    ui.label(
+                                        RichText::new("Private Key (Hex):")
+                                            .strong()
+                                            .color(ui.visuals().text_color()),
+                                    );
                                     let private_key_hex = hex::encode(clear);
-                                    ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+                                    ui.label(
+                                        RichText::new(private_key_hex)
+                                            .color(ui.visuals().text_color()),
+                                    );
                                     ui.end_row();
                                 });
                             ui.add_space(10.0);
@@ -330,14 +337,29 @@ impl ScreenLike for KeyInfoScreen {
                                         .num_columns(2)
                                         .spacing([10.0, 10.0])
                                         .show(ui, |ui| {
-                                            ui.label(RichText::new("Private Key (WIF):").strong().color(ui.visuals().text_color()));
+                                            ui.label(
+                                                RichText::new("Private Key (WIF):")
+                                                    .strong()
+                                                    .color(ui.visuals().text_color()),
+                                            );
                                             let private_key_wif = private_key.to_wif();
-                                            ui.label(RichText::new(private_key_wif).color(ui.visuals().text_color()));
+                                            ui.label(
+                                                RichText::new(private_key_wif)
+                                                    .color(ui.visuals().text_color()),
+                                            );
                                             ui.end_row();
-                                            
-                                            ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
-                                            let private_key_hex = hex::encode(private_key.inner.secret_bytes());
-                                            ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+
+                                            ui.label(
+                                                RichText::new("Private Key (Hex):")
+                                                    .strong()
+                                                    .color(ui.visuals().text_color()),
+                                            );
+                                            let private_key_hex =
+                                                hex::encode(private_key.inner.secret_bytes());
+                                            ui.label(
+                                                RichText::new(private_key_hex)
+                                                    .color(ui.visuals().text_color()),
+                                            );
                                             ui.end_row();
                                         });
                                 } else {
@@ -352,17 +374,33 @@ impl ScreenLike for KeyInfoScreen {
                                                 .num_columns(2)
                                                 .spacing([10.0, 10.0])
                                                 .show(ui, |ui| {
-                                                    ui.label(RichText::new("Private Key (WIF):").strong().color(ui.visuals().text_color()));
+                                                    ui.label(
+                                                        RichText::new("Private Key (WIF):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
                                                     let private_key_wif = private_key.to_wif();
-                                                    ui.label(RichText::new(private_key_wif).color(ui.visuals().text_color()));
+                                                    ui.label(
+                                                        RichText::new(private_key_wif)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
                                                     ui.end_row();
-                                                    
-                                                    ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
-                                                    let private_key_hex = hex::encode(private_key.inner.secret_bytes());
-                                                    ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+
+                                                    ui.label(
+                                                        RichText::new("Private Key (Hex):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    let private_key_hex = hex::encode(
+                                                        private_key.inner.secret_bytes(),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(private_key_hex)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
                                                     ui.end_row();
                                                 });
-                                            
+
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
@@ -392,17 +430,33 @@ impl ScreenLike for KeyInfoScreen {
                                                 .num_columns(2)
                                                 .spacing([10.0, 10.0])
                                                 .show(ui, |ui| {
-                                                    ui.label(RichText::new("Private Key (WIF):").strong().color(ui.visuals().text_color()));
+                                                    ui.label(
+                                                        RichText::new("Private Key (WIF):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
                                                     let private_key_wif = private_key.to_wif();
-                                                    ui.label(RichText::new(private_key_wif).color(ui.visuals().text_color()));
+                                                    ui.label(
+                                                        RichText::new(private_key_wif)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
                                                     ui.end_row();
-                                                    
-                                                    ui.label(RichText::new("Private Key (Hex):").strong().color(ui.visuals().text_color()));
-                                                    let private_key_hex = hex::encode(private_key.inner.secret_bytes());
-                                                    ui.label(RichText::new(private_key_hex).color(ui.visuals().text_color()));
+
+                                                    ui.label(
+                                                        RichText::new("Private Key (Hex):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    let private_key_hex = hex::encode(
+                                                        private_key.inner.secret_bytes(),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(private_key_hex)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
                                                     ui.end_row();
                                                 });
-                                            
+
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {

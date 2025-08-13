@@ -251,10 +251,11 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                             .as_ref()
                             .map(|k| {
                                 format!(
-                                    "Key {} Type {} Security {}",
+                                    "Key {} | {} | {} | {}",
                                     k.id(),
-                                    k.key_type(),
-                                    k.security_level()
+                                    k.purpose(),
+                                    k.security_level(),
+                                    k.key_type()
                                 )
                             })
                             .unwrap_or_else(|| "Select Key…".into()),
@@ -305,15 +306,19 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                                     {
                                         // In dev mode, mark keys that wouldn't normally be allowed
                                         format!(
-                                            "Key {} Security {} [DEV]",
+                                            "Key {} | {} | {} | {} [DEV]",
                                             key.id(),
-                                            key.security_level()
+                                            key.purpose(),
+                                            key.security_level(),
+                                            key.key_type()
                                         )
                                     } else {
                                         format!(
-                                            "Key {} Security {}",
+                                            "Key {} | {} | {} | {}",
                                             key.id(),
-                                            key.security_level()
+                                            key.purpose(),
+                                            key.security_level(),
+                                            key.key_type()
                                         )
                                     };
 

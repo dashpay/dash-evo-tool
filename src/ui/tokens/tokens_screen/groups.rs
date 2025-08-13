@@ -1,5 +1,6 @@
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::group::v0::GroupV0;
@@ -8,6 +9,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
+use egui::RichText;
 use std::collections::BTreeMap;
 
 #[derive(Default, Clone)]
@@ -98,25 +100,33 @@ impl TokensScreen {
     pub fn render_groups(&mut self, ui: &mut egui::Ui) {
         ui.add_space(5.0);
 
-        let mut groups_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("token_creator_groups"),
-            false,
-        );
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            groups_state.set_open(false);
-        }
-
-        groups_state.store(ui.ctx());
-
-        groups_state.show_header(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if self.token_creator_groups_expanded {
+                "−"
+            } else {
+                "+"
+            };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                self.token_creator_groups_expanded = !self.token_creator_groups_expanded;
+            }
             ui.label("Groups");
-        })
-        .body(|ui| {
+        });
+
+        if self.token_creator_groups_expanded {
             ui.add_space(3.0);
-            ui.label("Define one or more groups for multi-party control of the contract.");
+
+            ui.indent("groups_section", |ui| {
+                ui.label("Define one or more groups for multi-party control of the contract.");
             ui.add_space(2.0);
 
             // Add main group selection input
@@ -132,15 +142,31 @@ impl TokensScreen {
             let last_group_position = self.groups_ui.len().saturating_sub(1);
 
             for (group_position, group_ui) in self.groups_ui.iter_mut().enumerate() {
-                egui::collapsing_header::CollapsingState::load_with_default_open(
-                    ui.ctx(),
-                    format!("group_header_{}", group_position).into(),
-                    true,
-                )
-                    .show_header(ui, |ui| {
-                        ui.label(format!("Group {}", group_position));
-                    })
-                    .body(|ui| {
+                ui.horizontal(|ui| {
+                    // +/- button for individual groups
+                    let group_key = format!("group_{}", group_position);
+                    let is_expanded = self.token_creator_groups_items_expanded.contains(&group_key);
+                    let button_text = if is_expanded { "−" } else { "+" };
+                    let button_response = ui.add(
+                        egui::Button::new(
+                            RichText::new(button_text)
+                                .size(20.0)
+                                .color(DashColors::DASH_BLUE),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::NONE),
+                    );
+                    if button_response.clicked() {
+                        if is_expanded {
+                            self.token_creator_groups_items_expanded.remove(&group_key);
+                        } else {
+                            self.token_creator_groups_items_expanded.insert(group_key.clone());
+                        }
+                    }
+                    ui.label(format!("Group {}", group_position));
+                });
+
+                if self.token_creator_groups_items_expanded.contains(&format!("group_{}", group_position)) {
                         ui.add_space(3.0);
 
                         ui.horizontal(|ui| {
@@ -229,10 +255,10 @@ impl TokensScreen {
                                 group_to_remove = Some(group_position);
                             }
                         }
-                    });
+                }
             }
 
-            if let Some(group_to_remove) = group_to_remove{
+            if let Some(group_to_remove) = group_to_remove {
                 self.groups_ui.remove(group_to_remove);
             }
 
@@ -240,15 +266,23 @@ impl TokensScreen {
             if ui.button("Add New Group").clicked() {
                 self.groups_ui.push(GroupConfigUI {
                     required_power_str: "2".to_owned(),
-                    members: vec![GroupMemberUI {
-                        identity_str: self.selected_identity.as_ref().map(|q| q.identity.id().to_string(Encoding::Base58)).unwrap_or_default(),
-                        power_str: "1".to_string(),
-                    }, GroupMemberUI {
-                        identity_str: "".to_string(),
-                        power_str: "1".to_string(),
-                    }],
+                    members: vec![
+                        GroupMemberUI {
+                            identity_str: self
+                                .selected_identity
+                                .as_ref()
+                                .map(|q| q.identity.id().to_string(Encoding::Base58))
+                                .unwrap_or_default(),
+                            power_str: "1".to_string(),
+                        },
+                        GroupMemberUI {
+                            identity_str: "".to_string(),
+                            power_str: "1".to_string(),
+                        },
+                    ],
                 });
             }
-        });
+            });
+        }
     }
 }

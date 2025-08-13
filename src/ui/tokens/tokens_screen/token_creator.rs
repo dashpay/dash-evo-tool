@@ -12,6 +12,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context,  RichText, TextEdit, Ui};
+use crate::ui::theme::DashColors;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
@@ -294,30 +295,33 @@ impl TokensScreen {
                         ui.add_space(10.0);
 
                         // 5) Advanced settings toggle
-                        let mut advanced_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            ui.make_persistent_id("token_creator_advanced"),
-                            false,
-                        );
-
-                        // Force close if we need to reset
-                        if self.should_reset_collapsing_states {
-                            advanced_state.set_open(false);
-                        }
-
-                        advanced_state.store(ui.ctx());
-
-                        advanced_state.show_header(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // +/- button
+                            let button_text = if self.token_creator_advanced_expanded { "−" } else { "+" };
+                            let button_response = ui.add(
+                                egui::Button::new(
+                                    RichText::new(button_text)
+                                        .size(20.0)
+                                        .color(DashColors::DASH_BLUE),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                            );
+                            if button_response.clicked() {
+                                self.token_creator_advanced_expanded = !self.token_creator_advanced_expanded;
+                            }
                             ui.label("Advanced");
-                        })
-                        .body(|ui| {
+                        });
+
+                        if self.token_creator_advanced_expanded {
                             ui.add_space(3.0);
 
-                            // Use `Grid` to align labels and text edits
-                            egui::Grid::new("advanced_token_info_grid")
-                                .num_columns(2)
-                                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                                .show(ui, |ui| {
+                            ui.indent("advanced_section", |ui| {
+                                // Use `Grid` to align labels and text edits
+                                egui::Grid::new("advanced_token_info_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                            .show(ui, |ui| {
 
                                     // Start as paused
                                     ui.horizontal(|ui| {
@@ -394,28 +398,34 @@ impl TokensScreen {
                                     });
                                     ui.end_row();
                                 });
-                        });
+                            });
+                        }
 
                         ui.add_space(5.0);
 
-                        let mut action_rules_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                            ui.ctx(),
-                            ui.make_persistent_id("token_creator_action_rules"),
-                            false,
-                        );
-
-                        // Force close if we need to reset
-                        if self.should_reset_collapsing_states {
-                            action_rules_state.set_open(false);
-                        }
-
-                        action_rules_state.store(ui.ctx());
-
-                        action_rules_state.show_header(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // +/- button
+                            let button_text = if self.token_creator_action_rules_expanded { "−" } else { "+" };
+                            let button_response = ui.add(
+                                egui::Button::new(
+                                    RichText::new(button_text)
+                                        .size(20.0)
+                                        .color(DashColors::DASH_BLUE),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                            );
+                            if button_response.clicked() {
+                                self.token_creator_action_rules_expanded = !self.token_creator_action_rules_expanded;
+                            }
                             ui.label("Action Rules");
-                        })
-                        .body(|ui| {
+                        });
+
+                        if self.token_creator_action_rules_expanded {
+                            ui.add_space(3.0);
+
                             ui.horizontal(|ui| {
+                                ui.add_space(20.0); // Indentation
                                 ui.label("Preset:");
 
                                 ComboBox::from_id_salt("preset_selector")
@@ -467,36 +477,48 @@ impl TokensScreen {
                                     });
                             });
 
-                            self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
-                            self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None);
-                            self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
-                            self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None);
-                            self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None);
-                            self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None);
-                            self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None);
-                            self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None);
-                            self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None);
-                            self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None);
+                            ui.add_space(5.0);
+
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0); // Indentation for action rules
+                                ui.vertical(|ui| {
+                                    self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules, &mut self.token_creator_manual_mint_expanded, &mut self.token_creator_new_tokens_destination_expanded, &mut self.token_creator_minting_allow_choosing_expanded);
+                                    self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None, &mut self.token_creator_manual_burn_expanded);
+                                    self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities), &mut self.token_creator_freeze_expanded);
+                                    self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None, &mut self.token_creator_unfreeze_expanded);
+                                    self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None, &mut self.token_creator_destroy_frozen_expanded);
+                                    self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None, &mut self.token_creator_emergency_action_expanded);
+                                    self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None, &mut self.token_creator_max_supply_change_expanded);
+                                    self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None, &mut self.token_creator_conventions_change_expanded);
+                                    self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None, &mut self.token_creator_marketplace_expanded);
+                                    self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None, &mut self.token_creator_direct_purchase_pricing_expanded);
+                                });
+                            });
 
                             // Main control group change is slightly different so do this one manually.
                             ui.add_space(6.0);
-                            let mut main_control_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ui.ctx(),
-                                ui.make_persistent_id("token_creator_main_control_group"),
-                                false,
-                            );
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0); // Indentation for main control group change
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        // +/- button
+                                        let button_text = if self.token_creator_main_control_expanded { "−" } else { "+" };
+                                        let button_response = ui.add(
+                                            egui::Button::new(
+                                                RichText::new(button_text)
+                                                    .size(20.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            )
+                                            .fill(Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE),
+                                        );
+                                        if button_response.clicked() {
+                                            self.token_creator_main_control_expanded = !self.token_creator_main_control_expanded;
+                                        }
+                                        ui.label("Main Control Group Change");
+                                    });
 
-                            // Force close if we need to reset
-                            if self.should_reset_collapsing_states {
-                                main_control_state.set_open(false);
-                            }
-
-                            main_control_state.store(ui.ctx());
-
-                            main_control_state.show_header(ui, |ui| {
-                                ui.label("Main Control Group Change");
-                            })
-                            .body(|ui| {
+                                    if self.token_creator_main_control_expanded {
                                 ui.add_space(3.0);
 
                                 // A) authorized_to_make_change
@@ -554,8 +576,10 @@ impl TokensScreen {
                                         _ => {}
                                     }
                                 });
+                                    }
+                                });
                             });
-                        });
+                        }
 
                         self.render_distributions(context, ui);
                         self.render_groups(ui);
@@ -633,10 +657,30 @@ impl TokensScreen {
                                 }
                             }
                         });
-            });
 
-        // Reset the flag after processing all collapsing headers
+        // Reset the expanded states after processing
         if self.should_reset_collapsing_states {
+            self.token_creator_advanced_expanded = false;
+            self.token_creator_action_rules_expanded = false;
+            self.token_creator_main_control_expanded = false;
+            self.token_creator_distribution_expanded = false;
+            self.token_creator_groups_expanded = false;
+            self.token_creator_document_schemas_expanded = false;
+            // Individual action rules
+            self.token_creator_manual_mint_expanded = false;
+            self.token_creator_manual_burn_expanded = false;
+            self.token_creator_freeze_expanded = false;
+            self.token_creator_unfreeze_expanded = false;
+            self.token_creator_destroy_frozen_expanded = false;
+            self.token_creator_emergency_action_expanded = false;
+            self.token_creator_max_supply_change_expanded = false;
+            self.token_creator_conventions_change_expanded = false;
+            self.token_creator_marketplace_expanded = false;
+            self.token_creator_direct_purchase_pricing_expanded = false;
+            // Nested rules
+            self.token_creator_new_tokens_destination_expanded = false;
+            self.token_creator_minting_allow_choosing_expanded = false;
+            self.token_creator_perpetual_distribution_rules_expanded = false;
             self.should_reset_collapsing_states = false;
         }
 
@@ -669,6 +713,8 @@ impl TokensScreen {
             ui.colored_label(Color32::DARK_RED, err_msg.to_string());
             ui.add_space(10.0);
         }
+
+            }); // Close the ScrollArea from line 40
 
         action
     }
@@ -1146,29 +1192,35 @@ impl TokensScreen {
     fn render_document_schemas(&mut self, ui: &mut Ui) {
         ui.add_space(5.0);
 
-        let mut document_schemas_state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                ui.make_persistent_id("token_creator_document_schemas"),
-                false,
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if self.token_creator_document_schemas_expanded {
+                "−"
+            } else {
+                "+"
+            };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
             );
+            if button_response.clicked() {
+                self.token_creator_document_schemas_expanded =
+                    !self.token_creator_document_schemas_expanded;
+            }
+            ui.label("Document Schemas");
+        });
 
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            document_schemas_state.set_open(false);
-        }
+        if self.token_creator_document_schemas_expanded {
+            ui.add_space(3.0);
 
-        document_schemas_state.store(ui.ctx());
-
-        document_schemas_state
-            .show_header(ui, |ui| {
-                ui.label("Document Schemas");
-            })
-            .body(|ui| {
-                ui.add_space(3.0);
-
+            ui.indent("document_schemas_section", |ui| {
                 // Add link to dashpay.io
-                ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
                     ui.label("Paste JSON document schemas to include in the contract. Easily create document schemas here:");
                     ui.add(egui::Hyperlink::from_label_and_url(
                         RichText::new("dashpay.io")
@@ -1178,38 +1230,39 @@ impl TokensScreen {
                     ));
                 });
 
-                ui.add_space(5.0);
+            ui.add_space(5.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let schemas_response = ui.add_sized(
-                    [ui.available_width(), 120.0],
-                    TextEdit::multiline(&mut self.document_schemas_input)
-                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let schemas_response = ui.add_sized(
+                [ui.available_width(), 120.0],
+                TextEdit::multiline(&mut self.document_schemas_input)
+                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+            );
+
+            if schemas_response.changed() {
+                self.parse_document_schemas();
+            }
+
+            ui.add_space(5.0);
+
+            // Show validation result
+            if let Some(ref error) = self.document_schemas_error {
+                ui.colored_label(
+                    Color32::DARK_RED,
+                    format!("Schema validation error: {}", error),
                 );
-
-                if schemas_response.changed() {
-                    self.parse_document_schemas();
-                }
-
-                ui.add_space(5.0);
-
-                // Show validation result
-                if let Some(ref error) = self.document_schemas_error {
+            } else if self.parsed_document_schemas.is_some() {
+                let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
+                if schema_count > 0 {
                     ui.colored_label(
-                        Color32::DARK_RED,
-                        format!("Schema validation error: {}", error),
+                        Color32::DARK_GREEN,
+                        format!("✓ {} valid document schema(s) parsed", schema_count),
                     );
-                } else if self.parsed_document_schemas.is_some() {
-                    let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
-                    if schema_count > 0 {
-                        ui.colored_label(
-                            Color32::DARK_GREEN,
-                            format!("✓ {} valid document schema(s) parsed", schema_count),
-                        );
-                    }
                 }
+            }
             });
+        }
     }
 
     /// Parse and validate the document schemas JSON input

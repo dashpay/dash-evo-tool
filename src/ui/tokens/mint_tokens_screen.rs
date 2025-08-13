@@ -3,14 +3,17 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
@@ -58,7 +61,8 @@ pub struct MintTokensScreen {
 
     pub recipient_identity_id: String,
 
-    pub amount_to_mint: String,
+    pub amount: Option<Amount>,
+    pub amount_input: Option<AmountInput>,
     status: MintTokensStatus,
     error_message: Option<String>,
 
@@ -190,7 +194,8 @@ impl MintTokensScreen {
             group_action_id: None,
             known_identities,
             recipient_identity_id: "".to_string(),
-            amount_to_mint: "".to_string(),
+            amount: None,
+            amount_input: None,
             status: MintTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
@@ -201,15 +206,25 @@ impl MintTokensScreen {
         }
     }
 
-    /// Renders a text input for the user to specify an amount to mint
+    /// Renders an amount input for the user to specify an amount to mint
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount to Mint:");
-            ui.text_edit_singleline(&mut self.amount_to_mint);
-
-            // Since it's minting, we often don't do "Max."
-            // But you could show a help text or put constraints if needed.
+        // Lazy initialization with proper token configuration
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            // Create appropriate Amount based on token configuration
+            let token_amount = Amount::from_token(&self.identity_token_info, 0);
+            AmountInput::new(token_amount).with_label("Amount to Mint:")
         });
+
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.status {
+            MintTokensStatus::WaitingForResult(_) | MintTokensStatus::Complete => false,
+            MintTokensStatus::NotStarted | MintTokensStatus::ErrorMessage(_) => true,
+        };
+
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
+
+        response.inner.update(&mut self.amount);
+        // errors are handled inside AmountInput
     }
 
     /// Renders an optional text input for the user to specify a "Recipient Identity"
@@ -237,13 +252,12 @@ impl MintTokensScreen {
             .open(&mut is_open)
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount_to_mint.parse::<u64>().ok();
-                if amount_ok.is_none() {
+                let Some(amount) = &self.amount else {
                     self.error_message = Some("Please enter a valid amount.".into());
                     self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
                     self.show_confirmation_popup = false;
                     return;
-                }
+                };
 
                 let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
                     None
@@ -266,7 +280,7 @@ impl MintTokensScreen {
 
                 ui.label(format!(
                     "Are you sure you want to mint {} token(s)?",
-                    self.amount_to_mint
+                    amount
                 ));
 
                 // If user provided a recipient:
@@ -320,7 +334,7 @@ impl MintTokensScreen {
                             } else {
                                 self.public_note.clone()
                             },
-                            amount: amount_ok.unwrap(),
+                            amount: amount.value(),
                             recipient_id: maybe_identifier,
                             group_info,
                         },
@@ -557,7 +571,13 @@ impl ScreenLike for MintTokensScreen {
                         "You are signing an existing group Mint so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!("Amount: {}", self.amount_to_mint));
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount
+                            .as_ref()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default()
+                    ));
                 } else {
                     self.render_amount_input(ui);
                 }

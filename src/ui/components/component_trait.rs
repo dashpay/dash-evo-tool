@@ -95,10 +95,9 @@ pub trait Component {
 
     /// Returns the current value of the component.
     ///
-    /// This method is an equivalent of binding some variable using [`ComponentResponse::update()`].
+    /// Note that only valid values should be returned here.
+    /// If the component value is invalid, this should return `None`.
     ///
-    /// ## See also
-    ///
-    /// See [`ComponentResponse::update`].
+    /// See [`ComponentResponse::current_value`] for more details.
     fn current_value(&self) -> Option<Self::DomainType>;
 }

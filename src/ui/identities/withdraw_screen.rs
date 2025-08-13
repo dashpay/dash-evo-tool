@@ -123,9 +123,7 @@ impl WithdrawalScreen {
         let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
 
         response.inner.update(&mut self.withdrawal_amount);
-        if let Some(error) = &response.inner.error_message {
-            ui.colored_label(egui::Color32::DARK_RED, error);
-        }
+        // errors are handled inside AmountInput
     }
 
     fn render_address_input(&mut self, ui: &mut Ui) {

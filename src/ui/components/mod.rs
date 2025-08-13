@@ -1,5 +1,6 @@
 pub mod amount_input;
 pub mod component_trait;
+pub mod confirmation_dialog;
 pub mod contract_chooser_panel;
 pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;

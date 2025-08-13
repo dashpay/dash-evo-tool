@@ -172,6 +172,7 @@ impl TokensScreen {
                                 DistributionFunctionUI::InvertedLogarithmic,
                                 "InvertedLogarithmic",
                             );
+                            // DistributionFunctionUI::Random is not supported
                         });
 
                     let response = crate::ui::helpers::info_icon_button(ui, "Info about distribution types");

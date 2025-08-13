@@ -142,6 +142,7 @@ impl AppContext {
             wallet_index: Some(identity_index),
             top_ups: Default::default(),
             status: IdentityStatus::Active,
+            network: self.network,
         };
 
         // Insert qualified identity into the database

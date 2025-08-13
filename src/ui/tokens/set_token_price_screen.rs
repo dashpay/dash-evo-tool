@@ -6,12 +6,14 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::components::ComponentResponse;
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
@@ -101,6 +103,7 @@ pub struct SetTokenPriceScreen {
 
     /// Confirmation popup
     show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -232,6 +235,7 @@ impl SetTokenPriceScreen {
             error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -251,8 +255,8 @@ impl SetTokenPriceScreen {
                         // Create amount input for token threshold
 
                         let amount_input = AmountInput::new(Amount::from_token(
-                            *amount,
                             &self.identity_token_info,
+                            *amount,
                         ))
                         .with_hint_text("Token amount threshold");
 
@@ -390,8 +394,8 @@ impl SetTokenPriceScreen {
                                         let amount_input =
                                             self.tiered_prices[i].0.get_or_insert_with(|| {
                                                 AmountInput::new(Amount::from_token(
-                                                    1,
                                                     &self.identity_token_info,
+                                                    1,
                                                 ))
                                                 .with_hint_text("Token amount threshold")
                                             });
@@ -402,8 +406,8 @@ impl SetTokenPriceScreen {
                                         let amount_input =
                                             self.tiered_prices[i].0.get_or_insert_with(|| {
                                                 AmountInput::new(Amount::from_token(
-                                                    0,
                                                     &self.identity_token_info,
+                                                    0,
                                                 ))
                                                 .with_hint_text("Token amount threshold")
                                             });
@@ -540,133 +544,183 @@ impl SetTokenPriceScreen {
         }
     }
 
-    /// Renders a confirm popup with the final "Are you sure?" step
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm SetPricingSchedule")
-            .collapsible(false)
-            .open(&mut is_open)
-            .frame(
-                egui::Frame::default()
-                    .fill(Color32::from_rgb(245, 245, 245))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(200, 200, 200)))
-                    .shadow(egui::epaint::Shadow::default())
-                    .inner_margin(egui::Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(8)),
-            )
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let token_pricing_schedule_opt = match self.create_pricing_schedule() {
-                    Ok(schedule) => schedule,
-                    Err(error) => {
-                        self.error_message = Some(error.clone());
-                        self.status = SetTokenPriceStatus::ErrorMessage(error);
-                        self.show_confirmation_popup = false;
-                        return;
-                    }
-                };
-
-                // Show confirmation message based on pricing type
-                match &self.pricing_type {
-                    PricingType::RemovePricing => {
-                        ui.colored_label(
-                            Color32::from_rgb(180, 100, 0),
-                            "WARNING: Are you sure you want to remove the pricing schedule?",
-                        );
-                        ui.label("This will make the token unavailable for direct purchase.");
-                    }
-                    PricingType::SinglePrice => {
-                        if let Some(amount) = &self.single_price_amount {
-                            ui.label(format!(
-                                "Are you sure you want to set a fixed price of {} per token?",
-                                amount
-                            ));
-                        }
-                    }
-                    PricingType::TieredPricing => {
-                        ui.label("Are you sure you want to set the following tiered pricing?");
-                        ui.add_space(5.0);
-                        for (amount_input, price_input) in &self.tiered_prices {
-                            let Some(price) =
-                                price_input.as_ref().and_then(|input| input.current_value())
-                            else {
-                                continue; // Skip if no price input is available
-                            };
-
-                            let Some(amount_value) = amount_input
-                                .as_ref()
-                                .and_then(|input| input.current_value())
-                            else {
-                                continue;
-                            };
-
-                            let amount = amount_value.value();
-                            ui.label(format!(
-                                "  - {} or more tokens: {} Dash each",
-                                amount, price
-                            ));
-                        }
-                    }
+    /// Validate the current pricing configuration before showing confirmation dialog
+    fn validate_pricing_configuration(&self) -> Result<(), String> {
+        match self.pricing_type {
+            PricingType::RemovePricing => Ok(()),
+            PricingType::SinglePrice => {
+                match &self.single_price_amount {
+                    Some(amount) if amount.value() > 0 => Ok(()),
+                    Some(_) => Err("Price must be greater than 0".to_string()),
+                    None => Err("Please enter a price".to_string()),
                 }
+            }
+            PricingType::TieredPricing => {
+                let mut valid_tiers = 0;
 
-                ui.add_space(10.0);
-
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = SetTokenPriceStatus::WaitingForResult(now);
-
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
+                for (amount_input, price_input) in &self.tiered_prices {
+                    let Some(price) = price_input.as_ref().and_then(|input| input.current_value())
+                    else {
+                        continue;
                     };
 
-                    // Dispatch the actual backend mint action
-                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::SetDirectPurchasePrice {
-                            identity: self.identity_token_info.identity.clone(),
-                            data_contract: Arc::new(
-                                self.identity_token_info.data_contract.contract.clone(),
-                            ),
-                            token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
-                            },
-                            token_pricing_schedule: token_pricing_schedule_opt,
-                            group_info,
-                        },
-                    )));
+                    let Some(amount_value) = amount_input
+                        .as_ref()
+                        .and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
+
+                    if amount_value.value() > 0 && price.value() > 0 {
+                        valid_tiers += 1;
+                    }
                 }
 
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
+                if valid_tiers == 0 {
+                    return Err("Please add at least one valid pricing tier".to_string());
                 }
-            });
 
-        if !is_open {
-            self.show_confirmation_popup = false;
+                Ok(())
+            }
         }
-        action
+    }
+
+    /// Generate the confirmation message for the set price dialog
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the pricing type is not set correctly or if the single price is not a valid number.
+    fn confirmation_message(&self) -> String {
+        match &self.pricing_type {
+            PricingType::RemovePricing => {
+                "WARNING: Are you sure you want to remove the pricing schedule? This will make the token unavailable for direct purchase.".to_string()
+            }
+            PricingType::SinglePrice => {
+                if let Some(amount) = &self.single_price_amount {
+                    format!(
+                        "Are you sure you want to set a fixed price of {} per token?",
+                        amount
+                    )
+                } else {
+                    "Are you sure you want to set the pricing schedule?".to_string()
+                }
+            }
+            PricingType::TieredPricing => {
+                let mut message = "Are you sure you want to set the following tiered pricing?".to_string();
+                for (amount_input, price_input) in &self.tiered_prices {
+                    let Some(price) = price_input.as_ref().and_then(|input| input.current_value()) else {
+                        continue; // Skip if no price input is available
+                    };
+
+                    let Some(amount_value) = amount_input
+                        .as_ref()
+                        .and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
+
+                    message.push_str(&format!(
+                        "\n  - {} or more tokens: {} each",
+                        amount_value, price
+                    ));
+                }
+                message
+            }
+        }
+    }
+
+    /// Handle the confirmation action when user clicks OK
+    fn confirmation_ok(&mut self) -> AppAction {
+        self.show_confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
+
+        // Validate user input and create pricing schedule
+        let token_pricing_schedule_opt = match self.create_pricing_schedule() {
+            Ok(schedule) => schedule,
+            Err(error) => {
+                // This should not happen if validation was done before opening dialog,
+                // but we handle it as a safety net
+                self.set_error_state(format!("Validation error: {}", error));
+                return AppAction::None;
+            }
+        };
+
+        // Set waiting state
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.status = SetTokenPriceStatus::WaitingForResult(now);
+
+        // Prepare group info
+        let group_info = if self.group_action_id.is_some() {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position: *pos,
+                        action_id: self.group_action_id.unwrap(),
+                        action_is_proposer: false,
+                    },
+                )
+            })
+        } else {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+            })
+        };
+
+        // Create and return the backend task
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::SetDirectPurchasePrice {
+                identity: self.identity_token_info.identity.clone(),
+                data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
+                token_position: self.identity_token_info.token_position,
+                signing_key: self.selected_key.clone().expect("Expected a key"),
+                public_note: if self.group_action_id.is_some() {
+                    None
+                } else {
+                    self.public_note.clone()
+                },
+                token_pricing_schedule: token_pricing_schedule_opt,
+                group_info,
+            },
+        )))
+    }
+
+    /// Handle the cancel action when user clicks Cancel or closes dialog
+    fn confirmation_cancel(&mut self) -> AppAction {
+        self.show_confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
+        AppAction::None
+    }
+
+    /// Set error state with the given message
+    fn set_error_state(&mut self, error: String) {
+        self.error_message = Some(error.clone());
+        self.status = SetTokenPriceStatus::ErrorMessage(error);
+    }
+
+    /// Renders a confirm popup with the final "Are you sure?" step
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        // Prepare values before borrowing
+        let confirmation_message = self.confirmation_message();
+        let is_danger_mode = self.pricing_type == PricingType::RemovePricing;
+
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm pricing schedule update", confirmation_message)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(is_danger_mode)
+        });
+
+        let response = confirmation_dialog.show(ui);
+
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
+            Some(ConfirmationStatus::Canceled) => self.confirmation_cancel(),
+            None => AppAction::None,
+        }
     }
 
     /// Renders a simple "Success!" screen after completion
@@ -968,28 +1022,10 @@ impl ScreenLike for SetTokenPriceScreen {
                 };
 
                 // Set price button
-                let can_proceed = match self.pricing_type {
-                    PricingType::RemovePricing => true,
-                    PricingType::SinglePrice => {
-                        self.single_price_amount.is_some()
-                    },
-                    PricingType::TieredPricing => {
-                        // Check if there's at least one valid tier with both amount and price
-                        self.tiered_prices.iter().any(|(amount_input, price_input)| {
-                            let Some(price) = price_input.as_ref().and_then(|input| input.current_value()) else {
-                                return false; // Skip if no price input is available
-                            };
+                let validation_result = self.validate_pricing_configuration();
+                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
 
-                            let Some(amount_value) = amount_input.as_ref().and_then(|input| input.current_value()) else {
-                                return false; // Skip if no amount input is available
-                            };
-
-                            amount_value.value() > 0 && price.value() > 0
-                        })
-                    }
-                };
-
-                let button_color = if can_proceed {
+                let button_color = if validation_result.is_ok() {
                     Color32::from_rgb(0, 128, 255)
                 } else {
                     Color32::from_rgb(100, 100, 100)
@@ -999,10 +1035,10 @@ impl ScreenLike for SetTokenPriceScreen {
                     .fill(button_color)
                     .corner_radius(3.0);
 
-                let button_response = ui.add_enabled(can_proceed, button);
+                let button_response = ui.add_enabled(button_active, button);
 
-                if !can_proceed {
-                    button_response.on_hover_text("Please enter valid pricing information");
+                if let Err(hover_message) = validation_result {
+                                    button_response.on_disabled_hover_text(hover_message);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }

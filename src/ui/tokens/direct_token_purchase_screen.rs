@@ -176,7 +176,7 @@ impl PurchaseTokenScreen {
                 TokenPricingSchedule::SetPrices(tiers) => {
                     ui.label("  Tiered pricing:");
                     for (amount_value, price_credits) in tiers {
-                        let amount = Amount::from_token(*amount_value, &self.identity_token_info);
+                        let amount = Amount::from_token(&self.identity_token_info, *amount_value);
                         let price =
                             Amount::new(*price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
                         ui.label(format!(

@@ -5,6 +5,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
+use crate::ui::components::ComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -13,7 +14,6 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::components::ComponentResponse;
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
@@ -548,13 +548,11 @@ impl SetTokenPriceScreen {
     fn validate_pricing_configuration(&self) -> Result<(), String> {
         match self.pricing_type {
             PricingType::RemovePricing => Ok(()),
-            PricingType::SinglePrice => {
-                match &self.single_price_amount {
-                    Some(amount) if amount.value() > 0 => Ok(()),
-                    Some(_) => Err("Price must be greater than 0".to_string()),
-                    None => Err("Please enter a price".to_string()),
-                }
-            }
+            PricingType::SinglePrice => match &self.single_price_amount {
+                Some(amount) if amount.value() > 0 => Ok(()),
+                Some(_) => Err("Price must be greater than 0".to_string()),
+                None => Err("Please enter a price".to_string()),
+            },
             PricingType::TieredPricing => {
                 let mut valid_tiers = 0;
 

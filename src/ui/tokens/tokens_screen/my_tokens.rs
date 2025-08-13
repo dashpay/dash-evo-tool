@@ -474,29 +474,27 @@ impl TokensScreen {
                                             });
                                         }
                                         row.col(|ui| {
-                                            ui.horizontal(|ui| {
-                                                if itb.available_actions.shown_buttons() < 6 {
-                                                    action |= self.render_actions(itb, &token_info, 0..10, ui);
-                                                } else {
-                                                    action |= self.render_actions(itb, &token_info, 0..3, ui);
-                                                    // Expandable advanced actions menu
-                                                    ui.menu_button("...", |ui| {
-                                                        action |= self.render_actions(itb, &token_info, 3..128, ui);
-                                                    });
-                                                }
+                                            if itb.available_actions.shown_buttons() < 3 {
+                                                action |= self.render_actions(itb, &token_info, 0..10, ui);
+                                            } else {
+                                                action |= self.render_actions(itb, &token_info, 0..3, ui);
+                                                // Expandable advanced actions menu
+                                                ui.menu_button("...", |ui| {
+                                                    action |= self.render_actions(itb, &token_info, 3..128, ui);
+                                                });
+                                            }
 
-                                                // Remove
-                                                if ui
-                                                    .button("X")
-                                                    .on_hover_text(
-                                                        "Remove identity token balance from DET",
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    self.confirm_remove_identity_token_balance_popup = true;
-                                                    self.identity_token_balance_to_remove = Some(itb.into());
-                                                }
-                                            });
+                                            // Remove
+                                            if ui
+                                                .button("X")
+                                                .on_hover_text(
+                                                    "Remove identity token balance from DET",
+                                                )
+                                                .clicked()
+                                            {
+                                                self.confirm_remove_identity_token_balance_popup = true;
+                                                self.identity_token_balance_to_remove = Some(itb.into());
+                                            }
                                         });
                                     });
                                 }
@@ -591,10 +589,6 @@ impl TokensScreen {
     ) -> AppAction {
         let mut pos = 0;
         let mut action = AppAction::None;
-
-        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            ui.add_space(-9.0);
-            ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
 
             if range.contains(&pos) {
@@ -924,10 +918,6 @@ impl TokensScreen {
                    ui.close_kind(egui::UiKind::Menu);
                 }
             }
-        });
-
-            });
-
         action
     }
 
@@ -1006,21 +996,15 @@ impl TokensScreen {
                                     self.show_token_info_popup = Some(*token_id);
                                 }
 
-                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                    ui.add_space(-1.0);
-
-                                    ui.horizontal(|ui| {
-                                        // Remove button
-                                        if ui
-                                            .button("X")
-                                            .on_hover_text("Remove token from DET")
-                                            .clicked()
-                                        {
-                                            self.confirm_remove_token_popup = true;
-                                            self.token_to_remove = Some(*token_id);
-                                        }
-                                    });
-                                });
+                                // Remove button
+                                if ui
+                                    .button("X")
+                                    .on_hover_text("Remove token from DET")
+                                    .clicked()
+                                {
+                                    self.confirm_remove_token_popup = true;
+                                    self.token_to_remove = Some(*token_id);
+                                }
                             });
                         });
                     }

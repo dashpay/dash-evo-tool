@@ -3,6 +3,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
@@ -13,12 +15,15 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -45,11 +50,11 @@ pub struct PurchaseTokenScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
 
-    // Specific to this transition
-    amount_to_purchase: String,
-    total_agreed_price: String,
+    // Specific to this transition - using AmountInput components following design pattern
+    amount_to_purchase_input: Option<AmountInput>,
+    amount_to_purchase_value: Option<Amount>,
     fetched_pricing_schedule: Option<TokenPricingSchedule>,
-    calculated_price: Option<Credits>,
+    calculated_price_credits: Option<Credits>,
     pricing_fetch_attempted: bool,
 
     /// Screen stuff
@@ -89,10 +94,10 @@ impl PurchaseTokenScreen {
         Self {
             identity_token_info,
             selected_key: possible_key,
-            amount_to_purchase: "".to_string(),
-            total_agreed_price: "".to_string(),
+            amount_to_purchase_input: None,
+            amount_to_purchase_value: None,
             fetched_pricing_schedule: None,
-            calculated_price: None,
+            calculated_price_credits: None,
             pricing_fetch_attempted: false,
             status: PurchaseTokensStatus::NotStarted,
             error_message: None,
@@ -104,16 +109,33 @@ impl PurchaseTokenScreen {
         }
     }
 
-    /// Renders a text input for the user to specify an amount to purchase
+    /// Renders AmountInput components for the user to specify an amount to purchase
     fn render_amount_input(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         ui.horizontal(|ui| {
-            ui.label("Amount to Purchase:");
-            let response = ui.text_edit_singleline(&mut self.amount_to_purchase);
+            // Use AmountInput for token amount with lazy initialization
+            let amount_input = self.amount_to_purchase_input.get_or_insert_with(|| {
+                AmountInput::new(
+                    Amount::new(
+                        0,
+                        self.identity_token_info
+                            .token_config
+                            .conventions()
+                            .decimals(),
+                    )
+                    .with_unit_name(&self.identity_token_info.token_alias),
+                )
+                .with_label("Amount to Purchase:")
+                .with_hint_text("Enter token amount to purchase")
+                .with_min_amount(Some(1))
+            });
 
-            // When amount changes, recalculate the price if we have pricing schedule
-            if response.changed() {
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount_to_purchase_value);
+
+            // When amount changes, update domain data and recalculate the price
+            if response.inner.has_changed() {
                 self.recalculate_price();
             }
 
@@ -142,14 +164,30 @@ impl PurchaseTokenScreen {
         if let Some(pricing_schedule) = &self.fetched_pricing_schedule {
             ui.add_space(5.0);
             ui.label("Current pricing:");
+            let token_decimals = self
+                .identity_token_info
+                .token_config
+                .conventions()
+                .decimals();
+            let decimal_multiplier = 10u64.pow(token_decimals as u32);
+
             match pricing_schedule {
-                TokenPricingSchedule::SinglePrice(price) => {
-                    ui.label(format!("  Fixed price: {} credits per token", price));
+                TokenPricingSchedule::SinglePrice(price_per_smallest_unit) => {
+                    // Convert price per smallest unit to price per token for display
+                    let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                    let price =
+                        Amount::new(price_per_token, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                    ui.label(format!("  Fixed price: {} per token", price));
                 }
                 TokenPricingSchedule::SetPrices(tiers) => {
                     ui.label("  Tiered pricing:");
-                    for (amount, price) in tiers {
-                        ui.label(format!("    {} tokens: {} credits each", amount, price));
+                    for (amount_value, price_per_smallest_unit) in tiers {
+                        let amount = Amount::from_token(&self.identity_token_info, *amount_value);
+                        // Convert price per smallest unit to price per token for display
+                        let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                        let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
+                        ui.label(format!("    {} tokens: {} each", amount, price));
                     }
                 }
             }
@@ -160,10 +198,11 @@ impl PurchaseTokenScreen {
 
     /// Recalculates the total price based on amount and pricing schedule
     fn recalculate_price(&mut self) {
-        if let (Some(pricing_schedule), Ok(amount)) = (
+        if let (Some(pricing_schedule), Some(amount_value)) = (
             &self.fetched_pricing_schedule,
-            self.amount_to_purchase.parse::<u64>(),
+            &self.amount_to_purchase_value,
         ) {
+            let amount = amount_value.value();
             let price_per_token = match pricing_schedule {
                 TokenPricingSchedule::SinglePrice(price) => *price,
                 TokenPricingSchedule::SetPrices(tiers) => {
@@ -178,11 +217,12 @@ impl PurchaseTokenScreen {
                 }
             };
 
+            // The price from Platform is per smallest unit, and amount is in smallest units
+            // So we just multiply them directly
             let total_price = amount.saturating_mul(price_per_token);
-            self.calculated_price = Some(total_price);
-            self.total_agreed_price = total_price.to_string();
+            self.calculated_price_credits = Some(total_price);
         } else {
-            self.calculated_price = None;
+            self.calculated_price_credits = None;
         }
     }
 
@@ -206,27 +246,29 @@ impl PurchaseTokenScreen {
             )
             .show(ui.ctx(), |ui| {
                 // Validate user input
-                let amount_ok = self.amount_to_purchase.parse::<u64>().ok();
-                if amount_ok.is_none() {
+                let amount_value = self.amount_to_purchase_value.as_ref();
+                let Some(amount) = amount_value else {
                     self.error_message = Some("Please enter a valid amount.".into());
                     self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
                     self.show_confirmation_popup = false;
                     return;
-                }
+                };
 
-                let total_agreed_price_ok: Option<Credits> =
-                    self.total_agreed_price.parse::<u64>().ok();
-                if total_agreed_price_ok.is_none() {
-                    self.error_message = Some("Please enter a valid total agreed price.".into());
-                    self.status =
-                        PurchaseTokensStatus::ErrorMessage("Invalid total agreed price".into());
+                let Some(total_price_credits) = self.calculated_price_credits else {
+                    self.error_message = Some(
+                        "Cannot calculate total price. Please fetch token pricing first.".into(),
+                    );
+                    self.status = PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
                     self.show_confirmation_popup = false;
                     return;
-                }
+                };
+
+                let total_price_dash =
+                    Amount::new(total_price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
 
                 ui.label(format!(
-                    "Are you sure you want to purchase {} token(s) for {} Credits?",
-                    self.amount_to_purchase, self.total_agreed_price
+                    "Are you sure you want to purchase {} token(s) for {} ({} Credits)?",
+                    amount, total_price_dash, total_price_credits
                 ));
 
                 ui.add_space(10.0);
@@ -250,9 +292,8 @@ impl PurchaseTokenScreen {
                                 ),
                                 token_position: self.identity_token_info.token_position,
                                 signing_key: self.selected_key.clone().expect("Expected a key"),
-                                amount: amount_ok.expect("Expected a valid amount"),
-                                total_agreed_price: total_agreed_price_ok
-                                    .expect("Expected a valid total agreed price"),
+                                amount: amount.value(),
+                                total_agreed_price: total_price_credits,
                             })),
                             BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
@@ -474,12 +515,17 @@ impl ScreenLike for PurchaseTokenScreen {
 
                 ui.add_space(10.0);
 
-                // Display calculated price
-                if let Some(calculated_price) = self.calculated_price {
+                // Display calculated price and total agreed price input
+                if let Some(calculated_price_credits) = self.calculated_price_credits {
                     ui.group(|ui| {
                         ui.heading("Calculated total price:");
-                        ui.label(format!("{} credits", calculated_price));
+                        let dash_amount = Amount::new(calculated_price_credits, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
+                        ui.label(format!("{} DASH ({} credits)",dash_amount, calculated_price_credits));
                         ui.label("Note: This is the calculated price based on the current pricing schedule.");
+
+                        ui.add_space(10.0);
+
                     });
                 } else if self.fetched_pricing_schedule.is_some() {
                     ui.colored_label(
@@ -494,9 +540,15 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Purchase button (disabled if no pricing is available)
-                let can_purchase =
-                    self.fetched_pricing_schedule.is_some() && self.calculated_price.is_some();
+                // Purchase button (disabled if no valid amounts are available)
+                let can_purchase = self.fetched_pricing_schedule.is_some()
+                    && self.calculated_price_credits.unwrap_or_default() > 0
+                    && self
+                        .amount_to_purchase_value
+                        .as_ref()
+                        .map(|v| v.value())
+                        .unwrap_or_default()
+                        > 0;
                 let purchase_text = "Purchase".to_string();
 
                 if can_purchase {
@@ -587,5 +639,108 @@ impl ScreenWithWalletUnlock for PurchaseTokenScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::amount::DASH_DECIMAL_PLACES;
+
+    #[test]
+    fn test_token_pricing_storage_and_calculation() {
+        // Test how prices should be stored and calculated
+
+        // Case 1: Token with 8 decimals (like the user's case)
+        let token_decimals_8 = 8u8;
+        let user_price_per_token_dash = 0.001; // User wants 0.001 DASH per token
+        let user_price_per_token_credits =
+            (user_price_per_token_dash * 10f64.powi(DASH_DECIMAL_PLACES as i32)) as u64;
+
+        println!("Test 1 - Token with 8 decimals, price 0.001 DASH per token:");
+        println!(
+            "  User enters: {} DASH per token",
+            user_price_per_token_dash
+        );
+        println!(
+            "  In credits: {} credits per token",
+            user_price_per_token_credits
+        );
+
+        // Platform expects price per smallest unit, not per token
+        let decimal_divisor_8 = 10u64.pow(token_decimals_8 as u32);
+        let platform_price_per_smallest_unit = user_price_per_token_credits / decimal_divisor_8;
+
+        println!(
+            "  Platform stores: {} credits per smallest unit",
+            platform_price_per_smallest_unit
+        );
+
+        // When buying 1 token (100,000,000 smallest units)
+        let tokens_to_buy = 1u64;
+        let amount_smallest_units = tokens_to_buy * 10u64.pow(token_decimals_8 as u32);
+        let total_price = amount_smallest_units * platform_price_per_smallest_unit;
+
+        println!(
+            "  Buying {} token ({} smallest units)",
+            tokens_to_buy, amount_smallest_units
+        );
+        println!(
+            "  Total: {} credits (should be {} credits for 0.001 DASH)",
+            total_price, user_price_per_token_credits
+        );
+
+        assert_eq!(
+            total_price, user_price_per_token_credits,
+            "Total should match expected price"
+        );
+
+        // Case 2: Token with 2 decimals
+        let token_decimals_2 = 2u8;
+        let user_price_2 = 0.1; // 0.1 DASH per token
+        let user_price_credits_2 = (user_price_2 * 10f64.powi(DASH_DECIMAL_PLACES as i32)) as u64;
+
+        let divisor_2 = 10u64.pow(token_decimals_2 as u32);
+        let platform_price_2 = user_price_credits_2 / divisor_2;
+
+        // Buy 5 tokens
+        let amount_2 = 5 * 10u64.pow(token_decimals_2 as u32); // 500 smallest units
+        let total_2 = amount_2 * platform_price_2;
+
+        println!("\nTest 2 - Token with 2 decimals, 5 tokens at 0.1 DASH each:");
+        println!(
+            "  Platform price: {} credits per smallest unit",
+            platform_price_2
+        );
+        println!("  Total for 5 tokens: {} credits", total_2);
+
+        assert_eq!(
+            total_2,
+            5 * user_price_credits_2,
+            "Should be 0.5 DASH total"
+        );
+
+        // Case 3: Token with 0 decimals
+        let _token_decimals_0 = 0u8;
+        let user_price_0 = 0.05; // 0.05 DASH per token
+        let user_price_credits_0 = (user_price_0 * 10f64.powi(DASH_DECIMAL_PLACES as i32)) as u64;
+
+        // With 0 decimals, price per token = price per smallest unit
+        let platform_price_0 = user_price_credits_0; // No division needed
+
+        let amount_0 = 10; // 10 tokens = 10 smallest units (no decimals)
+        let total_0 = amount_0 * platform_price_0;
+
+        println!("\nTest 3 - Token with 0 decimals, 10 tokens at 0.05 DASH each:");
+        println!(
+            "  Platform price: {} credits per smallest unit",
+            platform_price_0
+        );
+        println!("  Total for 10 tokens: {} credits", total_0);
+
+        assert_eq!(
+            total_0,
+            10 * user_price_credits_0,
+            "Should be 0.5 DASH total"
+        );
     }
 }

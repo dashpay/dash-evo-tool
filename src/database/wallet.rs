@@ -8,7 +8,6 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
-use dash_sdk::dpp::dashcore::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::consensus::deserialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
@@ -19,6 +18,7 @@ use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLoc
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
+use dash_sdk::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use rusqlite::params;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;

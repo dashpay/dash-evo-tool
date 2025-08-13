@@ -2,12 +2,12 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
-use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
+use dash_sdk::key_wallet::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
 
-use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
+use dash_sdk::key_wallet::bip32::DerivationPath;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;

@@ -9,7 +9,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
-use dash_sdk::dpp::dashcore::Network as Network2;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::consensus::serialize as serialize2;
 use dash_sdk::dpp::dashcore::consensus::{Decodable, deserialize, serialize};
@@ -29,9 +28,7 @@ use dash_sdk::dpp::dashcore::sml::masternode_list_entry::qualified_masternode_li
 use dash_sdk::dpp::dashcore::sml::quorum_entry::qualified_quorum_entry::{
     QualifiedQuorumEntry, VerifyingChainLockSignaturesType,
 };
-use dash_sdk::dpp::dashcore::sml::quorum_validation_error::{
-    ClientDataRetrievalError, QuorumValidationError,
-};
+use dash_sdk::dpp::dashcore::sml::quorum_validation_error::ClientDataRetrievalError;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use dash_sdk::dpp::dashcore::{
     Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction,
@@ -148,7 +145,7 @@ impl MasternodeListDiffScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let mut mnlist_diffs = BTreeMap::new();
         let engine = match app_context.network {
-            Network2::Dash => {
+            Network::Dash => {
                 use std::env;
                 println!(
                     "Current working directory: {:?}",
@@ -172,6 +169,32 @@ impl MasternodeListDiffScreen {
                         Err(e) => {
                             eprintln!("Failed to read MNListDiff file: {}", e);
                             MasternodeListEngine::default_for_network(Network::Dash)
+                        }
+                    }
+                } else {
+                    eprintln!("MNListDiff file not found: {}", file_path);
+                    MasternodeListEngine::default_for_network(Network::Dash)
+                }
+            }
+            Network::Testnet => {
+                let file_path = "artifacts/mn_list_diff_testnet_0_1296600.bin";
+                // Attempt to load and parse the MNListDiff file
+                if Path::new(file_path).exists() {
+                    match fs::read(file_path) {
+                        Ok(bytes) => {
+                            let diff: MnListDiff =
+                                deserialize(bytes.as_slice()).expect("expected to deserialize");
+                            mnlist_diffs.insert((0, 1296600), diff.clone());
+                            MasternodeListEngine::initialize_with_diff_to_height(
+                                diff,
+                                1296600,
+                                Network::Testnet,
+                            )
+                            .expect("expected to start engine")
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read MNListDiff file: {}", e);
+                            MasternodeListEngine::default_for_network(Network::Testnet)
                         }
                     }
                 } else {
@@ -1128,7 +1151,13 @@ impl MasternodeListDiffScreen {
 
         let max_blocks = 2000;
 
-        let start_height = if base_block_height < 2227096 {
+        let loaded_list_height = match self.app_context.network {
+            Network::Dash => 2227096,
+            Network::Testnet => 1296600,
+            _ => 0,
+        };
+
+        let start_height = if base_block_height < loaded_list_height {
             block_height - max_blocks
         } else {
             base_block_height

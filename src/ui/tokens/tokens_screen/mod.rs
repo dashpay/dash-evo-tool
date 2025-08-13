@@ -2467,6 +2467,11 @@ impl ScreenLike for TokensScreen {
             .map(|qi| (qi.identity.id(), qi))
             .collect();
 
+        // Clear pricing data to force re-fetching when tokens are selected
+        // This ensures we get updated pricing after changes like SetPrice
+        self.token_pricing_data.clear();
+        self.pricing_loading_state.clear();
+
         self.my_tokens = my_tokens(
             &self.app_context,
             &self.identities,
@@ -2502,6 +2507,11 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+
+        // Clear pricing data to force re-fetching when tokens are selected
+        // This ensures we get updated pricing after changes like SetPrice
+        self.token_pricing_data.clear();
+        self.pricing_loading_state.clear();
 
         self.my_tokens = my_tokens(
             &self.app_context,

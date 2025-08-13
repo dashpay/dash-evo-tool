@@ -5,6 +5,8 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -64,8 +66,8 @@ pub struct FreezeTokensScreen {
     // Basic references
     pub app_context: Arc<AppContext>,
 
-    // Confirmation popup
-    show_confirmation_popup: bool,
+    // Confirmation dialog
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -192,7 +194,7 @@ impl FreezeTokensScreen {
             status: FreezeTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -215,92 +217,87 @@ impl FreezeTokensScreen {
 
     /// Confirmation popup
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Freeze")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let parsed = Identifier::from_string_try_encodings(
-                    &self.freeze_identity_id,
-                    &[
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
-                    ],
-                );
-                if parsed.is_err() {
-                    self.error_message = Some("Please enter a valid identity ID.".into());
-                    self.status = FreezeTokensStatus::ErrorMessage("Invalid identity".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
-                let freeze_id = parsed.unwrap();
+        let msg = format!(
+            "Are you sure you want to freeze identity {}?",
+            self.freeze_identity_id
+        );
 
-                ui.label(format!(
-                    "Are you sure you want to freeze identity {}?",
-                    self.freeze_identity_id
-                ));
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Freeze", msg)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+        });
 
-                ui.add_space(10.0);
-
-                // Confirm
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = FreezeTokensStatus::WaitingForResult(now);
-
-                    // Grab the data contract for this token from the app context
-                    let data_contract =
-                        Arc::new(self.identity_token_info.data_contract.contract.clone());
-
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
-                    };
-
-                    // Dispatch to backend
-                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::FreezeTokens {
-                            actor_identity: self.identity.clone(),
-                            data_contract,
-                            token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("No key selected"),
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
-                            },
-                            freeze_identity: freeze_id,
-                            group_info,
-                        },
-                    )));
-                }
-
-                // Cancel
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+        let response = confirmation_dialog.show(ui);
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                self.confirmation_ok()
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
+    }
+
+    /// Handle confirmation OK action
+    fn confirmation_ok(&mut self) -> AppAction {
+        // Validate user input
+        let parsed = Identifier::from_string_try_encodings(
+            &self.freeze_identity_id,
+            &[
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+            ],
+        );
+        if parsed.is_err() {
+            self.error_message = Some("Please enter a valid identity ID.".into());
+            self.status = FreezeTokensStatus::ErrorMessage("Invalid identity".into());
+            return AppAction::None;
+        }
+        let freeze_id = parsed.unwrap();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.status = FreezeTokensStatus::WaitingForResult(now);
+
+        // Grab the data contract for this token from the app context
+        let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
+
+        let group_info = if self.group_action_id.is_some() {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position: *pos,
+                        action_id: self.group_action_id.unwrap(),
+                        action_is_proposer: false,
+                    },
+                )
+            })
+        } else {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+            })
+        };
+
+        // Dispatch to backend
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::FreezeTokens {
+            actor_identity: self.identity.clone(),
+            data_contract,
+            token_position: self.identity_token_info.token_position,
+            signing_key: self.selected_key.clone().expect("No key selected"),
+            public_note: if self.group_action_id.is_some() {
+                None
+            } else {
+                self.public_note.clone()
+            },
+            freeze_identity: freeze_id,
+            group_info,
+        })))
     }
 
     /// Success screen
@@ -561,12 +558,13 @@ impl ScreenLike for FreezeTokensScreen {
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                        // Initialize confirmation dialog when button is clicked
+                        self.confirmation_dialog = None; // Reset for fresh dialog
                     }
                 }
 
-                // If user pressed "Freeze," show popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

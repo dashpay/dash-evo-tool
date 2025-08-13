@@ -1,12 +1,13 @@
 use super::tokens_screen::IdentityTokenInfo;
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::Component;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -17,6 +18,7 @@ use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -28,47 +30,64 @@ use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::Identifier;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// States for the resume flow
+/// Represents possible states in the “destroy frozen funds” flow
 #[derive(PartialEq)]
-pub enum ResumeTokensStatus {
+pub enum DestroyFrozenFundsStatus {
     NotStarted,
     WaitingForResult(u64),
     ErrorMessage(String),
     Complete,
 }
 
-pub struct ResumeTokensScreen {
+/// A screen for destroying frozen funds of a particular token contract
+pub struct DestroyFrozenFundsScreen {
+    /// Identity that is authorized to destroy
     pub identity: QualifiedIdentity,
+
+    /// Info on which token contract we’re dealing with
     pub identity_token_info: IdentityTokenInfo,
-    selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+
+    /// The key used to sign the operation
+    selected_key: Option<IdentityPublicKey>,
+
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+
+    /// Optional public note
     pub public_note: Option<String>,
 
-    status: ResumeTokensStatus,
+    /// The user must specify the identity ID whose frozen funds are to be destroyed
+    /// Typically some Identity that has been frozen by the system or a group
+    pub frozen_identity_id: String,
+
+    /// All frozen identities that can be selected
+    /// TODO: We should filter them by frozen status, right now we just show all known identities
+    pub frozen_identities: Vec<QualifiedIdentity>,
+
+    status: DestroyFrozenFundsStatus,
     error_message: Option<String>,
 
-    // Basic references
+    /// Basic references
     pub app_context: Arc<AppContext>,
 
-    // Confirmation popup
+    /// Confirmation dialog
     confirmation_dialog: Option<ConfirmationDialog>,
 
-    // If password-based wallet unlocking is needed
+    /// If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
 }
 
-impl ResumeTokensScreen {
+impl DestroyFrozenFundsScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
@@ -85,7 +104,7 @@ impl ResumeTokensScreen {
 
         let group = match identity_token_info
             .token_config
-            .emergency_action_rules()
+            .destroy_frozen_funds_rules()
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
@@ -171,15 +190,21 @@ impl ResumeTokensScreen {
             &mut error_message,
         );
 
+        let all_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         Self {
             identity: identity_token_info.identity.clone(),
+            frozen_identity_id: String::new(),
+            frozen_identities: all_identities,
             identity_token_info,
             selected_key: possible_key,
             group,
             is_unilateral_group_member,
             group_action_id: None,
             public_note: None,
-            status: ResumeTokensStatus::NotStarted,
+            status: DestroyFrozenFundsStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -189,65 +214,115 @@ impl ResumeTokensScreen {
         }
     }
 
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new(
-                "Confirm Resume".to_string(),
-                "Are you sure you want to resume normal token actions for this contract?"
-                    .to_string(),
+    /// Renders the text input for specifying the “frozen identity”
+    fn render_frozen_identity_input(&mut self, ui: &mut Ui) {
+        ui.add(
+            IdentitySelector::new(
+                "frozen_identity_selector",
+                &mut self.frozen_identity_id,
+                &self.frozen_identities,
             )
-        });
-
-        match dialog.show(ui).inner.dialog_response {
-            Some(ConfirmationStatus::Confirmed) => {
-                self.confirmation_dialog = None;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.status = ResumeTokensStatus::WaitingForResult(now);
-
-                // Grab the data contract for this token from the app context
-                let data_contract =
-                    Arc::new(self.identity_token_info.data_contract.contract.clone());
-
-                let group_info = if self.group_action_id.is_some() {
-                    self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                            GroupStateTransitionInfo {
-                                group_contract_position: *pos,
-                                action_id: self.group_action_id.unwrap(),
-                                action_is_proposer: false,
-                            },
-                        )
-                    })
-                } else {
-                    self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    })
-                };
-
-                AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::ResumeTokens {
-                    actor_identity: self.identity.clone(),
-                    data_contract,
-                    token_position: self.identity_token_info.token_position,
-                    signing_key: self.selected_key.clone().expect("No key selected"),
-                    public_note: if self.group_action_id.is_some() {
-                        None
-                    } else {
-                        self.public_note.clone()
-                    },
-                    group_info,
-                })))
-            }
-            Some(ConfirmationStatus::Canceled) => {
-                self.confirmation_dialog = None;
-                AppAction::None
-            }
-            None => AppAction::None,
-        }
+            .label("Frozen Identity ID:"),
+        );
     }
 
+    /// Confirmation popup
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let mut is_open = true;
+        egui::Window::new("Confirm Destroy Frozen Funds")
+            .collapsible(false)
+            .open(&mut is_open)
+            .show(ui.ctx(), |ui| {
+                // Parse the user input into an Identifier
+                let maybe_frozen_id = Identifier::from_string_try_encodings(
+                    &self.frozen_identity_id,
+                    &[
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+                    ],
+                );
+
+                if maybe_frozen_id.is_err() {
+                    self.error_message = Some("Invalid frozen identity format".into());
+                    self.status = DestroyFrozenFundsStatus::ErrorMessage("Invalid identity".into());
+                    self.show_confirmation_popup = false;
+                    return;
+                }
+
+                let frozen_id = maybe_frozen_id.unwrap();
+
+                ui.label(format!(
+                    "Are you sure you want to destroy the frozen funds of identity {}?",
+                    self.frozen_identity_id
+                ));
+
+                ui.add_space(10.0);
+
+                // Confirm button
+                if ui.button("Confirm").clicked() {
+                    self.show_confirmation_popup = false;
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+                    self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
+
+                    // Grab the data contract for this token from the app context
+                    let data_contract =
+                        Arc::new(self.identity_token_info.data_contract.contract.clone());
+
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        })
+                    } else {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        })
+                    };
+
+                    // Dispatch the actual backend destroy action
+                    action = AppAction::BackendTasks(
+                        vec![
+                            BackendTask::TokenTask(Box::new(TokenTask::DestroyFrozenFunds {
+                                actor_identity: self.identity.clone(),
+                                data_contract,
+                                token_position: self.identity_token_info.token_position,
+                                signing_key: self.selected_key.clone().expect("Expected a key"),
+                                public_note: if self.group_action_id.is_some() {
+                                    None
+                                } else {
+                                    self.public_note.clone()
+                                },
+                                frozen_identity: frozen_id,
+                                group_info,
+                            })),
+                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                        ],
+                        BackendTasksExecutionMode::Sequential,
+                    );
+                }
+
+                // Cancel
+                if ui.button("Cancel").clicked() {
+                    self.show_confirmation_popup = false;
+                }
+            });
+
+        if !is_open {
+            self.show_confirmation_popup = false;
+        }
+        action
+    }
+
+    /// Simple “Success” screen
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         ui.vertical_centered(|ui| {
@@ -255,12 +330,12 @@ impl ResumeTokensScreen {
 
             ui.heading("🎉");
             if self.group_action_id.is_some() {
-                // This resume is already initiated by the group, we are just signing it
-                ui.heading("Group Resume Signing Successful.");
+                // This destroy is already initiated by the group, we are just signing it
+                ui.heading("Group Destroy Frozen Funds Signing Successful.");
             } else if !self.is_unilateral_group_member && self.group.is_some() {
-                ui.heading("Group Resume Initiated.");
+                ui.heading("Group Action to Destroy Frozen Funds Initiated.");
             } else {
-                ui.heading("Resume Successful.");
+                ui.heading("Frozen Funds Destroyed Successfully.");
             }
 
             ui.add_space(20.0);
@@ -293,16 +368,20 @@ impl ResumeTokensScreen {
     }
 }
 
-impl ScreenLike for ResumeTokensScreen {
+impl ScreenLike for DestroyFrozenFundsScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message.contains("Resumed") || message == "ResumeTokens" {
-                    self.status = ResumeTokensStatus::Complete;
+                // If your backend returns "DestroyFrozenFunds" on success,
+                // or if there's a more descriptive success message:
+                if message.contains("Successfully destroyed frozen funds")
+                    || message == "DestroyFrozenFunds"
+                {
+                    self.status = DestroyFrozenFundsStatus::Complete;
                 }
             }
             MessageType::Error => {
-                self.status = ResumeTokensStatus::ErrorMessage(message.to_string());
+                self.status = DestroyFrozenFundsStatus::ErrorMessage(message.to_string());
                 self.error_message = Some(message.to_string());
             }
             MessageType::Info => {
@@ -312,12 +391,13 @@ impl ScreenLike for ResumeTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_user_identities() {
-            if let Some(updated) = all
+        // Reload the identity data if needed
+        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
+            if let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
             {
-                self.identity = updated;
+                self.identity = updated_identity;
             }
         }
     }
@@ -333,7 +413,7 @@ impl ScreenLike for ResumeTokensScreen {
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
                     ("Group Actions", AppAction::PopScreen),
-                    ("Resume", AppAction::None),
+                    ("Destroy Frozen Funds", AppAction::None),
                 ],
                 vec![],
             );
@@ -344,7 +424,7 @@ impl ScreenLike for ResumeTokensScreen {
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
                     (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                    ("Resume", AppAction::None),
+                    ("Destroy Frozen Funds", AppAction::None),
                 ],
                 vec![],
             );
@@ -361,12 +441,14 @@ impl ScreenLike for ResumeTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            if self.status == ResumeTokensStatus::Complete {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            if self.status == DestroyFrozenFundsStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
             }
 
-            ui.heading("Resume Token Contract");
+            ui.heading("Destroy Frozen Funds");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -381,7 +463,7 @@ impl ScreenLike for ResumeTokensScreen {
 
             if !has_keys {
                 ui.colored_label(
-                    Color32::RED,
+                    DashColors::error_color(dark_mode),
                     format!(
                         "No authentication keys with CRITICAL security level found for this {} identity.",
                         self.identity.identity_type,
@@ -389,6 +471,7 @@ impl ScreenLike for ResumeTokensScreen {
                 );
                 ui.add_space(10.0);
 
+                // Show "Add key" or "Check keys" option
                 let first_key = self.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
                     HashSet::from([SecurityLevel::CRITICAL]),
@@ -418,13 +501,13 @@ impl ScreenLike for ResumeTokensScreen {
                 // Possibly handle locked wallet scenario
                 if self.selected_wallet.is_some() {
                     let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
                     if needed_unlock && !just_unlocked {
                         return;
                     }
                 }
 
-                ui.heading("1. Select the key to sign the Resume transition");
+                // Key selection
+                ui.heading("1. Select the key to sign the Destroy operation");
                 ui.add_space(10.0);
 
                 let mut selected_identity = Some(self.identity.clone());
@@ -441,12 +524,29 @@ impl ScreenLike for ResumeTokensScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Render text input for the public note
-                ui.heading("2. Public note (optional)");
+                // Frozen identity
+                ui.heading("2. Frozen identity to destroy funds from");
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
-                        "You are signing an existing group Resume so you are not allowed to put a note.",
+                        "You are signing an existing group Destroy so you are not allowed to choose the identity.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!("Identity: {}", self.frozen_identity_id));
+                } else {
+                    self.render_frozen_identity_input(ui);
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Destroy so you are not allowed to put a note.",
                     );
                     ui.add_space(5.0);
                     ui.label(format!(
@@ -474,11 +574,11 @@ impl ScreenLike for ResumeTokensScreen {
                     ui,
                     &self.group,
                     &self.identity_token_info,
-                    "Resume",
+                    "Destroy Frozen Funds",
                     &self.group_action_id,
                 );
 
-                // Resume button
+                // Destroy button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
                     let button =
@@ -486,34 +586,42 @@ impl ScreenLike for ResumeTokensScreen {
                             .fill(Color32::from_rgb(0, 128, 255))
                             .corner_radius(3.0);
 
-                    if ui.add(button).clicked() && self.confirmation_dialog.is_none() {
-                        self.confirmation_dialog = Some(ConfirmationDialog::new(
-                            "Confirm Resume".to_string(),
-                            "Are you sure you want to resume normal token actions for this contract?".to_string(),
-                        ));
+                    if ui.add(button).clicked() {
+                        self.show_confirmation_popup = true;
                     }
                 }
 
-                // Show confirmation dialog if it exists
-                if self.confirmation_dialog.is_some() {
+                // If user pressed "Destroy," show a popup
+                if self.show_confirmation_popup {
                     action |= self.show_confirmation_popup(ui);
                 }
 
+                // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    ResumeTokensStatus::NotStarted => {}
-                    ResumeTokensStatus::WaitingForResult(start_time) => {
+                    DestroyFrozenFundsStatus::NotStarted => {
+                        // no-op
+                    }
+                    DestroyFrozenFundsStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .expect("Time went backwards")
                             .as_secs();
                         let elapsed = now - start_time;
-                        ui.label(format!("Resuming... elapsed: {}s", elapsed));
+                        ui.label(format!(
+                            "Destroying frozen funds... elapsed: {} seconds",
+                            elapsed
+                        ));
                     }
-                    ResumeTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                    DestroyFrozenFundsStatus::ErrorMessage(msg) => {
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            format!("Error: {}", msg),
+                        );
                     }
-                    ResumeTokensStatus::Complete => {}
+                    DestroyFrozenFundsStatus::Complete => {
+                        // handled above
+                    }
                 }
             }
         });
@@ -522,7 +630,7 @@ impl ScreenLike for ResumeTokensScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for ResumeTokensScreen {
+impl ScreenWithWalletUnlock for DestroyFrozenFundsScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

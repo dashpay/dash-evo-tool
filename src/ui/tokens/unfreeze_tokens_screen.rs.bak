@@ -5,8 +5,9 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::Component;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -25,41 +26,51 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
-use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
+use dash_sdk::dpp::group::GroupStateTransitionInfo;
+use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::Identifier;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// States for the resume flow
+/// The states for the unfreeze flow
 #[derive(PartialEq)]
-pub enum ResumeTokensStatus {
+pub enum UnfreezeTokensStatus {
     NotStarted,
     WaitingForResult(u64),
     ErrorMessage(String),
     Complete,
 }
 
-pub struct ResumeTokensScreen {
+/// A screen that allows unfreezing a previously frozen identity's tokens for a specific contract
+pub struct UnfreezeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_info: IdentityTokenInfo,
-    selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    selected_key: Option<IdentityPublicKey>,
+    pub public_note: Option<String>,
+
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
-    pub public_note: Option<String>,
+    /// A list of identities that are frozen and can be unfrozen.
+    ///
+    /// TODO: Right now it is just a list of all identities, but it should be filtered to only show frozen ones.
+    frozen_identities: Vec<QualifiedIdentity>,
 
-    status: ResumeTokensStatus,
+    /// The identity we want to freeze
+    pub unfreeze_identity_id: String,
+
+    status: UnfreezeTokensStatus,
     error_message: Option<String>,
 
     // Basic references
     pub app_context: Arc<AppContext>,
 
-    // Confirmation popup
+    // Confirmation dialog
     confirmation_dialog: Option<ConfirmationDialog>,
 
     // If password-based wallet unlocking is needed
@@ -68,8 +79,13 @@ pub struct ResumeTokensScreen {
     show_password: bool,
 }
 
-impl ResumeTokensScreen {
+impl UnfreezeTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        // TODO: filter to include only frozen identities
+        let frozen_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -85,7 +101,7 @@ impl ResumeTokensScreen {
 
         let group = match identity_token_info
             .token_config
-            .emergency_action_rules()
+            .unfreeze_rules()
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
@@ -179,73 +195,176 @@ impl ResumeTokensScreen {
             is_unilateral_group_member,
             group_action_id: None,
             public_note: None,
-            status: ResumeTokensStatus::NotStarted,
+            unfreeze_identity_id: String::new(),
+            status: UnfreezeTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
+            frozen_identities,
         }
     }
 
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new(
-                "Confirm Resume".to_string(),
-                "Are you sure you want to resume normal token actions for this contract?"
-                    .to_string(),
+    fn render_unfreeze_identity_input(&mut self, ui: &mut Ui) {
+        let _response = ui.add(
+            IdentitySelector::new(
+                "unfreeze_identity_selector",
+                &mut self.unfreeze_identity_id,
+                &self.frozen_identities,
             )
-        });
+            .width(300.0)
+            .label("Identity ID to unfreeze:"),
+        );
+    }
 
-        match dialog.show(ui).inner.dialog_response {
-            Some(ConfirmationStatus::Confirmed) => {
-                self.confirmation_dialog = None;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.status = ResumeTokensStatus::WaitingForResult(now);
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let mut is_open = true;
+        egui::Window::new("Confirm Unfreeze")
+            .collapsible(false)
+            .open(&mut is_open)
+            .show(ui.ctx(), |ui| {
+                // Validate user input
+                let parsed = Identifier::from_string_try_encodings(
+                    &self.unfreeze_identity_id,
+                    &[
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+                    ],
+                );
+                if parsed.is_err() {
+                    self.error_message = Some("Please enter a valid identity ID.".into());
+                    self.status = UnfreezeTokensStatus::ErrorMessage("Invalid identity ID".into());
+                    self.show_confirmation_popup = false;
+                    return;
+                }
+                let unfreeze_id = parsed.unwrap();
 
-                // Grab the data contract for this token from the app context
-                let data_contract =
-                    Arc::new(self.identity_token_info.data_contract.contract.clone());
+                ui.label(format!(
+                    "Are you sure you want to unfreeze identity {}?",
+                    self.unfreeze_identity_id
+                ));
 
-                let group_info = if self.group_action_id.is_some() {
-                    self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                            GroupStateTransitionInfo {
-                                group_contract_position: *pos,
-                                action_id: self.group_action_id.unwrap(),
-                                action_is_proposer: false,
-                            },
-                        )
-                    })
-                } else {
-                    self.group.as_ref().map(|(pos, _)| {
-                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                    })
-                };
+                ui.add_space(10.0);
 
-                AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::ResumeTokens {
-                    actor_identity: self.identity.clone(),
-                    data_contract,
-                    token_position: self.identity_token_info.token_position,
-                    signing_key: self.selected_key.clone().expect("No key selected"),
-                    public_note: if self.group_action_id.is_some() {
-                        None
+                // Confirm
+                if ui.button("Confirm").clicked() {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+                    self.status = UnfreezeTokensStatus::WaitingForResult(now);
+
+                    // Grab the data contract for this token from the app context
+                    let data_contract =
+                        Arc::new(self.identity_token_info.data_contract.contract.clone());
+
+                    let group_info = if self.group_action_id.is_some() {
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                                GroupStateTransitionInfo {
+                                    group_contract_position: *pos,
+                                    action_id: self.group_action_id.unwrap(),
+                                    action_is_proposer: false,
+                                },
+                            )
+                        })
                     } else {
-                        self.public_note.clone()
-                    },
-                    group_info,
-                })))
-            }
-            Some(ConfirmationStatus::Canceled) => {
-                self.confirmation_dialog = None;
-                AppAction::None
-            }
-            None => AppAction::None,
+                        self.group.as_ref().map(|(pos, _)| {
+                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                        })
+                    };
+
+                    // Dispatch to backend
+                    action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::UnfreezeTokens {
+                            actor_identity: self.identity.clone(),
+                            data_contract,
+                            token_position: self.identity_token_info.token_position,
+                            signing_key: self.selected_key.clone().expect("No key selected"),
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
+                            unfreeze_identity: unfreeze_id,
+                            group_info,
+                        },
+                    )));
+                }
+
+                // Cancel
+                if ui.button("Cancel").clicked() {
+                    self.show_confirmation_popup = false;
+                }
+            });
+
+        if !is_open {
+            self.show_confirmation_popup = false;
         }
+        action
+    }
+    
+    fn confirmation_ok(&mut self) -> AppAction {
+        // Validate user input
+        let parsed = Identifier::from_string_try_encodings(
+            &self.unfreeze_identity_id,
+            &[
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+            ],
+        );
+        if parsed.is_err() {
+            self.error_message = Some("Please enter a valid identity ID.".into());
+            self.status = UnfreezeTokensStatus::ErrorMessage("Invalid identity ID".into());
+            return AppAction::None;
+        }
+        let unfreeze_id = parsed.unwrap();
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.status = UnfreezeTokensStatus::WaitingForResult(now);
+        
+        // Grab the data contract for this token from the app context
+        let data_contract =
+            Arc::new(self.identity_token_info.data_contract.contract.clone());
+        
+        let group_info = if self.group_action_id.is_some() {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position: *pos,
+                        action_id: self.group_action_id.unwrap(),
+                        action_is_proposer: false,
+                    },
+                )
+            })
+        } else {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+            })
+        };
+        
+        // Dispatch to backend
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::UnfreezeTokens {
+                actor_identity: self.identity.clone(),
+                data_contract,
+                token_position: self.identity_token_info.token_position,
+                signing_key: self.selected_key.clone().expect("No key selected"),
+                public_note: if self.group_action_id.is_some() {
+                    None
+                } else {
+                    self.public_note.clone()
+                },
+                unfreeze_identity: unfreeze_id,
+                group_info,
+            },
+        )))
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -255,32 +374,32 @@ impl ResumeTokensScreen {
 
             ui.heading("🎉");
             if self.group_action_id.is_some() {
-                // This resume is already initiated by the group, we are just signing it
-                ui.heading("Group Resume Signing Successful.");
+                // This is already initiated by the group, we are just signing it
+                ui.heading("Group Unfreeze Signing Successful.");
             } else if !self.is_unilateral_group_member && self.group.is_some() {
-                ui.heading("Group Resume Initiated.");
+                ui.heading("Group Unfreeze Initiated.");
             } else {
-                ui.heading("Resume Successful.");
+                ui.heading("Unfroze Identity Successfully.");
             }
 
             ui.add_space(20.0);
 
             if self.group_action_id.is_some() {
                 if ui.button("Back to Group Actions").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
+                    action |= AppAction::PopScreenAndRefresh;
                 }
                 if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::SetMainScreenThenGoToMainScreen(
+                    action |= AppAction::SetMainScreenThenGoToMainScreen(
                         RootScreenType::RootScreenMyTokenBalances,
                     );
                 }
             } else {
                 if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
+                    action |= AppAction::PopScreenAndRefresh;
                 }
 
                 if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
-                    action = AppAction::PopThenAddScreenToMainScreen(
+                    action |= AppAction::PopThenAddScreenToMainScreen(
                         RootScreenType::RootScreenDocumentQuery,
                         Screen::GroupActionsScreen(GroupActionsScreen::new(
                             &self.app_context.clone(),
@@ -293,31 +412,31 @@ impl ResumeTokensScreen {
     }
 }
 
-impl ScreenLike for ResumeTokensScreen {
+impl ScreenLike for UnfreezeTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message.contains("Resumed") || message == "ResumeTokens" {
-                    self.status = ResumeTokensStatus::Complete;
+                // Possibly "UnfreezeTokens" or something else from your backend
+                if message.contains("Successfully unfroze identity") || message == "UnfreezeTokens"
+                {
+                    self.status = UnfreezeTokensStatus::Complete;
                 }
             }
             MessageType::Error => {
-                self.status = ResumeTokensStatus::ErrorMessage(message.to_string());
+                self.status = UnfreezeTokensStatus::ErrorMessage(message.to_string());
                 self.error_message = Some(message.to_string());
             }
-            MessageType::Info => {
-                // no-op
-            }
+            MessageType::Info => {}
         }
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_user_identities() {
-            if let Some(updated) = all
+        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
+            if let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
             {
-                self.identity = updated;
+                self.identity = updated_identity;
             }
         }
     }
@@ -333,7 +452,7 @@ impl ScreenLike for ResumeTokensScreen {
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
                     ("Group Actions", AppAction::PopScreen),
-                    ("Resume", AppAction::None),
+                    ("Unfreeze", AppAction::None),
                 ],
                 vec![],
             );
@@ -344,7 +463,7 @@ impl ScreenLike for ResumeTokensScreen {
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
                     (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                    ("Resume", AppAction::None),
+                    ("Unfreeze", AppAction::None),
                 ],
                 vec![],
             );
@@ -361,12 +480,12 @@ impl ScreenLike for ResumeTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            if self.status == ResumeTokensStatus::Complete {
+            if self.status == UnfreezeTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
             }
 
-            ui.heading("Resume Token Contract");
+            ui.heading("Unfreeze a Frozen Identity’s Tokens");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -389,6 +508,7 @@ impl ScreenLike for ResumeTokensScreen {
                 );
                 ui.add_space(10.0);
 
+                // Show "Add key" or "Check keys" option
                 let first_key = self.identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
                     HashSet::from([SecurityLevel::CRITICAL]),
@@ -424,7 +544,8 @@ impl ScreenLike for ResumeTokensScreen {
                     }
                 }
 
-                ui.heading("1. Select the key to sign the Resume transition");
+                // 1) Key selection
+                ui.heading("1. Select the key to sign the Unfreeze transition");
                 ui.add_space(10.0);
 
                 let mut selected_identity = Some(self.identity.clone());
@@ -441,12 +562,29 @@ impl ScreenLike for ResumeTokensScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Render text input for the public note
-                ui.heading("2. Public note (optional)");
+                // 2) Identity to unfreeze
+                ui.heading("2. Enter the identity ID to unfreeze");
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
-                        "You are signing an existing group Resume so you are not allowed to put a note.",
+                        "You are signing an existing group Unfreeze so you are not allowed to choose the identity.",
+                    );
+                    ui.add_space(5.0);
+                    ui.label(format!("Identity: {}", self.unfreeze_identity_id));
+                } else {
+                    self.render_unfreeze_identity_input(ui);
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Render text input for the public note
+                ui.heading("3. Public note (optional)");
+                ui.add_space(5.0);
+                if self.group_action_id.is_some() {
+                    ui.label(
+                        "You are signing an existing group Mint so you are not allowed to put a note.",
                     );
                     ui.add_space(5.0);
                     ui.label(format!(
@@ -474,11 +612,11 @@ impl ScreenLike for ResumeTokensScreen {
                     ui,
                     &self.group,
                     &self.identity_token_info,
-                    "Resume",
+                    "Unfreeze",
                     &self.group_action_id,
                 );
 
-                // Resume button
+                // Unfreeze button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
                     let button =
@@ -486,11 +624,9 @@ impl ScreenLike for ResumeTokensScreen {
                             .fill(Color32::from_rgb(0, 128, 255))
                             .corner_radius(3.0);
 
-                    if ui.add(button).clicked() && self.confirmation_dialog.is_none() {
-                        self.confirmation_dialog = Some(ConfirmationDialog::new(
-                            "Confirm Resume".to_string(),
-                            "Are you sure you want to resume normal token actions for this contract?".to_string(),
-                        ));
+                    if ui.add(button).clicked() {
+                        // Initialize confirmation dialog when button is clicked
+                        self.confirmation_dialog = None; // Reset for fresh dialog
                     }
                 }
 
@@ -499,21 +635,26 @@ impl ScreenLike for ResumeTokensScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
+                // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    ResumeTokensStatus::NotStarted => {}
-                    ResumeTokensStatus::WaitingForResult(start_time) => {
+                    UnfreezeTokensStatus::NotStarted => {
+                        // no-op
+                    }
+                    UnfreezeTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .expect("Time went backwards")
                             .as_secs();
                         let elapsed = now - start_time;
-                        ui.label(format!("Resuming... elapsed: {}s", elapsed));
+                        ui.label(format!("Unfreezing... elapsed: {}s", elapsed));
                     }
-                    ResumeTokensStatus::ErrorMessage(msg) => {
+                    UnfreezeTokensStatus::ErrorMessage(msg) => {
                         ui.colored_label(Color32::RED, format!("Error: {}", msg));
                     }
-                    ResumeTokensStatus::Complete => {}
+                    UnfreezeTokensStatus::Complete => {
+                        // handled above
+                    }
                 }
             }
         });
@@ -522,7 +663,7 @@ impl ScreenLike for ResumeTokensScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for ResumeTokensScreen {
+impl ScreenWithWalletUnlock for UnfreezeTokensScreen {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
         &self.selected_wallet
     }

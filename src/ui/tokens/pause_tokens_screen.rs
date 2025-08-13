@@ -5,6 +5,8 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -59,7 +61,7 @@ pub struct PauseTokensScreen {
     pub app_context: Arc<AppContext>,
 
     // Confirmation popup
-    show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -181,7 +183,7 @@ impl PauseTokensScreen {
             status: PauseTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -189,69 +191,61 @@ impl PauseTokensScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Pause")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label("Are you sure you want to pause token transfers for this contract?");
-                ui.add_space(10.0);
+        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Pause".to_string(),
+                "Are you sure you want to pause token transfers for this contract?".to_string(),
+            )
+        });
 
-                // Confirm
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = PauseTokensStatus::WaitingForResult(now);
+        match dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                self.status = PauseTokensStatus::WaitingForResult(now);
 
-                    // Grab the data contract for this token from the app context
-                    let data_contract =
-                        Arc::new(self.identity_token_info.data_contract.contract.clone());
+                // Grab the data contract for this token from the app context
+                let data_contract =
+                    Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
-                    };
-
-                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::PauseTokens {
-                            actor_identity: self.identity.clone(),
-                            data_contract,
-                            token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("No key selected"),
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
+                let group_info = if self.group_action_id.is_some() {
+                    self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                            GroupStateTransitionInfo {
+                                group_contract_position: *pos,
+                                action_id: self.group_action_id.unwrap(),
+                                action_is_proposer: false,
                             },
-                            group_info,
-                        },
-                    )));
-                }
+                        )
+                    })
+                } else {
+                    self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                    })
+                };
 
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+                AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::PauseTokens {
+                    actor_identity: self.identity.clone(),
+                    data_contract,
+                    token_position: self.identity_token_info.token_position,
+                    signing_key: self.selected_key.clone().expect("No key selected"),
+                    public_note: if self.group_action_id.is_some() {
+                        None
+                    } else {
+                        self.public_note.clone()
+                    },
+                    group_info,
+                })))
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -491,13 +485,17 @@ impl ScreenLike for PauseTokensScreen {
                             .fill(Color32::from_rgb(0, 128, 255))
                             .corner_radius(3.0);
 
-                    if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() && self.confirmation_dialog.is_none() {
+                        self.confirmation_dialog = Some(ConfirmationDialog::new(
+                            "Confirm Pause".to_string(),
+                            "Are you sure you want to pause token transfers for this contract?"
+                                .to_string(),
+                        ));
                     }
                 }
 
-                // If user pressed "Pause," show popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

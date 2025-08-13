@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::theme::ComponentStyles;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use egui::{InnerResponse, Ui, WidgetText};
 
 /// Response from showing a confirmation dialog
@@ -144,19 +144,53 @@ impl ConfirmationDialog {
             );
         }
 
+        // Draw dark overlay behind the dialog for better visibility
+        let screen_rect = ui.ctx().screen_rect();
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("confirmation_dialog_overlay"),
+        ));
+        painter.rect_filled(
+            screen_rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120), // Semi-transparent black overlay
+        );
+
         let mut final_response = None;
         let window_response = egui::Window::new(self.title.clone())
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut is_open)
+            .frame(egui::Frame {
+                inner_margin: egui::Margin::same(16),
+                outer_margin: egui::Margin::same(0),
+                corner_radius: egui::CornerRadius::same(8),
+                shadow: egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                },
+                fill: ui.style().visuals.window_fill,
+                stroke: egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                ),
+            })
             .show(ui.ctx(), |ui| {
                 // Set minimum width for the dialog
                 ui.set_min_width(300.0);
 
-                // Message content
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+                // Message content with bold text and proper color
                 ui.add_space(10.0);
-                ui.label(self.message.clone());
+                ui.label(
+                    egui::RichText::new(self.message.text())
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
                 ui.add_space(20.0);
 
                 // Buttons
@@ -186,7 +220,13 @@ impl ConfirmationDialog {
 
                             let confirm_button = egui::Button::new(confirm_label)
                                 .fill(fill_color)
-                                .stroke(ComponentStyles::primary_button_stroke());
+                                .stroke(if self.danger_mode {
+                                    egui::Stroke::NONE
+                                } else {
+                                    ComponentStyles::primary_button_stroke()
+                                })
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                .min_size(egui::Vec2::new(80.0, 32.0));
 
                             if ui
                                 .add(confirm_button)
@@ -194,11 +234,6 @@ impl ConfirmationDialog {
                                 .clicked()
                             {
                                 final_response = Some(ConfirmationStatus::Confirmed);
-                            }
-
-                            // Add space only if both buttons are present
-                            if self.cancel_text.is_some() {
-                                ui.add_space(10.0);
                             }
                         }
 
@@ -216,7 +251,9 @@ impl ConfirmationDialog {
 
                             let cancel_button = egui::Button::new(cancel_label)
                                 .fill(ComponentStyles::secondary_button_fill())
-                                .stroke(ComponentStyles::secondary_button_stroke());
+                                .stroke(ComponentStyles::secondary_button_stroke())
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                .min_size(egui::Vec2::new(80.0, 32.0));
 
                             if ui
                                 .add(cancel_button)
@@ -225,11 +262,11 @@ impl ConfirmationDialog {
                             {
                                 final_response = Some(ConfirmationStatus::Canceled);
                             }
+
+                            ui.add_space(8.0); // Add spacing between buttons
                         }
                     });
                 });
-
-                ui.add_space(10.0);
             });
 
         // Handle window being closed via X button - treat as cancel

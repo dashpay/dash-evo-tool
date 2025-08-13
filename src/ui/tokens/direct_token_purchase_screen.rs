@@ -164,25 +164,30 @@ impl PurchaseTokenScreen {
         if let Some(pricing_schedule) = &self.fetched_pricing_schedule {
             ui.add_space(5.0);
             ui.label("Current pricing:");
+            let token_decimals = self
+                .identity_token_info
+                .token_config
+                .conventions()
+                .decimals();
+            let decimal_multiplier = 10u64.pow(token_decimals as u32);
+
             match pricing_schedule {
-                TokenPricingSchedule::SinglePrice(price_credits) => {
+                TokenPricingSchedule::SinglePrice(price_per_smallest_unit) => {
+                    // Convert price per smallest unit to price per token for display
+                    let price_per_token = price_per_smallest_unit * decimal_multiplier;
                     let price =
-                        Amount::new(*price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
-                    ui.label(format!(
-                        "  Fixed price: {} ({} credits) per token",
-                        price, price_credits
-                    ));
+                        Amount::new(price_per_token, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                    ui.label(format!("  Fixed price: {} per token", price));
                 }
                 TokenPricingSchedule::SetPrices(tiers) => {
                     ui.label("  Tiered pricing:");
-                    for (amount_value, price_credits) in tiers {
+                    for (amount_value, price_per_smallest_unit) in tiers {
                         let amount = Amount::from_token(&self.identity_token_info, *amount_value);
-                        let price =
-                            Amount::new(*price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
-                        ui.label(format!(
-                            "    {} tokens: {} ({} credits) each",
-                            amount, price, price_credits
-                        ));
+                        // Convert price per smallest unit to price per token for display
+                        let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                        let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
+                        ui.label(format!("    {} tokens: {} each", amount, price));
                     }
                 }
             }
@@ -212,6 +217,8 @@ impl PurchaseTokenScreen {
                 }
             };
 
+            // The price from Platform is per smallest unit, and amount is in smallest units
+            // So we just multiply them directly
             let total_price = amount.saturating_mul(price_per_token);
             self.calculated_price_credits = Some(total_price);
         } else {
@@ -632,5 +639,108 @@ impl ScreenWithWalletUnlock for PurchaseTokenScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::amount::DASH_DECIMAL_PLACES;
+
+    #[test]
+    fn test_token_pricing_storage_and_calculation() {
+        // Test how prices should be stored and calculated
+
+        // Case 1: Token with 8 decimals (like the user's case)
+        let token_decimals_8 = 8u8;
+        let user_price_per_token_dash = 0.001; // User wants 0.001 DASH per token
+        let user_price_per_token_credits =
+            (user_price_per_token_dash * 10f64.powi(DASH_DECIMAL_PLACES as i32)) as u64;
+
+        println!("Test 1 - Token with 8 decimals, price 0.001 DASH per token:");
+        println!(
+            "  User enters: {} DASH per token",
+            user_price_per_token_dash
+        );
+        println!(
+            "  In credits: {} credits per token",
+            user_price_per_token_credits
+        );
+
+        // Platform expects price per smallest unit, not per token
+        let decimal_divisor_8 = 10u64.pow(token_decimals_8 as u32);
+        let platform_price_per_smallest_unit = user_price_per_token_credits / decimal_divisor_8;
+
+        println!(
+            "  Platform stores: {} credits per smallest unit",
+            platform_price_per_smallest_unit
+        );
+
+        // When buying 1 token (100,000,000 smallest units)
+        let tokens_to_buy = 1u64;
+        let amount_smallest_units = tokens_to_buy * 10u64.pow(token_decimals_8 as u32);
+        let total_price = amount_smallest_units * platform_price_per_smallest_unit;
+
+        println!(
+            "  Buying {} token ({} smallest units)",
+            tokens_to_buy, amount_smallest_units
+        );
+        println!(
+            "  Total: {} credits (should be {} credits for 0.001 DASH)",
+            total_price, user_price_per_token_credits
+        );
+
+        assert_eq!(
+            total_price, user_price_per_token_credits,
+            "Total should match expected price"
+        );
+
+        // Case 2: Token with 2 decimals
+        let token_decimals_2 = 2u8;
+        let user_price_2 = 0.1; // 0.1 DASH per token
+        let user_price_credits_2 = (user_price_2 * 10f64.powi(DASH_DECIMAL_PLACES as i32)) as u64;
+
+        let divisor_2 = 10u64.pow(token_decimals_2 as u32);
+        let platform_price_2 = user_price_credits_2 / divisor_2;
+
+        // Buy 5 tokens
+        let amount_2 = 5 * 10u64.pow(token_decimals_2 as u32); // 500 smallest units
+        let total_2 = amount_2 * platform_price_2;
+
+        println!("\nTest 2 - Token with 2 decimals, 5 tokens at 0.1 DASH each:");
+        println!(
+            "  Platform price: {} credits per smallest unit",
+            platform_price_2
+        );
+        println!("  Total for 5 tokens: {} credits", total_2);
+
+        assert_eq!(
+            total_2,
+            5 * user_price_credits_2,
+            "Should be 0.5 DASH total"
+        );
+
+        // Case 3: Token with 0 decimals
+        let _token_decimals_0 = 0u8;
+        let user_price_0 = 0.05; // 0.05 DASH per token
+        let user_price_credits_0 = (user_price_0 * 10f64.powi(DASH_DECIMAL_PLACES as i32)) as u64;
+
+        // With 0 decimals, price per token = price per smallest unit
+        let platform_price_0 = user_price_credits_0; // No division needed
+
+        let amount_0 = 10; // 10 tokens = 10 smallest units (no decimals)
+        let total_0 = amount_0 * platform_price_0;
+
+        println!("\nTest 3 - Token with 0 decimals, 10 tokens at 0.05 DASH each:");
+        println!(
+            "  Platform price: {} credits per smallest unit",
+            platform_price_0
+        );
+        println!("  Total for 10 tokens: {} credits", total_0);
+
+        assert_eq!(
+            total_0,
+            10 * user_price_credits_0,
+            "Should be 0.5 DASH total"
+        );
     }
 }

@@ -25,6 +25,7 @@ use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -243,25 +244,36 @@ impl SetTokenPriceScreen {
     }
 
     pub fn with_schedule(self, token_pricing_schedule: Option<TokenPricingSchedule>) -> Self {
+        let token_decimals = self
+            .identity_token_info
+            .token_config
+            .conventions()
+            .decimals();
+        let decimal_multiplier = 10u64.pow(token_decimals as u32);
+
         let (single_price_amount, tiered_prices) = match &token_pricing_schedule {
-            Some(TokenPricingSchedule::SinglePrice(price)) => {
-                let amount = Amount::new(*price, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+            Some(TokenPricingSchedule::SinglePrice(price_per_smallest_unit)) => {
+                // Convert price per smallest unit back to price per token for display
+                let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                let amount =
+                    Amount::new(price_per_token, DASH_DECIMAL_PLACES).with_unit_name("DASH");
                 (Some(amount), vec![(None, None)])
             }
             Some(TokenPricingSchedule::SetPrices(prices)) => {
                 let tiered_prices = prices
                     .iter()
-                    .map(|(amount, price)| {
+                    .map(|(amount, price_per_smallest_unit)| {
                         // Create amount input for token threshold
-
                         let amount_input = AmountInput::new(Amount::from_token(
                             &self.identity_token_info,
                             *amount,
                         ))
                         .with_hint_text("Token amount threshold");
 
-                        // Create price input for Dash pricing
-                        let price = Amount::new(*price, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                        // Convert price per smallest unit back to price per token for display
+                        let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                        let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
                         let price_input = AmountInput::new(price)
                             .with_hint_text("Enter price in Dash")
                             .with_min_amount(Some(1));
@@ -509,14 +521,33 @@ impl SetTokenPriceScreen {
             PricingType::RemovePricing => Ok(None),
             PricingType::SinglePrice => match &self.single_price_amount {
                 Some(amount) if amount.value() > 0 => {
-                    let credits_price = amount.value();
-                    Ok(Some(TokenPricingSchedule::SinglePrice(credits_price)))
+                    // User enters price per whole token, but Platform expects price per smallest unit
+                    let credits_price_per_token = amount.value();
+                    let token_decimals = self
+                        .identity_token_info
+                        .token_config
+                        .conventions()
+                        .decimals();
+
+                    // Convert price per token to price per smallest unit
+                    let decimal_divisor = 10u64.pow(token_decimals as u32);
+                    let price_per_smallest_unit = credits_price_per_token / decimal_divisor;
+
+                    Ok(Some(TokenPricingSchedule::SinglePrice(
+                        price_per_smallest_unit,
+                    )))
                 }
                 Some(_) => Err("Price must be greater than 0".to_string()),
                 None => Err("Please enter a price".to_string()),
             },
             PricingType::TieredPricing => {
                 let mut map = std::collections::BTreeMap::new();
+                let token_decimals = self
+                    .identity_token_info
+                    .token_config
+                    .conventions()
+                    .decimals();
+                let decimal_divisor = 10u64.pow(token_decimals as u32);
 
                 for (amount_input, price_input) in &self.tiered_prices {
                     let Some(price) = price_input.as_ref().and_then(|input| input.current_value())
@@ -532,7 +563,9 @@ impl SetTokenPriceScreen {
                     };
 
                     let amount = amount_value.value();
-                    map.insert(amount, price.value());
+                    // Convert price per token to price per smallest unit
+                    let price_per_smallest_unit = price.value() / decimal_divisor;
+                    map.insert(amount, price_per_smallest_unit);
                 }
 
                 if map.is_empty() {

@@ -5,6 +5,7 @@ pub mod contract_chooser_panel;
 pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;
 pub mod identity_selector;
+pub mod key_selector;
 pub mod left_panel;
 pub mod left_wallet_panel;
 pub mod styled;

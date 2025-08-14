@@ -4,6 +4,8 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // Updated import
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
+use crate::ui::components::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::contract_chooser_panel::{
     ContractChooserState, add_contract_chooser_panel,
 };
@@ -57,7 +59,7 @@ pub struct DocumentQueryScreen {
     selected_index: Option<Index>,
     pub matching_documents: Vec<Document>,
     document_query_status: DocumentQueryStatus,
-    confirm_remove_contract_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     contract_to_remove: Option<Identifier>,
     pending_document_type: DocumentType,
     pending_fields_selection: HashMap<String, bool>,
@@ -122,7 +124,7 @@ impl DocumentQueryScreen {
             selected_index: None,
             matching_documents: vec![],
             document_query_status: DocumentQueryStatus::NotStarted,
-            confirm_remove_contract_popup: false,
+            confirmation_dialog: None,
             contract_to_remove: None,
             pending_document_type,
             pending_fields_selection,
@@ -490,53 +492,44 @@ impl DocumentQueryScreen {
         let contract_to_remove = match &self.contract_to_remove {
             Some(contract) => *contract,
             None => {
-                self.confirm_remove_contract_popup = false;
+                self.confirmation_dialog = None;
                 return AppAction::None;
             }
         };
 
-        let mut app_action = AppAction::None;
-        let mut is_open = true;
+        let contract_alias_or_id = match self.app_context.get_contract_by_id(&contract_to_remove) {
+            Ok(Some(contract)) => contract
+                .alias
+                .unwrap_or_else(|| contract.contract.id().to_string(Encoding::Base58)),
+            Ok(None) | Err(_) => contract_to_remove.to_string(Encoding::Base58),
+        };
 
-        egui::Window::new("Confirm Remove Contract")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                let contract_alias_or_id =
-                    match self.app_context.get_contract_by_id(&contract_to_remove) {
-                        Ok(Some(contract)) => contract
-                            .alias
-                            .unwrap_or_else(|| contract.contract.id().to_string(Encoding::Base58)),
-                        Ok(None) | Err(_) => contract_to_remove.to_string(Encoding::Base58),
-                    };
-
-                ui.label(format!(
+        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Remove Contract".to_string(),
+                format!(
                     "Are you sure you want to remove contract \"{}\"?",
                     contract_alias_or_id
-                ));
+                ),
+            )
+        });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::RemoveContract(contract_to_remove),
-                    )));
-                    self.confirm_remove_contract_popup = false;
-                    self.contract_to_remove = None;
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.confirm_remove_contract_popup = false;
-                    self.contract_to_remove = None;
-                }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_contract_popup = false;
-            self.contract_to_remove = None;
+        match dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                let action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::RemoveContract(contract_to_remove),
+                )));
+                self.confirmation_dialog = None;
+                self.contract_to_remove = None;
+                action
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                self.contract_to_remove = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        app_action
     }
 }
 
@@ -708,8 +701,9 @@ impl ScreenLike for DocumentQueryScreen {
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action {
             if let ContractTask::RemoveContract(contract_id) = **contract_task {
                 action = AppAction::None;
-                self.confirm_remove_contract_popup = true;
                 self.contract_to_remove = Some(contract_id);
+                // Clear any existing dialog to create a new one with updated content
+                self.confirmation_dialog = None;
             }
         }
 
@@ -752,7 +746,7 @@ impl ScreenLike for DocumentQueryScreen {
                             );
                         });
 
-                        if self.confirm_remove_contract_popup {
+                        if self.contract_to_remove.is_some() {
                             inner_action |= self.show_remove_contract_popup(ui);
                         }
                         inner_action

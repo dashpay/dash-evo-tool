@@ -18,6 +18,8 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::Component;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
 
@@ -1051,65 +1053,66 @@ impl TokensScreen {
     /// Shows a popup "Are you sure?" for creating the token contract
     fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let mut is_open = true;
 
-        egui::Window::new("Confirm Token Contract Registration")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(
-                    "Are you sure you want to register a new token contract with these settings?\n",
-                );
-                let base_supply_display = self
-                    .base_supply_amount
-                    .as_ref()
-                    .map(|amount| amount.to_string_opts(true, false))
-                    .unwrap_or_else(|| "0".to_string());
-                let max_supply_display = self
-                    .max_supply_amount
-                    .as_ref()
-                    .filter(|amount| amount.value() > 0)
-                    .map(|amount| amount.to_string_opts(true, false))
-                    .unwrap_or_else(|| "None".to_string());
-                ui.label(format!(
-                    "Name: {}\nBase Supply: {}\nMax Supply: {}",
-                    self.token_names_input[0].0, base_supply_display, max_supply_display,
-                ));
+        // Prepare the confirmation message
+        let mut confirmation_message =
+            "Are you sure you want to register a new token contract with these settings?\n\n"
+                .to_string();
+        let base_supply_display = self
+            .base_supply_amount
+            .as_ref()
+            .map(|amount| amount.to_string_opts(true, false))
+            .unwrap_or_else(|| "0".to_string());
+        let max_supply_display = self
+            .max_supply_amount
+            .as_ref()
+            .filter(|amount| amount.value() > 0)
+            .map(|amount| amount.to_string_opts(true, false))
+            .unwrap_or_else(|| "None".to_string());
 
-                ui.add_space(10.0);
+        confirmation_message.push_str(&format!(
+            "Name: {}\nBase Supply: {}\nMax Supply: {}\n\n",
+            self.token_names_input[0].0, base_supply_display, max_supply_display,
+        ));
 
-                ui.label(format!(
-                    "Estimated cost to register this token is {} Dash",
-                    self.estimate_registration_cost() as f64 / 100_000_000_000.0
-                ));
+        confirmation_message.push_str(&format!(
+            "Estimated cost to register this token is {} Dash",
+            self.estimate_registration_cost() as f64 / 100_000_000_000.0
+        ));
 
-                ui.add_space(10.0);
+        // Check if marketplace is locked to NotTradeable forever
+        let mut is_danger_mode = false;
+        if let Some(args) = &self.cached_build_args {
+            let is_not_tradeable = args.marketplace_trade_mode == 0;
+            let marketplace_rules_locked = matches!(
+                args.marketplace_rules,
+                ChangeControlRules::V0(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    ..
+                })
+            );
 
-                // Check if marketplace is locked to NotTradeable forever
-                if let Some(args) = &self.cached_build_args {
-                    let is_not_tradeable = args.marketplace_trade_mode == 0;
-                    let marketplace_rules_locked = matches!(
-                        args.marketplace_rules,
-                        ChangeControlRules::V0(ChangeControlRulesV0 {
-                            authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                            admin_action_takers: AuthorizedActionTakers::NoOne,
-                            ..
-                        })
-                    );
+            if is_not_tradeable && marketplace_rules_locked {
+                confirmation_message.push_str("\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!");
+                is_danger_mode = true;
+            }
+        }
 
-                    if is_not_tradeable && marketplace_rules_locked {
-                        ui.colored_label(
-                            Color32::DARK_RED,
-                            "WARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!"
-                        );
-                        ui.add_space(10.0);
-                    }
-                }
+        // Always create a fresh confirmation dialog to ensure current state is reflected
+        let confirmation_dialog = self.token_creator_confirmation_dialog.insert(
+            ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(is_danger_mode),
+        );
 
-                ui.add_space(10.0);
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
 
-                // Confirm
-                if ui.button("Confirm").clicked() {
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
                     let args = match &self.cached_build_args {
                         Some(args) => args.clone(),
                         None => {
@@ -1119,8 +1122,8 @@ impl TokensScreen {
                                 Err(err) => {
                                     self.token_creator_error_message = Some(err);
                                     self.show_token_creator_confirmation_popup = false;
-                                    action = AppAction::None;
-                                    return;
+                                    self.token_creator_confirmation_dialog = None;
+                                    return AppAction::None;
                                 }
                             }
                         }
@@ -1168,17 +1171,15 @@ impl TokensScreen {
                     self.show_token_creator_confirmation_popup = false;
                     let now = Utc::now().timestamp() as u64;
                     self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
-                }
-
-                // Cancel
-                if ui.button("Cancel").clicked() {
                     self.show_token_creator_confirmation_popup = false;
+                    self.token_creator_confirmation_dialog = None;
+                }
+                ConfirmationStatus::Canceled => {
+                    self.show_token_creator_confirmation_popup = false;
+                    self.token_creator_confirmation_dialog = None;
                     action = AppAction::None;
                 }
-            });
-
-        if !is_open {
-            self.show_token_creator_confirmation_popup = false;
+            }
         }
 
         action

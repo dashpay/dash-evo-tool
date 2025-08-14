@@ -60,6 +60,7 @@ use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -1048,8 +1049,10 @@ pub struct TokensScreen {
     // Remove token
     confirm_remove_identity_token_balance_popup: bool,
     identity_token_balance_to_remove: Option<IdentityTokenBasicInfo>,
+    remove_identity_token_balance_confirmation_dialog: Option<ConfirmationDialog>,
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
+    remove_token_confirmation_dialog: Option<ConfirmationDialog>,
 
     // Reward explanations
     reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
@@ -1080,6 +1083,7 @@ pub struct TokensScreen {
     start_as_paused_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
+    token_creator_confirmation_dialog: Option<ConfirmationDialog>,
     token_creator_status: TokenCreatorStatus,
     token_creator_error_message: Option<String>,
     show_advanced_keeps_history: bool,
@@ -1401,8 +1405,10 @@ impl TokensScreen {
             // Remove token
             confirm_remove_identity_token_balance_popup: false,
             identity_token_balance_to_remove: None,
+            remove_identity_token_balance_confirmation_dialog: None,
             confirm_remove_token_popup: false,
             token_to_remove: None,
+            remove_token_confirmation_dialog: None,
 
             // Reward explanations
             reward_explanations: IndexMap::new(),
@@ -1418,6 +1424,7 @@ impl TokensScreen {
             wallet_password: String::new(),
             show_password: false,
             show_token_creator_confirmation_popup: false,
+            token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
             token_names_input: vec![(
@@ -2389,20 +2396,28 @@ impl TokensScreen {
             }
         };
 
-        let mut is_open = true;
-
-        egui::Window::new("Confirm Stop Tracking Balance")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self
+            .remove_identity_token_balance_confirmation_dialog
+            .get_or_insert_with(|| {
+                ConfirmationDialog::new(
+                "Confirm Stop Tracking Balance",
+                format!(
                     "Are you sure you want to stop tracking the token \"{}\" for identity \"{}\"?",
                     token_to_remove.token_alias,
                     token_to_remove.identity_id.to_string(Encoding::Base58)
-                ));
+                ),
+            )
+            .confirm_text(Some("Confirm"))
+            .cancel_text(Some("Cancel"))
+            });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
+
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
                     if let Err(e) = self
                         .app_context
                         .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
@@ -2412,26 +2427,19 @@ impl TokensScreen {
                             MessageType::Error,
                             Utc::now(),
                         ));
-                        self.confirm_remove_identity_token_balance_popup = false;
-                        self.identity_token_balance_to_remove = None;
                     } else {
-                        self.confirm_remove_identity_token_balance_popup = false;
-                        self.identity_token_balance_to_remove = None;
                         self.refresh();
-                    };
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
+                    }
                     self.confirm_remove_identity_token_balance_popup = false;
                     self.identity_token_balance_to_remove = None;
+                    self.remove_identity_token_balance_confirmation_dialog = None;
                 }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_identity_token_balance_popup = false;
-            self.identity_token_balance_to_remove = None;
+                ConfirmationStatus::Canceled => {
+                    self.confirm_remove_identity_token_balance_popup = false;
+                    self.identity_token_balance_to_remove = None;
+                    self.remove_identity_token_balance_confirmation_dialog = None;
+                }
+            }
         }
     }
 
@@ -2452,48 +2460,48 @@ impl TokensScreen {
             .map(|t| t.token_name.clone())
             .unwrap_or_else(|| token_to_remove.to_string(Encoding::Base58));
 
-        let mut is_open = true;
-
-        egui::Window::new("Confirm Remove Token")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.remove_token_confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Remove Token",
+                format!(
                     "Are you sure you want to stop tracking the token \"{}\"? You can re-add it later. Your actual token balance will not change with this action.",
                     token_name,
-                ));
+                ),
+            )
+            .confirm_text(Some("Confirm"))
+            .cancel_text(Some("Cancel"))
+        });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    if let Err(e) = self.app_context.db.remove_token(
-                        &token_to_remove,
-                        &self.app_context,
-                    ) {
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
+
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
+                    if let Err(e) = self
+                        .app_context
+                        .db
+                        .remove_token(&token_to_remove, &self.app_context)
+                    {
                         self.backend_message = Some((
                             format!("Error removing token balance: {}", e),
                             MessageType::Error,
                             Utc::now(),
                         ));
-                        self.confirm_remove_token_popup = false;
-                        self.token_to_remove = None;
                     } else {
-                        self.confirm_remove_token_popup = false;
-                        self.token_to_remove = None;
                         self.refresh();
                     }
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
                     self.confirm_remove_token_popup = false;
                     self.token_to_remove = None;
+                    self.remove_token_confirmation_dialog = None;
                 }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_token_popup = false;
-            self.token_to_remove = None;
+                ConfirmationStatus::Canceled => {
+                    self.confirm_remove_token_popup = false;
+                    self.token_to_remove = None;
+                    self.remove_token_confirmation_dialog = None;
+                }
+            }
         }
     }
 

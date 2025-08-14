@@ -14,6 +14,8 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -53,7 +55,7 @@ pub struct PurchaseTokenScreen {
     pricing_fetch_attempted: bool,
 
     /// Screen stuff
-    show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     status: PurchaseTokensStatus,
     error_message: Option<String>,
 
@@ -97,7 +99,7 @@ impl PurchaseTokenScreen {
             status: PurchaseTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -188,88 +190,67 @@ impl PurchaseTokenScreen {
 
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Purchase")
-            .collapsible(false)
-            .open(&mut is_open)
-            .frame(
-                egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(245, 245, 245))
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgb(200, 200, 200),
-                    ))
-                    .shadow(egui::epaint::Shadow::default())
-                    .inner_margin(egui::Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(8)),
-            )
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let amount_ok = self.amount_to_purchase.parse::<u64>().ok();
-                if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid amount.".into());
-                    self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
+        // Validate user input
+        let amount_ok = self.amount_to_purchase.parse::<u64>().ok();
+        if amount_ok.is_none() {
+            self.error_message = Some("Please enter a valid amount.".into());
+            self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
+            self.confirmation_dialog = None;
+            return AppAction::None;
+        }
 
-                let total_agreed_price_ok: Option<Credits> =
-                    self.total_agreed_price.parse::<u64>().ok();
-                if total_agreed_price_ok.is_none() {
-                    self.error_message = Some("Please enter a valid total agreed price.".into());
-                    self.status =
-                        PurchaseTokensStatus::ErrorMessage("Invalid total agreed price".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
+        let total_agreed_price_ok: Option<Credits> = self.total_agreed_price.parse::<u64>().ok();
+        if total_agreed_price_ok.is_none() {
+            self.error_message = Some("Please enter a valid total agreed price.".into());
+            self.status = PurchaseTokensStatus::ErrorMessage("Invalid total agreed price".into());
+            self.confirmation_dialog = None;
+            return AppAction::None;
+        }
 
-                ui.label(format!(
+        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Purchase".to_string(),
+                format!(
                     "Are you sure you want to purchase {} token(s) for {} Credits?",
                     self.amount_to_purchase, self.total_agreed_price
-                ));
+                ),
+            )
+        });
 
-                ui.add_space(10.0);
+        match dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                self.status = PurchaseTokensStatus::WaitingForResult(now);
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = PurchaseTokensStatus::WaitingForResult(now);
-
-                    // Dispatch the actual backend purchase action
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
-                                identity: self.identity_token_info.identity.clone(),
-                                data_contract: Arc::new(
-                                    self.identity_token_info.data_contract.contract.clone(),
-                                ),
-                                token_position: self.identity_token_info.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                amount: amount_ok.expect("Expected a valid amount"),
-                                total_agreed_price: total_agreed_price_ok
-                                    .expect("Expected a valid total agreed price"),
-                            })),
-                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+                // Dispatch the actual backend purchase action
+                AppAction::BackendTasks(
+                    vec![
+                        BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
+                            identity: self.identity_token_info.identity.clone(),
+                            data_contract: Arc::new(
+                                self.identity_token_info.data_contract.contract.clone(),
+                            ),
+                            token_position: self.identity_token_info.token_position,
+                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            amount: amount_ok.expect("Expected a valid amount"),
+                            total_agreed_price: total_agreed_price_ok
+                                .expect("Expected a valid total agreed price"),
+                        })),
+                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                    ],
+                    BackendTasksExecutionMode::Sequential,
+                )
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
     /// Renders a simple "Success!" screen after completion
@@ -505,8 +486,15 @@ impl ScreenLike for PurchaseTokenScreen {
                             .fill(Color32::from_rgb(0, 128, 255))
                             .corner_radius(3.0);
 
-                    if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() && self.confirmation_dialog.is_none() {
+                        // Validation will be done in show_confirmation_popup
+                        self.confirmation_dialog = Some(ConfirmationDialog::new(
+                            "Confirm Purchase".to_string(),
+                            format!(
+                                "Are you sure you want to purchase {} token(s) for {} Credits?",
+                                self.amount_to_purchase, self.total_agreed_price
+                            ),
+                        ));
                     }
                 } else {
                     let button = egui::Button::new(
@@ -524,8 +512,8 @@ impl ScreenLike for PurchaseTokenScreen {
                     );
                 }
 
-                // If the user pressed "Purchase," show a popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

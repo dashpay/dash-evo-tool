@@ -836,8 +836,9 @@ impl IdentitiesScreen {
         action
     }
 
-    fn show_identity_to_remove(&mut self, ctx: &Context) {
+    fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
         if let Some(identity_to_remove) = self.identity_to_remove.clone() {
+            let action = AppAction::None;
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
@@ -884,6 +885,9 @@ impl IdentitiesScreen {
                         }
                     });
                 });
+            action
+        } else {
+            AppAction::None
         }
     }
 
@@ -1004,6 +1008,11 @@ impl ScreenLike for IdentitiesScreen {
                 inner_action |= self.render_identities_view(ui, &identities_vec);
             }
 
+            // Handle identity removal confirmation dialog
+            if self.identity_to_remove.is_some() {
+                inner_action |= self.show_identity_to_remove(ctx);
+            }
+
             // Show either refreshing indicator or message, but not both
             if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
                 ui.add_space(25.0); // Space above
@@ -1039,10 +1048,6 @@ impl ScreenLike for IdentitiesScreen {
             }
             inner_action
         });
-
-        if self.identity_to_remove.is_some() {
-            self.show_identity_to_remove(ctx);
-        }
 
         match action {
             AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {

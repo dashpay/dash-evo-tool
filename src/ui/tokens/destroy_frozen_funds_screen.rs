@@ -1,10 +1,12 @@
 use super::tokens_screen::IdentityTokenInfo;
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -76,8 +78,8 @@ pub struct DestroyFrozenFundsScreen {
     /// Basic references
     pub app_context: Arc<AppContext>,
 
-    /// Confirmation popup
-    show_confirmation_popup: bool,
+    /// Confirmation dialog
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     /// If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -205,7 +207,7 @@ impl DestroyFrozenFundsScreen {
             status: DestroyFrozenFundsStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -226,100 +228,87 @@ impl DestroyFrozenFundsScreen {
 
     /// Confirmation popup
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Destroy Frozen Funds")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                // Parse the user input into an Identifier
-                let maybe_frozen_id = Identifier::from_string_try_encodings(
-                    &self.frozen_identity_id,
-                    &[
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
-                    ],
-                );
+        let msg = format!(
+            "Are you sure you want to destroy frozen funds for identity {}? This action cannot be undone.",
+            self.frozen_identity_id
+        );
 
-                if maybe_frozen_id.is_err() {
-                    self.error_message = Some("Invalid frozen identity format".into());
-                    self.status = DestroyFrozenFundsStatus::ErrorMessage("Invalid identity".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Destroy Frozen Funds", msg)
+                .confirm_text(Some("Destroy"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(true)
+        });
 
-                let frozen_id = maybe_frozen_id.unwrap();
-
-                ui.label(format!(
-                    "Are you sure you want to destroy the frozen funds of identity {}?",
-                    self.frozen_identity_id
-                ));
-
-                ui.add_space(10.0);
-
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
-
-                    // Grab the data contract for this token from the app context
-                    let data_contract =
-                        Arc::new(self.identity_token_info.data_contract.contract.clone());
-
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
-                    };
-
-                    // Dispatch the actual backend destroy action
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(Box::new(TokenTask::DestroyFrozenFunds {
-                                actor_identity: self.identity.clone(),
-                                data_contract,
-                                token_position: self.identity_token_info.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: if self.group_action_id.is_some() {
-                                    None
-                                } else {
-                                    self.public_note.clone()
-                                },
-                                frozen_identity: frozen_id,
-                                group_info,
-                            })),
-                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
-                }
-
-                // Cancel
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+        let response = confirmation_dialog.show(ui);
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                self.confirmation_ok()
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
+    fn confirmation_ok(&mut self) -> AppAction {
+        let maybe_frozen_id = Identifier::from_string_try_encodings(
+            &self.frozen_identity_id,
+            &[
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+            ],
+        );
+        if maybe_frozen_id.is_err() {
+            self.error_message = Some("Invalid frozen identity format".into());
+            self.status = DestroyFrozenFundsStatus::ErrorMessage("Invalid identity".into());
+            return AppAction::None;
+        }
+        let frozen_id = maybe_frozen_id.unwrap();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
+
+        let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
+
+        let group_info = if self.group_action_id.is_some() {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position: *pos,
+                        action_id: self.group_action_id.unwrap(),
+                        action_is_proposer: false,
+                    },
+                )
+            })
+        } else {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+            })
+        };
+
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::DestroyFrozenFunds {
+                actor_identity: self.identity.clone(),
+                data_contract,
+                token_position: self.identity_token_info.token_position,
+                signing_key: self.selected_key.clone().expect("No key selected"),
+                public_note: if self.group_action_id.is_some() {
+                    None
+                } else {
+                    self.public_note.clone()
+                },
+                frozen_identity: frozen_id,
+                group_info,
+            },
+        )))
+    }
     /// Simple “Success” screen
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
@@ -585,12 +574,22 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                        // Initialize confirmation dialog when button is clicked
+                        let msg = format!(
+                            "Are you sure you want to destroy frozen funds for identity {}? This action cannot be undone.",
+                            self.frozen_identity_id
+                        );
+                        self.confirmation_dialog = Some(
+                            ConfirmationDialog::new("Confirm Destroy Frozen Funds", msg)
+                                .confirm_text(Some("Destroy"))
+                                .cancel_text(Some("Cancel"))
+                                .danger_mode(true),
+                        );
                     }
                 }
 
-                // If user pressed "Destroy," show a popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

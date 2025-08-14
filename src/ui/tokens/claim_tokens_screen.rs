@@ -1,3 +1,5 @@
+use crate::ui::components::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -54,7 +56,7 @@ pub struct ClaimTokensScreen {
     status: ClaimTokensStatus,
     error_message: Option<String>,
     pub app_context: Arc<AppContext>,
-    show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
@@ -122,7 +124,7 @@ impl ClaimTokensScreen {
             status: ClaimTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -181,52 +183,47 @@ impl ClaimTokensScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
         let distribution_type = self
             .distribution_type
             .unwrap_or(TokenDistributionType::Perpetual);
-        egui::Window::new("Confirm Claim")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label("Are you sure you want to claim tokens for this contract?");
-                ui.add_space(10.0);
 
-                // Confirm
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = ClaimTokensStatus::WaitingForResult(now);
+        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Claim".to_string(),
+                "Are you sure you want to claim tokens for this contract?".to_string(),
+            )
+        });
 
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
-                                data_contract: Arc::new(self.token_contract.contract.clone()),
-                                token_position: self.identity_token_basic_info.token_position,
-                                actor_identity: self.identity.clone(),
-                                distribution_type,
-                                signing_key: self.selected_key.clone().expect("No key selected"),
-                                public_note: self.public_note.clone(),
-                            })),
-                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
-                }
+        match dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                self.status = ClaimTokensStatus::WaitingForResult(now);
 
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+                AppAction::BackendTasks(
+                    vec![
+                        BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
+                            data_contract: Arc::new(self.token_contract.contract.clone()),
+                            token_position: self.identity_token_basic_info.token_position,
+                            actor_identity: self.identity.clone(),
+                            distribution_type,
+                            signing_key: self.selected_key.clone().expect("No key selected"),
+                            public_note: self.public_note.clone(),
+                        })),
+                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                    ],
+                    BackendTasksExecutionMode::Sequential,
+                )
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -511,13 +508,16 @@ impl ScreenLike for ClaimTokensScreen {
                             "Please select a distribution type.".to_string(),
                         );
                         return;
-                    } else {
-                        self.show_confirmation_popup = true;
+                    } else if self.confirmation_dialog.is_none() {
+                        self.confirmation_dialog = Some(ConfirmationDialog::new(
+                            "Confirm Claim".to_string(),
+                            "Are you sure you want to claim tokens for this contract?".to_string(),
+                        ));
                     }
                 }
 
-                // If user pressed "Claim," show popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

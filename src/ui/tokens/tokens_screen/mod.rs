@@ -247,12 +247,32 @@ impl ChangeControlRulesUI {
         current_groups: &[GroupConfigUI],
         action_name: &str,
         special_case_option: Option<&mut bool>,
+        is_expanded: &mut bool,
     ) {
-        ui.collapsing(action_name, |ui| {
-            egui::Grid::new("basic_token_info_grid")
-                .num_columns(2)
-                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if *is_expanded { "−" } else { "+" };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                *is_expanded = !*is_expanded;
+            }
+            ui.label(action_name);
+        });
+
+        if *is_expanded {
+            ui.indent(format!("{}_content", action_name), |ui| {
+                egui::Grid::new(format!("{}_grid", action_name))
+                    .num_columns(2)
+                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                    .show(ui, |ui| {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
@@ -460,7 +480,8 @@ impl ChangeControlRulesUI {
                         }
                     }
                 });
-        });
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -474,12 +495,34 @@ impl ChangeControlRulesUI {
         new_tokens_destination_identity_rules: &mut ChangeControlRulesUI,
         new_tokens_destination_identity: &mut String,
         minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
+        is_expanded: &mut bool,
+        new_tokens_destination_expanded: &mut bool,
+        minting_allow_choosing_expanded: &mut bool,
     ) {
-        ui.collapsing("Manual Mint", |ui| {
-            egui::Grid::new("basic_token_info_grid")
-                .num_columns(2)
-                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if *is_expanded { "−" } else { "+" };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                *is_expanded = !*is_expanded;
+            }
+            ui.label("Manual Mint");
+        });
+
+        if *is_expanded {
+            ui.indent("manual_mint_content", |ui| {
+                egui::Grid::new("manual_mint_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                    .show(ui, |ui| {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
@@ -709,7 +752,7 @@ impl ChangeControlRulesUI {
                             ui.text_edit_singleline(new_tokens_destination_identity);
                             ui.end_row();
 
-                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None);
+                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None, new_tokens_destination_expanded);
                         }
 
                         ui.end_row();
@@ -723,7 +766,7 @@ impl ChangeControlRulesUI {
 
                         if *minting_allow_choosing_destination {
                             ui.end_row();
-                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None);
+                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None, minting_allow_choosing_expanded);
                         }
                         ui.end_row();
 
@@ -740,7 +783,8 @@ impl ChangeControlRulesUI {
                         }
                     }
                 });
-        });
+            });
+        }
     }
 
     pub fn extract_change_control_rules(
@@ -957,6 +1001,29 @@ pub struct TokensScreen {
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
     should_reset_collapsing_states: bool,
+    // Token Creator expanded sections
+    token_creator_advanced_expanded: bool,
+    token_creator_action_rules_expanded: bool,
+    token_creator_main_control_expanded: bool,
+    token_creator_distribution_expanded: bool,
+    token_creator_groups_expanded: bool,
+    token_creator_groups_items_expanded: std::collections::HashSet<String>,
+    token_creator_document_schemas_expanded: bool,
+    // Individual action rules expanded states
+    token_creator_manual_mint_expanded: bool,
+    token_creator_manual_burn_expanded: bool,
+    token_creator_freeze_expanded: bool,
+    token_creator_unfreeze_expanded: bool,
+    token_creator_destroy_frozen_expanded: bool,
+    token_creator_emergency_action_expanded: bool,
+    token_creator_max_supply_change_expanded: bool,
+    token_creator_conventions_change_expanded: bool,
+    token_creator_marketplace_expanded: bool,
+    token_creator_direct_purchase_pricing_expanded: bool,
+    // Nested rules expanded states
+    token_creator_new_tokens_destination_expanded: bool,
+    token_creator_minting_allow_choosing_expanded: bool,
+    token_creator_perpetual_distribution_rules_expanded: bool,
 
     // Contract Search
     pub selected_contract_id: Option<Identifier>,
@@ -1489,6 +1556,29 @@ impl TokensScreen {
             function_images,
             function_textures: BTreeMap::default(),
             should_reset_collapsing_states: false,
+            // Token Creator expanded sections
+            token_creator_advanced_expanded: false,
+            token_creator_action_rules_expanded: false,
+            token_creator_main_control_expanded: false,
+            token_creator_distribution_expanded: false,
+            token_creator_groups_expanded: false,
+            token_creator_groups_items_expanded: std::collections::HashSet::new(),
+            token_creator_document_schemas_expanded: false,
+            // Individual action rules expanded states
+            token_creator_manual_mint_expanded: false,
+            token_creator_manual_burn_expanded: false,
+            token_creator_freeze_expanded: false,
+            token_creator_unfreeze_expanded: false,
+            token_creator_destroy_frozen_expanded: false,
+            token_creator_emergency_action_expanded: false,
+            token_creator_max_supply_change_expanded: false,
+            token_creator_conventions_change_expanded: false,
+            token_creator_marketplace_expanded: false,
+            token_creator_direct_purchase_pricing_expanded: false,
+            // Nested rules expanded states
+            token_creator_new_tokens_destination_expanded: false,
+            token_creator_minting_allow_choosing_expanded: false,
+            token_creator_perpetual_distribution_rules_expanded: false,
 
             // Token adding status
             adding_token_start_time: None,

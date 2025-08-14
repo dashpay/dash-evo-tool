@@ -1,3 +1,4 @@
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     DistributionEntry, DistributionFunctionUI, IntervalTimeUnit,
     PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI, TokensScreen, sanitize_i64,
@@ -10,31 +11,41 @@ impl TokensScreen {
     pub(super) fn render_distributions(&mut self, context: &Context, ui: &mut egui::Ui) {
         ui.add_space(5.0);
 
-        let mut distribution_state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                ui.make_persistent_id("token_creator_distribution"),
-                false,
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if self.token_creator_distribution_expanded {
+                "−"
+            } else {
+                "+"
+            };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
             );
-
-        // Force close if we need to reset
-        if self.should_reset_collapsing_states {
-            distribution_state.set_open(false);
-        }
-
-        distribution_state.store(ui.ctx());
-
-        distribution_state.show_header(ui, |ui| {
+            if button_response.clicked() {
+                self.token_creator_distribution_expanded =
+                    !self.token_creator_distribution_expanded;
+            }
             ui.label("Distribution");
-        })
-        .body(|ui| {
+        });
+
+        if self.token_creator_distribution_expanded {
             ui.add_space(3.0);
 
-            // PERPETUAL DISTRIBUTION SETTINGS
-            if ui.checkbox(
-                &mut self.enable_perpetual_distribution,
-                "Enable Perpetual Distribution",
-            ).clicked() {
+            ui.indent("distribution_section", |ui| {
+                // PERPETUAL DISTRIBUTION SETTINGS
+            if ui
+                .checkbox(
+                    &mut self.enable_perpetual_distribution,
+                    "Enable Perpetual Distribution",
+                )
+                .clicked()
+            {
                 self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
             };
             if self.enable_perpetual_distribution {
@@ -72,13 +83,14 @@ impl TokensScreen {
                             ui.label("        - Distributes every ");
 
                             // Restrict input to digits only
-                            let response = ui.add(
-                                TextEdit::singleline(&mut self.perpetual_dist_interval_input)
-                            );
+                            let response = ui.add(TextEdit::singleline(
+                                &mut self.perpetual_dist_interval_input,
+                            ));
 
                             // Optionally filter out non-digit input
                             if response.changed() {
-                                self.perpetual_dist_interval_input.retain(|c| c.is_ascii_digit());
+                                self.perpetual_dist_interval_input
+                                    .retain(|c| c.is_ascii_digit());
                             }
 
                             // Dropdown for selecting unit
@@ -99,7 +111,9 @@ impl TokensScreen {
                                         ui.selectable_value(
                                             &mut self.perpetual_dist_interval_unit,
                                             unit.clone(),
-                                            unit.label_for_amount(&self.perpetual_dist_interval_input),
+                                            unit.label_for_amount(
+                                                &self.perpetual_dist_interval_input,
+                                            ),
                                         );
                                     }
                                 });
@@ -331,9 +345,15 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.image(texture);
                     });
                     ui.add_space(10.0);
-                } else if let Some(image) = self.function_images.get(&self.perpetual_dist_function) {
-                    let texture = context.load_texture(self.perpetual_dist_function.name(), image.clone(), Default::default());
-                    self.function_textures.insert(self.perpetual_dist_function.clone(), texture.clone());
+                } else if let Some(image) = self.function_images.get(&self.perpetual_dist_function)
+                {
+                    let texture = context.load_texture(
+                        self.perpetual_dist_function.name(),
+                        image.clone(),
+                        Default::default(),
+                    );
+                    self.function_textures
+                        .insert(self.perpetual_dist_function.clone(), texture.clone());
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.add_space(50.0); // Shift image right
@@ -359,11 +379,22 @@ Emits tokens in fixed amounts for specific intervals.
                                 sanitize_u64(&mut self.step_count_input);
                             }
                             if !self.step_count_input.is_empty() {
-                                if let Ok((perpetual_dist_interval_input, step_count_input)) = self.perpetual_dist_interval_input.parse::<u64>().and_then(|perpetual_dist_interval_input| self.step_count_input.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input))) {
+                                if let Ok((perpetual_dist_interval_input, step_count_input)) = self
+                                    .perpetual_dist_interval_input
+                                    .parse::<u64>()
+                                    .and_then(|perpetual_dist_interval_input| {
+                                        self.step_count_input.parse::<u64>().map(
+                                            |step_count_input| {
+                                                (perpetual_dist_interval_input, step_count_input)
+                                            },
+                                        )
+                                    })
+                                {
                                     let text = match self.perpetual_dist_type {
                                         PerpetualDistributionIntervalTypeUI::None => "".to_string(),
                                         PerpetualDistributionIntervalTypeUI::BlockBased => {
-                                            let amount = perpetual_dist_interval_input * step_count_input;
+                                            let amount =
+                                                perpetual_dist_interval_input * step_count_input;
                                             if amount == 1 {
                                                 "Every Block".to_string()
                                             } else {
@@ -371,11 +402,18 @@ Emits tokens in fixed amounts for specific intervals.
                                             }
                                         }
                                         PerpetualDistributionIntervalTypeUI::TimeBased => {
-                                            let amount = perpetual_dist_interval_input * step_count_input;
-                                            format!("Every {} {}", amount, self.perpetual_dist_interval_unit.capitalized_label_for_num_amount(amount))
+                                            let amount =
+                                                perpetual_dist_interval_input * step_count_input;
+                                            format!(
+                                                "Every {} {}",
+                                                amount,
+                                                self.perpetual_dist_interval_unit
+                                                    .capitalized_label_for_num_amount(amount)
+                                            )
                                         }
                                         PerpetualDistributionIntervalTypeUI::EpochBased => {
-                                            let amount = perpetual_dist_interval_input * step_count_input;
+                                            let amount =
+                                                perpetual_dist_interval_input * step_count_input;
                                             if amount == 1 {
                                                 "Every Epoch Change".to_string()
                                             } else {
@@ -391,7 +429,9 @@ Emits tokens in fixed amounts for specific intervals.
 
                         ui.horizontal(|ui| {
                             ui.label("        - Decrease per Interval Numerator (n < 65,536):");
-                            let response = ui.add(TextEdit::singleline(&mut self.decrease_per_interval_numerator_input));
+                            let response = ui.add(TextEdit::singleline(
+                                &mut self.decrease_per_interval_numerator_input,
+                            ));
                             if response.changed() {
                                 sanitize_u64(&mut self.decrease_per_interval_numerator_input);
                                 self.decrease_per_interval_numerator_input.truncate(5);
@@ -400,7 +440,9 @@ Emits tokens in fixed amounts for specific intervals.
 
                         ui.horizontal(|ui| {
                             ui.label("        - Decrease per Interval Denominator (d < 65,536):");
-                            let response = ui.add(TextEdit::singleline(&mut self.decrease_per_interval_denominator_input));
+                            let response = ui.add(TextEdit::singleline(
+                                &mut self.decrease_per_interval_denominator_input,
+                            ));
                             if response.changed() {
                                 sanitize_u64(&mut self.decrease_per_interval_denominator_input);
                                 self.decrease_per_interval_denominator_input.truncate(5);
@@ -410,8 +452,10 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.horizontal(|ui| {
                             ui.label("        - Start Period Offset (i64, optional):");
                             let response = ui.add(
-                                TextEdit::singleline(&mut self.step_decreasing_start_period_offset_input)
-                                    .hint_text("None"),
+                                TextEdit::singleline(
+                                    &mut self.step_decreasing_start_period_offset_input,
+                                )
+                                .hint_text("None"),
                             );
                             if response.changed() {
                                 sanitize_i64(&mut self.step_decreasing_start_period_offset_input);
@@ -420,7 +464,9 @@ Emits tokens in fixed amounts for specific intervals.
 
                         ui.horizontal(|ui| {
                             ui.label("        - Initial Token Emission Amount:");
-                            let response = ui.add(TextEdit::singleline(&mut self.step_decreasing_initial_emission_input));
+                            let response = ui.add(TextEdit::singleline(
+                                &mut self.step_decreasing_initial_emission_input,
+                            ));
                             if response.changed() {
                                 sanitize_u64(&mut self.step_decreasing_initial_emission_input);
                             }
@@ -440,8 +486,10 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.horizontal(|ui| {
                             ui.label("        - Maximum Interval Count (optional):");
                             let response = ui.add(
-                                TextEdit::singleline(&mut self.step_decreasing_max_interval_count_input)
-                                    .hint_text("None"),
+                                TextEdit::singleline(
+                                    &mut self.step_decreasing_max_interval_count_input,
+                                )
+                                .hint_text("None"),
                             );
                             if response.changed() {
                                 sanitize_u64(&mut self.step_decreasing_max_interval_count_input);
@@ -581,14 +629,16 @@ Emits tokens in fixed amounts for specific intervals.
                     DistributionFunctionUI::Linear => {
                         ui.horizontal(|ui| {
                             ui.label("        - Slope Numerator (a, { -255 ≤ a ≤ 256 }):");
-                            let response = ui.add(TextEdit::singleline(&mut self.linear_int_a_input));
+                            let response =
+                                ui.add(TextEdit::singleline(&mut self.linear_int_a_input));
                             if response.changed() {
                                 sanitize_i64(&mut self.linear_int_a_input);
                             }
                         });
                         ui.horizontal(|ui| {
                             ui.label("        - Slope Divisor (d, u64):");
-                            let response = ui.add(TextEdit::singleline(&mut self.linear_int_d_input));
+                            let response =
+                                ui.add(TextEdit::singleline(&mut self.linear_int_d_input));
                             if response.changed() {
                                 sanitize_u64(&mut self.linear_int_d_input);
                             }
@@ -605,7 +655,9 @@ Emits tokens in fixed amounts for specific intervals.
                         });
                         ui.horizontal(|ui| {
                             ui.label("        - Starting Amount (b, i64):");
-                            let response = ui.add(TextEdit::singleline(&mut self.linear_int_starting_amount_input));
+                            let response = ui.add(TextEdit::singleline(
+                                &mut self.linear_int_starting_amount_input,
+                            ));
                             if response.changed() {
                                 sanitize_i64(&mut self.linear_int_starting_amount_input);
                             }
@@ -660,8 +712,7 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.horizontal(|ui| {
                             ui.label("        - Start Period Offset (s, optional, u64):");
                             let response = ui.add(
-                                TextEdit::singleline(&mut self.poly_int_s_input)
-                                    .hint_text("None"),
+                                TextEdit::singleline(&mut self.poly_int_s_input).hint_text("None"),
                             );
                             if response.changed() && !self.poly_int_s_input.trim().is_empty() {
                                 sanitize_u64(&mut self.poly_int_s_input);
@@ -686,7 +737,9 @@ Emits tokens in fixed amounts for specific intervals.
                                 TextEdit::singleline(&mut self.poly_int_min_value_input)
                                     .hint_text("None"),
                             );
-                            if response.changed() && !self.poly_int_min_value_input.trim().is_empty() {
+                            if response.changed()
+                                && !self.poly_int_min_value_input.trim().is_empty()
+                            {
                                 sanitize_u64(&mut self.poly_int_min_value_input);
                             }
                         });
@@ -697,7 +750,9 @@ Emits tokens in fixed amounts for specific intervals.
                                 TextEdit::singleline(&mut self.poly_int_max_value_input)
                                     .hint_text("None"),
                             );
-                            if response.changed() && !self.poly_int_max_value_input.trim().is_empty() {
+                            if response.changed()
+                                && !self.poly_int_max_value_input.trim().is_empty()
+                            {
                                 sanitize_u64(&mut self.poly_int_max_value_input);
                             }
                         });
@@ -710,7 +765,9 @@ Emits tokens in fixed amounts for specific intervals.
                             sanitize_u64(&mut self.exp_a_input);
                         });
                         ui.horizontal(|ui| {
-                            ui.label("        - Exponent Rate Numerator (m, { -8 ≤ m ≤ 8 ; m ≠ 0 }):");
+                            ui.label(
+                                "        - Exponent Rate Numerator (m, { -8 ≤ m ≤ 8 ; m ≠ 0 }):",
+                            );
                             ui.text_edit_singleline(&mut self.exp_m_input);
                             sanitize_i64(&mut self.exp_m_input);
                         });
@@ -726,10 +783,8 @@ Emits tokens in fixed amounts for specific intervals.
                         });
                         ui.horizontal(|ui| {
                             ui.label("        - Start Period Offset (s, optional, u64):");
-                            let response = ui.add(
-                                TextEdit::singleline(&mut self.exp_s_input)
-                                    .hint_text("None"),
-                            );
+                            let response = ui
+                                .add(TextEdit::singleline(&mut self.exp_s_input).hint_text("None"));
                             if response.changed() && !self.exp_s_input.trim().is_empty() {
                                 sanitize_u64(&mut self.exp_s_input);
                             }
@@ -769,7 +824,9 @@ Emits tokens in fixed amounts for specific intervals.
 
                     DistributionFunctionUI::Logarithmic => {
                         ui.horizontal(|ui| {
-                            ui.label("        - Scaling Factor (a, i64, { -32_766 ≤ a ≤ 32_767 }):");
+                            ui.label(
+                                "        - Scaling Factor (a, i64, { -32_766 ≤ a ≤ 32_767 }):",
+                            );
                             ui.text_edit_singleline(&mut self.log_a_input);
                             sanitize_i64(&mut self.log_a_input);
                         });
@@ -794,10 +851,8 @@ Emits tokens in fixed amounts for specific intervals.
 
                         ui.horizontal(|ui| {
                             ui.label("        - Start Period Offset (s, optional, u64):");
-                            let response = ui.add(
-                                TextEdit::singleline(&mut self.log_s_input)
-                                    .hint_text("None"),
-                            );
+                            let response = ui
+                                .add(TextEdit::singleline(&mut self.log_s_input).hint_text("None"));
                             if response.changed() && !self.log_s_input.trim().is_empty() {
                                 sanitize_u64(&mut self.log_s_input);
                             }
@@ -840,7 +895,9 @@ Emits tokens in fixed amounts for specific intervals.
 
                     DistributionFunctionUI::InvertedLogarithmic => {
                         ui.horizontal(|ui| {
-                            ui.label("        - Scaling Factor (a, i64, { -32_766 ≤ a ≤ 32_767 }):");
+                            ui.label(
+                                "        - Scaling Factor (a, i64, { -32_766 ≤ a ≤ 32_767 }):",
+                            );
                             ui.text_edit_singleline(&mut self.inv_log_a_input);
                             sanitize_i64(&mut self.inv_log_a_input);
                         });
@@ -866,8 +923,7 @@ Emits tokens in fixed amounts for specific intervals.
                         ui.horizontal(|ui| {
                             ui.label("        - Start Period Offset (s, optional, u64):");
                             let response = ui.add(
-                                TextEdit::singleline(&mut self.inv_log_s_input)
-                                    .hint_text("None"),
+                                TextEdit::singleline(&mut self.inv_log_s_input).hint_text("None"),
                             );
                             if response.changed() && !self.inv_log_s_input.trim().is_empty() {
                                 sanitize_u64(&mut self.inv_log_s_input);
@@ -892,7 +948,8 @@ Emits tokens in fixed amounts for specific intervals.
                                 TextEdit::singleline(&mut self.inv_log_min_value_input)
                                     .hint_text("None"),
                             );
-                            if response.changed() && !self.inv_log_min_value_input.trim().is_empty() {
+                            if response.changed() && !self.inv_log_min_value_input.trim().is_empty()
+                            {
                                 sanitize_u64(&mut self.inv_log_min_value_input);
                             }
                         });
@@ -903,7 +960,8 @@ Emits tokens in fixed amounts for specific intervals.
                                 TextEdit::singleline(&mut self.inv_log_max_value_input)
                                     .hint_text("None"),
                             );
-                            if response.changed() && !self.inv_log_max_value_input.trim().is_empty() {
+                            if response.changed() && !self.inv_log_max_value_input.trim().is_empty()
+                            {
                                 sanitize_u64(&mut self.inv_log_max_value_input);
                             }
                         });
@@ -950,7 +1008,14 @@ Emits tokens in fixed amounts for specific intervals.
 
                 ui.horizontal(|ui| {
                     ui.label(" ");
-                    self.perpetual_distribution_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Perpetual Distribution Rules", None);
+                    self.perpetual_distribution_rules
+                        .render_control_change_rules_ui(
+                            ui,
+                            &self.groups_ui,
+                            "Perpetual Distribution Rules",
+                            None,
+                            &mut self.token_creator_perpetual_distribution_rules_expanded,
+                        );
                 });
 
                 ui.add_space(5.0);
@@ -1018,10 +1083,12 @@ Emits tokens in fixed amounts for specific intervals.
                 ui.horizontal(|ui| {
                     ui.label("   ");
                     if ui.button("Add New Distribution Entry").clicked() {
-                        self.pre_programmed_distributions.push(DistributionEntry::default());
+                        self.pre_programmed_distributions
+                            .push(DistributionEntry::default());
                     }
                 });
             }
-        });
+            });
+        }
     }
 }

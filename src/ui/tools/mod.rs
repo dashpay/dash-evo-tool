@@ -4,3 +4,4 @@ pub mod platform_info_screen;
 pub mod proof_log_screen;
 pub mod proof_visualizer_screen;
 pub mod transition_visualizer_screen;
+pub mod zk_proofs_screen;

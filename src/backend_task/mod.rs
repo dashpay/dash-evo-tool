@@ -27,6 +27,7 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
+use zk_proofs::ZKProofTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -39,6 +40,7 @@ pub mod register_contract;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
+pub mod zk_proofs;
 
 // TODO: Refactor how we handle errors and messages, and remove it from here
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
@@ -54,6 +56,7 @@ pub enum BackendTask {
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
     PlatformInfo(PlatformInfoTaskRequestType),
+    ZKProofTask(ZKProofTask),
     None,
 }
 
@@ -99,6 +102,8 @@ pub enum BackendTaskSuccessResult {
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
+    GeneratedZKProof(crate::proofs::grovestark_integration::ProofDataOutput),
+    VerifiedZKProof(bool),
 }
 
 impl BackendTaskSuccessResult {}
@@ -173,6 +178,14 @@ impl AppContext {
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
+            }
+            BackendTask::ZKProofTask(zk_proof_task) => {
+                zk_proofs::process_zk_proof_task(
+                    BackendTask::ZKProofTask(zk_proof_task),
+                    &sdk,
+                    self,
+                )
+                .await
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

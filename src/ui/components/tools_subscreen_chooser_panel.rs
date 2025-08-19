@@ -12,6 +12,7 @@ pub enum ToolsSubscreen {
     ProofViewer,
     ContractViewer,
     PlatformInfo,
+    ZKProofs,
 }
 
 impl ToolsSubscreen {
@@ -23,6 +24,7 @@ impl ToolsSubscreen {
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
             Self::PlatformInfo => "Platform info",
+            Self::ZKProofs => "ZK Proofs",
         }
     }
 }
@@ -38,6 +40,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
         ToolsSubscreen::PlatformInfo,
+        ToolsSubscreen::ZKProofs,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -54,6 +57,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::ContractViewer
             }
             ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
+            ui::RootScreenType::RootScreenToolsZKProofsScreen => ToolsSubscreen::ZKProofs,
             _ => ToolsSubscreen::ProofLog,
         },
         _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
@@ -146,6 +150,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             ToolsSubscreen::PlatformInfo => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenToolsPlatformInfoScreen,
+                                )
+                            }
+                            ToolsSubscreen::ZKProofs => {
+                                action = AppAction::SetMainScreen(
+                                    RootScreenType::RootScreenToolsZKProofsScreen,
                                 )
                             }
                         }

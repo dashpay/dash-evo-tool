@@ -10,6 +10,7 @@ pub mod cpu_compatibility;
 pub mod database;
 pub mod logging;
 pub mod model;
+pub mod proofs;
 pub mod sdk_wrapper;
 pub mod ui;
 pub mod utils;

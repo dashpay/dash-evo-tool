@@ -26,6 +26,7 @@ use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
+use crate::ui::tools::zk_proofs_screen::ZKProofsScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
@@ -89,6 +90,7 @@ pub enum RootScreenType {
     RootScreenTokenCreator,
     RootScreenToolsContractVisualizerScreen,
     RootScreenToolsPlatformInfoScreen,
+    RootScreenToolsZKProofsScreen,
 }
 
 impl RootScreenType {
@@ -113,6 +115,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsDocumentVisualizerScreen => 15,
             RootScreenType::RootScreenToolsContractVisualizerScreen => 16,
             RootScreenType::RootScreenToolsPlatformInfoScreen => 17,
+            RootScreenType::RootScreenToolsZKProofsScreen => 18,
         }
     }
 
@@ -137,6 +140,7 @@ impl RootScreenType {
             15 => Some(RootScreenType::RootScreenToolsDocumentVisualizerScreen),
             16 => Some(RootScreenType::RootScreenToolsContractVisualizerScreen),
             17 => Some(RootScreenType::RootScreenToolsPlatformInfoScreen),
+            18 => Some(RootScreenType::RootScreenToolsZKProofsScreen),
             _ => None,
         }
     }
@@ -168,6 +172,7 @@ impl From<RootScreenType> for ScreenType {
                 ScreenType::ContractsVisualizer
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
+            RootScreenType::RootScreenToolsZKProofsScreen => ScreenType::ZKProofs,
         }
     }
 }
@@ -207,6 +212,7 @@ pub enum ScreenType {
     DocumentsVisualizer,
     ContractsVisualizer,
     PlatformInfo,
+    ZKProofs,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -323,6 +329,7 @@ impl ScreenType {
             ScreenType::PlatformInfo => {
                 Screen::PlatformInfoScreen(PlatformInfoScreen::new(app_context))
             }
+            ScreenType::ZKProofs => Screen::ZKProofsScreen(ZKProofsScreen::new(app_context)),
             ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
                 app_context.clone(),
                 None,
@@ -446,6 +453,7 @@ pub enum Screen {
     AddContractsScreen(AddContractsScreen),
     ProofVisualizerScreen(ProofVisualizerScreen),
     PlatformInfoScreen(PlatformInfoScreen),
+    ZKProofsScreen(ZKProofsScreen),
 
     // Token Screens
     TokensScreen(Box<TokensScreen>),
@@ -495,6 +503,7 @@ impl Screen {
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::PlatformInfoScreen(screen) => screen.app_context = app_context,
+            Screen::ZKProofsScreen(screen) => screen.app_context = app_context,
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.app_context = app_context,
@@ -610,6 +619,7 @@ impl Screen {
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
             Screen::DocumentVisualizerScreen(_) => ScreenType::DocumentsVisualizer,
             Screen::PlatformInfoScreen(_) => ScreenType::PlatformInfo,
+            Screen::ZKProofsScreen(_) => ScreenType::ZKProofs,
 
             // Token Screens
             Screen::TokensScreen(screen)
@@ -706,6 +716,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.refresh(),
             Screen::ContractVisualizerScreen(screen) => screen.refresh(),
             Screen::PlatformInfoScreen(screen) => screen.refresh(),
+            Screen::ZKProofsScreen(screen) => screen.refresh(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh(),
@@ -755,6 +766,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::ContractVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::PlatformInfoScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ZKProofsScreen(screen) => screen.refresh_on_arrival(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh_on_arrival(),
@@ -804,6 +816,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.ui(ctx),
             Screen::ContractVisualizerScreen(screen) => screen.ui(ctx),
             Screen::PlatformInfoScreen(screen) => screen.ui(ctx),
+            Screen::ZKProofsScreen(screen) => screen.ui(ctx),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.ui(ctx),
@@ -865,6 +878,7 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             Screen::PlatformInfoScreen(screen) => screen.display_message(message, message_type),
+            Screen::ZKProofsScreen(screen) => screen.display_message(message, message_type),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.display_message(message, message_type),
@@ -966,6 +980,9 @@ impl ScreenLike for Screen {
             Screen::PlatformInfoScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::ZKProofsScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.display_task_result(backend_task_success_result),
@@ -1041,6 +1058,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::ContractVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::PlatformInfoScreen(screen) => screen.pop_on_success(),
+            Screen::ZKProofsScreen(screen) => screen.pop_on_success(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.pop_on_success(),

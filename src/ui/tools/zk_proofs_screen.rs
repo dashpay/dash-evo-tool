@@ -132,7 +132,7 @@ pub struct ZKProofsScreen {
 
     // Dialogs
     confirmation_dialog: Option<ConfirmationDialog>,
-    
+
     // UI state
     public_inputs_expanded: bool,
 }
@@ -475,6 +475,7 @@ impl ZKProofsScreen {
     fn verify_proof(&mut self, _app_context: &AppContext) -> AppAction {
         self.is_verifying = true;
         self.error_message = None;
+        self.verification_result = None; // Clear any previous results
 
         // Parse the proof based on input method
         let proof_result = match self.input_method {
@@ -933,7 +934,6 @@ impl ZKProofsScreen {
                 ui.spinner();
                 ui.vertical(|ui| {
                     ui.label("🔄 Generating ZK proof...");
-                    ui.label("⏱️ This may take 10-30 seconds");
                 });
             } else {
                 if ui
@@ -1166,6 +1166,11 @@ impl ZKProofsScreen {
             return action;
         }
 
+        // Error Display
+        if let Some(error) = &self.error_message {
+            ui.colored_label(egui::Color32::RED, format!("❌ Error: {}", error));
+        }
+
         // Verification Result
         if let Some(result) = &self.verification_result {
             ui.separator();
@@ -1187,7 +1192,7 @@ impl ZKProofsScreen {
                                 ui.end_row();
 
                                 ui.label("Document Exists:");
-                                ui.label("Yes (contents hidden)");
+                                ui.label("Yes");
                                 ui.end_row();
 
                                 ui.label("Key Control:");
@@ -1255,6 +1260,7 @@ impl ScreenLike for ZKProofsScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
+        // Always show error messages
         self.error_message = Some(message.to_string());
 
         // Reset loading states when an error occurs
@@ -1288,15 +1294,17 @@ impl ScreenLike for ZKProofsScreen {
                 ));
                 self.error_message = None;
             }
-            BackendTaskSuccessResult::VerifiedZKProof(is_valid) => {
+            BackendTaskSuccessResult::VerifiedZKProof(is_valid, proof_data) => {
                 self.is_verifying = false;
+                // Get contract ID from the proof data itself
+                let contract_id = hex::encode(&proof_data.public_inputs.contract_id);
                 self.verification_result = Some(VerificationResult {
                     is_valid,
                     verified_at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
-                    contract_id: self.contract_id.clone(),
+                    contract_id,
                     security_level: self.security_level,
                     error_message: if !is_valid {
                         Some("Proof verification failed".to_string())

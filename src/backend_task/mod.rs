@@ -103,7 +103,7 @@ pub enum BackendTaskSuccessResult {
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
     GeneratedZKProof(crate::proofs::grovestark_integration::ProofDataOutput),
-    VerifiedZKProof(bool),
+    VerifiedZKProof(bool, crate::proofs::grovestark_integration::ProofDataOutput),
 }
 
 impl BackendTaskSuccessResult {}

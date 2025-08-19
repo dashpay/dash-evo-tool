@@ -44,7 +44,9 @@ pub async fn process_zk_proof_task(
                 let integration = GroveStarkIntegration::new(security_level, 16);
 
                 match integration.verify_proof(&proof_data) {
-                    Ok(is_valid) => Ok(BackendTaskSuccessResult::VerifiedZKProof(is_valid)),
+                    Ok(is_valid) => Ok(BackendTaskSuccessResult::VerifiedZKProof(
+                        is_valid, proof_data,
+                    )),
                     Err(e) => Err(format!("Failed to verify proof: {}", e)),
                 }
             }

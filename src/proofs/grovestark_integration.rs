@@ -6,7 +6,7 @@ use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::{Fetch, FetchWithProof};
 use ed25519_dalek::{Signer, SigningKey};
 use grovestark::{
-    GroveSTARK, PublicInputs, STARKConfig, STARKProof, Verifier, create_witness_from_sdk_proofs,
+    GroveSTARK, PublicInputs, STARKConfig, STARKProof, create_witness_from_sdk_proofs,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -36,7 +36,6 @@ pub struct ProofMetadata {
 
 pub struct GroveStarkIntegration {
     prover: GroveSTARK,
-    verifier: Verifier,
 }
 
 impl GroveStarkIntegration {
@@ -54,8 +53,7 @@ impl GroveStarkIntegration {
         };
 
         Self {
-            prover: GroveSTARK::with_config(config.clone()),
-            verifier: Verifier::new(config),
+            prover: GroveSTARK::with_config(config),
         }
     }
 
@@ -331,8 +329,8 @@ impl GroveStarkIntegration {
             timestamp: proof_data.public_inputs.timestamp,
         };
 
-        // Step 3: Verify the proof using GroveSTARK's verifier
-        self.verifier
+        // Step 3: Verify the proof using GroveSTARK's verify method
+        self.prover
             .verify(&stark_proof, &public_inputs)
             .map_err(|e| ProofError::VerificationFailed(e.to_string()))
     }

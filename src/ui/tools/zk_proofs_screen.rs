@@ -1141,6 +1141,11 @@ impl ZKProofsScreen {
 
         ui.separator();
 
+        // Error Display (above the button)
+        if let Some(error) = &self.error_message {
+            ui.colored_label(egui::Color32::RED, format!("❌ Error: {}", error));
+        }
+
         // Verify Button
         let can_verify = match self.input_method {
             InputMethod::Paste => !self.proof_text.is_empty(),
@@ -1164,11 +1169,6 @@ impl ZKProofsScreen {
         });
         if action.is_some() {
             return action;
-        }
-
-        // Error Display
-        if let Some(error) = &self.error_message {
-            ui.colored_label(egui::Color32::RED, format!("❌ Error: {}", error));
         }
 
         // Verification Result

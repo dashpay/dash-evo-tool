@@ -63,6 +63,7 @@ pub struct AppContext {
     pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
+    pub(crate) dashpay_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
     pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
@@ -123,6 +124,10 @@ impl AppContext {
             load_system_data_contract(SystemDataContract::KeywordSearch, platform_version)
                 .expect("expected to get keyword search contract");
 
+        let dashpay_contract =
+            load_system_data_contract(SystemDataContract::Dashpay, platform_version)
+                .expect("expected to get dashpay contract");
+
         let addr = format!(
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
@@ -176,6 +181,7 @@ impl AppContext {
             rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
+            dashpay_contract: Arc::new(dashpay_contract),
             token_history_contract: Arc::new(token_history_contract),
             keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
@@ -242,7 +248,7 @@ impl AppContext {
         }
     }
 
-    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
+/// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), String> {
         // 1. Grab a fresh snapshot of your NetworkConfig
@@ -596,6 +602,15 @@ impl AppContext {
 
         // Insert the keyword search contract at 3
         contracts.insert(3, keyword_search_contract);
+
+        // Add the DashPay contract to the list
+        let dashpay_contract = QualifiedContract {
+            contract: Arc::clone(&self.dashpay_contract).as_ref().clone(),
+            alias: Some("dashpay".to_string()),
+        };
+
+        // Insert the DashPay contract at 4
+        contracts.insert(4, dashpay_contract);
 
         Ok(contracts)
     }

@@ -11,6 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
+use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
@@ -226,6 +227,16 @@ impl AppState {
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
 
+        // Create DashPay screens
+        let mut dashpay_contacts_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Contacts);
+        let mut dashpay_requests_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Requests);
+        let mut dashpay_profile_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
+        let mut dashpay_payments_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Payments);
+
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
             testnet_app_context.as_ref(),
@@ -264,6 +275,14 @@ impl AppState {
                 TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
+            dashpay_contacts_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Contacts);
+            dashpay_requests_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Requests);
+            dashpay_profile_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
+            dashpay_payments_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Payments);
         } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
             let devnet_app_context = devnet_app_context.as_ref().unwrap();
             identities_screen = IdentitiesScreen::new(devnet_app_context);
@@ -287,6 +306,14 @@ impl AppState {
                 TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
+            dashpay_contacts_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Contacts);
+            dashpay_requests_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Requests);
+            dashpay_profile_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Profile);
+            dashpay_payments_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Payments);
         } else if chosen_network == Network::Regtest && local_app_context.is_some() {
             let local_app_context = local_app_context.as_ref().unwrap();
             identities_screen = IdentitiesScreen::new(local_app_context);
@@ -309,6 +336,14 @@ impl AppState {
                 TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
+            dashpay_contacts_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Contacts);
+            dashpay_requests_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Requests);
+            dashpay_profile_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
+            dashpay_payments_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Payments);
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
@@ -451,6 +486,22 @@ impl AppState {
                 (
                     RootScreenType::RootScreenTokenCreator,
                     Screen::TokensScreen(Box::new(token_creator_screen)),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayContacts,
+                    Screen::DashPayScreen(dashpay_contacts_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayRequests,
+                    Screen::DashPayScreen(dashpay_requests_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayProfile,
+                    Screen::DashPayScreen(dashpay_profile_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayPayments,
+                    Screen::DashPayScreen(dashpay_payments_screen),
                 ),
             ]
             .into(),
@@ -625,8 +676,25 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
-                            self.visible_screen_mut()
-                                .display_message(msg, MessageType::Success);
+                            // For DashPay screens, also call display_task_result to clear loading/saving states
+                            let is_dashpay_screen = matches!(
+                                self.visible_screen_mut().screen_type(),
+                                ScreenType::DashPayProfile 
+                                | ScreenType::DashPayContacts 
+                                | ScreenType::DashPayRequests 
+                                | ScreenType::DashPayPayments
+                                | ScreenType::DashPayContactDetails(..)
+                                | ScreenType::DashPaySendPayment(..)
+                                | ScreenType::DashPayContactInfoEditor(..)
+                            );
+                            
+                            if is_dashpay_screen {
+                                self.visible_screen_mut()
+                                    .display_task_result(unboxed_message.clone());
+                            } else {
+                                self.visible_screen_mut()
+                                    .display_message(msg, MessageType::Success);
+                            }
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
@@ -645,6 +713,11 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                             self.visible_screen_mut().refresh();
+                        }
+                        BackendTaskSuccessResult::DashPayProfile(_) => {
+                            // DashPay profile results need to go through display_task_result
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
                         }
                         _ => {
                             self.visible_screen_mut()

@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::dashpay::{DashPayTask, ContactData};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
@@ -32,6 +33,7 @@ pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
+pub mod dashpay;
 pub mod document;
 pub mod identity;
 pub mod platform_info;
@@ -50,6 +52,7 @@ pub enum BackendTask {
     ContractTask(Box<ContractTask>),
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
+    DashPayTask(Box<DashPayTask>),
     BroadcastStateTransition(StateTransition),
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
@@ -89,6 +92,14 @@ pub enum BackendTaskSuccessResult {
         TokenAmount,
         IntervalEvaluationExplanation,
     ),
+    DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
+    DashPayContactRequests {
+        incoming: Vec<(Identifier, Document)>, // (request_id, document)
+        outgoing: Vec<(Identifier, Document)>, // (request_id, document)
+    },
+    DashPayContacts(Vec<Identifier>), // List of contact identity IDs
+    DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
+    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
@@ -163,6 +174,9 @@ impl AppContext {
                 self.run_document_task(*document_task, &sdk).await
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
+            BackendTask::DashPayTask(dashpay_task) => {
+                self.run_dashpay_task(*dashpay_task, &sdk, sender).await
+            }
             BackendTask::BroadcastStateTransition(state_transition) => {
                 self.broadcast_state_transition(state_transition, &sdk)
                     .await

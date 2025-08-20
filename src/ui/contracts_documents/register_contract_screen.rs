@@ -201,7 +201,10 @@ impl RegisterDataContractScreen {
                 ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
             }
             BroadcastStatus::Done => {
-                ui.colored_label(Color32::GREEN, "Data Contract registered successfully!");
+                ui.colored_label(
+                    Color32::DARK_GREEN,
+                    "Data Contract registered successfully!",
+                );
             }
         }
 

@@ -292,6 +292,18 @@ impl Decode for QualifiedIdentity {
     }
 }
 
+impl Display for QualifiedIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(alias) = &self.alias {
+            write!(f, "{}", alias)
+        } else if !self.dpns_names.is_empty() {
+            write!(f, "{}", self.dpns_names[0].name)
+        } else {
+            write!(f, "{}", self.identity.id())
+        }
+    }
+}
+
 impl Signer for QualifiedIdentity {
     fn sign(
         &self,

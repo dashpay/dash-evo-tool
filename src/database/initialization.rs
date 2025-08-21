@@ -385,6 +385,9 @@ impl Database {
         self.initialize_identity_order_table(&conn)?;
         self.initialize_token_order_table(&conn)?;
         self.initialize_identity_token_balances_table(&conn)?;
+        
+        // Initialize contacts table
+        self.init_contacts_tables()?;
 
         Ok(())
     }

@@ -93,6 +93,8 @@ pub enum BackendTaskSuccessResult {
         IntervalEvaluationExplanation,
     ),
     DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
+    DashPayContactProfile(Option<Document>),          // Contact's public profile document
+    DashPayProfileSearchResults(Vec<(Identifier, Document)>), // Search results: (identity_id, profile_document)
     DashPayContactRequests {
         incoming: Vec<(Identifier, Document)>, // (request_id, document)
         outgoing: Vec<(Identifier, Document)>, // (request_id, document)

@@ -19,6 +19,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
         DashPaySubscreen::Requests,
         DashPaySubscreen::Profile,
         DashPaySubscreen::Payments,
+        DashPaySubscreen::ProfileSearch,
     ];
 
     let active_screen = current_subscreen;
@@ -47,7 +48,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
                     // Display subscreen names
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("DashPay Sections")
+                            RichText::new("DashPay")
                                 .font(Typography::heading_small())
                                 .color(DashColors::text_primary(dark_mode)),
                         );
@@ -61,6 +62,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
                                 DashPaySubscreen::Requests => "Contact Requests",
                                 DashPaySubscreen::Profile => "My Profile",
                                 DashPaySubscreen::Payments => "Payment History",
+                                DashPaySubscreen::ProfileSearch => "Search Profiles",
                             };
 
                             let button = if is_active {
@@ -107,6 +109,11 @@ pub fn add_dashpay_subscreen_chooser_panel(
                                     DashPaySubscreen::Payments => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenDashPayPayments,
+                                        )
+                                    }
+                                    DashPaySubscreen::ProfileSearch => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDashPayProfileSearch,
                                         )
                                     }
                                 }

@@ -211,7 +211,16 @@ impl ContactDetailsScreen {
                 // Contact info section
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Contact Information").strong());
+                        ui.label(RichText::new("Private Contact Information").strong());
+                        ui.add_space(10.0);
+                        crate::ui::helpers::info_icon_button(
+                            ui,
+                            "About Private Contact Information:\n\n\
+                            • This information is stored locally on your device\n\
+                            • It is never shared with the contact or published\n\
+                            • Only you can see these nicknames and notes\n\
+                            • Use this to organize and remember your contacts",
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.editing_info {
                                 if ui.button("Cancel").clicked() {
@@ -377,6 +386,9 @@ impl ContactDetailsScreen {
                     ui.add_space(10.0);
                     ui.label("Contact information will be loaded automatically when available from the backend.");
                 });
+
+                ui.add_space(10.0);
+
             }
         });
 

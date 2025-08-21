@@ -869,7 +869,7 @@ impl AppContext {
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
-        Network::Dash => &PLATFORM_V8,
+        Network::Dash => &PLATFORM_V9,
         Network::Testnet => &PLATFORM_V9,
         Network::Devnet => &PLATFORM_V9,
         Network::Regtest => &PLATFORM_V9,

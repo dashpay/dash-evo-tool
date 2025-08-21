@@ -8,8 +8,10 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
+use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use eframe::epaint::TextureHandle;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
@@ -81,7 +83,7 @@ impl QRCodeGeneratorScreen {
 
         // Header with info icon
         ui.horizontal(|ui| {
-            if ui.button("← Back").clicked() {
+            if ui.button("Back").clicked() {
                 action = AppAction::PopScreen;
             }
             ui.heading("Generate Contact QR Code");
@@ -94,7 +96,7 @@ impl QRCodeGeneratorScreen {
                 • QR codes expire after the specified validity period\n\
                 • Each QR code is unique and can only be used once\n\
                 • The account reference determines which wallet account to use\n\n\
-                ⚠️ Anyone with this QR code can automatically become your contact",
+                WARNING: Anyone with this QR code can automatically become your contact",
             );
         });
 
@@ -214,42 +216,60 @@ impl QRCodeGeneratorScreen {
             if let Some(qr_data) = &self.generated_qr_data {
                 ui.group(|ui| {
                     ui.label(
-                        RichText::new("Generated QR Code Data")
+                        RichText::new("Generated QR Code")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.separator();
 
-                    // Display as text for now (in production, would render actual QR code image)
-                    ui.group(|ui| {
-                        ui.label(
-                            RichText::new("QR Code (text representation):")
-                                .small()
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
+                    // Center the QR code
+                    ui.vertical_centered(|ui| {
+                        // Generate and display the actual QR code image
+                        if let Ok(qr_image) = generate_qr_code_image(qr_data) {
+                            let texture: TextureHandle = ui.ctx().load_texture(
+                                "dashpay_qr_code",
+                                qr_image,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            // Display at a reasonable size
+                            ui.image(&texture);
+                        } else {
+                            ui.label(
+                                RichText::new("Failed to generate QR code image")
+                                    .color(DashColors::error_color(dark_mode)),
+                            );
+                        }
+                    });
+
+                    ui.add_space(10.0);
+
+                    // Show the text data in a collapsible section
+                    ui.collapsing("QR Code Data (text)", |ui| {
                         ui.code(qr_data);
                     });
 
                     ui.add_space(10.0);
 
-                    let copy_text = qr_data.clone();
-                    if ui.button("Copy to Clipboard").clicked() {
-                        ui.output_mut(|o| o.copied_text = copy_text);
-                        show_copied_message = true;
-                    }
+                    ui.horizontal(|ui| {
+                        let copy_text = qr_data.clone();
+                        if ui.button("Copy Data to Clipboard").clicked() {
+                            ui.output_mut(|o| o.copied_text = copy_text);
+                            show_copied_message = true;
+                        }
+                    });
 
                     ui.add_space(10.0);
 
                     ui.label(
                         RichText::new(
-                            "ℹ️ Share this QR code with someone to establish a mutual contact",
+                            "Share this QR code with someone to establish a mutual contact",
                         )
                         .small()
                         .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(
-                            "⚠️ Anyone with this QR code can automatically become your contact",
+                            "WARNING: Anyone with this QR code can automatically become your contact",
                         )
                         .small()
                         .color(DashColors::warning_color(dark_mode)),

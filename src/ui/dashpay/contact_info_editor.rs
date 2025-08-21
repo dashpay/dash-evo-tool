@@ -96,6 +96,26 @@ impl ContactInfoEditorScreen {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
+        // Header with Back button and title
+        ui.horizontal(|ui| {
+            if ui.button("Back").clicked() {
+                action = AppAction::PopScreen;
+            }
+            ui.heading("Edit Private Contact Details");
+            ui.add_space(10.0);
+            crate::ui::helpers::info_icon_button(
+                ui,
+                "About Private Contact Information:\n\n\
+                • This information is stored locally on your device\n\
+                • It is NEVER shared with the contact or published\n\
+                • Only you can see these nicknames and notes\n\
+                • Hidden contacts can still send you payments\n\
+                • Use this to organize and remember your contacts",
+            );
+        });
+
+        ui.separator();
+
         // Show message if any
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
@@ -123,12 +143,12 @@ impl ContactInfoEditorScreen {
                 ui.separator();
 
                 // Nickname field
-                ui.label(RichText::new("Nickname:").strong().color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
-                ui.label(RichText::new("Give this contact a custom name that only you will see").small()
+                ui.label(RichText::new("Private Nickname:").strong().color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
+                ui.label(RichText::new("Give this contact a custom name that ONLY YOU will see").small()
                     .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                 ui.add(
                     TextEdit::singleline(&mut self.nickname)
-                        .hint_text("e.g., 'Alice from work' or 'Bob the builder'")
+                        .hint_text("e.g., 'Mom', 'Boss', 'Alice from work'")
                         .desired_width(300.0)
                 );
 
@@ -149,7 +169,7 @@ impl ContactInfoEditorScreen {
 
                 // Hidden checkbox
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.is_hidden, "Hide this contact");
+                    ui.checkbox(&mut self.is_hidden, "Hide this contact from my list");
                 });
                 if self.is_hidden {
                     ui.label(RichText::new("⚠️ Hidden contacts won't appear in your contact list but can still send you payments")
@@ -225,20 +245,6 @@ impl ContactInfoEditorScreen {
                 });
             });
 
-            ui.add_space(20.0);
-
-            // Information box
-            ui.group(|ui| {
-                ui.label(RichText::new("ℹ️ About Contact Information").strong()
-                    .color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
-                ui.separator();
-                let info_color = if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY };
-                ui.label(RichText::new("• Nicknames and notes are stored locally and encrypted").color(info_color));
-                ui.label(RichText::new("• This information is never shared with the contact").color(info_color));
-                ui.label(RichText::new("• Hidden contacts can still send you payments").color(info_color));
-                ui.label(RichText::new("• You can unhide contacts at any time").color(info_color));
-                ui.label(RichText::new("• Contact information is backed up with your identity").color(info_color));
-            });
         });
 
         action
@@ -277,7 +283,11 @@ impl ScreenLike for ContactInfoEditorScreen {
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![("Edit Contact Information", AppAction::None)],
+            vec![
+                ("DashPay", AppAction::None),
+                ("Contact Details", AppAction::PopScreen),
+                ("Edit", AppAction::None),
+            ],
             right_buttons,
         );
 

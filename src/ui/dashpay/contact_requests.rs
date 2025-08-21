@@ -83,12 +83,10 @@ impl ContactRequests {
     }
 
     pub fn refresh(&mut self) -> AppAction {
-        // Don't auto-fetch - just clear state
-        self.incoming_requests.clear();
-        self.outgoing_requests.clear();
+        // Don't clear requests - preserve loaded state
+        // Only clear temporary states
         self.message = None;
         self.loading = false;
-        self.has_fetched_requests = false;
         AppAction::None
     }
 
@@ -185,13 +183,11 @@ impl ContactRequests {
                         if let Some((msg, _)) = &self.message {
                             ui.label(msg);
                         } else {
-                            ui.label("Processing...");
+                            ui.label("Loading...");
                         }
                     });
-                    ui.separator();
-                }
-
-                ScrollArea::vertical().show(ui, |ui| {
+                } else {
+                    ScrollArea::vertical().show(ui, |ui| {
                     if !self.has_fetched_requests {
                         ui.label("No contact requests loaded");
                     } else if self.incoming_requests.is_empty() {
@@ -312,6 +308,7 @@ impl ContactRequests {
                         }
                     }
                 });
+                }
             }
             RequestTab::Outgoing => {
                 // Loading indicator
@@ -329,13 +326,11 @@ impl ContactRequests {
                         if let Some((msg, _)) = &self.message {
                             ui.label(msg);
                         } else {
-                            ui.label("Processing...");
+                            ui.label("Loading...");
                         }
                     });
-                    ui.separator();
-                }
-
-                ScrollArea::vertical().show(ui, |ui| {
+                } else {
+                    ScrollArea::vertical().show(ui, |ui| {
                     if !self.has_fetched_requests {
                         ui.label("No contact requests loaded");
                     } else if self.outgoing_requests.is_empty() {
@@ -397,6 +392,7 @@ impl ContactRequests {
                         }
                     }
                 });
+                }
             }
         }
 

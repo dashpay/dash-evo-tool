@@ -298,3 +298,127 @@ pub async fn load_payment_history(
         )))
     }
 }
+
+/// Fetch a contact's public profile from the Platform
+pub async fn fetch_contact_profile(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    _identity: QualifiedIdentity, // May be needed for future privacy features
+    contact_id: Identifier,
+) -> Result<BackendTaskSuccessResult, String> {
+    let dashpay_contract = app_context.dashpay_contract.clone();
+
+    // Query for the contact's profile document
+    let mut query = DocumentQuery::new(dashpay_contract, "profile")
+        .map_err(|e| format!("Failed to create profile query: {}", e))?;
+
+    query = query.with_where(WhereClause {
+        field: "$ownerId".to_string(),
+        operator: WhereOperator::Equal,
+        value: Value::Identifier(contact_id.to_buffer()),
+    });
+    query.limit = 1;
+
+    match Document::fetch_many(sdk, query).await {
+        Ok(results) => {
+            // Extract the profile document if found
+            let profile_doc = results.into_iter().next().and_then(|(_, doc)| doc);
+            Ok(BackendTaskSuccessResult::DashPayContactProfile(profile_doc))
+        }
+        Err(e) => {
+            // Return a more helpful error message
+            Err(format!(
+                "Failed to fetch profile for identity {}: {}. This identity may not have a public profile yet.",
+                contact_id.to_string(Encoding::Base58),
+                e
+            ))
+        }
+    }
+}
+
+/// Search for public profiles on the Platform
+pub async fn search_profiles(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    _identity: QualifiedIdentity, // May be needed for future privacy features
+    search_query: String,
+) -> Result<BackendTaskSuccessResult, String> {
+    let dashpay_contract = app_context.dashpay_contract.clone();
+    let mut results = Vec::new();
+
+    let query_trimmed = search_query.trim();
+    if query_trimmed.is_empty() {
+        return Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(
+            results,
+        ));
+    }
+
+    // First, try to parse as identity ID (exact match)
+    if let Ok(identity_id) = Identifier::from_string(query_trimmed, Encoding::Base58) {
+        // Query for specific identity's profile
+        let mut query = DocumentQuery::new(dashpay_contract.clone(), "profile")
+            .map_err(|e| format!("Failed to create profile query: {}", e))?;
+
+        query = query.with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(identity_id.to_buffer()),
+        });
+        query.limit = 1;
+
+        let identity_results = Document::fetch_many(sdk, query)
+            .await
+            .map_err(|e| format!("Failed to fetch profile by identity: {}", e))?;
+
+        // Add identity results
+        for (_, doc) in identity_results {
+            if let Some(document) = doc {
+                results.push((identity_id, document));
+            }
+        }
+    }
+
+    // If no results from identity search or query doesn't look like identity ID,
+    // search by display name (partial match)
+    if results.is_empty() {
+        // Query all profiles and filter by display name client-side
+        // Note: Platform queries don't support partial text matching yet,
+        // so we fetch multiple profiles and filter
+        let mut query = DocumentQuery::new(dashpay_contract, "profile")
+            .map_err(|e| format!("Failed to create profile query: {}", e))?;
+
+        // Limit results to prevent too much data
+        query.limit = 50;
+
+        let all_results = Document::fetch_many(sdk, query)
+            .await
+            .map_err(|e| format!("Failed to search profiles: {}", e))?;
+
+        // Filter results by display name match
+        let search_lower = query_trimmed.to_lowercase();
+        for (_, doc) in all_results {
+            if let Some(document) = doc {
+                // Extract display name from document
+                let properties = match &document {
+                    Document::V0(doc_v0) => doc_v0.properties(),
+                };
+
+                if let Some(display_name_val) = properties.get("displayName") {
+                    if let Some(display_name) = display_name_val.as_text() {
+                        if display_name.to_lowercase().contains(&search_lower) {
+                            // Get the identity ID from document owner
+                            let identity_id = match &document {
+                                Document::V0(doc_v0) => doc_v0.owner_id(),
+                            };
+                            results.push((identity_id, document));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(
+        results,
+    ))
+}

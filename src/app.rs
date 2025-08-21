@@ -11,7 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
-use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen};
+use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
@@ -236,6 +236,8 @@ impl AppState {
             DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
         let mut dashpay_payments_screen =
             DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Payments);
+        let mut dashpay_profile_search_screen =
+            ProfileSearchScreen::new(mainnet_app_context.clone());
 
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
@@ -283,6 +285,7 @@ impl AppState {
                 DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
             dashpay_payments_screen =
                 DashPayScreen::new(testnet_app_context, DashPaySubscreen::Payments);
+            dashpay_profile_search_screen = ProfileSearchScreen::new(testnet_app_context.clone());
         } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
             let devnet_app_context = devnet_app_context.as_ref().unwrap();
             identities_screen = IdentitiesScreen::new(devnet_app_context);
@@ -314,6 +317,7 @@ impl AppState {
                 DashPayScreen::new(devnet_app_context, DashPaySubscreen::Profile);
             dashpay_payments_screen =
                 DashPayScreen::new(devnet_app_context, DashPaySubscreen::Payments);
+            dashpay_profile_search_screen = ProfileSearchScreen::new(devnet_app_context.clone());
         } else if chosen_network == Network::Regtest && local_app_context.is_some() {
             let local_app_context = local_app_context.as_ref().unwrap();
             identities_screen = IdentitiesScreen::new(local_app_context);
@@ -344,6 +348,7 @@ impl AppState {
                 DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
             dashpay_payments_screen =
                 DashPayScreen::new(local_app_context, DashPaySubscreen::Payments);
+            dashpay_profile_search_screen = ProfileSearchScreen::new(local_app_context.clone());
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
@@ -502,6 +507,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDashPayPayments,
                     Screen::DashPayScreen(dashpay_payments_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayProfileSearch,
+                    Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
                 ),
             ]
             .into(),

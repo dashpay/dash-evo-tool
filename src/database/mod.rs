@@ -1,4 +1,5 @@
 mod asset_lock_transaction;
+mod contacts;
 mod contested_names;
 pub(crate) mod contracts;
 mod identities;

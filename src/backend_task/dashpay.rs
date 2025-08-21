@@ -41,6 +41,14 @@ pub enum DashPayTask {
     LoadContactRequests {
         identity: QualifiedIdentity,
     },
+    FetchContactProfile {
+        identity: QualifiedIdentity,
+        contact_id: Identifier,
+    },
+    SearchProfiles {
+        identity: QualifiedIdentity,
+        search_query: String,
+    },
     SendContactRequest {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
@@ -98,6 +106,16 @@ impl AppContext {
             DashPayTask::LoadContactRequests { identity } => {
                 contact_requests::load_contact_requests(self, sdk, identity).await
             }
+            DashPayTask::FetchContactProfile {
+                identity,
+                contact_id,
+            } => {
+                profile::fetch_contact_profile(self, sdk, identity, contact_id).await
+            }
+            DashPayTask::SearchProfiles {
+                identity,
+                search_query,
+            } => profile::search_profiles(self, sdk, identity, search_query).await,
             DashPayTask::SendContactRequest {
                 identity,
                 signing_key,

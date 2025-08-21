@@ -93,8 +93,8 @@ impl ContactsList {
     }
 
     pub fn refresh(&mut self) -> AppAction {
-        // Just clear state, don't auto-fetch
-        self.contacts.clear();
+        // Don't clear contacts - preserve loaded state
+        // Only clear temporary states
         self.message = None;
         self.loading = false;
         AppAction::None
@@ -122,7 +122,6 @@ impl ContactsList {
         } else {
             // Identity selector
             ui.horizontal(|ui| {
-                ui.label("Identity:");
                 let response = ui.add(
                     IdentitySelector::new(
                         "contacts_identity_selector",
@@ -131,6 +130,7 @@ impl ContactsList {
                     )
                     .selected_identity(&mut self.selected_identity)
                     .unwrap()
+                    .label("Identity:")
                     .width(300.0)
                     .other_option(false),
                 );
@@ -144,9 +144,11 @@ impl ContactsList {
             });
 
             ui.add_space(5.0);
+            ui.separator();
 
             // Search bar
             ui.horizontal(|ui| {
+                ui.set_min_height(40.0);
                 ui.label("Search:");
                 ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(200.0));
                 if ui.button("Clear").clicked() {
@@ -156,53 +158,82 @@ impl ContactsList {
 
             // Filter and sort options in one line
             ui.horizontal(|ui| {
-                ui.label("Filter:");
-                egui::ComboBox::from_id_source("filter_combo")
-                    .selected_text(match self.search_filter {
-                        SearchFilter::All => "All",
-                        SearchFilter::WithUsernames => "With usernames",
-                        SearchFilter::WithoutUsernames => "No usernames",
-                        SearchFilter::WithBio => "With bio",
-                        SearchFilter::Recent => "Recent",
-                        SearchFilter::Hidden => "Hidden",
-                        SearchFilter::Visible => "Visible",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.search_filter, SearchFilter::All, "All");
-                        ui.selectable_value(
-                            &mut self.search_filter,
-                            SearchFilter::WithUsernames,
-                            "With usernames",
-                        );
-                        ui.selectable_value(
-                            &mut self.search_filter,
-                            SearchFilter::WithoutUsernames,
-                            "No usernames",
-                        );
-                        ui.selectable_value(
-                            &mut self.search_filter,
-                            SearchFilter::WithBio,
-                            "With bio",
-                        );
-                        ui.selectable_value(&mut self.search_filter, SearchFilter::Hidden, "Hidden");
-                        ui.selectable_value(&mut self.search_filter, SearchFilter::Visible, "Visible");
-                    });
+                ui.set_min_height(40.0);
+                ui.vertical(|ui| {
+                    ui.add_space(11.0);
+                    ui.label("Filter:");
+                });
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    egui::ComboBox::from_id_source("filter_combo")
+                        .selected_text(match self.search_filter {
+                            SearchFilter::All => "All",
+                            SearchFilter::WithUsernames => "With usernames",
+                            SearchFilter::WithoutUsernames => "No usernames",
+                            SearchFilter::WithBio => "With bio",
+                            SearchFilter::Recent => "Recent",
+                            SearchFilter::Hidden => "Hidden",
+                            SearchFilter::Visible => "Visible",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.search_filter, SearchFilter::All, "All");
+                            ui.selectable_value(
+                                &mut self.search_filter,
+                                SearchFilter::WithUsernames,
+                                "With usernames",
+                            );
+                            ui.selectable_value(
+                                &mut self.search_filter,
+                                SearchFilter::WithoutUsernames,
+                                "No usernames",
+                            );
+                            ui.selectable_value(
+                                &mut self.search_filter,
+                                SearchFilter::WithBio,
+                                "With bio",
+                            );
+                            ui.selectable_value(
+                                &mut self.search_filter,
+                                SearchFilter::Hidden,
+                                "Hidden",
+                            );
+                            ui.selectable_value(
+                                &mut self.search_filter,
+                                SearchFilter::Visible,
+                                "Visible",
+                            );
+                        });
+                });
 
                 ui.separator();
 
-                ui.label("Sort:");
-                egui::ComboBox::from_id_source("sort_combo")
-                    .selected_text(match self.sort_order {
-                        SortOrder::Name => "Name",
-                        SortOrder::Username => "Username",
-                        SortOrder::DateAdded => "Date",
-                        SortOrder::AccountRef => "Account",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.sort_order, SortOrder::Name, "Name");
-                        ui.selectable_value(&mut self.sort_order, SortOrder::Username, "Username");
-                        ui.selectable_value(&mut self.sort_order, SortOrder::AccountRef, "Account");
-                    });
+                ui.vertical(|ui| {
+                    ui.add_space(11.0);
+                    ui.label("Sort:");
+                });
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    egui::ComboBox::from_id_source("sort_combo")
+                        .selected_text(match self.sort_order {
+                            SortOrder::Name => "Name",
+                            SortOrder::Username => "Username",
+                            SortOrder::DateAdded => "Date",
+                            SortOrder::AccountRef => "Account",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.sort_order, SortOrder::Name, "Name");
+                            ui.selectable_value(
+                                &mut self.sort_order,
+                                SortOrder::Username,
+                                "Username",
+                            );
+                            ui.selectable_value(
+                                &mut self.sort_order,
+                                SortOrder::AccountRef,
+                                "Account",
+                            );
+                        });
+                });
 
                 ui.separator();
 
@@ -282,9 +313,7 @@ impl ContactsList {
                 }
 
                 // Enhanced search functionality
-                let search_in_text = |text: &str| {
-                    text.to_lowercase().contains(&query)
-                };
+                let search_in_text = |text: &str| text.to_lowercase().contains(&query);
 
                 // Search in username
                 if let Some(username) = &contact.username {
@@ -461,9 +490,8 @@ impl ContactsList {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    // Action buttons
+                                    // Just two buttons: Pay and View Profile
                                     if ui.button("Pay").clicked() {
-                                        // TODO: Navigate to send payment screen with this contact
                                         action = AppAction::AddScreen(
                                             ScreenType::DashPaySendPayment(
                                                 self.selected_identity.clone().unwrap(),
@@ -473,20 +501,9 @@ impl ContactsList {
                                         );
                                     }
 
-                                    if ui.button("Details").clicked() {
-                                        // TODO: Navigate to contact details screen
+                                    if ui.button("View Profile").clicked() {
                                         action = AppAction::AddScreen(
-                                            ScreenType::DashPayContactDetails(
-                                                self.selected_identity.clone().unwrap(),
-                                                contact.identity_id,
-                                            )
-                                            .create_screen(&self.app_context),
-                                        );
-                                    }
-
-                                    if ui.button("Edit").clicked() {
-                                        action = AppAction::AddScreen(
-                                            ScreenType::DashPayContactInfoEditor(
+                                            ScreenType::DashPayContactProfileViewer(
                                                 self.selected_identity.clone().unwrap(),
                                                 contact.identity_id,
                                             )

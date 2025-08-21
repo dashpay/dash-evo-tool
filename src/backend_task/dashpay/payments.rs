@@ -286,7 +286,7 @@ async fn store_payment_record(
     //     address_index INTEGER NOT NULL
     // );
 
-    eprintln!("DEBUG: Would store payment record: {:?}", payment);
+    // TODO: Store payment record in database
     Ok(())
 }
 

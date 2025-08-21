@@ -113,10 +113,6 @@ pub async fn load_contact_requests(
                 if to_id == from_id {
                     // Mutual request found - they are now contacts
                     contacts_established.insert(from_id);
-                    eprintln!(
-                        "DEBUG: Found mutual contact request with {}",
-                        from_id.to_string(Encoding::Base58)
-                    );
                 }
             }
         }
@@ -133,12 +129,6 @@ pub async fn load_contact_requests(
             true
         }
     });
-
-    eprintln!(
-        "DEBUG: After filtering mutual contacts - Incoming: {}, Outgoing: {}",
-        incoming.len(),
-        outgoing.len()
-    );
 
     Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
 }
@@ -222,7 +212,6 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Get key indices for ECDH
-    eprintln!("DEBUG: Getting key indices for ECDH...");
     let sender_key = &signing_key; // Use the selected key
 
     // Find a recipient key that supports ECDH (must be ECDSA_SECP256K1)
@@ -234,13 +223,10 @@ pub async fn send_contact_request_with_proof(
             false,
         )
         .ok_or_else(|| {
-            eprintln!("DEBUG: Recipient does not have compatible key");
             "Recipient does not have a compatible ECDSA_SECP256K1 authentication key for ECDH encryption".to_string()
         })?;
-    eprintln!("DEBUG: Found recipient key with ID: {}", recipient_key.id());
 
     // Step 4: Generate ECDH shared key and encrypt data
-    eprintln!("DEBUG: Generating ECDH shared key...");
     let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
     let sender_private_key = identity
         .private_keys
@@ -252,15 +238,9 @@ pub async fn send_contact_request_with_proof(
             &wallets,
             identity.network,
         )
-        .map_err(|e| {
-            eprintln!("DEBUG: Error resolving private key: {}", e);
-            format!("Error resolving private key: {}", e)
-        })?
+        .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| {
-            eprintln!("DEBUG: Sender private key not found");
-            "Sender private key not found".to_string()
-        })?;
+        .ok_or_else(|| "Sender private key not found".to_string())?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, &recipient_key)
         .map_err(|e| format!("Failed to generate ECDH shared key: {}", e))?;
@@ -295,7 +275,6 @@ pub async fn send_contact_request_with_proof(
     .map_err(|e| format!("Failed to encrypt extended public key: {}", e))?;
 
     // Step 5: Get the current core chain height for synchronization
-    eprintln!("DEBUG: Fetching current core chain height...");
     let (core_height, current_height_for_validation) =
         match CurrentQuorumsInfo::fetch_unproved(sdk, NoParamQuery {}).await {
             Ok(Some(quorum_info)) => {
@@ -309,17 +288,14 @@ pub async fn send_contact_request_with_proof(
                 )
             }
             Ok(None) => {
-                eprintln!("DEBUG: No quorum info available, using 0 for core height");
                 (0u32, None) // Fallback if no quorum info available
             }
             Err(e) => {
-                eprintln!("DEBUG: Error fetching core height: {}, using 0", e);
                 (0u32, None) // Fallback on error
             }
         };
 
     // Step 5.5: Validate the contact request before proceeding
-    eprintln!("DEBUG: Validating contact request parameters...");
     let validation = validate_contact_request_before_send(
         sdk,
         &identity,
@@ -339,14 +315,11 @@ pub async fn send_contact_request_with_proof(
             "Contact request validation failed: {}",
             validation.errors.join("; ")
         );
-        eprintln!("DEBUG: {}", error_msg);
         return Err(error_msg);
     }
 
     // Log any warnings
-    for warning in &validation.warnings {
-        eprintln!("DEBUG: Validation warning: {}", warning);
-    }
+    for warning in &validation.warnings {}
 
     // Step 6: Create contact request document
     let mut properties = BTreeMap::new();
@@ -442,16 +415,11 @@ pub async fn send_contact_request_with_proof(
         builder = builder.with_state_transition_creation_options(options);
     }
 
-    eprintln!("DEBUG: Submitting contact request state transition...");
     let _result = sdk
         .document_create(builder, &identity_key, &identity)
         .await
-        .map_err(|e| {
-            eprintln!("DEBUG: Error creating contact request: {}", e);
-            format!("Error creating contact request: {}", e)
-        })?;
+        .map_err(|e| format!("Error creating contact request: {}", e))?;
 
-    eprintln!("DEBUG: Contact request created successfully");
     Ok(BackendTaskSuccessResult::Message(format!(
         "Contact request sent successfully to {}",
         to_username_or_id
@@ -530,19 +498,11 @@ pub async fn accept_contact_request(
         .map_err(|e| format!("Failed to create query: {}", e))?;
     let query_with_id = DocumentQuery::with_document_id(query, &request_id);
 
-    eprintln!("DEBUG: Fetching contact request document...");
     let doc = Document::fetch(sdk, query_with_id)
         .await
-        .map_err(|e| {
-            eprintln!("DEBUG: Error fetching contact request: {}", e);
-            format!("Failed to fetch contact request: {}", e)
-        })?
-        .ok_or_else(|| {
-            eprintln!("DEBUG: Contact request {} not found", request_id);
-            format!("Contact request {} not found", request_id)
-        })?;
+        .map_err(|e| format!("Failed to fetch contact request: {}", e))?
+        .ok_or_else(|| format!("Contact request {} not found", request_id))?;
 
-    eprintln!("DEBUG: Contact request found, extracting sender ID...");
     // Get the sender's identity (the owner of the incoming request)
     let from_identity_id = doc.owner_id();
     eprintln!(
@@ -567,21 +527,15 @@ pub async fn accept_contact_request(
         });
     existing_query.limit = 1;
 
-    eprintln!("DEBUG: Checking for existing reverse contact request...");
     let existing = Document::fetch_many(sdk, existing_query)
         .await
-        .map_err(|e| {
-            eprintln!("DEBUG: Error checking existing requests: {}", e);
-            format!("Error checking existing requests: {}", e)
-        })?;
+        .map_err(|e| format!("Error checking existing requests: {}", e))?;
 
     if !existing.is_empty() {
-        eprintln!("DEBUG: Contact already established");
         return Ok(BackendTaskSuccessResult::Message(
             "Contact already established (request already sent in reverse direction)".to_string(),
         ));
     }
-    eprintln!("DEBUG: No existing reverse request found, proceeding...");
 
     // Get a signing key for the identity
     let signing_key = identity
@@ -615,8 +569,8 @@ pub async fn accept_contact_request(
     .await;
 
     match &result {
-        Ok(_) => eprintln!("DEBUG: Successfully sent contact request back"),
-        Err(e) => eprintln!("DEBUG: Error sending contact request back: {}", e),
+        Ok(_) => {}
+        Err(_) => {}
     }
 
     result

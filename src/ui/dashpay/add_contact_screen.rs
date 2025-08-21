@@ -192,8 +192,13 @@ impl ScreenLike for AddContactScreen {
                 return self.show_success_screen(ui);
             }
 
-            // Header
-            ui.heading("Send Contact Request");
+            // Header with Back button
+            ui.horizontal(|ui| {
+                if ui.button("Back").clicked() {
+                    inner_action = AppAction::PopScreen;
+                }
+                ui.heading("Send Contact Request");
+            });
             ui.separator();
 
             // Show message if any

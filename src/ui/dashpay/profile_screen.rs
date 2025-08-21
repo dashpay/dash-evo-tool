@@ -335,11 +335,9 @@ impl ProfileScreen {
                 };
                 ui.label(RichText::new(status_text).color(DashColors::text_primary(dark_mode)));
             });
-            ui.separator();
             return action;
-        }
-
-        ScrollArea::vertical().show(ui, |ui| {
+        } else {
+            ScrollArea::vertical().show(ui, |ui| {
             if self.editing {
                 // Edit mode
                 ui.horizontal(|ui| {
@@ -669,6 +667,7 @@ impl ProfileScreen {
 
             }
         });
+        }
 
         action
     }

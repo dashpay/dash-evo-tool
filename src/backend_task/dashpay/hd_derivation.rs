@@ -160,7 +160,7 @@ pub fn derive_auto_accept_key(
 
     // Build derivation path: m/9'/5'/16'/timestamp'
     let path = DerivationPath::from_str(&format!(
-        "m/9'/5'/{}'/{}'/",
+        "m/9'/5'/{}'/{}'",
         DASHPAY_AUTO_ACCEPT_FEATURE, timestamp
     ))
     .map_err(|e| format!("Invalid derivation path: {}", e))?;

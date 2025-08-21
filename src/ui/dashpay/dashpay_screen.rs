@@ -20,6 +20,7 @@ pub enum DashPaySubscreen {
     Requests,
     Profile,
     Payments,
+    ProfileSearch,
 }
 
 pub struct DashPayScreen {
@@ -49,6 +50,11 @@ impl DashPayScreen {
             DashPaySubscreen::Requests => self.contact_requests.render(ui),
             DashPaySubscreen::Profile => self.profile_screen.render(ui),
             DashPaySubscreen::Payments => self.payment_history.render(ui),
+            DashPaySubscreen::ProfileSearch => {
+                // ProfileSearch is a separate screen, not embedded
+                ui.label("Use the Search Profiles tab to search for public profiles");
+                AppAction::None
+            }
         }
     }
 }
@@ -64,6 +70,9 @@ impl ScreenLike for DashPayScreen {
             } // Ignore return value for now
             DashPaySubscreen::Profile => self.profile_screen.refresh(),
             DashPaySubscreen::Payments => self.payment_history.refresh(),
+            DashPaySubscreen::ProfileSearch => {
+                // ProfileSearch is a separate screen, not embedded here
+            }
         }
     }
 
@@ -106,6 +115,7 @@ impl ScreenLike for DashPayScreen {
                 "Load Payments",
                 DesiredAppAction::Custom("fetch_payment_history".to_string()),
             )],
+            DashPaySubscreen::ProfileSearch => vec![],
         };
 
         action |= add_top_panel(
@@ -121,6 +131,7 @@ impl ScreenLike for DashPayScreen {
             DashPaySubscreen::Requests => RootScreenType::RootScreenDashPayRequests,
             DashPaySubscreen::Profile => RootScreenType::RootScreenDashPayProfile,
             DashPaySubscreen::Payments => RootScreenType::RootScreenDashPayPayments,
+            DashPaySubscreen::ProfileSearch => RootScreenType::RootScreenDashPayProfileSearch,
         };
         action |= add_left_panel(ctx, &self.app_context, root_screen);
 
@@ -163,6 +174,9 @@ impl ScreenLike for DashPayScreen {
             DashPaySubscreen::Payments => {
                 self.payment_history.display_message(message, message_type)
             }
+            DashPaySubscreen::ProfileSearch => {
+                // ProfileSearch is a separate screen, not embedded here
+            }
         }
     }
 
@@ -172,6 +186,9 @@ impl ScreenLike for DashPayScreen {
             DashPaySubscreen::Requests => self.contact_requests.display_task_result(result),
             DashPaySubscreen::Contacts => self.contacts_list.display_task_result(result),
             DashPaySubscreen::Payments => self.payment_history.display_task_result(result),
+            DashPaySubscreen::ProfileSearch => {
+                // ProfileSearch is a separate screen, not embedded here
+            }
         }
     }
 }

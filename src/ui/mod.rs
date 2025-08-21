@@ -12,6 +12,8 @@ use crate::ui::contracts_documents::document_action_screen::{
 use crate::ui::dashpay::add_contact_screen::AddContactScreen;
 use crate::ui::dashpay::contact_details::ContactDetailsScreen;
 use crate::ui::dashpay::contact_info_editor::ContactInfoEditorScreen;
+use crate::ui::dashpay::contact_profile_viewer::ContactProfileViewerScreen;
+use crate::ui::dashpay::profile_search::ProfileSearchScreen;
 use crate::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
 use crate::ui::dashpay::send_payment::SendPaymentScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen};
@@ -101,6 +103,7 @@ pub enum RootScreenType {
     RootScreenDashPayRequests,
     RootScreenDashPayProfile,
     RootScreenDashPayPayments,
+    RootScreenDashPayProfileSearch,
 }
 
 impl RootScreenType {
@@ -129,6 +132,7 @@ impl RootScreenType {
             RootScreenType::RootScreenDashPayRequests => 19,
             RootScreenType::RootScreenDashPayProfile => 20,
             RootScreenType::RootScreenDashPayPayments => 21,
+            RootScreenType::RootScreenDashPayProfileSearch => 22,
         }
     }
 
@@ -157,6 +161,7 @@ impl RootScreenType {
             19 => Some(RootScreenType::RootScreenDashPayRequests),
             20 => Some(RootScreenType::RootScreenDashPayProfile),
             21 => Some(RootScreenType::RootScreenDashPayPayments),
+            22 => Some(RootScreenType::RootScreenDashPayProfileSearch),
             _ => None,
         }
     }
@@ -192,6 +197,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenDashPayRequests => ScreenType::DashPayRequests,
             RootScreenType::RootScreenDashPayProfile => ScreenType::DashPayProfile,
             RootScreenType::RootScreenDashPayPayments => ScreenType::DashPayPayments,
+            RootScreenType::RootScreenDashPayProfileSearch => ScreenType::DashPayProfileSearch,
         }
     }
 }
@@ -265,9 +271,11 @@ pub enum ScreenType {
     DashPayPayments,
     DashPayAddContact,
     DashPayContactDetails(QualifiedIdentity, Identifier),
+    DashPayContactProfileViewer(QualifiedIdentity, Identifier),
     DashPaySendPayment(QualifiedIdentity, Identifier),
     DashPayContactInfoEditor(QualifiedIdentity, Identifier),
     DashPayQRGenerator,
+    DashPayProfileSearch,
 }
 
 impl ScreenType {
@@ -472,6 +480,13 @@ impl ScreenType {
                     *contact_id,
                 ))
             }
+            ScreenType::DashPayContactProfileViewer(identity, contact_id) => {
+                Screen::DashPayContactProfileViewerScreen(ContactProfileViewerScreen::new(
+                    app_context.clone(),
+                    identity.clone(),
+                    *contact_id,
+                ))
+            }
             ScreenType::DashPaySendPayment(identity, contact_id) => {
                 Screen::DashPaySendPaymentScreen(SendPaymentScreen::new(
                     app_context.clone(),
@@ -488,6 +503,9 @@ impl ScreenType {
             }
             ScreenType::DashPayQRGenerator => {
                 Screen::DashPayQRGeneratorScreen(QRCodeGeneratorScreen::new(app_context.clone()))
+            }
+            ScreenType::DashPayProfileSearch => {
+                Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
             }
         }
     }
@@ -544,9 +562,11 @@ pub enum Screen {
     DashPayScreen(DashPayScreen),
     DashPayAddContactScreen(AddContactScreen),
     DashPayContactDetailsScreen(ContactDetailsScreen),
+    DashPayContactProfileViewerScreen(ContactProfileViewerScreen),
     DashPaySendPaymentScreen(SendPaymentScreen),
     DashPayContactInfoEditorScreen(ContactInfoEditorScreen),
     DashPayQRGeneratorScreen(QRCodeGeneratorScreen),
+    DashPayProfileSearchScreen(ProfileSearchScreen),
 }
 
 impl Screen {
@@ -601,9 +621,11 @@ impl Screen {
             Screen::DashPayScreen(screen) => screen.app_context = app_context,
             Screen::DashPayAddContactScreen(screen) => screen.app_context = app_context,
             Screen::DashPayContactDetailsScreen(screen) => screen.app_context = app_context,
+            Screen::DashPayContactProfileViewerScreen(screen) => screen.app_context = app_context,
             Screen::DashPaySendPaymentScreen(screen) => screen.app_context = app_context,
             Screen::DashPayContactInfoEditorScreen(screen) => screen.app_context = app_context,
             Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
+            Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -771,10 +793,14 @@ impl Screen {
                 DashPaySubscreen::Requests => ScreenType::DashPayRequests,
                 DashPaySubscreen::Profile => ScreenType::DashPayProfile,
                 DashPaySubscreen::Payments => ScreenType::DashPayPayments,
+                DashPaySubscreen::ProfileSearch => ScreenType::DashPayProfileSearch,
             },
             Screen::DashPayAddContactScreen(_) => ScreenType::DashPayAddContact,
             Screen::DashPayContactDetailsScreen(screen) => {
                 ScreenType::DashPayContactDetails(screen.identity.clone(), screen.contact_id)
+            }
+            Screen::DashPayContactProfileViewerScreen(screen) => {
+                ScreenType::DashPayContactProfileViewer(screen.identity.clone(), screen.contact_id)
             }
             Screen::DashPaySendPaymentScreen(screen) => {
                 ScreenType::DashPaySendPayment(screen.from_identity.clone(), screen.to_contact_id)
@@ -783,6 +809,7 @@ impl Screen {
                 ScreenType::DashPayContactInfoEditor(screen.identity.clone(), screen.contact_id)
             }
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
+            Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
         }
     }
 }
@@ -839,9 +866,11 @@ impl ScreenLike for Screen {
             Screen::DashPayScreen(screen) => screen.refresh(),
             Screen::DashPayAddContactScreen(screen) => screen.refresh(),
             Screen::DashPayContactDetailsScreen(screen) => screen.refresh(),
+            Screen::DashPayContactProfileViewerScreen(screen) => screen.refresh(),
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh(),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh(),
             Screen::DashPayQRGeneratorScreen(_) => {}
+            Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
         }
     }
 
@@ -896,9 +925,11 @@ impl ScreenLike for Screen {
             Screen::DashPayScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayAddContactScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayContactDetailsScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DashPayContactProfileViewerScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayQRGeneratorScreen(_) => {}
+            Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -953,9 +984,11 @@ impl ScreenLike for Screen {
             Screen::DashPayScreen(screen) => screen.ui(ctx),
             Screen::DashPayAddContactScreen(screen) => screen.ui(ctx),
             Screen::DashPayContactDetailsScreen(screen) => screen.ui(ctx),
+            Screen::DashPayContactProfileViewerScreen(screen) => screen.ui(ctx),
             Screen::DashPaySendPaymentScreen(screen) => screen.ui(ctx),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.ui(ctx),
             Screen::DashPayQRGeneratorScreen(screen) => screen.ui(ctx),
+            Screen::DashPayProfileSearchScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -1030,6 +1063,9 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            Screen::DashPayContactProfileViewerScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
             Screen::DashPaySendPaymentScreen(screen) => {
                 screen.display_message(message, message_type)
             }
@@ -1037,6 +1073,9 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             Screen::DashPayQRGeneratorScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_message(message, message_type)
             }
         }
@@ -1173,6 +1212,9 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => {
                 screen.display_message("Success", MessageType::Success)
             }
+            Screen::DashPayContactProfileViewerScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
             Screen::DashPaySendPaymentScreen(screen) => {
                 screen.display_message("Success", MessageType::Success)
             }
@@ -1181,6 +1223,9 @@ impl ScreenLike for Screen {
             }
             Screen::DashPayQRGeneratorScreen(screen) => {
                 screen.display_message("Success", MessageType::Success)
+            }
+            Screen::DashPayProfileSearchScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
             }
         }
     }
@@ -1236,9 +1281,11 @@ impl ScreenLike for Screen {
             Screen::DashPayScreen(screen) => screen.pop_on_success(),
             Screen::DashPayAddContactScreen(_) => {}
             Screen::DashPayContactDetailsScreen(_) => {}
+            Screen::DashPayContactProfileViewerScreen(_) => {}
             Screen::DashPaySendPaymentScreen(_) => {}
             Screen::DashPayContactInfoEditorScreen(_) => {}
             Screen::DashPayQRGeneratorScreen(_) => {}
+            Screen::DashPayProfileSearchScreen(_) => {}
         }
     }
 }

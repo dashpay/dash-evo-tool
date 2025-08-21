@@ -214,10 +214,6 @@ pub async fn load_contacts(
                 if to_id == from_id {
                     // Mutual contact found
                     contacts.insert(from_id);
-                    eprintln!(
-                        "DEBUG: Found mutual contact: {}",
-                        from_id.to_string(Encoding::Base58)
-                    );
                 }
             }
         }
@@ -339,12 +335,6 @@ pub async fn load_contacts(
             }
         }
     }
-
-    eprintln!("DEBUG: Total contacts found: {}", contacts.len());
-    eprintln!(
-        "DEBUG: Contact info documents found: {}",
-        contact_info_map.len()
-    );
 
     // Build enriched contact list
     let contact_list: Vec<ContactData> = contacts

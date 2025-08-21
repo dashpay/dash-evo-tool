@@ -16,7 +16,9 @@ pub async fn process_zk_proof_task(
                 contract_id,
                 document_type,
                 document_id,
+                key_id,
                 private_key,
+                public_key,
                 security_level,
                 grinding_bits,
             } => {
@@ -29,7 +31,9 @@ pub async fn process_zk_proof_task(
                         &contract_id,
                         &document_type,
                         &document_id,
+                        key_id,
                         &private_key,
+                        &public_key,
                     )
                     .await
                 {
@@ -62,7 +66,9 @@ pub enum ZKProofTask {
         contract_id: String,
         document_type: String,
         document_id: String,
+        key_id: u32,
         private_key: [u8; 32],
+        public_key: [u8; 32],  // Add public key from storage
         security_level: u32,
         grinding_bits: u32,
     },

@@ -1,12 +1,15 @@
 use dash_sdk::Sdk;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
-use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::{KeyID, KeyType};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::documents::document_query::DocumentQuery;
-use dash_sdk::platform::{Fetch, FetchWithProof};
+use dash_sdk::platform::{Fetch, FetchWithProof, FetchMany, IdentityKeysQuery, IdentityPublicKey, ProofData};
 use ed25519_dalek::{Signer, SigningKey};
 use grovestark::{
-    GroveSTARK, PublicInputs, STARKConfig, STARKProof, create_witness_from_sdk_proofs,
+    GroveSTARK, PublicInputs, STARKConfig, STARKProof,
+    create_witness_from_platform_proofs_v2,ed25519_helpers::create_witness_from_platform_proofs_v2_no_validation,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -65,7 +68,9 @@ impl GroveStarkIntegration {
         contract_id: &str,
         document_type: &str,
         document_id: &str,
+        key_id: u32,
         private_key: &[u8; 32],
+        public_key: &[u8; 32],
     ) -> Result<ProofDataOutput, ProofError> {
         let start_time = Instant::now();
 
@@ -91,22 +96,61 @@ impl GroveStarkIntegration {
         )
         .map_err(|e| ProofError::InvalidContractId(e.to_string()))?;
 
-        // Step 2: Fetch identity with proof
-        tracing::info!("Fetching identity with proof...");
-        let (identity_opt, identity_proof_data) =
-            Identity::fetch_with_proof(sdk, identity_identifier)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to fetch identity with proof: {}", e);
-                    ProofError::Platform(e.to_string())
-                })?;
+        // Step 2: Fetch specific key with proof using new SDK API
+        tracing::info!("Fetching specific key {} with proof...", key_id);
+        
+        // Create a query for the specific key
+        let specific_key_ids: Vec<KeyID> = vec![key_id];
+        let keys_query = IdentityKeysQuery::new(identity_identifier, specific_key_ids);
+        
+        // Fetch only the specified key with proof
+        let (specific_keys, metadata, key_proof) = 
+            IdentityPublicKey::fetch_many_with_metadata_and_proof(
+                sdk,
+                keys_query,
+                None,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch key with proof: {}", e);
+                ProofError::Platform(e.to_string())
+            })?;
+        
+        let key_proof_data = ProofData::new(key_proof, metadata);
+        
+        // Verify the key exists in the identity
+        let identity_key = specific_keys
+            .get(&key_id)
+            .and_then(|maybe_key| maybe_key.as_ref())
+            .ok_or_else(|| {
+                tracing::error!("Key {} not found for identity", key_id);
+                ProofError::PrivateKeyNotAvailable
+            })?;
+        
+        // Verify it's an EdDSA key
+        if identity_key.key_type() != KeyType::EDDSA_25519_HASH160 {
+            return Err(ProofError::InvalidProof(
+                "Key is not EdDSA type required for ZK proofs".to_string()
+            ));
+        }
+        
+        // Use the public key passed from the UI (derived from private key)
+        let public_key_bytes = *public_key;
 
-        let identity = identity_opt.ok_or_else(|| ProofError::IdentityNotFound)?;
-
-        tracing::info!(
-            "Identity proof size: {} bytes",
-            identity_proof_data.grovedb_proof.len()
-        );
+        // 3. KEY PROOF (Raw bytes)
+        tracing::info!("=== 3. KEY PROOF (Raw bytes) ===");
+        tracing::info!("Key proof size: {} bytes", key_proof_data.grovedb_proof.len());
+        tracing::info!("Key proof hex: {}", hex::encode(&key_proof_data.grovedb_proof));
+        tracing::info!("Key proof root hash (hex): {}", hex::encode(key_proof_data.root_hash));
+        tracing::info!("Key proof root hash (raw bytes): {:?}", key_proof_data.root_hash);
+        
+        // Additional key details
+        tracing::info!("Key ID: {}", key_id);
+        tracing::info!("Key type: {:?}", identity_key.key_type());
+        tracing::info!("Key purpose: {:?}", identity_key.purpose());
+        tracing::info!("Identity key data (hash160): {} bytes - {}", 
+            identity_key.data().len(), 
+            hex::encode(identity_key.data().to_vec()));
 
         // Step 3: Fetch contract and create DocumentQuery
         tracing::info!("Fetching contract...");
@@ -145,10 +189,72 @@ impl GroveStarkIntegration {
             ProofError::DocumentNotFound
         })?;
 
+        // COMPREHENSIVE LOGGING FOR DEBUGGING
+        
+        // 1. REAL DOCUMENT (JSON format)
+        tracing::info!("=== 1. REAL DOCUMENT (JSON FORMAT) ===");
+        if let Ok(json_value) = serde_json::to_value(&document) {
+            let json_pretty = serde_json::to_string_pretty(&json_value).unwrap_or_default();
+            tracing::info!("Full JSON document as returned by Platform:\n{}", json_pretty);
+            
+            // Also log specific fields we care about
+            if let Some(owner_id_value) = json_value.get("$ownerId") {
+                tracing::info!("$ownerId field in document: {}", owner_id_value);
+            }
+            if let Some(id_value) = json_value.get("$id") {
+                tracing::info!("$id field in document: {}", id_value);
+            }
+            if let Some(revision_value) = json_value.get("$revision") {
+                tracing::info!("$revision field in document: {}", revision_value);
+            }
+        }
+        
+        // For witness creation, we need proper serialization
+        let document_cbor = serde_json::to_vec(&document)
+            .map_err(|e| ProofError::SerializationError(format!("Failed to encode document: {}", e)))?;
+        
+        // 5. EXPECTED VALUES FOR VERIFICATION
+        let document_owner_id = document.owner_id();
+        tracing::info!("=== 5. EXPECTED VALUES FOR VERIFICATION ===");
         tracing::info!(
-            "Document proof size: {} bytes",
-            document_proof_data.grovedb_proof.len()
+            "Document owner_id (base58): {}",
+            document_owner_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
         );
+        tracing::info!(
+            "Document owner_id (hex): {}",
+            hex::encode(document_owner_id.to_buffer())
+        );
+        tracing::info!(
+            "Document owner_id (raw bytes): {:?}",
+            document_owner_id.to_buffer()
+        );
+        
+        tracing::info!(
+            "Identity_id we're proving for (base58): {}",
+            identity_identifier.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+        );
+        tracing::info!(
+            "Identity_id we're proving for (hex): {}",
+            hex::encode(identity_identifier.to_buffer())
+        );
+        tracing::info!(
+            "Identity_id we're proving for (raw bytes): {:?}",
+            identity_identifier.to_buffer()
+        );
+        
+        // Ownership verification status
+        if document_owner_id == identity_identifier {
+            tracing::info!("✅ OWNER MATCH: Document owner matches proving identity - proof should succeed");
+        } else {
+            tracing::warn!("⚠️ OWNER MISMATCH: Document owner does NOT match proving identity - proof should fail!");
+        }
+
+        // 2. DOCUMENT PROOF (Raw bytes)
+        tracing::info!("=== 2. DOCUMENT PROOF (Raw bytes) ===");
+        tracing::info!("Document proof size: {} bytes", document_proof_data.grovedb_proof.len());
+        tracing::info!("Document proof hex: {}", hex::encode(&document_proof_data.grovedb_proof));
+        tracing::info!("Document proof root hash (hex): {}", hex::encode(document_proof_data.root_hash));
+        tracing::info!("Document proof root hash (raw bytes): {:?}", document_proof_data.root_hash);
 
         // Step 4: Get current state root from proof data
         let state_root = document_proof_data.root_hash;
@@ -156,104 +262,68 @@ impl GroveStarkIntegration {
         // Step 5: Create signing challenge
         let challenge = create_challenge(&state_root, contract_id, document_id);
 
-        // Step 6: Sign the challenge with Ed25519
-        let ed25519_sig = sign_challenge_ed25519(private_key, &challenge)?;
+        // Step 6: Sign the challenge with Ed25519 (we don't use this signature in the new approach)
+        // The witness creation will handle the signing internally
 
-        // Step 7: Log proof information and save to files for testing
+        // Step 7: Log proof information
         tracing::info!(
-            "Using separate proofs - identity: {} bytes, document: {} bytes",
-            identity_proof_data.grovedb_proof.len(),
+            "Using separate proofs - key: {} bytes, document: {} bytes",
+            key_proof_data.grovedb_proof.len(),
             document_proof_data.grovedb_proof.len()
         );
 
-        // Save proofs to files for testing in grovestark
-        let test_dir = std::path::Path::new("grovestark_test_proofs");
-        if let Err(e) = std::fs::create_dir_all(&test_dir) {
-            tracing::warn!("Failed to create test proof directory: {}", e);
+        // 6. OPTIONAL BUT HELPFUL
+        tracing::info!("=== 6. OPTIONAL BUT HELPFUL ===");
+        tracing::info!("Contract ID (base58): {}", contract_id);
+        tracing::info!("Contract ID (hex): {}", hex::encode(contract_identifier.to_buffer()));
+        tracing::info!("Document Type: {}", document_type);
+        tracing::info!("Document ID (base58): {}", document_id);
+        tracing::info!("Document ID (hex): {}", hex::encode(document_id_identifier.to_buffer()));
+        tracing::info!("State root (hex): {}", hex::encode(&state_root));
+        tracing::info!("State root (raw bytes): {:?}", state_root);
+        
+        // Document CBOR details
+        tracing::info!("Document CBOR size: {} bytes", document_cbor.len());
+        if document_cbor.len() <= 500 {
+            tracing::info!("Document CBOR (hex): {}", hex::encode(&document_cbor));
         } else {
-            // Save document proof
-            let doc_proof_path = test_dir.join(format!("document_proof_{}.bin", document_id));
-            if let Err(e) = std::fs::write(&doc_proof_path, &document_proof_data.grovedb_proof) {
-                tracing::error!("Failed to save document proof to file: {}", e);
-            } else {
-                tracing::info!("Document proof saved to: {}", doc_proof_path.display());
-            }
-
-            // Save identity proof
-            let id_proof_path = test_dir.join(format!("identity_proof_{}.bin", identity_id));
-            if let Err(e) = std::fs::write(&id_proof_path, &identity_proof_data.grovedb_proof) {
-                tracing::error!("Failed to save identity proof to file: {}", e);
-            } else {
-                tracing::info!("Identity proof saved to: {}", id_proof_path.display());
-            }
-
-            // Save proof metadata as JSON for reference
-            let metadata = serde_json::json!({
-                "identity_id": identity_id.to_string(),
-                "contract_id": contract_id.to_string(),
-                "document_id": document_id.to_string(),
-                "document_type": document_type,
-                "identity_proof_size": identity_proof_data.grovedb_proof.len(),
-                "document_proof_size": document_proof_data.grovedb_proof.len(),
-                "state_root": hex::encode(document_proof_data.root_hash),
-                "timestamp": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            });
-
-            let metadata_path = test_dir.join(format!("proof_metadata_{}.json", document_id));
-            if let Err(e) = std::fs::write(
-                &metadata_path,
-                serde_json::to_string_pretty(&metadata).unwrap_or_default(),
-            ) {
-                tracing::error!("Failed to save proof metadata: {}", e);
-            } else {
-                tracing::info!("Proof metadata saved to: {}", metadata_path.display());
-            }
+            tracing::info!("Document CBOR (first 500 bytes hex): {}", hex::encode(&document_cbor[..500]));
         }
 
-        // Debug: Log first few bytes of each proof to understand format
-        if document_proof_data.grovedb_proof.len() >= 10 {
-            let first_bytes: Vec<String> = document_proof_data.grovedb_proof[..10]
-                .iter()
-                .map(|b| format!("{:02x}", b))
-                .collect();
-            tracing::debug!("Document proof first 10 bytes: {}", first_bytes.join(" "));
-        }
-
-        if identity_proof_data.grovedb_proof.len() >= 10 {
-            let first_bytes: Vec<String> = identity_proof_data.grovedb_proof[..10]
-                .iter()
-                .map(|b| format!("{:02x}", b))
-                .collect();
-            tracing::debug!("Identity proof first 10 bytes: {}", first_bytes.join(" "));
-        }
-
-        // Log full hex for easier debugging (only in debug mode)
-        tracing::debug!(
-            "Full document proof hex: {}",
-            hex::encode(&document_proof_data.grovedb_proof)
-        );
-        tracing::debug!(
-            "Full identity proof hex: {}",
-            hex::encode(&identity_proof_data.grovedb_proof)
-        );
-
-        // Step 8: Use GroveSTARK's new SDK integration API
-        // This accepts raw SDK proofs directly without needing special formatting
-        tracing::info!("Creating witness with GroveSTARK SDK integration...");
-        let witness = create_witness_from_sdk_proofs(
+        // 4. EdDSA SIGNATURE COMPONENTS
+        tracing::info!("=== 4. EdDSA SIGNATURE COMPONENTS ===");
+        
+        // Sign the challenge message
+        let signing_key = SigningKey::from_bytes(private_key);
+        let signature = signing_key.sign(&challenge);
+        let sig_bytes = signature.to_bytes();
+        let mut signature_r = [0u8; 32];
+        let mut signature_s = [0u8; 32];
+        signature_r.copy_from_slice(&sig_bytes[0..32]);
+        signature_s.copy_from_slice(&sig_bytes[32..64]);
+        
+        tracing::info!("Signature R (hex): {}", hex::encode(&signature_r));
+        tracing::info!("Signature R (raw bytes): {:?}", signature_r);
+        tracing::info!("Signature S (hex): {}", hex::encode(&signature_s));
+        tracing::info!("Signature S (raw bytes): {:?}", signature_s);
+        tracing::info!("Public key (hex): {}", hex::encode(&public_key_bytes));
+        tracing::info!("Public key (raw bytes): {:?}", public_key_bytes);
+        tracing::info!("Message/Challenge (hex): {}", hex::encode(&challenge));
+        tracing::info!("Message/Challenge (raw bytes): {:?}", challenge);
+        tracing::info!("Private key (hex): {}", hex::encode(private_key));
+        
+        // Step 8: Use GroveSTARK's new platform proofs V2 API
+        tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
+        
+        let witness = create_witness_from_platform_proofs_v2_no_validation(
             &document_proof_data.grovedb_proof, // Raw document proof from SDK
-            &identity_proof_data.grovedb_proof, // Raw identity proof from SDK
-            serde_json::to_vec(&document)
-                .map_err(|e| ProofError::SerializationError(e.to_string()))?,
-            identity.id().to_buffer().to_vec(),
-            &ed25519_sig.r,          // Signature R component
-            &ed25519_sig.s,          // Signature s component
-            &ed25519_sig.public_key, // Ed25519 public key
-            &challenge,              // Message that was signed
-            private_key,             // Private key
+            &key_proof_data.grovedb_proof,      // Raw key proof from SDK
+            document_cbor.clone(),              // Use the proper CBOR we created above
+            &public_key_bytes,                  // Public key bytes
+            &signature_r,                       // Signature R component
+            &signature_s,                       // Signature s component
+            &challenge,                         // Message to sign
+            private_key,                        // Private key
         )
         .map_err(|e| {
             tracing::error!("GroveSTARK witness creation failed: {:?}", e);
@@ -278,6 +348,7 @@ impl GroveStarkIntegration {
 
         // Step 9: Generate the STARK proof
         tracing::info!("Generating STARK proof (this may take 10-30 seconds)...");
+        eprintln!("Rayon thread pool size: {}", rayon::current_num_threads());
         let proof = self
             .prover
             .prove(witness, public_inputs.clone())
@@ -377,38 +448,6 @@ fn create_challenge(state_root: &[u8; 32], contract_id: &str, document_id: &str)
     hash
 }
 
-/// Sign a challenge with Ed25519 and extract signature components
-fn sign_challenge_ed25519(
-    private_key: &[u8; 32],
-    message: &[u8; 32],
-) -> Result<Ed25519SignatureData, ProofError> {
-    // Create Ed25519 signing key from private key bytes
-    let signing_key = SigningKey::from_bytes(private_key);
-    let verifying_key = signing_key.verifying_key();
-
-    // Sign the message
-    let signature = signing_key.sign(message);
-
-    // Extract R and s from the signature
-    let sig_bytes = signature.to_bytes();
-    let mut r = [0u8; 32];
-    let mut s = [0u8; 32];
-    r.copy_from_slice(&sig_bytes[0..32]);
-    s.copy_from_slice(&sig_bytes[32..64]);
-
-    Ok(Ed25519SignatureData {
-        r,
-        s,
-        public_key: *verifying_key.as_bytes(),
-    })
-}
-
-#[derive(Debug)]
-struct Ed25519SignatureData {
-    r: [u8; 32],
-    s: [u8; 32],
-    public_key: [u8; 32],
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProofError {

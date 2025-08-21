@@ -5,7 +5,6 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::RootScreenType;
 use crate::ui::ScreenLike;
-use crate::ui::components::confirmation_dialog::ConfirmationDialog;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
@@ -18,7 +17,6 @@ use dash_sdk::dpp::identity::{
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{Button, ComboBox, Context, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -68,13 +66,6 @@ pub enum ProofMode {
 }
 
 #[derive(Clone)]
-pub enum InputMethod {
-    Paste,
-    File,
-    Platform,
-}
-
-#[derive(Clone)]
 pub struct VerificationResult {
     pub is_valid: bool,
     pub verified_at: u64,
@@ -115,26 +106,13 @@ pub struct ZKProofsScreen {
     grinding_bits: u32,
 
     // Verification fields
-    input_method: InputMethod,
     proof_text: String,
-    proof_file_path: Option<PathBuf>,
-    proof_id: String,
     is_verifying: bool,
     verification_result: Option<VerificationResult>,
-    state_root: String,
-    contract_id: String,
-    check_timestamp: bool,
-    expected_timestamp: u64,
     advanced_expanded: bool,
 
     // Error handling
     error_message: Option<String>,
-
-    // Dialogs
-    confirmation_dialog: Option<ConfirmationDialog>,
-
-    // UI state
-    public_inputs_expanded: bool,
 }
 
 impl ZKProofsScreen {
@@ -210,21 +188,12 @@ impl ZKProofsScreen {
             proof_size: None,
             generation_time: None,
             security_level: 128,
-            grinding_bits: 16,
-            input_method: InputMethod::Paste,
+            grinding_bits: 24,
             proof_text: String::new(),
-            proof_file_path: None,
-            proof_id: String::new(),
             is_verifying: false,
             verification_result: None,
-            state_root: String::new(),
-            contract_id: String::new(),
-            check_timestamp: false,
-            expected_timestamp: 0,
             advanced_expanded: false,
             error_message: None,
-            confirmation_dialog: None,
-            public_inputs_expanded: false,
         }
     }
 
@@ -349,6 +318,15 @@ impl ZKProofsScreen {
     }
 
     fn generate_proof(&mut self, app_context: &AppContext) -> AppAction {
+        // Check if running in release mode
+        #[cfg(debug_assertions)]
+        {
+            self.error_message = Some(
+                "ZK proof generation requires release mode. Please run with: cargo run --release".to_string()
+            );
+            return AppAction::None;
+        }
+
         self.is_generating = true;
         self.error_message = None;
 
@@ -459,12 +437,23 @@ impl ZKProofsScreen {
             }
         };
 
+        // For EDDSA_25519_HASH160, the key data is only 20 bytes (the hash)
+        // We need to derive the public key from the private key
+        let public_key = {
+            use ed25519_dalek::SigningKey;
+            let signing_key = SigningKey::from_bytes(&private_key);
+            let verifying_key = signing_key.verifying_key();
+            *verifying_key.as_bytes()
+        };
+
         let task = BackendTask::ZKProofTask(ZKProofTask::GenerateProof {
             identity_id,
             contract_id,
             document_type,
             document_id,
+            key_id: selected_key.id(),
             private_key,
+            public_key,
             security_level: self.security_level,
             grinding_bits: self.grinding_bits,
         });
@@ -477,36 +466,17 @@ impl ZKProofsScreen {
         self.error_message = None;
         self.verification_result = None; // Clear any previous results
 
-        // Parse the proof based on input method
-        let proof_result = match self.input_method {
-            InputMethod::Paste => {
-                // Try to parse from base64-encoded JSON first, then raw JSON
-                crate::proofs::grovestark_integration::ProofDataOutput::from_base64(
+        // Parse the proof from pasted text
+        let proof_result =
+            // Try to parse from base64-encoded JSON first, then raw JSON
+            crate::proofs::grovestark_integration::ProofDataOutput::from_base64(
+                &self.proof_text,
+            )
+            .or_else(|_| {
+                crate::proofs::grovestark_integration::ProofDataOutput::from_json_string(
                     &self.proof_text,
                 )
-                .or_else(|_| {
-                    crate::proofs::grovestark_integration::ProofDataOutput::from_json_string(
-                        &self.proof_text,
-                    )
-                })
-            }
-            InputMethod::File => {
-                // TODO: Read from file
-                Err(
-                    crate::proofs::grovestark_integration::ProofError::DeserializationError(
-                        "File input not yet implemented".to_string(),
-                    ),
-                )
-            }
-            InputMethod::Platform => {
-                // TODO: Fetch from platform
-                Err(
-                    crate::proofs::grovestark_integration::ProofError::DeserializationError(
-                        "Platform fetch not yet implemented".to_string(),
-                    ),
-                )
-            }
-        };
+            });
 
         match proof_result {
             Ok(proof_data) => {
@@ -534,22 +504,6 @@ impl ZKProofsScreen {
         }
     }
 
-    fn save_proof_to_file(&self) {
-        // TODO: Implement file save dialog
-    }
-
-    fn share_proof(&self) {
-        // TODO: Implement proof sharing
-    }
-
-    fn browse_for_file(&mut self) {
-        // TODO: Implement file browser dialog
-    }
-
-    fn fetch_current_state_root(&mut self, _app_context: &AppContext) {
-        // TODO: Fetch current state root from platform
-    }
-
     fn copy_verification_result(&self) {
         if let Some(result) = &self.verification_result {
             let text = format!(
@@ -560,10 +514,6 @@ impl ZKProofsScreen {
             );
             let _ = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text));
         }
-    }
-
-    fn show_detailed_report(&self) {
-        // TODO: Show detailed verification report
     }
 
     fn truncate_id(id: &str) -> String {
@@ -584,11 +534,17 @@ impl ZKProofsScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         ui.label(
-            RichText::new("Generate Zero-Knowledge Proof")
+            RichText::new("Contract Membership Circuit")
                 .size(Typography::SCALE_XL)
                 .strong()
                 .color(DashColors::text_primary(dark_mode)),
         );
+        ui.label(
+            RichText::new("Prove you own a document in a specific contract without revealing anything about your identity or the document.")
+                .size(Typography::SCALE_SM)
+                .color(DashColors::text_primary(dark_mode))
+        );
+        ui.add_space(5.0);
 
         // Add informational description
         Frame::new()
@@ -598,32 +554,28 @@ impl ZKProofsScreen {
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    crate::ui::helpers::info_icon_button(ui,
-                        "Zero-Knowledge Proofs allow you to prove ownership of a document without revealing your identity or the document's contents. This cryptographic technique ensures privacy while maintaining verifiability.\n\nRequirement: Only EdDSA (Ed25519) keys are supported for ZK proof generation.");
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("What are ZK Proofs?")
+                            RichText::new("Notes:")
+                                .size(Typography::SCALE_XS)
                                 .strong()
-                                .color(DashColors::text_primary(dark_mode))
-                        );
-                        ui.label(
-                            RichText::new("Prove you own a document in a specific contract without revealing your identity or the document contents.")
-                                .size(Typography::SCALE_SM)
                                 .color(DashColors::text_secondary(dark_mode))
                         );
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("📝 Requirement:")
-                                    .size(Typography::SCALE_XS)
-                                    .strong()
-                                    .color(DashColors::text_secondary(dark_mode))
-                            );
-                            ui.label(
-                                RichText::new("Only EdDSA keys are supported for ZK proof generation.")
-                                    .size(Typography::SCALE_XS)
-                                    .color(DashColors::text_secondary(dark_mode))
-                            );
-                        });
+                        ui.label(
+                            RichText::new(" - Only EdDSA keys are supported for ZK proof generation.")
+                                .size(Typography::SCALE_XS)
+                                .color(DashColors::text_secondary(dark_mode))
+                        );
+                        ui.label(
+                            RichText::new(" - This feature uses Facebook's Winterfell STARK prover which is marked as not for production usage.")
+                                .size(Typography::SCALE_XS)
+                                .color(DashColors::text_secondary(dark_mode))
+                        );
+                        ui.label(
+                            RichText::new("   However, it is used in multiple production implementations including Polygon's Miden proof system.")
+                                .size(Typography::SCALE_XS)
+                                .color(DashColors::text_secondary(dark_mode))
+                        );
                     });
                 });
             });
@@ -806,7 +758,7 @@ impl ZKProofsScreen {
                     }
                 });
 
-                if let Some(contract_id) = &self.selected_contract {
+                if let Some(_contract_id) = &self.selected_contract {
                     ui.label(
                         RichText::new("✅ Contract selected").color(egui::Color32::DARK_GREEN),
                     );
@@ -880,7 +832,7 @@ impl ZKProofsScreen {
                     }
                 });
 
-                if let Some(doc_id) = &self.selected_document {
+                if let Some(_doc_id) = &self.selected_document {
                     ui.label(
                         RichText::new("✅ Document selected").color(egui::Color32::DARK_GREEN),
                     );
@@ -899,9 +851,21 @@ impl ZKProofsScreen {
                 ui.horizontal(|ui| {
                     ui.label("Security Level:");
                     crate::ui::helpers::info_icon_button(ui,
-                        "Security Level determines the cryptographic strength of the zero-knowledge proof:\n\n\
-                        • 128-bit: Provides 128 bits of security, suitable for most applications. Faster proof generation and smaller proof size.\n\n\
-                        • 192-bit: Provides 192 bits of security for applications requiring higher cryptographic assurance. Slower proof generation and larger proof size.");
+                        "Security Level controls the overall soundness of the STARK proof system:\n\n\
+                        • 128-bit (recommended): Standard security level used in production. Provides 2^-128 probability \
+                        of accepting an invalid proof. This means an attacker would need approximately 2^128 attempts \
+                        to forge a proof.\n\n\
+                        • 192-bit: Ultra-high security for critical applications. Provides 2^-192 probability of accepting \
+                        an invalid proof. Results in:\n  \
+                          - 50% larger proofs\n  \
+                          - 2-3x longer generation time\n  \
+                          - More query rounds in the FRI protocol\n\n\
+                        The security level affects:\n\
+                        • Number of FRI query rounds (more rounds = higher security)\n\
+                        • Field extension degree\n\
+                        • Overall proof size\n\n\
+                        For reference: 128-bit security is considered quantum-resistant and exceeds \
+                        the security of Bitcoin's SHA-256.");
                     ui.radio_value(&mut self.security_level, 128, "128-bit");
                     ui.radio_value(&mut self.security_level, 192, "192-bit");
                 });
@@ -909,12 +873,23 @@ impl ZKProofsScreen {
                 ui.horizontal(|ui| {
                     ui.label("Grinding Bits:");
                     crate::ui::helpers::info_icon_button(ui,
-                        "Grinding Bits control the computational work required for proof generation:\n\n\
-                        • Lower values (10-15): Faster proof generation but less security against certain attacks\n\n\
-                        • Higher values (16-20): Slower proof generation but increased security\n\n\
-                        • Default value of 16 provides a good balance between security and performance\n\n\
-                        This parameter affects the 'grinding' process where the prover searches for a nonce that satisfies certain constraints.");
-                    ui.add(egui::Slider::new(&mut self.grinding_bits, 10..=20));
+                        "Grinding Bits add proof-of-work to prevent proof forgery attacks:\n\n\
+                        • Default (24): Production setting requiring ~16 million hash attempts (2^24). \
+                        Takes 1-5 seconds on modern hardware.\n\n\
+                        • Lower (10-15): Testing only. Faster generation but vulnerable to grinding attacks \
+                        where attackers could try multiple proof attempts.\n\n\
+                        • Higher (25-30): Maximum security for high-value proofs. May take 30+ seconds.\n\n\
+                        How it works:\n\
+                        The prover must find a nonce where SHA3(proof||nonce) has the specified number \
+                        of leading zero bits. This prevents attackers from generating many proof attempts \
+                        quickly.\n\n\
+                        Example times (approximate):\n\
+                        • 16 bits: ~0.1 seconds\n\
+                        • 20 bits: ~1 second\n\
+                        • 24 bits: ~5 seconds (default)\n\
+                        • 28 bits: ~60 seconds\n\n\
+                        Note: GroveSTARK defaults to 24 bits for production use.");
+                    ui.add(egui::Slider::new(&mut self.grinding_bits, 10..=30));
                 });
             });
         }
@@ -935,13 +910,11 @@ impl ZKProofsScreen {
                 ui.vertical(|ui| {
                     ui.label("🔄 Generating ZK proof...");
                 });
-            } else {
-                if ui
-                    .add_enabled(can_generate, Button::new("🔐 Generate Proof"))
-                    .clicked()
-                {
-                    action = Some(self.generate_proof(app_context));
-                }
+            } else if ui
+                .add_enabled(can_generate, Button::new("🔐 Generate Proof"))
+                .clicked()
+            {
+                action = Some(self.generate_proof(app_context));
             }
         });
         if action.is_some() {
@@ -950,11 +923,11 @@ impl ZKProofsScreen {
 
         // Error Display
         if let Some(error) = &self.error_message {
-            ui.colored_label(egui::Color32::RED, format!("❌ Error: {}", error));
+            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
         }
 
         // Success Display
-        if let Some(proof) = &self.generated_proof {
+        if let Some(_proof) = &self.generated_proof {
             ui.separator();
             Frame::new()
                 .inner_margin(Margin::same(Spacing::MD_I8))
@@ -968,15 +941,9 @@ impl ZKProofsScreen {
                             .strong(),
                     );
 
-                    ui.horizontal(|ui| {
-                        if ui.button("📋 Copy Proof").clicked() {
-                            self.copy_proof_to_clipboard();
-                        }
-
-                        if ui.button("💾 Save to File").clicked() {
-                            self.save_proof_to_file();
-                        }
-                    });
+                    if ui.button("📋 Copy Proof").clicked() {
+                        self.copy_proof_to_clipboard();
+                    }
                 });
         }
         None
@@ -997,7 +964,7 @@ impl ZKProofsScreen {
         );
         ui.separator();
 
-        // Input Method Selection
+        // Proof Input
         Frame::new()
             .inner_margin(Margin::same(Spacing::MD_I8))
             .fill(DashColors::surface(dark_mode))
@@ -1005,166 +972,36 @@ impl ZKProofsScreen {
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .show(ui, |ui| {
                 ui.label(
-                    RichText::new("Select Proof Input Method:")
+                    RichText::new("Paste Proof (Base64 or JSON):")
                         .color(DashColors::text_primary(dark_mode)),
                 );
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(
-                            matches!(self.input_method, InputMethod::Paste),
-                            "📋 Paste",
-                        )
-                        .clicked()
-                    {
-                        self.input_method = InputMethod::Paste;
-                    }
-                    if ui
-                        .selectable_label(matches!(self.input_method, InputMethod::File), "📁 File")
-                        .clicked()
-                    {
-                        self.input_method = InputMethod::File;
-                    }
-                    if ui
-                        .selectable_label(
-                            matches!(self.input_method, InputMethod::Platform),
-                            "🌐 Platform",
-                        )
-                        .clicked()
-                    {
-                        self.input_method = InputMethod::Platform;
-                    }
-                });
+                ui.add(
+                    TextEdit::multiline(&mut self.proof_text)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(6),
+                );
             });
-
-        ui.add_space(Spacing::MD);
-
-        // Proof Input
-        match self.input_method {
-            InputMethod::Paste => {
-                Frame::new()
-                    .inner_margin(Margin::same(Spacing::MD_I8))
-                    .fill(DashColors::surface(dark_mode))
-                    .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new("Paste Proof (Base64 or Hex):")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add(
-                            TextEdit::multiline(&mut self.proof_text)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(6),
-                        );
-                    });
-            }
-            InputMethod::File => {
-                Frame::new()
-                    .inner_margin(Margin::same(Spacing::MD_I8))
-                    .fill(DashColors::surface(dark_mode))
-                    .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Proof File:")
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-                            if ui.button("Browse...").clicked() {
-                                self.browse_for_file();
-                            }
-                        });
-
-                        if let Some(path) = &self.proof_file_path {
-                            ui.label(format!("Selected: {}", path.display()));
-                        }
-                    });
-            }
-            InputMethod::Platform => {
-                Frame::new()
-                    .inner_margin(Margin::same(Spacing::MD_I8))
-                    .fill(DashColors::surface(dark_mode))
-                    .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new("Enter Proof ID from Platform:")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.text_edit_singleline(&mut self.proof_id);
-                    });
-            }
-        }
-
-        ui.separator();
-
-        // Public Inputs (collapsible)
-        if render_collapsing_header(ui, "Public Inputs (Optional)", self.public_inputs_expanded) {
-            self.public_inputs_expanded = !self.public_inputs_expanded;
-        }
-
-        if self.public_inputs_expanded {
-            Frame::new()
-                .inner_margin(Margin::same(Spacing::MD_I8))
-                .fill(DashColors::surface(dark_mode))
-                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("Override auto-detected values if needed:")
-                            .size(Typography::SCALE_SM)
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-
-                    ui.horizontal(|ui| {
-                        ui.label("State Root:");
-                        ui.text_edit_singleline(&mut self.state_root);
-                        if ui.button("Current").clicked() {
-                            self.fetch_current_state_root(app_context);
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Contract ID:");
-                        ui.text_edit_singleline(&mut self.contract_id);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.check_timestamp, "Verify Timestamp");
-                        if self.check_timestamp {
-                            ui.label("Expected:");
-                            ui.add(egui::DragValue::new(&mut self.expected_timestamp));
-                        }
-                    });
-                });
-        }
 
         ui.separator();
 
         // Error Display (above the button)
         if let Some(error) = &self.error_message {
-            ui.colored_label(egui::Color32::RED, format!("❌ Error: {}", error));
+            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
         }
 
         // Verify Button
-        let can_verify = match self.input_method {
-            InputMethod::Paste => !self.proof_text.is_empty(),
-            InputMethod::File => self.proof_file_path.is_some(),
-            InputMethod::Platform => !self.proof_id.is_empty(),
-        };
+        let can_verify = !self.proof_text.is_empty();
 
         let mut action = None;
         ui.horizontal(|ui| {
             if self.is_verifying {
                 ui.spinner();
                 ui.label("Verifying proof...");
-            } else {
-                if ui
-                    .add_enabled(can_verify, Button::new("✅ Verify Proof"))
-                    .clicked()
-                {
-                    action = Some(self.verify_proof(app_context));
-                }
+            } else if ui
+                .add_enabled(can_verify, Button::new("✅ Verify Proof"))
+                .clicked()
+            {
+                action = Some(self.verify_proof(app_context));
             }
         });
         if action.is_some() {
@@ -1208,15 +1045,9 @@ impl ZKProofsScreen {
                                 ui.end_row();
                             });
 
-                        ui.horizontal(|ui| {
-                            if ui.button("📋 Copy Result").clicked() {
-                                self.copy_verification_result();
-                            }
-
-                            if ui.button("📊 View Details").clicked() {
-                                self.show_detailed_report();
-                            }
-                        });
+                        if ui.button("📋 Copy Result").clicked() {
+                            self.copy_verification_result();
+                        }
                     });
             } else {
                 Frame::new()
@@ -1297,7 +1128,7 @@ impl ScreenLike for ZKProofsScreen {
             BackendTaskSuccessResult::VerifiedZKProof(is_valid, proof_data) => {
                 self.is_verifying = false;
                 // Get contract ID from the proof data itself
-                let contract_id = hex::encode(&proof_data.public_inputs.contract_id);
+                let contract_id = hex::encode(proof_data.public_inputs.contract_id);
                 self.verification_result = Some(VerificationResult {
                     is_valid,
                     verified_at: std::time::SystemTime::now()
@@ -1350,7 +1181,7 @@ impl ScreenLike for ZKProofsScreen {
         // Add central panel with the main UI
         let panel_action = island_central_panel(ctx, |ui| {
             ui.label(
-                RichText::new("Zero-Knowledge Proofs")
+                RichText::new("GroveSTARK Zero-Knowledge Proofs")
                     .size(Typography::SCALE_XL)
                     .strong()
                     .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),

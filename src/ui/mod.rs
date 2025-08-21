@@ -841,7 +841,7 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => screen.refresh(),
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh(),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh(),
-            Screen::DashPayQRGeneratorScreen(_) => {},
+            Screen::DashPayQRGeneratorScreen(_) => {}
         }
     }
 
@@ -898,7 +898,7 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh_on_arrival(),
-            Screen::DashPayQRGeneratorScreen(_) => {},
+            Screen::DashPayQRGeneratorScreen(_) => {}
         }
     }
 
@@ -1024,7 +1024,9 @@ impl ScreenLike for Screen {
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.display_message(message, message_type),
-            Screen::DashPayAddContactScreen(screen) => screen.display_message(message, message_type),
+            Screen::DashPayAddContactScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
             Screen::DashPayContactDetailsScreen(screen) => {
                 screen.display_message(message, message_type)
             }
@@ -1232,7 +1234,7 @@ impl ScreenLike for Screen {
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.pop_on_success(),
-            Screen::DashPayAddContactScreen(_) => {},
+            Screen::DashPayAddContactScreen(_) => {}
             Screen::DashPayContactDetailsScreen(_) => {}
             Screen::DashPaySendPaymentScreen(_) => {}
             Screen::DashPayContactInfoEditorScreen(_) => {}

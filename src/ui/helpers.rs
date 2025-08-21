@@ -152,7 +152,11 @@ impl TransactionType {
             TransactionType::TokenAction
             | TransactionType::TokenTransfer
             | TransactionType::TokenClaim => vec![SecurityLevel::CRITICAL],
-            TransactionType::ContactRequest => vec![SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM],
+            TransactionType::ContactRequest => vec![
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ],
         }
     }
 
@@ -299,12 +303,14 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                                 let is_allowed = if is_dev_mode {
                                     true
                                 } else {
-                                    let basic_requirements = allowed_purposes.contains(&key.purpose())
+                                    let basic_requirements = allowed_purposes
+                                        .contains(&key.purpose())
                                         && allowed_security_levels.contains(&key.security_level());
-                                    
+
                                     // Additional filtering for ContactRequest - only ECDSA_SECP256K1 keys for ECDH
                                     if transaction_type == TransactionType::ContactRequest {
-                                        basic_requirements && key.key_type() == KeyType::ECDSA_SECP256K1
+                                        basic_requirements
+                                            && key.key_type() == KeyType::ECDSA_SECP256K1
                                     } else {
                                         basic_requirements
                                     }

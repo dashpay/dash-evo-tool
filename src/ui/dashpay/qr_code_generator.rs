@@ -2,8 +2,14 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
@@ -43,7 +49,10 @@ impl QRCodeGeneratorScreen {
             let validity = match self.validity_hours.parse::<u32>() {
                 Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
                 _ => {
-                    self.display_message("Validity hours must be between 1 and 720", MessageType::Error);
+                    self.display_message(
+                        "Validity hours must be between 1 and 720",
+                        MessageType::Error,
+                    );
                     return;
                 }
             };
@@ -55,7 +64,10 @@ impl QRCodeGeneratorScreen {
                     self.display_message("QR code generated successfully", MessageType::Success);
                 }
                 Err(e) => {
-                    self.display_message(&format!("Failed to generate QR code: {}", e), MessageType::Error);
+                    self.display_message(
+                        &format!("Failed to generate QR code: {}", e),
+                        MessageType::Error,
+                    );
                 }
             }
         } else {
@@ -65,13 +77,25 @@ impl QRCodeGeneratorScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Header
+        // Header with info icon
         ui.horizontal(|ui| {
-            if ui.button("Back").clicked() {
+            if ui.button("← Back").clicked() {
                 action = AppAction::PopScreen;
             }
             ui.heading("Generate Contact QR Code");
+            ui.add_space(10.0);
+            crate::ui::helpers::info_icon_button(
+                ui,
+                "About Contact QR Codes:\n\n\
+                • QR codes allow instant mutual contact establishment\n\
+                • The recipient can scan to automatically send and accept contact requests\n\
+                • QR codes expire after the specified validity period\n\
+                • Each QR code is unique and can only be used once\n\
+                • The account reference determines which wallet account to use\n\n\
+                ⚠️ Anyone with this QR code can automatically become your contact",
+            );
         });
 
         ui.separator();
@@ -79,9 +103,9 @@ impl QRCodeGeneratorScreen {
         // Show message if any
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
+                MessageType::Success => DashColors::success_color(dark_mode),
+                MessageType::Error => DashColors::error_color(dark_mode),
+                MessageType::Info => DashColors::DASH_BLUE,
             };
             ui.colored_label(color, message);
             ui.separator();
@@ -96,21 +120,27 @@ impl QRCodeGeneratorScreen {
 
             if identities.is_empty() {
                 ui.colored_label(
-                    egui::Color32::from_rgb(255, 165, 0),
+                    DashColors::warning_color(dark_mode),
                     "⚠️ No identities loaded. Please load or create an identity first.",
                 );
                 return;
             }
 
             ui.group(|ui| {
-                ui.label(RichText::new("Configuration").strong());
+                ui.label(
+                    RichText::new("Configuration")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
                 ui.separator();
 
                 egui::Grid::new("qr_config_grid")
                     .num_columns(2)
                     .spacing([10.0, 10.0])
                     .show(ui, |ui| {
-                        ui.label("Identity:");
+                        ui.label(
+                            RichText::new("Identity:").color(DashColors::text_primary(dark_mode)),
+                        );
                         ui.add(
                             IdentitySelector::new(
                                 "qr_identity_selector",
@@ -124,25 +154,39 @@ impl QRCodeGeneratorScreen {
                         );
                         ui.end_row();
 
-                        ui.label("Account Reference:");
+                        ui.label(
+                            RichText::new("Account Reference:")
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                         ui.horizontal(|ui| {
                             ui.add(
                                 TextEdit::singleline(&mut self.account_reference)
                                     .hint_text("0")
-                                    .desired_width(100.0)
+                                    .desired_width(100.0),
                             );
-                            ui.label(RichText::new("Which account index to use for this contact").small().weak());
+                            ui.label(
+                                RichText::new("Which account index to use for this contact")
+                                    .small()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
                         });
                         ui.end_row();
 
-                        ui.label("Validity (hours):");
+                        ui.label(
+                            RichText::new("Validity (hours):")
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                         ui.horizontal(|ui| {
                             ui.add(
                                 TextEdit::singleline(&mut self.validity_hours)
                                     .hint_text("24")
-                                    .desired_width(100.0)
+                                    .desired_width(100.0),
                             );
-                            ui.label(RichText::new("How long the QR code remains valid").small().weak());
+                            ui.label(
+                                RichText::new("How long the QR code remains valid")
+                                    .small()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
                         });
                         ui.end_row();
                     });
@@ -169,12 +213,20 @@ impl QRCodeGeneratorScreen {
             let mut show_copied_message = false;
             if let Some(qr_data) = &self.generated_qr_data {
                 ui.group(|ui| {
-                    ui.label(RichText::new("Generated QR Code Data").strong());
+                    ui.label(
+                        RichText::new("Generated QR Code Data")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                     ui.separator();
 
                     // Display as text for now (in production, would render actual QR code image)
                     ui.group(|ui| {
-                        ui.label(RichText::new("QR Code (text representation):").small());
+                        ui.label(
+                            RichText::new("QR Code (text representation):")
+                                .small()
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
                         ui.code(qr_data);
                     });
 
@@ -188,27 +240,26 @@ impl QRCodeGeneratorScreen {
 
                     ui.add_space(10.0);
 
-                    ui.label(RichText::new("ℹ️ Share this QR code with someone to establish a mutual contact").small());
-                    ui.label(RichText::new("⚠️ Anyone with this QR code can automatically become your contact").small().color(egui::Color32::YELLOW));
+                    ui.label(
+                        RichText::new(
+                            "ℹ️ Share this QR code with someone to establish a mutual contact",
+                        )
+                        .small()
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "⚠️ Anyone with this QR code can automatically become your contact",
+                        )
+                        .small()
+                        .color(DashColors::warning_color(dark_mode)),
+                    );
                 });
             }
-            
+
             if show_copied_message {
                 self.display_message("Copied to clipboard", MessageType::Success);
             }
-
-            ui.add_space(20.0);
-
-            // Information box
-            ui.group(|ui| {
-                ui.label(RichText::new("ℹ️ About Contact QR Codes").strong());
-                ui.separator();
-                ui.label("• QR codes allow instant mutual contact establishment");
-                ui.label("• The recipient can scan to automatically send and accept contact requests");
-                ui.label("• QR codes expire after the specified validity period");
-                ui.label("• Each QR code is unique and can only be used once");
-                ui.label("• The account reference determines which wallet account to use");
-            });
         });
 
         action
@@ -223,9 +274,33 @@ impl ScreenLike for QRCodeGeneratorScreen {
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         let mut action = AppAction::None;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            action = self.render(ui);
-        });
+        // Add top panel
+        action |= add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![
+                ("DashPay", AppAction::None),
+                ("QR Generator", AppAction::None),
+            ],
+            vec![],
+        );
+
+        // Add left panel for DashPay navigation
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenDashPayContacts,
+        );
+
+        // Add DashPay subscreen chooser panel
+        action |= add_dashpay_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
+            DashPaySubscreen::Contacts, // Use Contacts as the active subscreen since QR Generator is launched from there
+        );
+
+        // Main content area with island styling
+        action |= island_central_panel(ctx, |ui| self.render(ui));
 
         action
     }

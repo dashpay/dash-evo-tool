@@ -4,8 +4,13 @@ use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
 use egui::{Context, Frame, Margin, RichText, SidePanel};
+use std::sync::Arc;
 
-pub fn add_dashpay_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
+pub fn add_dashpay_subscreen_chooser_panel(
+    ctx: &Context,
+    app_context: &Arc<AppContext>,
+    current_subscreen: DashPaySubscreen,
+) -> AppAction {
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
 
@@ -16,16 +21,7 @@ pub fn add_dashpay_subscreen_chooser_panel(ctx: &Context, app_context: &AppConte
         DashPaySubscreen::Payments,
     ];
 
-    let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.root_screen_type {
-            ui::RootScreenType::RootScreenDashPayContacts => DashPaySubscreen::Contacts,
-            ui::RootScreenType::RootScreenDashPayRequests => DashPaySubscreen::Requests,
-            ui::RootScreenType::RootScreenDashPayProfile => DashPaySubscreen::Profile,
-            ui::RootScreenType::RootScreenDashPayPayments => DashPaySubscreen::Payments,
-            _ => DashPaySubscreen::Contacts,
-        },
-        _ => DashPaySubscreen::Contacts, // Fallback to Contacts screen if settings unavailable
-    };
+    let active_screen = current_subscreen;
 
     SidePanel::left("dashpay_subscreen_chooser_panel")
         .default_width(270.0) // Increased to account for margins

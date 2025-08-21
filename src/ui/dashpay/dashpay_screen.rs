@@ -56,8 +56,12 @@ impl DashPayScreen {
 impl ScreenLike for DashPayScreen {
     fn refresh(&mut self) {
         match self.dashpay_subscreen {
-            DashPaySubscreen::Contacts => { self.contacts_list.refresh(); }, // Ignore return value for now
-            DashPaySubscreen::Requests => { self.contact_requests.refresh(); }, // Ignore return value for now  
+            DashPaySubscreen::Contacts => {
+                self.contacts_list.refresh();
+            } // Ignore return value for now
+            DashPaySubscreen::Requests => {
+                self.contact_requests.refresh();
+            } // Ignore return value for now
             DashPaySubscreen::Profile => self.profile_screen.refresh(),
             DashPaySubscreen::Payments => self.payment_history.refresh(),
         }
@@ -73,21 +77,37 @@ impl ScreenLike for DashPayScreen {
         // Add top panel with action buttons based on current subscreen
         let right_buttons = match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => vec![
-                ("🔄 Fetch Contacts", DesiredAppAction::Custom("fetch_contacts".to_string())),
-                ("Send Contact Request", DesiredAppAction::AddScreenType(Box::new(crate::ui::ScreenType::DashPayAddContact))),
-                ("Generate QR Code", DesiredAppAction::AddScreenType(Box::new(crate::ui::ScreenType::DashPayQRGenerator)))
+                (
+                    "Load Contacts",
+                    DesiredAppAction::Custom("fetch_contacts".to_string()),
+                ),
+                (
+                    "Send Contact Request",
+                    DesiredAppAction::AddScreenType(Box::new(
+                        crate::ui::ScreenType::DashPayAddContact,
+                    )),
+                ),
+                (
+                    "Generate QR Code",
+                    DesiredAppAction::AddScreenType(Box::new(
+                        crate::ui::ScreenType::DashPayQRGenerator,
+                    )),
+                ),
             ],
-            DashPaySubscreen::Requests => vec![
-                ("🔄 Fetch Requests", DesiredAppAction::Custom("fetch_requests".to_string())),
-            ],
-            DashPaySubscreen::Profile => vec![
-                ("Load Profile", DesiredAppAction::Custom("load_profile".to_string())),
-            ],
-            DashPaySubscreen::Payments => vec![
-                ("🔄 Fetch History", DesiredAppAction::Custom("fetch_payment_history".to_string())),
-            ],
+            DashPaySubscreen::Requests => vec![(
+                "Load Contact Requests",
+                DesiredAppAction::Custom("fetch_requests".to_string()),
+            )],
+            DashPaySubscreen::Profile => vec![(
+                "Load Profile",
+                DesiredAppAction::Custom("load_profile".to_string()),
+            )],
+            DashPaySubscreen::Payments => vec![(
+                "Load Payments",
+                DesiredAppAction::Custom("fetch_payment_history".to_string()),
+            )],
         };
-        
+
         action |= add_top_panel(
             ctx,
             &self.app_context,
@@ -105,7 +125,8 @@ impl ScreenLike for DashPayScreen {
         action |= add_left_panel(ctx, &self.app_context, root_screen);
 
         // Add DashPay subscreen chooser panel on the left side
-        action |= add_dashpay_subscreen_chooser_panel(ctx, &self.app_context);
+        action |=
+            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, self.dashpay_subscreen);
 
         // Main content area with island styling
         action |= island_central_panel(ctx, |ui| self.render_subscreen(ui));
@@ -147,18 +168,10 @@ impl ScreenLike for DashPayScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match self.dashpay_subscreen {
-            DashPaySubscreen::Profile => {
-                self.profile_screen.display_task_result(result)
-            },
-            DashPaySubscreen::Requests => {
-                self.contact_requests.display_task_result(result)
-            },
-            DashPaySubscreen::Contacts => {
-                self.contacts_list.display_task_result(result)
-            },
-            DashPaySubscreen::Payments => {
-                self.payment_history.display_task_result(result)
-            },
+            DashPaySubscreen::Profile => self.profile_screen.display_task_result(result),
+            DashPaySubscreen::Requests => self.contact_requests.display_task_result(result),
+            DashPaySubscreen::Contacts => self.contacts_list.display_task_result(result),
+            DashPaySubscreen::Payments => self.payment_history.display_task_result(result),
         }
     }
 }

@@ -73,12 +73,12 @@ impl ContactDetailsScreen {
     pub fn refresh(&mut self) {
         // Don't set loading here - only when actually making backend requests
         self.loading = false;
-        
+
         // Clear any existing data - real data should be loaded from backend when needed
         self.contact_info = None;
         self.payment_history.clear();
         self.message = None;
-        
+
         // TODO: Implement real backend fetching of contact info and payment history
         // This should be triggered by user actions or specific backend tasks
     }
@@ -397,24 +397,35 @@ impl ScreenLike for ContactDetailsScreen {
         let mut action = AppAction::None;
 
         // Add top panel with contact name if available
-        let contact_name = self.contact_info.as_ref()
-            .and_then(|info| info.nickname.as_ref().or(info.display_name.as_ref().or(info.username.as_ref())))
+        let contact_name = self
+            .contact_info
+            .as_ref()
+            .and_then(|info| {
+                info.nickname
+                    .as_ref()
+                    .or(info.display_name.as_ref().or(info.username.as_ref()))
+            })
             .map(|name| format!("Contact: {}", name))
             .unwrap_or_else(|| "Contact Details".to_string());
 
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![("DashPay", AppAction::None), (&contact_name, AppAction::None)],
+            vec![
+                ("DashPay", AppAction::None),
+                (&contact_name, AppAction::None),
+            ],
             vec![],
         );
 
-        // Add left panel  
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashPayContacts);
+        // Add left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenDashPayContacts,
+        );
 
-        action |= island_central_panel(ctx, |ui| {
-            self.render(ui)
-        });
+        action |= island_central_panel(ctx, |ui| self.render(ui));
 
         action
     }

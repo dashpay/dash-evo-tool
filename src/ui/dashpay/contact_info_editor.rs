@@ -1,9 +1,13 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::backend_task::dashpay::{DashPayTask, ContactData};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -51,7 +55,7 @@ impl ContactInfoEditorScreen {
         }));
         AppAction::BackendTask(task)
     }
-    
+
     fn handle_contacts_result(&mut self, contacts_data: Vec<ContactData>) {
         // Find the contact info for our specific contact
         for contact_data in contacts_data {
@@ -67,38 +71,37 @@ impl ContactInfoEditorScreen {
 
     fn save_contact_info(&mut self) -> AppAction {
         self.saving = true;
-        
+
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
             identity: self.identity.clone(),
             contact_id: self.contact_id,
-            nickname: if self.nickname.is_empty() { None } else { Some(self.nickname.clone()) },
-            note: if self.note.is_empty() { None } else { Some(self.note.clone()) },
+            nickname: if self.nickname.is_empty() {
+                None
+            } else {
+                Some(self.nickname.clone())
+            },
+            note: if self.note.is_empty() {
+                None
+            } else {
+                Some(self.note.clone())
+            },
             is_hidden: self.is_hidden,
             accepted_accounts: self.accepted_accounts.clone(),
         }));
-        
+
         AppAction::BackendTask(task)
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-
-        // Header
-        ui.horizontal(|ui| {
-            if ui.button("Back").clicked() {
-                action = AppAction::PopScreen;
-            }
-            ui.heading("Edit Contact Information");
-        });
-
-        ui.separator();
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         // Show message if any
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
+                MessageType::Success => DashColors::SUCCESS,
+                MessageType::Error => DashColors::ERROR,
+                MessageType::Info => DashColors::INFO,
             };
             ui.colored_label(color, message);
             ui.separator();
@@ -108,19 +111,21 @@ impl ContactInfoEditorScreen {
             ui.group(|ui| {
                 // Contact identity
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Contact:").strong());
+                    ui.label(RichText::new("Contact:").strong().color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
                     if let Some(username) = &self.contact_username {
-                        ui.label(username);
+                        ui.label(RichText::new(username).color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                     } else {
-                        ui.label(format!("{}", self.contact_id));
+                        ui.label(RichText::new(format!("{}", self.contact_id))
+                            .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                     }
                 });
 
                 ui.separator();
 
                 // Nickname field
-                ui.label(RichText::new("Nickname:").strong());
-                ui.label(RichText::new("Give this contact a custom name that only you will see").small().weak());
+                ui.label(RichText::new("Nickname:").strong().color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
+                ui.label(RichText::new("Give this contact a custom name that only you will see").small()
+                    .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                 ui.add(
                     TextEdit::singleline(&mut self.nickname)
                         .hint_text("e.g., 'Alice from work' or 'Bob the builder'")
@@ -130,8 +135,9 @@ impl ContactInfoEditorScreen {
                 ui.add_space(10.0);
 
                 // Note field
-                ui.label(RichText::new("Private Note:").strong());
-                ui.label(RichText::new("Add notes about this contact (only visible to you)").small().weak());
+                ui.label(RichText::new("Private Note:").strong().color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
+                ui.label(RichText::new("Add notes about this contact (only visible to you)").small()
+                    .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                 ui.add(
                     TextEdit::multiline(&mut self.note)
                         .hint_text("e.g., 'Met at Dash conference 2024', 'Owes me for lunch'")
@@ -146,24 +152,27 @@ impl ContactInfoEditorScreen {
                     ui.checkbox(&mut self.is_hidden, "Hide this contact");
                 });
                 if self.is_hidden {
-                    ui.label(RichText::new("⚠️ Hidden contacts won't appear in your contact list but can still send you payments").small().color(egui::Color32::YELLOW));
+                    ui.label(RichText::new("⚠️ Hidden contacts won't appear in your contact list but can still send you payments")
+                        .small().color(DashColors::WARNING));
                 } else {
-                    ui.label(RichText::new("Contact will appear in your contact list").small().weak());
+                    ui.label(RichText::new("Contact will appear in your contact list").small()
+                        .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                 }
-                
+
                 ui.add_space(10.0);
-                
+
                 // Account references section
-                ui.label(RichText::new("Accepted Account Indices:").strong());
-                ui.label(RichText::new("Specify which account indices this contact can pay to (comma-separated)").small().weak());
-                
+                ui.label(RichText::new("Accepted Account Indices:").strong().color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
+                ui.label(RichText::new("Specify which account indices this contact can pay to (comma-separated)").small()
+                    .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
+
                 ui.horizontal(|ui| {
                     ui.add(
                         TextEdit::singleline(&mut self.account_input)
                             .hint_text("e.g., 0, 1, 2")
                             .desired_width(200.0)
                     );
-                    
+
                     if ui.button("Parse").clicked() {
                         // Parse the account indices
                         self.accepted_accounts.clear();
@@ -175,7 +184,7 @@ impl ContactInfoEditorScreen {
                             }
                         }
                         self.accepted_accounts.sort();
-                        
+
                         // Update the input field to show the parsed values
                         self.account_input = self.accepted_accounts
                             .iter()
@@ -184,34 +193,34 @@ impl ContactInfoEditorScreen {
                             .join(", ");
                     }
                 });
-                
+
                 if !self.accepted_accounts.is_empty() {
-                    ui.label(RichText::new(format!("Accepted accounts: {:?}", self.accepted_accounts)).small());
+                    ui.label(RichText::new(format!("Accepted accounts: {:?}", self.accepted_accounts)).small()
+                        .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                 } else {
-                    ui.label(RichText::new("All accounts accepted (default)").small().weak());
+                    ui.label(RichText::new("All accounts accepted (default)").small()
+                        .color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                 }
 
                 ui.add_space(20.0);
 
                 // Action buttons
                 ui.horizontal(|ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+
                     if self.saving {
                         ui.spinner();
-                        ui.label("Saving...");
+                        ui.label(RichText::new("Saving...").color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
                     } else {
-                        if ui.button("Save Changes").clicked() {
+                        if ui.button(RichText::new("💾 Save Changes").size(16.0)).clicked() {
                             action = self.save_contact_info();
                         }
 
-                        if ui.button("Cancel").clicked() {
+                        ui.add_space(10.0);
+
+                        if ui.button(RichText::new("❌ Cancel").size(16.0)).clicked() {
                             action = AppAction::PopScreen;
                         }
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Refresh").clicked() {
-                                action = self.load_contact_info();
-                            }
-                        });
                     }
                 });
             });
@@ -220,13 +229,15 @@ impl ContactInfoEditorScreen {
 
             // Information box
             ui.group(|ui| {
-                ui.label(RichText::new("ℹ️ About Contact Information").strong());
+                ui.label(RichText::new("ℹ️ About Contact Information").strong()
+                    .color(if dark_mode { DashColors::DARK_TEXT_PRIMARY } else { DashColors::TEXT_PRIMARY }));
                 ui.separator();
-                ui.label("• Nicknames and notes are stored locally and encrypted");
-                ui.label("• This information is never shared with the contact");
-                ui.label("• Hidden contacts can still send you payments");
-                ui.label("• You can unhide contacts at any time");
-                ui.label("• Contact information is backed up with your identity");
+                let info_color = if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY };
+                ui.label(RichText::new("• Nicknames and notes are stored locally and encrypted").color(info_color));
+                ui.label(RichText::new("• This information is never shared with the contact").color(info_color));
+                ui.label(RichText::new("• Hidden contacts can still send you payments").color(info_color));
+                ui.label(RichText::new("• You can unhide contacts at any time").color(info_color));
+                ui.label(RichText::new("• Contact information is backed up with your identity").color(info_color));
             });
         });
 
@@ -236,7 +247,7 @@ impl ContactInfoEditorScreen {
     pub fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.message = Some((message.to_string(), message_type));
     }
-    
+
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.saving = false;
         match result {
@@ -257,9 +268,38 @@ impl ScreenLike for ContactInfoEditorScreen {
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         let mut action = AppAction::None;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            action = self.render(ui);
-        });
+        // Add top panel with back button
+        let right_buttons = vec![(
+            "Refresh",
+            DesiredAppAction::Custom("refresh_contact_info".to_string()),
+        )];
+
+        action |= add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![("Edit Contact Information", AppAction::None)],
+            right_buttons,
+        );
+
+        // Add left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenDashPayContacts,
+        );
+
+        // Main content area with island styling
+        action |= island_central_panel(ctx, |ui| self.render(ui));
+
+        // Handle custom actions from top panel
+        if let AppAction::Custom(command) = &action {
+            match command.as_str() {
+                "refresh_contact_info" => {
+                    action = self.load_contact_info();
+                }
+                _ => {}
+            }
+        }
 
         action
     }
@@ -267,7 +307,7 @@ impl ScreenLike for ContactInfoEditorScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.display_message(message, message_type);
     }
-    
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.display_task_result(result);
     }

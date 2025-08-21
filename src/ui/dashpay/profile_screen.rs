@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::MessageType;
@@ -17,6 +17,38 @@ pub struct DashPayProfile {
     pub avatar_url: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidationError {
+    DisplayNameTooLong(usize),
+    DisplayNameEmpty,
+    BioTooLong(usize),
+    InvalidAvatarUrl(String),
+    AvatarUrlTooLong(usize),
+}
+
+impl ValidationError {
+    pub fn message(&self) -> String {
+        match self {
+            ValidationError::DisplayNameTooLong(len) => {
+                format!("Display name is {} characters, must be 25 or less", len)
+            }
+            ValidationError::DisplayNameEmpty => "Display name cannot be empty".to_string(),
+            ValidationError::BioTooLong(len) => {
+                format!("Bio is {} characters, must be 250 or less", len)
+            }
+            ValidationError::InvalidAvatarUrl(url) => {
+                format!(
+                    "Invalid avatar URL: '{}'. Must start with http:// or https://",
+                    url
+                )
+            }
+            ValidationError::AvatarUrlTooLong(len) => {
+                format!("Avatar URL is {} characters, must be 500 or less", len)
+            }
+        }
+    }
+}
+
 pub struct ProfileScreen {
     app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
@@ -28,8 +60,14 @@ pub struct ProfileScreen {
     edit_avatar_url: String,
     message: Option<(String, MessageType)>,
     loading: bool,
-    saving: bool,  // Track if we're saving vs loading
+    saving: bool, // Track if we're saving vs loading
     profile_load_attempted: bool,
+    validation_errors: Vec<ValidationError>,
+    show_preview: bool,
+    has_unsaved_changes: bool,
+    original_display_name: String,
+    original_bio: String,
+    original_avatar_url: String,
 }
 
 impl ProfileScreen {
@@ -47,7 +85,56 @@ impl ProfileScreen {
             loading: false,
             saving: false,
             profile_load_attempted: false,
+            validation_errors: Vec::new(),
+            show_preview: bool::default(),
+            has_unsaved_changes: false,
+            original_display_name: String::new(),
+            original_bio: String::new(),
+            original_avatar_url: String::new(),
         }
+    }
+
+    fn validate_profile(&mut self) {
+        self.validation_errors.clear();
+
+        // Display name validation
+        if self.edit_display_name.trim().is_empty() {
+            self.validation_errors
+                .push(ValidationError::DisplayNameEmpty);
+        } else if self.edit_display_name.len() > 25 {
+            self.validation_errors
+                .push(ValidationError::DisplayNameTooLong(
+                    self.edit_display_name.len(),
+                ));
+        }
+
+        // Bio validation
+        if self.edit_bio.len() > 250 {
+            self.validation_errors
+                .push(ValidationError::BioTooLong(self.edit_bio.len()));
+        }
+
+        // Avatar URL validation
+        if !self.edit_avatar_url.trim().is_empty() {
+            let url = self.edit_avatar_url.trim();
+            if url.len() > 500 {
+                self.validation_errors
+                    .push(ValidationError::AvatarUrlTooLong(url.len()));
+            } else if !url.starts_with("http://") && !url.starts_with("https://") {
+                self.validation_errors
+                    .push(ValidationError::InvalidAvatarUrl(url.to_string()));
+            }
+        }
+    }
+
+    fn check_for_changes(&mut self) {
+        self.has_unsaved_changes = self.edit_display_name != self.original_display_name
+            || self.edit_bio != self.original_bio
+            || self.edit_avatar_url != self.original_avatar_url;
+    }
+
+    fn is_valid(&self) -> bool {
+        self.validation_errors.is_empty()
     }
 
     pub fn trigger_load_profile(&mut self) -> AppAction {
@@ -55,7 +142,7 @@ impl ProfileScreen {
             self.loading = true;
             self.profile_load_attempted = true;
             AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-                DashPayTask::LoadProfile { identity }
+                DashPayTask::LoadProfile { identity },
             )))
         } else {
             AppAction::None
@@ -66,7 +153,7 @@ impl ProfileScreen {
         // Don't set loading here - it will be set when actually triggering a backend task
         // This prevents stuck loading states
         self.loading = false;
-        
+
         // Clear any old messages
         self.message = None;
     }
@@ -76,29 +163,68 @@ impl ProfileScreen {
             self.edit_display_name = profile.display_name.clone();
             self.edit_bio = profile.bio.clone();
             self.edit_avatar_url = profile.avatar_url.clone();
-            self.editing = true;
+
+            // Store originals for change detection
+            self.original_display_name = profile.display_name.clone();
+            self.original_bio = profile.bio.clone();
+            self.original_avatar_url = profile.avatar_url.clone();
         } else {
             // New profile
             self.edit_display_name.clear();
             self.edit_bio.clear();
             self.edit_avatar_url.clear();
-            self.editing = true;
+
+            // Store empty originals
+            self.original_display_name.clear();
+            self.original_bio.clear();
+            self.original_avatar_url.clear();
         }
+
+        self.editing = true;
+        self.show_preview = false;
+        self.has_unsaved_changes = false;
+        self.validation_errors.clear();
+        self.message = None;
     }
 
     fn save_profile(&mut self) -> AppAction {
+        self.validate_profile();
+
+        if !self.is_valid() {
+            self.display_message(&self.validation_errors[0].message(), MessageType::Error);
+            return AppAction::None;
+        }
+
         if let Some(identity) = self.selected_identity.clone() {
             self.editing = false;
-            self.saving = true;  // Set saving flag instead of loading
-            
+            self.saving = true;
+            self.has_unsaved_changes = false;
+
+            // Trim whitespace from inputs
+            let display_name = self.edit_display_name.trim();
+            let bio = self.edit_bio.trim();
+            let avatar_url = self.edit_avatar_url.trim();
+
             // Trigger the actual DashPay profile update task
             AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
                 DashPayTask::UpdateProfile {
                     identity,
-                    display_name: if self.edit_display_name.is_empty() { None } else { Some(self.edit_display_name.clone()) },
-                    bio: if self.edit_bio.is_empty() { None } else { Some(self.edit_bio.clone()) },
-                    avatar_url: if self.edit_avatar_url.is_empty() { None } else { Some(self.edit_avatar_url.clone()) },
-                }
+                    display_name: if display_name.is_empty() {
+                        None
+                    } else {
+                        Some(display_name.to_string())
+                    },
+                    bio: if bio.is_empty() {
+                        None
+                    } else {
+                        Some(bio.to_string())
+                    },
+                    avatar_url: if avatar_url.is_empty() {
+                        None
+                    } else {
+                        Some(avatar_url.to_string())
+                    },
+                },
             )))
         } else {
             self.display_message("No identity selected", MessageType::Error);
@@ -108,9 +234,13 @@ impl ProfileScreen {
 
     fn cancel_editing(&mut self) {
         self.editing = false;
+        self.show_preview = false;
         self.edit_display_name.clear();
         self.edit_bio.clear();
         self.edit_avatar_url.clear();
+        self.validation_errors.clear();
+        self.has_unsaved_changes = false;
+        self.message = None;
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -151,6 +281,10 @@ impl ProfileScreen {
                     self.profile = None;
                     self.profile_load_attempted = false;
                     self.loading = false;
+                    self.editing = false;
+                    self.validation_errors.clear();
+                    self.has_unsaved_changes = false;
+                    self.show_preview = false;
                     self.message = None;
                 }
             });
@@ -181,9 +315,9 @@ impl ProfileScreen {
 
         // Profile loading status
         if !self.profile_load_attempted && !self.loading {
-            ui.label("Press \"Load Profile\" in the top panel");
+            ui.label("No profile loaded");
         }
-        
+
         // Loading or saving indicator
         if self.loading || self.saving {
             ui.horizontal(|ui| {
@@ -199,10 +333,7 @@ impl ProfileScreen {
                 } else {
                     "Loading profile..."
                 };
-                ui.label(
-                    RichText::new(status_text)
-                        .color(DashColors::text_primary(dark_mode))
-                );
+                ui.label(RichText::new(status_text).color(DashColors::text_primary(dark_mode)));
             });
             ui.separator();
             return action;
@@ -211,90 +342,237 @@ impl ProfileScreen {
         ScrollArea::vertical().show(ui, |ui| {
             if self.editing {
                 // Edit mode
-                ui.group(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Edit Profile").strong().color(DashColors::text_primary(dark_mode)));
-                        ui.add_space(10.0);
-                        crate::ui::helpers::info_icon_button(ui, 
-                            "Profile Guidelines:\n\n\
-                            • Display names can include any UTF-8 characters (emojis, symbols, etc.)\n\
-                            • Display names are limited to 25 characters\n\
-                            • Bios are limited to 250 characters\n\
-                            • Avatar URLs should point to publicly accessible images\n\
-                            • Profiles are public and visible to all DashPay users");
-                    });
+                ui.horizontal(|ui| {
+                    // Main editing panel (left side)
+                    ui.vertical(|ui| {
+                        ui.group(|ui| {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Edit Profile").strong().color(DashColors::text_primary(dark_mode)));
+                                ui.add_space(10.0);
 
-                    ui.separator();
+                                // Toggle preview button
+                                let preview_text = if self.show_preview { "Hide Preview" } else { "Show Preview" };
+                                if ui.button(preview_text).clicked() {
+                                    self.show_preview = !self.show_preview;
+                                }
 
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Display Name:").color(DashColors::text_primary(dark_mode)));
-                        ui.add_space(10.0);
-                    });
-                    ui.add(
-                        TextEdit::singleline(&mut self.edit_display_name)
-                            .hint_text("Enter your display name (max 25 characters)")
-                            .desired_width(300.0),
-                    );
-                    ui.label(RichText::new(format!("{}/25", self.edit_display_name.len())).small().color(DashColors::text_secondary(dark_mode)));
+                                ui.add_space(10.0);
+                                crate::ui::helpers::info_icon_button(ui,
+                                    "Profile Guidelines:\n\n\
+                                    • Display names can include any UTF-8 characters (emojis, symbols, etc.)\n\
+                                    • Display names are limited to 25 characters\n\
+                                    • Bios are limited to 250 characters\n\
+                                    • Avatar URLs should point to publicly accessible images (max 500 chars)\n\
+                                    • Profiles are public and visible to all DashPay users");
+                            });
 
-                    ui.add_space(10.0);
+                            ui.separator();
 
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Bio/Status:").color(DashColors::text_primary(dark_mode)));
-                        ui.add_space(10.0);
-                    });
-                    ui.add(
-                        TextEdit::multiline(&mut self.edit_bio)
-                            .hint_text("Tell others about yourself (max 250 characters)")
-                            .desired_width(300.0)
-                            .desired_rows(4),
-                    );
-                    ui.label(RichText::new(format!("{}/250", self.edit_bio.len())).small().color(DashColors::text_secondary(dark_mode)));
-
-                    ui.add_space(10.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Avatar URL:").color(DashColors::text_primary(dark_mode)));
-                        ui.add_space(10.0);
-                    });
-                    ui.add(
-                        TextEdit::singleline(&mut self.edit_avatar_url)
-                            .hint_text("https://example.com/avatar.jpg")
-                            .desired_width(300.0),
-                    );
-
-                    ui.add_space(10.0);
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.cancel_editing();
-                        }
-
-                        if ui.button("Save Profile").clicked() {
-                            // Validation
-                            if self.edit_display_name.len() > 25 {
-                                self.display_message(
-                                    "Display name must be 25 characters or less",
-                                    MessageType::Error,
-                                );
-                            } else if self.edit_bio.len() > 250 {
-                                self.display_message(
-                                    "Bio must be 250 characters or less",
-                                    MessageType::Error,
-                                );
-                            } else if !self.edit_avatar_url.is_empty()
-                                && !self.edit_avatar_url.starts_with("http")
-                            {
-                                self.display_message(
-                                    "Avatar URL must start with http:// or https://",
-                                    MessageType::Error,
-                                );
-                            } else {
-                                action |= self.save_profile();
+                            // Unsaved changes indicator
+                            if self.has_unsaved_changes {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("⚠").color(egui::Color32::ORANGE));
+                                    ui.label(RichText::new("You have unsaved changes").color(egui::Color32::ORANGE).small());
+                                });
+                                ui.separator();
                             }
-                        }
+
+                            // Display Name Field
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Display Name:").color(DashColors::text_primary(dark_mode)));
+                                ui.label(RichText::new("*").color(egui::Color32::RED)); // Required indicator
+                            });
+
+                            let display_name_response = ui.add(
+                                TextEdit::singleline(&mut self.edit_display_name)
+                                    .hint_text("Enter your display name (required)")
+                                    .desired_width(300.0),
+                            );
+
+                            // Character count with color coding
+                            let char_count = self.edit_display_name.len();
+                            let count_color = if char_count > 25 {
+                                egui::Color32::RED
+                            } else if char_count > 20 {
+                                egui::Color32::ORANGE
+                            } else {
+                                DashColors::text_secondary(dark_mode)
+                            };
+                            ui.label(RichText::new(format!("{}/25", char_count)).small().color(count_color));
+
+                            if display_name_response.changed() {
+                                self.check_for_changes();
+                                self.validate_profile();
+                            }
+
+                            ui.add_space(10.0);
+
+                            // Bio Field
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Bio/Status:").color(DashColors::text_primary(dark_mode)));
+                            });
+
+                            let bio_response = ui.add(
+                                TextEdit::multiline(&mut self.edit_bio)
+                                    .hint_text("Tell others about yourself (optional)")
+                                    .desired_width(300.0)
+                                    .desired_rows(4),
+                            );
+
+                            // Bio character count with color coding
+                            let bio_count = self.edit_bio.len();
+                            let bio_count_color = if bio_count > 250 {
+                                egui::Color32::RED
+                            } else if bio_count > 225 {
+                                egui::Color32::ORANGE
+                            } else {
+                                DashColors::text_secondary(dark_mode)
+                            };
+                            ui.label(RichText::new(format!("{}/250", bio_count)).small().color(bio_count_color));
+
+                            if bio_response.changed() {
+                                self.check_for_changes();
+                                self.validate_profile();
+                            }
+
+                            ui.add_space(10.0);
+
+                            // Avatar URL Field
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Avatar URL:").color(DashColors::text_primary(dark_mode)));
+                            });
+
+                            let avatar_response = ui.add(
+                                TextEdit::singleline(&mut self.edit_avatar_url)
+                                    .hint_text("https://example.com/avatar.jpg (optional)")
+                                    .desired_width(300.0),
+                            );
+
+                            // Avatar URL character count
+                            let url_count = self.edit_avatar_url.len();
+                            let url_count_color = if url_count > 500 {
+                                egui::Color32::RED
+                            } else if url_count > 450 {
+                                egui::Color32::ORANGE
+                            } else {
+                                DashColors::text_secondary(dark_mode)
+                            };
+                            if !self.edit_avatar_url.is_empty() {
+                                ui.label(RichText::new(format!("{}/500", url_count)).small().color(url_count_color));
+                            }
+
+                            if avatar_response.changed() {
+                                self.check_for_changes();
+                                self.validate_profile();
+                            }
+
+                            // Show validation errors
+                            if !self.validation_errors.is_empty() {
+                                ui.add_space(10.0);
+                                ui.separator();
+                                ui.label(RichText::new("Validation Errors:").color(egui::Color32::RED).strong());
+                                for error in &self.validation_errors {
+                                    ui.label(RichText::new(format!("• {}", error.message())).color(egui::Color32::RED).small());
+                                }
+                            }
+
+                            ui.add_space(15.0);
+
+                            // Action buttons
+                            ui.horizontal(|ui| {
+                                if ui.button("Cancel").clicked() {
+                                    // Show confirmation if there are unsaved changes
+                                    if self.has_unsaved_changes {
+                                        // TODO: Add confirmation dialog
+                                        self.cancel_editing();
+                                    } else {
+                                        self.cancel_editing();
+                                    }
+                                }
+
+                                ui.add_space(10.0);
+
+                                let save_button = egui::Button::new("Save Profile")
+                                    .fill(if self.is_valid() {
+                                        egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                                    } else {
+                                        egui::Color32::GRAY
+                                    });
+
+                                if ui.add_enabled(self.is_valid(), save_button).clicked() {
+                                    action |= self.save_profile();
+                                }
+
+                                // Show save status
+                                if self.has_unsaved_changes {
+                                    ui.add_space(10.0);
+                                    ui.label(RichText::new("Unsaved").color(egui::Color32::ORANGE).small());
+                                }
+                            });
+                        });
                     });
+
+                    // Live preview panel (right side)
+                    if self.show_preview {
+                        ui.add_space(20.0);
+                        ui.vertical(|ui| {
+                            ui.group(|ui| {
+                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                ui.label(RichText::new("Live Preview").strong().color(DashColors::text_primary(dark_mode)));
+                                ui.separator();
+
+                                // Preview the profile as it would appear
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.add_space(5.0);
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(10.0);
+                                            ui.label(RichText::new("👤").size(40.0));
+                                        });
+                                    });
+
+                                    ui.vertical(|ui| {
+                                        // Preview display name
+                                        if !self.edit_display_name.trim().is_empty() {
+                                            ui.label(RichText::new(self.edit_display_name.trim()).heading());
+                                        } else {
+                                            ui.label(RichText::new("[No display name]").weak().italics());
+                                        }
+
+                                        // Username from identity
+                                        if let Some(identity) = &self.selected_identity {
+                                            if !identity.dpns_names.is_empty() {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "@{}",
+                                                        identity.dpns_names[0].name
+                                                    ))
+                                                    .strong(),
+                                                );
+                                            }
+                                        }
+                                    });
+                                });
+
+                                ui.separator();
+
+                                // Preview bio
+                                ui.label(RichText::new("Bio:").strong());
+                                if !self.edit_bio.trim().is_empty() {
+                                    ui.label(RichText::new(self.edit_bio.trim()));
+                                } else {
+                                    ui.label(RichText::new("[No bio]").weak().italics());
+                                }
+
+                                if !self.edit_avatar_url.trim().is_empty() {
+                                    ui.separator();
+                                    ui.label(RichText::new("Avatar URL:").strong());
+                                    ui.label(RichText::new(self.edit_avatar_url.trim()).small());
+                                }
+                            });
+                        });
+                    }
                 });
             } else {
                 // View mode
@@ -409,7 +687,7 @@ impl ProfileScreen {
         self.loading = false;
         self.saving = false;
         self.profile_load_attempted = true;
-        
+
         match result {
             BackendTaskSuccessResult::DashPayProfile(profile_data) => {
                 if let Some((display_name, bio, avatar_url)) = profile_data {

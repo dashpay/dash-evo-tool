@@ -679,15 +679,15 @@ impl App for AppState {
                             // For DashPay screens, also call display_task_result to clear loading/saving states
                             let is_dashpay_screen = matches!(
                                 self.visible_screen_mut().screen_type(),
-                                ScreenType::DashPayProfile 
-                                | ScreenType::DashPayContacts 
-                                | ScreenType::DashPayRequests 
-                                | ScreenType::DashPayPayments
-                                | ScreenType::DashPayContactDetails(..)
-                                | ScreenType::DashPaySendPayment(..)
-                                | ScreenType::DashPayContactInfoEditor(..)
+                                ScreenType::DashPayProfile
+                                    | ScreenType::DashPayContacts
+                                    | ScreenType::DashPayRequests
+                                    | ScreenType::DashPayPayments
+                                    | ScreenType::DashPayContactDetails(..)
+                                    | ScreenType::DashPaySendPayment(..)
+                                    | ScreenType::DashPayContactInfoEditor(..)
                             );
-                            
+
                             if is_dashpay_screen {
                                 self.visible_screen_mut()
                                     .display_task_result(unboxed_message.clone());

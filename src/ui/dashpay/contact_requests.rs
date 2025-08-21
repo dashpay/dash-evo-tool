@@ -1,13 +1,13 @@
 use crate::app::AppAction;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::{MessageType, ScreenLike};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
-use dash_sdk::platform::Identifier;
+use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -67,21 +67,21 @@ impl ContactRequests {
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
             self.message = None;
-            
+
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
                 identity: identity.clone(),
             }));
-            
+
             return AppAction::BackendTask(task);
         }
-        
+
         AppAction::None
     }
 
     pub fn fetch_all_requests(&mut self) -> AppAction {
         self.trigger_fetch_requests()
     }
-    
+
     pub fn refresh(&mut self) -> AppAction {
         // Don't auto-fetch - just clear state
         self.incoming_requests.clear();
@@ -91,7 +91,6 @@ impl ContactRequests {
         self.has_fetched_requests = false;
         AppAction::None
     }
-
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
@@ -149,7 +148,6 @@ impl ContactRequests {
             return action;
         }
 
-
         // Tabs
         ui.horizontal(|ui| {
             if ui
@@ -182,7 +180,7 @@ impl ContactRequests {
                             egui::Color32::from_gray(60)
                         };
                         ui.add(egui::widgets::Spinner::default().color(spinner_color));
-                        
+
                         // Show specific loading message based on current message
                         if let Some((msg, _)) = &self.message {
                             ui.label(msg);
@@ -192,10 +190,10 @@ impl ContactRequests {
                     });
                     ui.separator();
                 }
-                
+
                 ScrollArea::vertical().show(ui, |ui| {
                     if !self.has_fetched_requests {
-                        // Don't show anything until we've fetched
+                        ui.label("No contact requests loaded");
                     } else if self.incoming_requests.is_empty() {
                         ui.label("No incoming contact requests found");
                     } else {
@@ -209,7 +207,7 @@ impl ContactRequests {
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                                        
+
                                         // Display name or username or identity ID
                                         let name = request
                                             .from_display_name
@@ -265,7 +263,7 @@ impl ContactRequests {
                                                         .strong()
                                                 );
                                             } else if self.rejected_requests.contains(&request.request_id) {
-                                                // Show X and "Rejected" text  
+                                                // Show X and "Rejected" text
                                                 ui.label(
                                                     RichText::new("✗ Rejected")
                                                         .color(egui::Color32::from_rgb(150, 0, 0))
@@ -277,15 +275,15 @@ impl ContactRequests {
                                                     if let Some(identity) = &self.selected_identity {
                                                         self.loading = true;
                                                         self.message = Some(("Rejecting contact request...".to_string(), MessageType::Info));
-                                                        
+
                                                         // Mark as rejected immediately for UI feedback
                                                         self.rejected_requests.insert(request.request_id);
-                                                        
+
                                                         let task = BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
                                                             identity: identity.clone(),
                                                             request_id: request.request_id,
                                                         }));
-                                                        
+
                                                         action |= AppAction::BackendTask(task);
                                                     }
                                                 }
@@ -296,12 +294,12 @@ impl ContactRequests {
                                                         self.accepted_requests.insert(request.request_id);
                                                         self.loading = true;
                                                         self.message = Some(("Accepting contact request...".to_string(), MessageType::Info));
-                                                        
+
                                                         let task = BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
                                                             identity: identity.clone(),
                                                             request_id: request.request_id,
                                                         }));
-                                                        
+
                                                         action |= AppAction::BackendTask(task);
                                                     }
                                                 }
@@ -326,7 +324,7 @@ impl ContactRequests {
                             egui::Color32::from_gray(60)
                         };
                         ui.add(egui::widgets::Spinner::default().color(spinner_color));
-                        
+
                         // Show specific loading message based on current message
                         if let Some((msg, _)) = &self.message {
                             ui.label(msg);
@@ -336,10 +334,10 @@ impl ContactRequests {
                     });
                     ui.separator();
                 }
-                
+
                 ScrollArea::vertical().show(ui, |ui| {
                     if !self.has_fetched_requests {
-                        // Don't show anything until we've fetched
+                        ui.label("No contact requests loaded");
                     } else if self.outgoing_requests.is_empty() {
                         ui.label("No outgoing contact requests found");
                     } else {
@@ -353,7 +351,7 @@ impl ContactRequests {
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                                        
+
                                         // For outgoing requests, show the TO identity
                                         let id_str = request.to_identity.to_string(Encoding::Base58);
                                         let name = format!("To: {}...{}", &id_str[..6], &id_str[id_str.len()-6..]);
@@ -404,7 +402,6 @@ impl ContactRequests {
 
         action
     }
-
 }
 
 impl ScreenLike for ContactRequests {
@@ -416,95 +413,93 @@ impl ScreenLike for ContactRequests {
         });
         action
     }
-    
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Clear loading state when displaying any message (including errors)
         self.loading = false;
         self.message = Some((message.to_string(), message_type));
     }
-    
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         use dash_sdk::dpp::document::DocumentV0Getters;
-        
+
         self.loading = false;
-        
+
         match result {
             BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
                 // Clear existing requests
                 self.incoming_requests.clear();
                 self.outgoing_requests.clear();
-                
+
                 // Mark as fetched
                 self.has_fetched_requests = true;
-                
+
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {
                     let properties = doc.properties();
                     let from_identity = doc.owner_id();
-                        
-                        let account_reference = properties.get("accountReference")
-                            .and_then(|v| v.as_integer::<i64>())
-                            .and_then(|i| u32::try_from(i).ok())
-                            .unwrap_or(0);
-                        
-                        let timestamp = doc.created_at()
-                            .or_else(|| doc.updated_at())
-                            .unwrap_or(0);
-                        
-                        let request = ContactRequest {
-                            request_id: *id,
-                            from_identity,
-                            to_identity: self.selected_identity.as_ref().unwrap().identity.id(),
-                            from_username: None, // TODO: Resolve username from identity
-                            from_display_name: None, // TODO: Fetch from profile
-                            account_reference,
-                            account_label: None, // TODO: Decrypt if present
-                            timestamp,
-                            auto_accept_proof: None,
-                        };
-                        
-                        self.incoming_requests.insert(*id, request);
-                
+
+                    let account_reference = properties
+                        .get("accountReference")
+                        .and_then(|v| v.as_integer::<i64>())
+                        .and_then(|i| u32::try_from(i).ok())
+                        .unwrap_or(0);
+
+                    let timestamp = doc.created_at().or_else(|| doc.updated_at()).unwrap_or(0);
+
+                    let request = ContactRequest {
+                        request_id: *id,
+                        from_identity,
+                        to_identity: self.selected_identity.as_ref().unwrap().identity.id(),
+                        from_username: None, // TODO: Resolve username from identity
+                        from_display_name: None, // TODO: Fetch from profile
+                        account_reference,
+                        account_label: None, // TODO: Decrypt if present
+                        timestamp,
+                        auto_accept_proof: None,
+                    };
+
+                    self.incoming_requests.insert(*id, request);
                 }
-                
+
                 // Process outgoing requests
                 for (id, doc) in outgoing.iter() {
                     let properties = doc.properties();
-                        let to_identity = properties.get("toUserId")
-                            .and_then(|v| v.to_identifier().ok())
-                            .unwrap_or_default();
-                        
-                        let account_reference = properties.get("accountReference")
-                            .and_then(|v| v.as_integer::<i64>())
-                            .and_then(|i| u32::try_from(i).ok())
-                            .unwrap_or(0);
-                        
-                        let timestamp = doc.created_at()
-                            .or_else(|| doc.updated_at())
-                            .unwrap_or(0);
-                        
-                        let request = ContactRequest {
-                            request_id: *id,
-                            from_identity: self.selected_identity.as_ref().unwrap().identity.id(),
-                            to_identity,
-                            from_username: None, // This would be our username
-                            from_display_name: None, // This would be our display name
-                            account_reference,
-                            account_label: None, // TODO: Decrypt if present
-                            timestamp,
-                            auto_accept_proof: None,
-                        };
-                        
-                        self.outgoing_requests.insert(*id, request);
+                    let to_identity = properties
+                        .get("toUserId")
+                        .and_then(|v| v.to_identifier().ok())
+                        .unwrap_or_default();
+
+                    let account_reference = properties
+                        .get("accountReference")
+                        .and_then(|v| v.as_integer::<i64>())
+                        .and_then(|i| u32::try_from(i).ok())
+                        .unwrap_or(0);
+
+                    let timestamp = doc.created_at().or_else(|| doc.updated_at()).unwrap_or(0);
+
+                    let request = ContactRequest {
+                        request_id: *id,
+                        from_identity: self.selected_identity.as_ref().unwrap().identity.id(),
+                        to_identity,
+                        from_username: None,     // This would be our username
+                        from_display_name: None, // This would be our display name
+                        account_reference,
+                        account_label: None, // TODO: Decrypt if present
+                        timestamp,
+                        auto_accept_proof: None,
+                    };
+
+                    self.outgoing_requests.insert(*id, request);
                 }
-                
+
                 // Don't show a message, just display the results
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Refresh the list after successful accept/reject operations
                 if msg.contains("Accepted") || msg.contains("Rejected") {
                     // Trigger a refresh
-                    // Note: We can't return an action from display_task_result, 
+                    // Note: We can't return an action from display_task_result,
                     // so we'll need to handle this differently
                 }
                 self.message = Some((msg, MessageType::Success));

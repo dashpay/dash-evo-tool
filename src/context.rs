@@ -248,7 +248,7 @@ impl AppContext {
         }
     }
 
-/// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
+    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), String> {
         // 1. Grab a fresh snapshot of your NetworkConfig

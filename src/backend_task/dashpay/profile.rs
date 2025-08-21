@@ -1,3 +1,4 @@
+use super::avatar_processing::{calculate_avatar_hash, calculate_dhash_fingerprint};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -6,11 +7,12 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::{string_encoding::Encoding, Value};
+use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::platform::documents::transitions::{
+    DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
+};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
-use dash_sdk::platform::documents::transitions::{DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder};
-use sha2::{Sha256, Digest};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -56,7 +58,7 @@ pub async fn load_profile(
             Ok(BackendTaskSuccessResult::DashPayProfile(Some((
                 display_name.to_string(),
                 public_message.to_string(),
-                avatar_url.to_string()
+                avatar_url.to_string(),
             ))))
         } else {
             Ok(BackendTaskSuccessResult::DashPayProfile(None))
@@ -105,7 +107,7 @@ pub async fn update_profile(
 
     // Prepare profile data
     let mut profile_data = BTreeMap::new();
-    
+
     // Only add non-empty fields according to DashPay DIP
     if let Some(name) = display_name {
         if !name.is_empty() {
@@ -120,39 +122,52 @@ pub async fn update_profile(
     if let Some(url) = avatar_url {
         if !url.is_empty() {
             profile_data.insert("avatarUrl".to_string(), Value::Text(url.clone()));
-            
-            // TODO: In a production implementation, we would:
-            // 1. Fetch the image from the URL
-            // 2. Calculate SHA-256 hash of the image bytes
-            // 3. Calculate perceptual hash using DHash algorithm
-            // For now, we'll add placeholder values to ensure compliance with DIP-0015
-            
-            // Note: These should be calculated from actual image data
-            // avatarHash: SHA-256 hash of image bytes (32 bytes)
-            // avatarFingerprint: DHash perceptual fingerprint (8 bytes)
-            
-            // Placeholder: In production, fetch image and calculate real hash
-            // let image_bytes = fetch_image(&url).await?;
-            // let mut hasher = Sha256::new();
-            // hasher.update(&image_bytes);
-            // let hash = hasher.finalize();
-            // profile_data.insert("avatarHash".to_string(), Value::Bytes(hash.to_vec()));
-            
-            // Placeholder: In production, calculate DHash fingerprint
-            // let fingerprint = calculate_dhash(&image_bytes)?;
-            // profile_data.insert("avatarFingerprint".to_string(), Value::Bytes(fingerprint));
+
+            // Try to fetch and process the avatar image
+            // Note: This requires an HTTP client which may not be available
+            // In production, this should be done asynchronously
+            match super::avatar_processing::fetch_image_bytes(&url).await {
+                Ok(image_bytes) => {
+                    // Calculate SHA-256 hash of the image
+                    let avatar_hash = calculate_avatar_hash(&image_bytes);
+                    profile_data
+                        .insert("avatarHash".to_string(), Value::Bytes(avatar_hash.to_vec()));
+
+                    // Calculate DHash perceptual fingerprint
+                    match calculate_dhash_fingerprint(&image_bytes) {
+                        Ok(fingerprint) => {
+                            profile_data.insert(
+                                "avatarFingerprint".to_string(),
+                                Value::Bytes(fingerprint.to_vec()),
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Could not calculate avatar fingerprint: {}", e);
+                            // Continue without fingerprint - it's optional
+                        }
+                    }
+                }
+                Err(e) => {
+                    // If we can't fetch the image, just set the URL without hash/fingerprint
+                    // These fields are optional according to DIP-0015
+                    eprintln!(
+                        "Warning: Could not fetch avatar image for processing: {}",
+                        e
+                    );
+                }
+            }
         }
     }
 
     if let Some((_, Some(existing_doc))) = existing_profile.iter().next() {
         // Update existing profile using DocumentReplaceTransitionBuilder
         let mut updated_document = existing_doc.clone();
-        
+
         // Update the document's properties
         for (key, value) in profile_data {
             updated_document.set(&key, value);
         }
-        
+
         // Bump revision for replacement
         updated_document.bump_revision();
 
@@ -229,48 +244,57 @@ pub async fn update_profile(
 }
 
 pub async fn send_payment(
-    _app_context: &Arc<AppContext>,
-    _sdk: &Sdk,
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
     from_identity: QualifiedIdentity,
     to_contact_id: Identifier,
     amount: u64,
     memo: Option<String>,
 ) -> Result<BackendTaskSuccessResult, String> {
-    // TODO: DashPay payments implementation
-    // This is complex and requires:
-    // 1. Verifying contact relationship exists
-    // 2. Getting payment channel keys from contactInfo
-    // 3. Deriving unique payment addresses
-    // 4. Creating and broadcasting payment transaction
-    // 5. Storing payment metadata locally
-
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Payment of {} credits from {} to {} (memo: {:?}) - Not yet implemented",
-        amount,
-        from_identity.identity.id().to_string(Encoding::Base58),
+    // Use the new payments module to send payment
+    super::payments::send_payment_to_contact(
+        app_context,
+        sdk,
+        from_identity,
         to_contact_id,
-        memo
-    )))
+        amount,
+        memo,
+    )
+    .await
 }
 
 pub async fn load_payment_history(
-    _app_context: &Arc<AppContext>,
+    app_context: &Arc<AppContext>,
     _sdk: &Sdk,
     identity: QualifiedIdentity,
     contact_id: Option<Identifier>,
 ) -> Result<BackendTaskSuccessResult, String> {
-    // TODO: Payment history would be stored locally in the database
-    // as DashPay payments are not stored on-chain
+    // Load payment history from local database
+    let history = super::payments::load_payment_history(
+        app_context,
+        &identity.identity.id(),
+        contact_id.as_ref(),
+    )
+    .await?;
 
-    let filter_msg = if let Some(cid) = contact_id {
-        format!(" with contact {}", cid)
+    // Format the results
+    if history.is_empty() {
+        let filter_msg = if let Some(cid) = contact_id {
+            format!(" with contact {}", cid.to_string(Encoding::Base58))
+        } else {
+            String::new()
+        };
+
+        Ok(BackendTaskSuccessResult::Message(format!(
+            "No payment history found for {}{}",
+            identity.identity.id().to_string(Encoding::Base58),
+            filter_msg
+        )))
     } else {
-        String::new()
-    };
-
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Payment history for {}{} - Not yet implemented",
-        identity.identity.id().to_string(Encoding::Base58),
-        filter_msg
-    )))
+        // In production, this would return a structured result
+        Ok(BackendTaskSuccessResult::Message(format!(
+            "Found {} payment records",
+            history.len()
+        )))
+    }
 }

@@ -1,15 +1,15 @@
 use crate::app::AppAction;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
-use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
@@ -89,12 +89,14 @@ impl SendPaymentScreen {
             }
             ui.heading("Send Payment");
             ui.add_space(10.0);
-            crate::ui::helpers::info_icon_button(ui, 
+            crate::ui::helpers::info_icon_button(
+                ui,
                 "Payment Guidelines:\n\n\
                 • Payments to contacts use encrypted payment channels\n\
                 • Only you and the recipient can see payment details\n\
                 • Addresses are never reused for privacy\n\
-                • Memos are stored locally and not sent on-chain");
+                • Memos are stored locally and not sent on-chain",
+            );
         });
 
         ui.separator();
@@ -115,17 +117,31 @@ impl SendPaymentScreen {
                 // From identity
                 ui.horizontal(|ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.label(RichText::new("From:").strong().color(DashColors::text_primary(dark_mode)));
+                    ui.label(
+                        RichText::new("From:")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.label(RichText::new(&self.from_identity.to_string()).color(DashColors::text_primary(dark_mode)));
+                    ui.label(
+                        RichText::new(&self.from_identity.to_string())
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                 });
 
                 // Balance
                 ui.horizontal(|ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.label(RichText::new("Balance:").strong().color(DashColors::text_primary(dark_mode)));
+                    ui.label(
+                        RichText::new("Balance:")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                     let balance_dash = self.from_identity.identity.balance() as f64 * 1e-11;
-                    ui.label(RichText::new(format!("{:.6} Dash", balance_dash)).color(DashColors::text_primary(dark_mode)));
+                    ui.label(
+                        RichText::new(format!("{:.6} Dash", balance_dash))
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                 });
 
                 ui.separator();
@@ -133,13 +149,20 @@ impl SendPaymentScreen {
                 // To contact
                 ui.horizontal(|ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.label(RichText::new("To:").strong().color(DashColors::text_primary(dark_mode)));
+                    ui.label(
+                        RichText::new("To:")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
                     if let Some(name) = &self.to_contact_name {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         ui.label(RichText::new(name).color(DashColors::text_primary(dark_mode)));
                     } else {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.label(RichText::new(&format!("{}", self.to_contact_id)).color(DashColors::text_primary(dark_mode)));
+                        ui.label(
+                            RichText::new(&format!("{}", self.to_contact_id))
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     }
                 });
 
@@ -147,7 +170,11 @@ impl SendPaymentScreen {
 
                 // Amount input
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(RichText::new("Amount:").strong().color(DashColors::text_primary(dark_mode)));
+                ui.label(
+                    RichText::new("Amount:")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
                 let amount_input = self.amount_input.get_or_insert_with(|| {
                     AmountInput::new(&self.amount)
                         .with_hint_text("Enter amount in Dash")
@@ -164,7 +191,11 @@ impl SendPaymentScreen {
 
                 // Memo field
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(RichText::new("Memo (optional):").strong().color(DashColors::text_primary(dark_mode)));
+                ui.label(
+                    RichText::new("Memo (optional):")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
                 ui.add(
                     TextEdit::multiline(&mut self.memo)
                         .hint_text("Add a note to this payment")
@@ -172,7 +203,11 @@ impl SendPaymentScreen {
                         .desired_width(f32::INFINITY),
                 );
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(RichText::new(format!("{}/100 characters", self.memo.len())).small().color(DashColors::text_secondary(dark_mode)));
+                ui.label(
+                    RichText::new(format!("{}/100 characters", self.memo.len()))
+                        .small()
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
 
                 ui.add_space(10.0);
 
@@ -199,7 +234,6 @@ impl SendPaymentScreen {
                     }
                 });
             });
-
         });
 
         action
@@ -226,16 +260,21 @@ impl ScreenLike for SendPaymentScreen {
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![("DashPay", AppAction::None), ("Send Payment", AppAction::None)],
+            vec![
+                ("DashPay", AppAction::None),
+                ("Send Payment", AppAction::None),
+            ],
             vec![],
         );
 
-        // Add left panel  
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashPayPayments);
+        // Add left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenDashPayPayments,
+        );
 
-        action |= island_central_panel(ctx, |ui| {
-            self.render(ui)
-        });
+        action |= island_central_panel(ctx, |ui| self.render(ui));
 
         action
     }
@@ -281,14 +320,14 @@ impl PaymentHistory {
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
             self.message = Some(("Loading payment history...".to_string(), MessageType::Info));
-            
+
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
                 identity: identity.clone(),
             }));
-            
+
             return AppAction::BackendTask(task);
         }
-        
+
         AppAction::None
     }
 
@@ -358,7 +397,10 @@ impl PaymentHistory {
 
         if self.selected_identity.is_none() {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.label(RichText::new("Please select an identity to view payment history").color(DashColors::text_primary(dark_mode)));
+            ui.label(
+                RichText::new("Please select an identity to view payment history")
+                    .color(DashColors::text_primary(dark_mode)),
+            );
             return action;
         }
 
@@ -374,8 +416,7 @@ impl PaymentHistory {
         // Payment list
         ScrollArea::vertical().show(ui, |ui| {
             if self.payments.is_empty() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.label(RichText::new("No payments found").color(DashColors::text_primary(dark_mode)));
+                ui.label("No payments loaded");
             } else {
                 for payment in &self.payments {
                     ui.group(|ui| {
@@ -397,7 +438,11 @@ impl PaymentHistory {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     // Contact name
-                                    ui.label(RichText::new(&payment.contact_name).strong().color(DashColors::text_primary(dark_mode)));
+                                    ui.label(
+                                        RichText::new(&payment.contact_name)
+                                            .strong()
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
 
                                     // Amount
                                     let amount_str = format!("{} Dash", payment.amount.to_string());
@@ -417,16 +462,26 @@ impl PaymentHistory {
                                 // Memo
                                 if let Some(memo) = &payment.memo {
                                     ui.label(
-                                        RichText::new(format!("\"{}\"", memo)).italics().color(DashColors::text_secondary(dark_mode)),
+                                        RichText::new(format!("\"{}\"", memo))
+                                            .italics()
+                                            .color(DashColors::text_secondary(dark_mode)),
                                     );
                                 }
 
                                 ui.horizontal(|ui| {
                                     // Transaction ID
-                                    ui.label(RichText::new(&payment.tx_id).small().color(DashColors::text_secondary(dark_mode)));
+                                    ui.label(
+                                        RichText::new(&payment.tx_id)
+                                            .small()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
 
                                     // Timestamp
-                                    ui.label(RichText::new("• 2 days ago").small().color(DashColors::text_secondary(dark_mode)));
+                                    ui.label(
+                                        RichText::new("• 2 days ago")
+                                            .small()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
                                 });
                             });
                         });
@@ -445,11 +500,11 @@ impl PaymentHistory {
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.loading = false;
-        
+
         match result {
             BackendTaskSuccessResult::DashPayPaymentHistory(payment_data) => {
                 self.payments.clear();
-                
+
                 // Convert backend data to PaymentRecord structs
                 for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
                     let payment = PaymentRecord {
@@ -462,10 +517,10 @@ impl PaymentHistory {
                     };
                     self.payments.push(payment);
                 }
-                
+
                 self.message = Some((
                     format!("Found {} payments", self.payments.len()),
-                    MessageType::Success
+                    MessageType::Success,
                 ));
             }
             _ => {

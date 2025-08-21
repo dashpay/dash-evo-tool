@@ -5,12 +5,19 @@ use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::Sdk;
 use std::sync::Arc;
 
+pub mod auto_accept_handler;
 pub mod auto_accept_proof;
+pub mod avatar_processing;
 pub mod contact_info;
 pub mod contact_requests;
 pub mod contacts;
 pub mod encryption;
+pub mod encryption_tests;
+pub mod errors;
+pub mod hd_derivation;
+pub mod payments;
 pub mod profile;
+pub mod validation;
 
 pub use contacts::ContactData;
 
@@ -39,6 +46,13 @@ pub enum DashPayTask {
         signing_key: IdentityPublicKey,
         to_username: String,
         account_label: Option<String>,
+    },
+    SendContactRequestWithProof {
+        identity: QualifiedIdentity,
+        signing_key: IdentityPublicKey,
+        to_identity_id: Identifier,
+        account_label: Option<String>,
+        auto_accept_proof: Vec<u8>,
     },
     AcceptContactRequest {
         identity: QualifiedIdentity,
@@ -77,9 +91,7 @@ impl AppContext {
                 display_name,
                 bio,
                 avatar_url,
-            } => {
-                profile::update_profile(self, sdk, identity, display_name, bio, avatar_url).await
-            }
+            } => profile::update_profile(self, sdk, identity, display_name, bio, avatar_url).await,
             DashPayTask::LoadContacts { identity } => {
                 contacts::load_contacts(self, sdk, identity).await
             }
@@ -99,14 +111,37 @@ impl AppContext {
                     signing_key,
                     to_username,
                     account_label,
-                ).await
+                )
+                .await
             }
-            DashPayTask::AcceptContactRequest { identity, request_id } => {
-                contact_requests::accept_contact_request(self, sdk, identity, request_id).await
+            DashPayTask::SendContactRequestWithProof {
+                identity,
+                signing_key,
+                to_identity_id,
+                account_label,
+                auto_accept_proof,
+            } => {
+                contact_requests::send_contact_request_with_proof(
+                    self,
+                    sdk,
+                    identity,
+                    signing_key,
+                    to_identity_id.to_string(
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                    ),
+                    account_label,
+                    Some(auto_accept_proof),
+                )
+                .await
             }
-            DashPayTask::RejectContactRequest { identity, request_id } => {
-                contact_requests::reject_contact_request(self, sdk, identity, request_id).await
-            }
+            DashPayTask::AcceptContactRequest {
+                identity,
+                request_id,
+            } => contact_requests::accept_contact_request(self, sdk, identity, request_id).await,
+            DashPayTask::RejectContactRequest {
+                identity,
+                request_id,
+            } => contact_requests::reject_contact_request(self, sdk, identity, request_id).await,
             DashPayTask::LoadPaymentHistory { identity: _ } => {
                 // TODO: Implement payment history loading according to DIP-0015
                 // This requires:
@@ -115,14 +150,21 @@ impl AppContext {
                 // 3. Query blockchain for transactions to/from those addresses
                 // 4. Build payment history records with amount, timestamp, memo, etc.
                 // 5. Store in local database for faster access
-                // 
+                //
                 // The derivation path for DashPay addresses is:
                 // m/9'/5'/15'/account'/(our_identity_id)/(contact_identity_id)/index
                 //
                 // For now, return empty payment history
                 Ok(BackendTaskSuccessResult::DashPayPaymentHistory(Vec::new()))
             }
-            DashPayTask::UpdateContactInfo { identity, contact_id, nickname, note, is_hidden, accepted_accounts } => {
+            DashPayTask::UpdateContactInfo {
+                identity,
+                contact_id,
+                nickname,
+                note,
+                is_hidden,
+                accepted_accounts,
+            } => {
                 contact_info::create_or_update_contact_info(
                     self,
                     sdk,
@@ -132,7 +174,8 @@ impl AppContext {
                     note,
                     is_hidden,
                     accepted_accounts,
-                ).await
+                )
+                .await
             }
         }
     }

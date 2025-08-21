@@ -59,7 +59,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{island_central_panel, ClickableCollapsingHeader};
+use crate::ui::components::styled::{ClickableCollapsingHeader, island_central_panel};
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;

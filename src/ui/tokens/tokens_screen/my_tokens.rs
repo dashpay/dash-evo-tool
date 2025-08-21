@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::Screen;
-use crate::ui::components::styled::{StyledButton, ClickableCollapsingHeader};
+use crate::ui::components::styled::{ClickableCollapsingHeader, StyledButton};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
@@ -58,100 +58,100 @@ impl TokensScreen {
         ClickableCollapsingHeader::new("Basic Information")
             .id_salt("token_basic_info_header")
             .show(ui, |ui| {
-            egui::Grid::new("token_basic_info")
-                .num_columns(2)
-                .spacing([10.0, 5.0])
-                .show(ui, |ui| {
-                    ui.label("Description:");
-                    ui.label(
-                        token_info
-                            .token_configuration
-                            .description()
-                            .as_ref()
-                            .unwrap_or(&"No description".to_string()),
-                    );
-                    ui.end_row();
+                egui::Grid::new("token_basic_info")
+                    .num_columns(2)
+                    .spacing([10.0, 5.0])
+                    .show(ui, |ui| {
+                        ui.label("Description:");
+                        ui.label(
+                            token_info
+                                .token_configuration
+                                .description()
+                                .as_ref()
+                                .unwrap_or(&"No description".to_string()),
+                        );
+                        ui.end_row();
 
-                    // Base Supply
-                    ui.label("Base Supply:");
-                    ui.label(config.base_supply().to_string());
-                    ui.end_row();
+                        // Base Supply
+                        ui.label("Base Supply:");
+                        ui.label(config.base_supply().to_string());
+                        ui.end_row();
 
-                    // Max Supply
-                    ui.label("Max Supply:");
-                    if let Some(max_supply) = config.max_supply() {
-                        ui.label(max_supply.to_string());
-                    } else {
-                        ui.label("Unlimited");
-                    }
-                    ui.end_row();
-
-                    // Distribution info
-                    ui.label("Perpetual Distribution:");
-                    ui.label(
-                        if config
-                            .distribution_rules()
-                            .perpetual_distribution()
-                            .is_some()
-                        {
-                            "Yes"
+                        // Max Supply
+                        ui.label("Max Supply:");
+                        if let Some(max_supply) = config.max_supply() {
+                            ui.label(max_supply.to_string());
                         } else {
-                            "No"
-                        },
-                    );
-                    ui.end_row();
+                            ui.label("Unlimited");
+                        }
+                        ui.end_row();
 
-                    ui.label("Preprogrammed Distribution:");
-                    ui.label(
-                        if config
-                            .distribution_rules()
-                            .pre_programmed_distribution()
-                            .is_some()
-                        {
-                            "Yes"
-                        } else {
-                            "No"
-                        },
-                    );
-                    ui.end_row();
+                        // Distribution info
+                        ui.label("Perpetual Distribution:");
+                        ui.label(
+                            if config
+                                .distribution_rules()
+                                .perpetual_distribution()
+                                .is_some()
+                            {
+                                "Yes"
+                            } else {
+                                "No"
+                            },
+                        );
+                        ui.end_row();
 
-                    ui.label("Token ID:");
-                    ui.label(token_info.token_id.to_string(Encoding::Base58));
-                    ui.end_row();
+                        ui.label("Preprogrammed Distribution:");
+                        ui.label(
+                            if config
+                                .distribution_rules()
+                                .pre_programmed_distribution()
+                                .is_some()
+                            {
+                                "Yes"
+                            } else {
+                                "No"
+                            },
+                        );
+                        ui.end_row();
 
-                    ui.label("Contract ID:");
-                    ui.label(token_info.data_contract.id().to_string(Encoding::Base58));
-                    ui.end_row();
+                        ui.label("Token ID:");
+                        ui.label(token_info.token_id.to_string(Encoding::Base58));
+                        ui.end_row();
 
-                    ui.label("Contract Owner:");
-                    ui.label(
-                        token_info
-                            .data_contract
-                            .owner_id()
-                            .to_string(Encoding::Base58),
-                    );
-                    ui.end_row();
-                });
-        });
+                        ui.label("Contract ID:");
+                        ui.label(token_info.data_contract.id().to_string(Encoding::Base58));
+                        ui.end_row();
+
+                        ui.label("Contract Owner:");
+                        ui.label(
+                            token_info
+                                .data_contract
+                                .owner_id()
+                                .to_string(Encoding::Base58),
+                        );
+                        ui.end_row();
+                    });
+            });
 
         // Token Configuration Summary
         ClickableCollapsingHeader::new("Token Configuration")
             .id_salt("token_config_header")
             .show(ui, |ui| {
-            ui.label("This token has the following configuration:");
-            ui.add_space(5.0);
+                ui.label("This token has the following configuration:");
+                ui.add_space(5.0);
 
-            // Show raw configuration as JSON for now
-            if let Ok(json_str) = serde_json::to_string_pretty(&config) {
-                egui::ScrollArea::vertical()
-                    .max_height(300.0)
-                    .show(ui, |ui| {
-                        ui.code(&json_str);
-                    });
-            } else {
-                ui.label("Unable to display configuration details");
-            }
-        });
+                // Show raw configuration as JSON for now
+                if let Ok(json_str) = serde_json::to_string_pretty(&config) {
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            ui.code(&json_str);
+                        });
+                } else {
+                    ui.label("Unable to display configuration details");
+                }
+            });
     }
 
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
@@ -527,41 +527,48 @@ impl TokensScreen {
                             ClickableCollapsingHeader::new("Basic Explanation")
                                 .id_salt("basic_explanation_header")
                                 .show(ui, |ui| {
-                                let local_time = Local::now();
-                                let timezone = local_time.format("%Z").to_string();
+                                    let local_time = Local::now();
+                                    let timezone = local_time.format("%Z").to_string();
 
-                                let short_explanation = explanation.short_explanation(
-                                    token_info.token_configuration.conventions().decimals(),
-                                    self.app_context.platform_version(),
-                                    &timezone,
-                                );
+                                    let short_explanation = explanation.short_explanation(
+                                        token_info.token_configuration.conventions().decimals(),
+                                        self.app_context.platform_version(),
+                                        &timezone,
+                                    );
 
-                                ui.label(short_explanation);
-                            });
+                                    ui.label(short_explanation);
+                                });
 
                             ClickableCollapsingHeader::new("Detailed Explanation")
                                 .id_salt("detailed_explanation_header")
                                 .show(ui, |ui| {
-                                ui.label(explanation.detailed_explanation());
-                            });
+                                    ui.label(explanation.detailed_explanation());
+                                });
 
                             if !explanation.evaluation_steps.is_empty() {
                                 ClickableCollapsingHeader::new("Step-by-Step Breakdown")
                                     .id_salt("step_by_step_header")
                                     .show(ui, |ui| {
-                                    for (i, step) in explanation.evaluation_steps.iter().enumerate()
-                                    {
-                                        ClickableCollapsingHeader::new(format!("Step {}", i + 1))
+                                        for (i, step) in
+                                            explanation.evaluation_steps.iter().enumerate()
+                                        {
+                                            ClickableCollapsingHeader::new(format!(
+                                                "Step {}",
+                                                i + 1
+                                            ))
                                             .id_salt(format!("step_{}_header", i))
-                                            .show(ui, |ui| {
-                                            if let Some(step_explanation) =
-                                                explanation.explanation_for_step(step.step_index)
-                                            {
-                                                ui.label(step_explanation);
-                                            }
-                                        });
-                                    }
-                                });
+                                            .show(
+                                                ui,
+                                                |ui| {
+                                                    if let Some(step_explanation) = explanation
+                                                        .explanation_for_step(step.step_index)
+                                                    {
+                                                        ui.label(step_explanation);
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    });
                             }
 
                             ui.separator();

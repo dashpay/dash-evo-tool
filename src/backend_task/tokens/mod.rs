@@ -782,7 +782,7 @@ impl AppContext {
             0 => TokenTradeMode::NotTradeable,
             _ => TokenTradeMode::NotTradeable, // Default to NotTradeable for any unknown value
         };
-        
+
         token_config_v0.marketplace_rules = TokenMarketplaceRules::V0(TokenMarketplaceRulesV0 {
             trade_mode,
             trade_mode_change_rules: marketplace_rules,

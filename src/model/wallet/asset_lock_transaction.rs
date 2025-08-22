@@ -1,6 +1,7 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::secp256k1::Message;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -16,7 +17,7 @@ impl Wallet {
     pub fn registration_asset_lock_transaction(
         &mut self,
         network: Network,
-        amount: u64,
+        amount: Duffs,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
         register_addresses: Option<&AppContext>,
@@ -47,7 +48,7 @@ impl Wallet {
     pub fn top_up_asset_lock_transaction(
         &mut self,
         network: Network,
-        amount: u64,
+        amount_duffs: Duffs,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
         top_up_index: u32,
@@ -69,7 +70,7 @@ impl Wallet {
         )?;
         self.asset_lock_transaction_from_private_key(
             network,
-            amount,
+            amount_duffs,
             allow_take_fee_from_amount,
             private_key,
             register_addresses,
@@ -80,7 +81,7 @@ impl Wallet {
     fn asset_lock_transaction_from_private_key(
         &mut self,
         network: Network,
-        amount: u64,
+        amount_duffs: Duffs,
         allow_take_fee_from_amount: bool,
         private_key: PrivateKey,
         register_addresses: Option<&AppContext>,
@@ -99,8 +100,15 @@ impl Wallet {
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
         let fee = 3_000;
 
+        tracing::debug!(wallet=?self.alias,
+            "Creating asset lock transaction with amount: {}, fee: {}, allow_take_fee_from_amount: {}",
+            amount_duffs,
+            fee,
+            allow_take_fee_from_amount
+        );
+
         let (utxos, change_option) = self
-            .take_unspent_utxos_for(amount, fee, allow_take_fee_from_amount)
+            .take_unspent_utxos_for(amount_duffs, fee, allow_take_fee_from_amount)
             .ok_or("take_unspent_utxos_for() returned None".to_string())?;
 
         let actual_amount = if change_option.is_none() && allow_take_fee_from_amount {
@@ -109,7 +117,7 @@ impl Wallet {
             let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
             total_input_value - fee
         } else {
-            amount
+            amount_duffs
         };
 
         let payload_output = TxOut {

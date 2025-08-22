@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use dash_sdk::Error;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
@@ -92,7 +93,7 @@ impl AppContext {
                         let mut wallet = wallet.write().unwrap();
                         match wallet.top_up_asset_lock_transaction(
                             sdk.network,
-                            amount,
+                            amount.dash_to_duffs().expect("amount should be in DASH"),
                             true,
                             identity_index,
                             top_up_index,
@@ -112,7 +113,7 @@ impl AppContext {
                                     .map_err(|e| e.to_string())?;
                                 wallet.top_up_asset_lock_transaction(
                                     sdk.network,
-                                    amount,
+                                    amount.dash_to_duffs().expect("amount should be in DASH"),
                                     true,
                                     identity_index,
                                     top_up_index,
@@ -242,7 +243,7 @@ impl AppContext {
                         asset_lock_proof,
                         asset_lock_proof_private_key,
                         tx_id,
-                        Some((tx_out.value, top_up_index)),
+                        Some((Amount::dash_from_duffs(tx_out.value), top_up_index)),
                     )
                 }
             };
@@ -326,7 +327,7 @@ impl AppContext {
                 .insert_top_up(
                     qualified_identity.identity.id().as_bytes(),
                     top_up_index,
-                    amount,
+                    amount.dash_to_duffs().expect("amount should be in DASH"),
                 )
                 .map_err(|e| e.to_string())?;
         }

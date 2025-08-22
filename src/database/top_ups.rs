@@ -1,4 +1,5 @@
 use crate::database::Database;
+use dash_sdk::dpp::balances::credits::Duffs;
 use rusqlite::{OptionalExtension, params};
 
 impl Database {
@@ -34,7 +35,7 @@ impl Database {
         &self,
         identity_id: &[u8],
         top_up_index: u32,
-        amount: u64,
+        amount: Duffs,
     ) -> rusqlite::Result<()> {
         self.execute(
             "INSERT INTO top_up (identity_id, top_up_index, amount) VALUES (?, ?, ?)",

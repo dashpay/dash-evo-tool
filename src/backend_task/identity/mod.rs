@@ -12,6 +12,7 @@ mod withdraw_from_identity;
 use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
@@ -21,7 +22,6 @@ use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
@@ -197,14 +197,15 @@ pub type TopUpIndex = u32;
 pub enum RegisterIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
-    FundWithWallet(Duffs, IdentityIndex),
+    FundWithWallet(Amount, IdentityIndex),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
+    // QR code mathod
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
-    FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
+    FundWithWallet(Amount, IdentityIndex, TopUpIndex),
 }
 
 #[derive(Debug, Clone)]

@@ -3,6 +3,8 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
+use crate::ui::components::funding_widget::FundingWidget;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -46,6 +48,8 @@ pub struct WalletsBalancesScreen {
     refreshing: bool,
     show_rename_dialog: bool,
     rename_input: String,
+    // Funding widget for top-up
+    funding_widget: Option<FundingWidget>,
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,
@@ -138,6 +142,7 @@ impl WalletsBalancesScreen {
             refreshing: false,
             show_rename_dialog: false,
             rename_input: String::new(),
+            funding_widget: None,
             wallet_password: String::new(),
             show_password: false,
             error_message: None,
@@ -437,7 +442,8 @@ impl WalletsBalancesScreen {
                     .column(Column::initial(150.0)) // Total Received
                     .column(Column::initial(100.0)) // Type
                     .column(Column::initial(60.0)) // Index
-                    .column(Column::remainder()) // Derivation Path
+                    .column(Column::initial(150.0)) // Derivation Path
+                    .column(Column::remainder()) // Top-up Action
                     .header(30.0, |mut header| {
                         header.col(|ui| {
                             let label = if self.sort_column == SortColumn::Address {
@@ -530,6 +536,9 @@ impl WalletsBalancesScreen {
                                 self.toggle_sort(SortColumn::DerivationPath);
                             }
                         });
+                        header.col(|ui| {
+                            ui.label("Actions");
+                        });
                     })
                     .body(|mut body| {
                         for data in &address_data {
@@ -556,6 +565,16 @@ impl WalletsBalancesScreen {
                                 });
                                 row.col(|ui| {
                                     ui.label(format!("{}", data.derivation_path));
+                                });
+                                row.col(|ui| {
+                                    if data.address_type.eq("Funds")
+                                        && ui
+                                            .button("💰")
+                                            .on_hover_text("Top-up this address")
+                                            .clicked()
+                                    {
+                                        self.init_address_topup_widget(data.address.clone());
+                                    }
                                 });
                             });
                         }
@@ -747,6 +766,88 @@ impl WalletsBalancesScreen {
             });
     }
 
+    fn render_top_up_modal(&mut self, ui: &mut Ui) {
+        if self.funding_widget.is_none() {
+            return;
+        };
+
+        let ctx = ui.ctx();
+        let screen_rect = ctx.screen_rect();
+        let max_height = screen_rect.height() * 0.9; // 90% of screen height
+
+        let mut open = true;
+
+        egui::Window::new("💰 Top-up Address")
+            .collapsible(false)
+            .resizable(true)
+            .max_height(max_height)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                self.render_modal_content(ui);
+            });
+
+        // Handle close button click
+        if !open {
+            self.close_funding_modal();
+        }
+    }
+
+    /// Render the content inside the top-up modal
+    fn render_modal_content(&mut self, ui: &mut Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([true; 2])
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    // Render the widget and get response
+                    let funding_widget = self.funding_widget.as_mut().expect("Checked above");
+                    let response_data = funding_widget.show(ui).inner.on_funded(|_| {
+                        self.close_funding_modal();
+                    });
+
+                    if let Some(e) = response_data.error {
+                        self.display_message(
+                            &format!("Funding widget error: {}", e),
+                            MessageType::Error,
+                        );
+                    }
+
+                    ui.add_space(15.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(RichText::new("Close").size(14.0)).clicked() {
+                                self.close_funding_modal();
+                            }
+                        });
+                    });
+                });
+            });
+    }
+
+    /// Initialize funding widget for address top-up
+    fn init_address_topup_widget(&mut self, address: Address) {
+        let mut widget = FundingWidget::new(self.app_context.clone())
+            .with_address(address)
+            .with_default_amount(crate::model::amount::Amount::new_dash(0.1)) // 0.1 DASH
+            .with_qr_code(true)
+            .with_copy_button(true)
+            .with_max_button(false) // Disable max button for address top-up
+            .with_ignore_existing_utxos(true); // Enable ignore existing UTXOs for top-up
+
+        if let Some(wallet) = &self.selected_wallet {
+            widget = widget.with_wallet(wallet.clone());
+        }
+
+        self.funding_widget = Some(widget);
+    }
+
+    /// Close the funding modal and reset state
+    fn close_funding_modal(&mut self) {
+        self.funding_widget = None;
+    }
+
     fn dismiss_message(&mut self) {
         self.message = None;
     }
@@ -913,6 +1014,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
                         self.render_bottom_options(ui);
+                        self.render_top_up_modal(ui);
                     } else {
                         ui.vertical_centered(|ui| {
                             ui.add_space(50.0);

@@ -174,7 +174,7 @@ impl AppContext {
                     wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
                         sdk.network,
-                        amount,
+                        amount.dash_to_duffs().expect("amount should be in DASH"),
                         true,
                         identity_index,
                         Some(self),
@@ -193,7 +193,7 @@ impl AppContext {
                                 .map_err(|e| e.to_string())?;
                             wallet.registration_asset_lock_transaction(
                                 sdk.network,
-                                amount,
+                                amount.dash_to_duffs().expect("amount should be in DASH"),
                                 true,
                                 identity_index,
                                 Some(self),

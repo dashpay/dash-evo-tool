@@ -30,3 +30,6 @@ test_db
 **/.DS_Store
 explorer.log
 .gitaipconfig
+
+# Test build directories
+build-test/

@@ -1,7 +1,6 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dpp::dashcore::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::secp256k1::Message;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
@@ -9,6 +8,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::Asset
 use dash_sdk::dpp::dashcore::{
     Address, Network, OutPoint, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut,
 };
+use dash_sdk::key_wallet::psbt::serialize::Serialize;
 use std::collections::BTreeMap;
 
 impl Wallet {

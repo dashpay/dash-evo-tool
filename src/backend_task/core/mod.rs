@@ -8,7 +8,9 @@ use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::{Address, ChainLock, Network, OutPoint, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::{
+    Address, Block, ChainLock, InstantLock, Network, OutPoint, Transaction, TxOut,
+};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -39,7 +41,8 @@ impl PartialEq for CoreTask {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum CoreItem {
+pub(crate) enum CoreItem {
+    InstantLockedTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>, InstantLock),
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
     ChainLock(ChainLock, Network),
     ChainLocks(
@@ -48,6 +51,7 @@ pub enum CoreItem {
         Option<ChainLock>,
         Option<ChainLock>,
     ), // Mainnet, Testnet, Devnet, Local
+    ChainLockedBlock(Block, ChainLock),
 }
 
 impl AppContext {

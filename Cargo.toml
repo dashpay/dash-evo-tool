@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "5f93c70720a1ea09f91c9142668e17f314986f03" }
+dash-sdk = { git = "https://github.com/dashpay/platform", features = ["key-wallet", "core-bincode", "core-quorum-validation", "core-verification"], rev = "8c623f69d3e3dbd0de4eab8f1170eab263851517" }
 thiserror = "2.0.12"
 serde = "1.0.219"
 serde_json = "1.0.140"
@@ -30,6 +30,7 @@ itertools = "0.14.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"
+rand = "0.8"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"

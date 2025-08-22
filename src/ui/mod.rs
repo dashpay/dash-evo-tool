@@ -270,6 +270,7 @@ pub enum ScreenType {
     DashPayProfile,
     DashPayPayments,
     DashPayAddContact,
+    DashPayAddContactWithId(String), // Pre-populated identity ID
     DashPayContactDetails(QualifiedIdentity, Identifier),
     DashPayContactProfileViewer(QualifiedIdentity, Identifier),
     DashPaySendPayment(QualifiedIdentity, Identifier),
@@ -472,6 +473,12 @@ impl ScreenType {
             }
             ScreenType::DashPayAddContact => {
                 Screen::DashPayAddContactScreen(AddContactScreen::new(app_context.clone()))
+            }
+            ScreenType::DashPayAddContactWithId(identity_id) => {
+                Screen::DashPayAddContactScreen(AddContactScreen::new_with_identity_id(
+                    app_context.clone(),
+                    identity_id.clone(),
+                ))
             }
             ScreenType::DashPayContactDetails(identity, contact_id) => {
                 Screen::DashPayContactDetailsScreen(ContactDetailsScreen::new(

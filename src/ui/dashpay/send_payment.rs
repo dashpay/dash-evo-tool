@@ -88,7 +88,7 @@ impl SendPaymentScreen {
                 action = AppAction::PopScreen;
             }
             ui.heading("Send Payment");
-            ui.add_space(10.0);
+            ui.add_space(5.0);
             crate::ui::helpers::info_icon_button(
                 ui,
                 "Payment Guidelines:\n\n\
@@ -170,16 +170,16 @@ impl SendPaymentScreen {
 
                 // Amount input
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(
-                    RichText::new("Amount:")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
+                let balance = self.from_identity.identity.balance();
                 let amount_input = self.amount_input.get_or_insert_with(|| {
                     AmountInput::new(&self.amount)
                         .with_hint_text("Enter amount in Dash")
                         .with_max_button(true)
+                        .with_max_amount(Some(balance))
+                        .with_label("Amount:")
                 });
+                // Update max amount in case balance changed
+                amount_input.set_max_amount(Some(balance));
                 let response = amount_input.show(ui);
                 if response.inner.has_changed() {
                     if let Some(new_amount) = response.inner.changed_value() {
@@ -217,7 +217,19 @@ impl SendPaymentScreen {
                         ui.spinner();
                         ui.label("Sending payment...");
                     } else {
-                        if ui.button("Send Payment").clicked() {
+                        let send_enabled = self.amount.value() > 0;
+                        let send_button = egui::Button::new(
+                            RichText::new("Send Payment")
+                                .color(egui::Color32::WHITE)
+                        ).fill(
+                            if send_enabled {
+                                egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                            } else {
+                                egui::Color32::GRAY
+                            }
+                        );
+                        
+                        if ui.add_enabled(send_enabled, send_button).clicked() {
                             if self.memo.len() > 100 {
                                 self.display_message(
                                     "Memo must be 100 characters or less",

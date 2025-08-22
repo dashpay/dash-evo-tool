@@ -109,9 +109,7 @@ impl AppContext {
             DashPayTask::FetchContactProfile {
                 identity,
                 contact_id,
-            } => {
-                profile::fetch_contact_profile(self, sdk, identity, contact_id).await
-            }
+            } => profile::fetch_contact_profile(self, sdk, identity, contact_id).await,
             DashPayTask::SearchProfiles {
                 identity,
                 search_query,

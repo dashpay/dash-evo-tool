@@ -63,7 +63,6 @@ pub struct ProfileScreen {
     saving: bool, // Track if we're saving vs loading
     profile_load_attempted: bool,
     validation_errors: Vec<ValidationError>,
-    show_preview: bool,
     has_unsaved_changes: bool,
     original_display_name: String,
     original_bio: String,
@@ -86,7 +85,6 @@ impl ProfileScreen {
             saving: false,
             profile_load_attempted: false,
             validation_errors: Vec::new(),
-            show_preview: bool::default(),
             has_unsaved_changes: false,
             original_display_name: String::new(),
             original_bio: String::new(),
@@ -181,7 +179,6 @@ impl ProfileScreen {
         }
 
         self.editing = true;
-        self.show_preview = false;
         self.has_unsaved_changes = false;
         self.validation_errors.clear();
         self.message = None;
@@ -234,7 +231,6 @@ impl ProfileScreen {
 
     fn cancel_editing(&mut self) {
         self.editing = false;
-        self.show_preview = false;
         self.edit_display_name.clear();
         self.edit_bio.clear();
         self.edit_avatar_url.clear();
@@ -284,7 +280,6 @@ impl ProfileScreen {
                     self.editing = false;
                     self.validation_errors.clear();
                     self.has_unsaved_changes = false;
-                    self.show_preview = false;
                     self.message = None;
                 }
             });
@@ -347,15 +342,8 @@ impl ProfileScreen {
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("Edit Profile").strong().color(DashColors::text_primary(dark_mode)));
-                                ui.add_space(10.0);
 
-                                // Toggle preview button
-                                let preview_text = if self.show_preview { "Hide Preview" } else { "Show Preview" };
-                                if ui.button(preview_text).clicked() {
-                                    self.show_preview = !self.show_preview;
-                                }
-
-                                ui.add_space(10.0);
+                                ui.add_space(5.0);
                                 crate::ui::helpers::info_icon_button(ui,
                                     "Profile Guidelines:\n\n\
                                     • Display names can include any UTF-8 characters (emojis, symbols, etc.)\n\
@@ -491,8 +479,10 @@ impl ProfileScreen {
 
                                 ui.add_space(10.0);
 
-                                let save_button = egui::Button::new("Save Profile")
-                                    .fill(if self.is_valid() {
+                                let save_button = egui::Button::new(
+                                    RichText::new("Save Profile")
+                                        .color(egui::Color32::WHITE)
+                                ).fill(if self.is_valid() {
                                         egui::Color32::from_rgb(0, 141, 228) // Dash blue
                                     } else {
                                         egui::Color32::GRAY
@@ -510,67 +500,6 @@ impl ProfileScreen {
                             });
                         });
                     });
-
-                    // Live preview panel (right side)
-                    if self.show_preview {
-                        ui.add_space(20.0);
-                        ui.vertical(|ui| {
-                            ui.group(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.label(RichText::new("Live Preview").strong().color(DashColors::text_primary(dark_mode)));
-                                ui.separator();
-
-                                // Preview the profile as it would appear
-                                ui.horizontal(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.add_space(5.0);
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(10.0);
-                                            ui.label(RichText::new("👤").size(40.0));
-                                        });
-                                    });
-
-                                    ui.vertical(|ui| {
-                                        // Preview display name
-                                        if !self.edit_display_name.trim().is_empty() {
-                                            ui.label(RichText::new(self.edit_display_name.trim()).heading());
-                                        } else {
-                                            ui.label(RichText::new("[No display name]").weak().italics());
-                                        }
-
-                                        // Username from identity
-                                        if let Some(identity) = &self.selected_identity {
-                                            if !identity.dpns_names.is_empty() {
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "@{}",
-                                                        identity.dpns_names[0].name
-                                                    ))
-                                                    .strong(),
-                                                );
-                                            }
-                                        }
-                                    });
-                                });
-
-                                ui.separator();
-
-                                // Preview bio
-                                ui.label(RichText::new("Bio:").strong());
-                                if !self.edit_bio.trim().is_empty() {
-                                    ui.label(RichText::new(self.edit_bio.trim()));
-                                } else {
-                                    ui.label(RichText::new("[No bio]").weak().italics());
-                                }
-
-                                if !self.edit_avatar_url.trim().is_empty() {
-                                    ui.separator();
-                                    ui.label(RichText::new("Avatar URL:").strong());
-                                    ui.label(RichText::new(self.edit_avatar_url.trim()).small());
-                                }
-                            });
-                        });
-                    }
                 });
             } else {
                 // View mode
@@ -618,7 +547,12 @@ impl ProfileScreen {
                             });
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                if ui.button("Edit Profile").clicked() {
+                                let edit_button = egui::Button::new(
+                                    RichText::new("Edit Profile")
+                                        .color(egui::Color32::WHITE)
+                                ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                
+                                if ui.add(edit_button).clicked() {
                                     self.start_editing();
                                 }
                             });
@@ -659,7 +593,12 @@ impl ProfileScreen {
                     ui.group(|ui| {
                         ui.label("No DashPay profile found for this identity.");
                         ui.add_space(10.0);
-                        if ui.button("Create Profile").clicked() {
+                        let create_button = egui::Button::new(
+                            RichText::new("Create Profile")
+                                .color(egui::Color32::WHITE)
+                        ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                        
+                        if ui.add(create_button).clicked() {
                             self.start_editing();
                         }
                     });

@@ -32,7 +32,7 @@ impl crate::database::Database {
             (owner_identity_id, contact_identity_id, nickname, notes, is_hidden, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
         ";
-        
+
         self.execute(
             sql,
             params![
@@ -54,9 +54,9 @@ impl crate::database::Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT nickname, notes, is_hidden FROM contact_private_info 
-             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2"
+             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
         )?;
-        
+
         let result = stmt.query_row(
             params![
                 owner_identity_id.to_buffer().to_vec(),
@@ -70,7 +70,7 @@ impl crate::database::Database {
                 ))
             },
         );
-        
+
         match result {
             Ok(data) => Ok(data),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok((String::new(), String::new(), false)),

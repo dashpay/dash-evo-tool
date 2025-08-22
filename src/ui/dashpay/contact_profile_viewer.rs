@@ -7,9 +7,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::platform::Identifier;
+use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::Arc;
 
@@ -45,9 +45,10 @@ impl ContactProfileViewerScreen {
         contact_id: Identifier,
     ) -> Self {
         // Load private contact info from database
-        let (nickname, notes, is_hidden) = 
-            app_context.db.load_contact_private_info(&identity.identity.id(), &contact_id)
-                .unwrap_or((String::new(), String::new(), false));
+        let (nickname, notes, is_hidden) = app_context
+            .db
+            .load_contact_private_info(&identity.identity.id(), &contact_id)
+            .unwrap_or((String::new(), String::new(), false));
 
         Self {
             app_context,
@@ -67,7 +68,7 @@ impl ContactProfileViewerScreen {
     fn fetch_profile(&mut self) -> AppAction {
         self.loading = true;
         self.profile = None; // Clear any existing profile
-        self.message = Some(("Fetching public profile...".to_string(), MessageType::Info));
+        self.message = None; // Clear any existing message
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::FetchContactProfile {
             identity: self.identity.clone(),
@@ -78,13 +79,16 @@ impl ContactProfileViewerScreen {
     }
 
     fn save_private_info(&mut self) -> Result<(), String> {
-        self.app_context.db.save_contact_private_info(
-            &self.identity.identity.id(),
-            &self.contact_id,
-            &self.nickname,
-            &self.notes,
-            self.is_hidden,
-        ).map_err(|e| e.to_string())
+        self.app_context
+            .db
+            .save_contact_private_info(
+                &self.identity.identity.id(),
+                &self.contact_id,
+                &self.nickname,
+                &self.notes,
+                self.is_hidden,
+            )
+            .map_err(|e| e.to_string())
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -105,12 +109,12 @@ impl ContactProfileViewerScreen {
                 action = AppAction::PopScreen;
             }
             ui.heading("Public Profile");
-            ui.add_space(10.0);
+            ui.add_space(5.0);
             crate::ui::helpers::info_icon_button(
                 ui,
                 "About Public Profiles:\n\n\
                 • This is the contact's public DashPay profile\n\
-                • This information is published on the Dash Platform\n\
+                • This information is published on Dash Platform\n\
                 • Anyone can view this profile\n\
                 • The contact controls what information to share\n\
                 • This is different from your private notes about them",
@@ -280,10 +284,25 @@ impl ContactProfileViewerScreen {
 
                 ui.add_space(10.0);
 
-                // Refresh button
+                // Action buttons
                 ui.horizontal(|ui| {
                     if ui.button("Refresh Profile").clicked() {
                         action = self.fetch_profile();
+                    }
+                    
+                    let pay_button = egui::Button::new(
+                        RichText::new("Pay")
+                            .color(egui::Color32::WHITE)
+                    ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                    
+                    if ui.add(pay_button).clicked() {
+                        action = AppAction::AddScreen(
+                            ScreenType::DashPaySendPayment(
+                                self.identity.clone(),
+                                self.contact_id,
+                            )
+                            .create_screen(&self.app_context),
+                        );
                     }
                 });
             } else if !self.loading {
@@ -296,31 +315,54 @@ impl ContactProfileViewerScreen {
                     ui.separator();
                     ui.label("This contact has not created a public profile yet.");
                     ui.add_space(10.0);
-                    if ui.button("Retry").clicked() {
-                        action = self.fetch_profile();
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Retry").clicked() {
+                            action = self.fetch_profile();
+                        }
+                        
+                        let pay_button = egui::Button::new(
+                            RichText::new("Pay")
+                                .color(egui::Color32::WHITE)
+                        ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                        
+                        if ui.add(pay_button).clicked() {
+                            action = AppAction::AddScreen(
+                                ScreenType::DashPaySendPayment(
+                                    self.identity.clone(),
+                                    self.contact_id,
+                                )
+                                .create_screen(&self.app_context),
+                            );
+                        }
+                    });
                 });
             }
 
             // Private Contact Info Section - Always show this, regardless of whether profile exists
             if !self.loading {
-                ui.add_space(20.0);
-                ui.separator();
                 ui.add_space(10.0);
 
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Private Contact Information")
-                                .strong()
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(10.0);
-                        crate::ui::helpers::info_icon_button(
-                            ui,
-                            "This information is stored locally on your device and is not shared with anyone.",
-                        );
-                        
+                        ui.vertical(|ui| {
+                            ui.add_space(9.0);
+                            ui.label(
+                                RichText::new("Private Contact Information")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                        });
+
+                        ui.add_space(5.0);
+
+                        ui.vertical(|ui| {
+                            ui.add_space(9.0);
+                            crate::ui::helpers::info_icon_button(
+                                ui,
+                                "This information is stored locally on your device and is not shared with anyone.",
+                            );
+                        });
+
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.editing_private_info {
                                 if ui.button("Save").clicked() {
@@ -350,7 +392,7 @@ impl ContactProfileViewerScreen {
                             }
                         });
                     });
-                    
+
                     ui.separator();
 
                     // Nickname field
@@ -505,10 +547,7 @@ impl ScreenLike for ContactProfileViewerScreen {
                     self.message = None;
                 } else {
                     self.profile = None;
-                    self.message = Some((
-                        "This contact has not created a public profile".to_string(),
-                        MessageType::Info,
-                    ));
+                    self.message = None; // Don't set message here, UI already shows "No profile found"
                 }
             }
             BackendTaskSuccessResult::Message(msg) => {

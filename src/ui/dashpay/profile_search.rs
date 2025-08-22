@@ -9,6 +9,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::{Document, Identifier};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -28,6 +29,7 @@ pub struct ProfileSearchScreen {
     search_results: Vec<ProfileSearchResult>,
     message: Option<(String, MessageType)>,
     loading: bool,
+    has_searched: bool, // Track if a search has been performed
 }
 
 impl ProfileSearchScreen {
@@ -38,6 +40,7 @@ impl ProfileSearchScreen {
             search_results: Vec::new(),
             message: None,
             loading: false,
+            has_searched: false,
         }
     }
 
@@ -63,7 +66,7 @@ impl ProfileSearchScreen {
 
         self.loading = true;
         self.search_results.clear();
-        self.message = Some(("Searching profiles...".to_string(), MessageType::Info));
+        self.has_searched = true; // Mark that a search has been performed
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
             identity: identities[0].clone(), // Just use any available identity
@@ -93,6 +96,18 @@ impl ProfileSearchScreen {
         )
     }
 
+    fn add_contact(&mut self, identity_id: Identifier) -> AppAction {
+        // Convert the identity ID to a base58 string and navigate to the Add Contact screen
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        let identity_id_string = identity_id.to_string(Encoding::Base58);
+        
+        // Navigate to the Add Contact screen with the pre-populated identity ID
+        AppAction::AddScreen(
+            ScreenType::DashPayAddContactWithId(identity_id_string)
+                .create_screen(&self.app_context),
+        )
+    }
+
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -100,7 +115,7 @@ impl ProfileSearchScreen {
         // Header
         ui.horizontal(|ui| {
             ui.heading("Search Public Profiles");
-            ui.add_space(10.0);
+            ui.add_space(5.0);
             crate::ui::helpers::info_icon_button(
                 ui,
                 "About Profile Search:\n\n\
@@ -126,40 +141,35 @@ impl ProfileSearchScreen {
 
         ScrollArea::vertical().show(ui, |ui| {
             // Search section
-            ui.group(|ui| {
-                ui.label(
-                    RichText::new("Search")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label("Search for:");
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(6.0);
                     ui.add(
                         TextEdit::singleline(&mut self.search_query)
                             .hint_text("Enter display name, username, or identity ID...")
                             .desired_width(400.0),
                     );
-
-                    if ui.button("Search").clicked() {
-                        action = self.search_profiles();
-                    }
-
-                    if ui.button("Clear").clicked() {
-                        self.search_query.clear();
-                        self.search_results.clear();
-                        self.message = None;
-                    }
                 });
 
-                ui.add_space(5.0);
-                ui.label(
-                    RichText::new("Tip: You can search by partial display name, @username, or full identity ID")
-                        .small()
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
+                if ui.button("Search").clicked() {
+                    action = self.search_profiles();
+                }
+
+                if ui.button("Clear").clicked() {
+                    self.search_query.clear();
+                    self.search_results.clear();
+                    self.message = None;
+                    self.has_searched = false; // Reset search state
+                }
             });
+
+            ui.label(
+                RichText::new(
+                    "Tip: You can search by partial display name, @username, or full identity ID",
+                )
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+            );
 
             ui.add_space(10.0);
 
@@ -253,11 +263,7 @@ impl ProfileSearchScreen {
                                             action = self.view_profile(result.identity_id);
                                         }
                                         if ui.button("Add Contact").clicked() {
-                                            // TODO: Implement adding contact from search results
-                                            self.display_message(
-                                                "Adding contacts from search not yet implemented",
-                                                MessageType::Info,
-                                            );
+                                            action = self.add_contact(result.identity_id);
                                         }
                                     },
                                 );
@@ -266,7 +272,8 @@ impl ProfileSearchScreen {
                         ui.add_space(4.0);
                     }
                 });
-            } else if !self.search_query.is_empty() && !self.loading {
+            } else if self.has_searched && !self.loading {
+                // Only show "No profiles found" if we've actually performed a search
                 ui.group(|ui| {
                     ui.label("No profiles found");
                     ui.separator();

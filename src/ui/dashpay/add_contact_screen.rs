@@ -4,7 +4,6 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -26,7 +25,6 @@ enum ContactRequestStatus {
 pub struct AddContactScreen {
     pub app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
-    selected_identity_string: String,
     selected_key: Option<IdentityPublicKey>,
     username_or_id: String,
     account_label: String,
@@ -39,9 +37,20 @@ impl AddContactScreen {
         Self {
             app_context,
             selected_identity: None,
-            selected_identity_string: String::new(),
             selected_key: None,
             username_or_id: String::new(),
+            account_label: String::new(),
+            message: None,
+            status: ContactRequestStatus::NotStarted,
+        }
+    }
+
+    pub fn new_with_identity_id(app_context: Arc<AppContext>, identity_id: String) -> Self {
+        Self {
+            app_context,
+            selected_identity: None,
+            selected_key: None,
+            username_or_id: identity_id,
             account_label: String::new(),
             message: None,
             status: ContactRequestStatus::NotStarted,
@@ -192,12 +201,21 @@ impl ScreenLike for AddContactScreen {
                 return self.show_success_screen(ui);
             }
 
-            // Header with Back button
+            // Header with Back button and info icon
             ui.horizontal(|ui| {
                 if ui.button("Back").clicked() {
                     inner_action = AppAction::PopScreen;
                 }
                 ui.heading("Send Contact Request");
+                ui.add_space(5.0);
+                crate::ui::helpers::info_icon_button(
+                    ui,
+                    "About Contact Requests:\n\n\
+                    • Contact requests establish secure communication channels\n\
+                    • Both parties must accept before payments can be sent\n\
+                    • Your display name and username will be shared with the contact\n\
+                    • You can manage contacts from the Contacts screen",
+                );
             });
             ui.separator();
 
@@ -212,7 +230,7 @@ impl ScreenLike for AddContactScreen {
                 ui.separator();
             }
 
-            // Identity selector
+            // Identity and Key selector
             let identities = self
                 .app_context
                 .load_local_qualified_identities()
@@ -229,54 +247,24 @@ impl ScreenLike for AddContactScreen {
             ui.group(|ui| {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(
-                    RichText::new("Your Identity")
+                    RichText::new("Identity and Signing Key")
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    let response = ui.add(
-                        IdentitySelector::new(
-                            "add_contact_identity_selector",
-                            &mut self.selected_identity_string,
-                            &identities,
-                        )
-                        .selected_identity(&mut self.selected_identity)
-                        .unwrap()
-                        .label("From Identity:")
-                        .width(400.0)
-                        .other_option(false),
-                    );
-
-                    if response.changed() {
-                        self.selected_key = None; // Clear key when identity changes
-                        self.message = None;
-                    }
-                });
-            });
-
-            ui.add_space(10.0);
-
-            // Key selector (only show if identity is selected)
-            if let Some(selected_identity) = &self.selected_identity {
-                ui.group(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(RichText::new("Signing Key").strong().color(DashColors::text_primary(dark_mode)));
-                ui.label(RichText::new("Select a key for signing the contact request. Only ECDSA_SECP256K1 keys are shown as they support ECDH encryption.").small().color(DashColors::text_secondary(dark_mode)));
+                ui.label(RichText::new("Select your identity and a key for signing the contact request. Only ECDSA_SECP256K1 keys are shown as they support ECDH encryption.").small().color(DashColors::text_secondary(dark_mode)));
                 ui.separator();
 
                 add_identity_key_chooser(
                     ui,
                     &self.app_context,
-                    std::iter::once(selected_identity),
-                    &mut Some(selected_identity.clone()),
+                    identities.iter(),
+                    &mut self.selected_identity,
                     &mut self.selected_key,
                     TransactionType::ContactRequest,
                 );
             });
-                ui.add_space(10.0);
-            }
+
+            ui.add_space(10.0);
 
             if self.selected_identity.is_none() {
                 ui.label("Please select an identity to send contact request from");
@@ -415,7 +403,10 @@ impl ScreenLike for AddContactScreen {
                             && self.selected_identity.is_some()
                             && self.selected_key.is_some();
 
-                        let send_button = egui::Button::new("Send Contact Request").fill(
+                        let send_button = egui::Button::new(
+                            RichText::new("Send Contact Request")
+                                .color(egui::Color32::WHITE)
+                        ).fill(
                             if send_button_enabled {
                                 egui::Color32::from_rgb(0, 141, 228) // Dash blue
                             } else {
@@ -441,36 +432,6 @@ impl ScreenLike for AddContactScreen {
                     });
                 });
 
-                ui.add_space(20.0);
-
-                // Additional information
-                ui.group(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.label(
-                        RichText::new("About Contact Requests")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new("• Contact requests establish secure communication channels")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.label(
-                        RichText::new("• Both parties must accept before payments can be sent")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "• Your display name and username will be shared with the contact",
-                        )
-                        .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.label(
-                        RichText::new("• You can manage contacts from the Contacts screen")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                });
             });
 
             inner_action

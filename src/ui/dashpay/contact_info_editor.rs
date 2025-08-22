@@ -102,7 +102,7 @@ impl ContactInfoEditorScreen {
                 action = AppAction::PopScreen;
             }
             ui.heading("Edit Private Contact Details");
-            ui.add_space(10.0);
+            ui.add_space(5.0);
             crate::ui::helpers::info_icon_button(
                 ui,
                 "About Private Contact Information:\n\n\

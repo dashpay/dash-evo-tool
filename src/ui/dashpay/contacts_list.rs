@@ -146,102 +146,108 @@ impl ContactsList {
             ui.add_space(5.0);
             ui.separator();
 
-            // Search bar
-            ui.horizontal(|ui| {
-                ui.set_min_height(40.0);
-                ui.label("Search:");
-                ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(200.0));
-                if ui.button("Clear").clicked() {
-                    self.search_query.clear();
-                }
-            });
+            // Only show search/filter/sort controls if there are contacts
+            if !self.contacts.is_empty() {
+                // Search bar
+                ui.horizontal(|ui| {
+                    ui.set_min_height(40.0);
+                    ui.label("Search:");
+                    ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(200.0));
+                    if ui.button("Clear").clicked() {
+                        self.search_query.clear();
+                    }
 
-            // Filter and sort options in one line
-            ui.horizontal(|ui| {
-                ui.set_min_height(40.0);
-                ui.vertical(|ui| {
-                    ui.add_space(11.0);
-                    ui.label("Filter:");
-                });
-                ui.vertical(|ui| {
-                    ui.add_space(4.0);
-                    egui::ComboBox::from_id_source("filter_combo")
-                        .selected_text(match self.search_filter {
-                            SearchFilter::All => "All",
-                            SearchFilter::WithUsernames => "With usernames",
-                            SearchFilter::WithoutUsernames => "No usernames",
-                            SearchFilter::WithBio => "With bio",
-                            SearchFilter::Recent => "Recent",
-                            SearchFilter::Hidden => "Hidden",
-                            SearchFilter::Visible => "Visible",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.search_filter, SearchFilter::All, "All");
-                            ui.selectable_value(
-                                &mut self.search_filter,
-                                SearchFilter::WithUsernames,
-                                "With usernames",
-                            );
-                            ui.selectable_value(
-                                &mut self.search_filter,
-                                SearchFilter::WithoutUsernames,
-                                "No usernames",
-                            );
-                            ui.selectable_value(
-                                &mut self.search_filter,
-                                SearchFilter::WithBio,
-                                "With bio",
-                            );
-                            ui.selectable_value(
-                                &mut self.search_filter,
-                                SearchFilter::Hidden,
-                                "Hidden",
-                            );
-                            ui.selectable_value(
-                                &mut self.search_filter,
-                                SearchFilter::Visible,
-                                "Visible",
-                            );
-                        });
+                    ui.separator();
+
+                    // Filter and sort options in one line
+                    ui.vertical(|ui| {
+                        ui.add_space(11.0);
+                        ui.label("Filter:");
+                    });
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        egui::ComboBox::from_id_source("filter_combo")
+                            .selected_text(match self.search_filter {
+                                SearchFilter::All => "All",
+                                SearchFilter::WithUsernames => "With usernames",
+                                SearchFilter::WithoutUsernames => "No usernames",
+                                SearchFilter::WithBio => "With bio",
+                                SearchFilter::Recent => "Recent",
+                                SearchFilter::Hidden => "Hidden",
+                                SearchFilter::Visible => "Visible",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.search_filter,
+                                    SearchFilter::All,
+                                    "All",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
+                                    SearchFilter::WithUsernames,
+                                    "With usernames",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
+                                    SearchFilter::WithoutUsernames,
+                                    "No usernames",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
+                                    SearchFilter::WithBio,
+                                    "With bio",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
+                                    SearchFilter::Hidden,
+                                    "Hidden",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
+                                    SearchFilter::Visible,
+                                    "Visible",
+                                );
+                            });
+                    });
+
+                    ui.separator();
+
+                    ui.vertical(|ui| {
+                        ui.add_space(11.0);
+                        ui.label("Sort:");
+                    });
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        egui::ComboBox::from_id_source("sort_combo")
+                            .selected_text(match self.sort_order {
+                                SortOrder::Name => "Name",
+                                SortOrder::Username => "Username",
+                                SortOrder::DateAdded => "Date",
+                                SortOrder::AccountRef => "Account",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.sort_order, SortOrder::Name, "Name");
+                                ui.selectable_value(
+                                    &mut self.sort_order,
+                                    SortOrder::Username,
+                                    "Username",
+                                );
+                                ui.selectable_value(
+                                    &mut self.sort_order,
+                                    SortOrder::AccountRef,
+                                    "Account",
+                                );
+                            });
+                    });
+
+                    ui.separator();
+
+                    ui.checkbox(&mut self.show_hidden, "Show hidden");
                 });
 
                 ui.separator();
-
-                ui.vertical(|ui| {
-                    ui.add_space(11.0);
-                    ui.label("Sort:");
-                });
-                ui.vertical(|ui| {
-                    ui.add_space(4.0);
-                    egui::ComboBox::from_id_source("sort_combo")
-                        .selected_text(match self.sort_order {
-                            SortOrder::Name => "Name",
-                            SortOrder::Username => "Username",
-                            SortOrder::DateAdded => "Date",
-                            SortOrder::AccountRef => "Account",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.sort_order, SortOrder::Name, "Name");
-                            ui.selectable_value(
-                                &mut self.sort_order,
-                                SortOrder::Username,
-                                "Username",
-                            );
-                            ui.selectable_value(
-                                &mut self.sort_order,
-                                SortOrder::AccountRef,
-                                "Account",
-                            );
-                        });
-                });
-
-                ui.separator();
-
-                ui.checkbox(&mut self.show_hidden, "Show hidden");
-            });
+            }
         }
-
-        ui.separator();
 
         // Show message if any
         if let Some((message, message_type)) = &self.message {
@@ -395,28 +401,6 @@ impl ContactsList {
                 }
             }
         });
-
-        // Show search stats
-        if !self.contacts.is_empty() {
-            let total_contacts = self.contacts.len();
-            let visible_contacts = filtered_contacts.len();
-            let hidden_count = self.contacts.values().filter(|c| c.is_hidden).count();
-
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Showing {} of {} contacts",
-                    visible_contacts, total_contacts
-                ));
-                if hidden_count > 0 && !self.show_hidden {
-                    ui.label(
-                        RichText::new(format!("({} hidden)", hidden_count))
-                            .small()
-                            .color(egui::Color32::GRAY),
-                    );
-                }
-            });
-            ui.separator();
-        }
 
         // Contacts list
         ScrollArea::vertical().show(ui, |ui| {

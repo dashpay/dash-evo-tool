@@ -294,7 +294,7 @@ impl AmountInput {
             if self.show_max_button {
                 // ensure we have height predefined to correctly vertically align the input field;
                 // see StyledButton::show() to see how y is calculated
-                ui.allocate_space(Vec2::new(0.0, 30.0));
+                ui.set_min_height(30.0);
             }
             // Show label if provided
             if let Some(label) = &self.label {

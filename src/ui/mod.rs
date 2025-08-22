@@ -474,12 +474,9 @@ impl ScreenType {
             ScreenType::DashPayAddContact => {
                 Screen::DashPayAddContactScreen(AddContactScreen::new(app_context.clone()))
             }
-            ScreenType::DashPayAddContactWithId(identity_id) => {
-                Screen::DashPayAddContactScreen(AddContactScreen::new_with_identity_id(
-                    app_context.clone(),
-                    identity_id.clone(),
-                ))
-            }
+            ScreenType::DashPayAddContactWithId(identity_id) => Screen::DashPayAddContactScreen(
+                AddContactScreen::new_with_identity_id(app_context.clone(), identity_id.clone()),
+            ),
             ScreenType::DashPayContactDetails(identity, contact_id) => {
                 Screen::DashPayContactDetailsScreen(ContactDetailsScreen::new(
                     app_context.clone(),

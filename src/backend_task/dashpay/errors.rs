@@ -158,6 +158,10 @@ impl DashPayError {
             DashPayError::RateLimited { .. } => {
                 "Too many requests. Please wait a moment before trying again.".to_string()
             }
+            DashPayError::Internal { message } => {
+                // Show the actual internal error message
+                message.clone()
+            }
             _ => "An error occurred. Please try again.".to_string(),
         }
     }
@@ -232,7 +236,7 @@ pub fn network_error(reason: impl Into<String>) -> DashPayError {
     }
 }
 
-/// Helper to create platform errors  
+/// Helper to create platform errors
 pub fn platform_error(reason: impl Into<String>) -> DashPayError {
     DashPayError::PlatformError {
         reason: reason.into(),

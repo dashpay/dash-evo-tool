@@ -289,12 +289,12 @@ impl ContactProfileViewerScreen {
                     if ui.button("Refresh Profile").clicked() {
                         action = self.fetch_profile();
                     }
-                    
+
                     let pay_button = egui::Button::new(
                         RichText::new("Pay")
                             .color(egui::Color32::WHITE)
                     ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-                    
+
                     if ui.add(pay_button).clicked() {
                         action = AppAction::AddScreen(
                             ScreenType::DashPaySendPayment(
@@ -319,12 +319,12 @@ impl ContactProfileViewerScreen {
                         if ui.button("Retry").clicked() {
                             action = self.fetch_profile();
                         }
-                        
+
                         let pay_button = egui::Button::new(
                             RichText::new("Pay")
                                 .color(egui::Color32::WHITE)
                         ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-                        
+
                         if ui.add(pay_button).clicked() {
                             action = AppAction::AddScreen(
                                 ScreenType::DashPaySendPayment(

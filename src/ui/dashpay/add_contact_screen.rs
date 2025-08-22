@@ -219,15 +219,17 @@ impl ScreenLike for AddContactScreen {
             });
             ui.separator();
 
-            // Show message if any
-            if let Some((message, message_type)) = &self.message {
-                let color = match message_type {
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => egui::Color32::LIGHT_BLUE,
-                };
-                ui.colored_label(color, message);
-                ui.separator();
+            // Show message if any (but not if we have an error status, to avoid duplication)
+            if !matches!(self.status, ContactRequestStatus::Error(_)) {
+                if let Some((message, message_type)) = &self.message {
+                    let color = match message_type {
+                        MessageType::Success => egui::Color32::DARK_GREEN,
+                        MessageType::Error => egui::Color32::DARK_RED,
+                        MessageType::Info => egui::Color32::LIGHT_BLUE,
+                    };
+                    ui.colored_label(color, message);
+                    ui.separator();
+                }
             }
 
             // Identity and Key selector
@@ -247,11 +249,17 @@ impl ScreenLike for AddContactScreen {
             ui.group(|ui| {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(
-                    RichText::new("Identity and Signing Key")
+                    RichText::new("From (Your Identity)")
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
-                ui.label(RichText::new("Select your identity and a key for signing the contact request. Only ECDSA_SECP256K1 keys are shown as they support ECDH encryption.").small().color(DashColors::text_secondary(dark_mode)));
+                ui.label(
+                    RichText::new(
+                        "Select your identity and signing key to send the contact request from.",
+                    )
+                    .small()
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
                 ui.separator();
 
                 add_identity_key_chooser(
@@ -262,18 +270,43 @@ impl ScreenLike for AddContactScreen {
                     &mut self.selected_key,
                     TransactionType::ContactRequest,
                 );
+
+                // Show selected identity info
+                if let Some(identity) = &self.selected_identity {
+                    ui.add_space(5.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Sending as:")
+                                .small()
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                        ui.label(
+                            RichText::new(identity.to_string())
+                                .small()
+                                .strong()
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                    });
+                }
             });
 
             ui.add_space(10.0);
 
+            // Show helpful messages if identity/key not selected
             if self.selected_identity.is_none() {
-                ui.label("Please select an identity to send contact request from");
-                return inner_action;
-            }
-
-            if self.selected_key.is_none() {
-                ui.label("Please select a signing key");
-                return inner_action;
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                ui.label(
+                    RichText::new("Please select an identity above to send contact request from")
+                        .color(DashColors::warning_color(dark_mode))
+                );
+                ui.add_space(5.0);
+            } else if self.selected_key.is_none() {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                ui.label(
+                    RichText::new("Please select a signing key above")
+                        .color(DashColors::warning_color(dark_mode))
+                );
+                ui.add_space(5.0);
             }
 
             // Loading indicator
@@ -292,7 +325,6 @@ impl ScreenLike for AddContactScreen {
                     );
                 });
                 ui.separator();
-                return inner_action;
             }
 
             // Show error if any
@@ -306,7 +338,6 @@ impl ScreenLike for AddContactScreen {
 
                 ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("⚠️").color(error_color));
                     ui.vertical(|ui| {
                         ui.label(RichText::new(err.user_message()).color(error_color));
 
@@ -341,9 +372,14 @@ impl ScreenLike for AddContactScreen {
                 ui.group(|ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.label(
-                        RichText::new("Contact Information")
+                        RichText::new("To (Recipient)")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.label(
+                        RichText::new("Who do you want to send the contact request to?")
+                            .small()
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.separator();
 
@@ -361,11 +397,9 @@ impl ScreenLike for AddContactScreen {
                             .desired_width(400.0),
                     );
                     ui.label(
-                        RichText::new(
-                            "Enter the DashPay username or full identity ID of the contact",
-                        )
-                        .small()
-                        .color(DashColors::text_secondary(dark_mode)),
+                        RichText::new("Enter their DashPay username or identity ID")
+                            .small()
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
 
                     ui.add_space(10.0);
@@ -373,23 +407,80 @@ impl ScreenLike for AddContactScreen {
                     // Account label (optional)
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("Account Label (optional):")
+                            RichText::new("Relationship Label (optional):")
                                 .color(DashColors::text_primary(dark_mode)),
                         );
                         ui.add_space(10.0);
                     });
                     ui.add(
                         TextEdit::singleline(&mut self.account_label)
-                            .hint_text("e.g., Personal, Business, etc.")
+                            .hint_text("e.g., Friend, Family, Business Partner")
                             .desired_width(400.0),
                     );
                     ui.label(
-                        RichText::new("A label to help you identify this account relationship")
+                        RichText::new("A label to help you remember this contact relationship")
                             .small()
                             .color(DashColors::text_secondary(dark_mode)),
                     );
 
                     ui.add_space(20.0);
+                });
+
+                // Show summary if all required fields are filled
+                if self.selected_identity.is_some() && !self.username_or_id.is_empty() {
+                    ui.group(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        ui.label(
+                            RichText::new("Request Summary")
+                                .strong()
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                        ui.separator();
+
+                        if let Some(identity) = &self.selected_identity {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("From:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.label(
+                                    RichText::new(identity.to_string())
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("To:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.label(
+                                    RichText::new(&self.username_or_id)
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                            });
+
+                            if !self.account_label.is_empty() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Label:")
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.label(
+                                        RichText::new(&self.account_label)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                });
+                            }
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+
+                ui.group(|ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                     // Action buttons
                     ui.horizontal(|ui| {
@@ -404,15 +495,13 @@ impl ScreenLike for AddContactScreen {
                             && self.selected_key.is_some();
 
                         let send_button = egui::Button::new(
-                            RichText::new("Send Contact Request")
-                                .color(egui::Color32::WHITE)
-                        ).fill(
-                            if send_button_enabled {
-                                egui::Color32::from_rgb(0, 141, 228) // Dash blue
-                            } else {
-                                egui::Color32::GRAY
-                            },
-                        );
+                            RichText::new("Send Contact Request").color(egui::Color32::WHITE),
+                        )
+                        .fill(if send_button_enabled {
+                            egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                        } else {
+                            egui::Color32::GRAY
+                        });
 
                         if ui.add_enabled(send_button_enabled, send_button).clicked() {
                             inner_action |= self.send_contact_request();
@@ -423,6 +512,7 @@ impl ScreenLike for AddContactScreen {
                             if err.is_recoverable() {
                                 ui.add_space(10.0);
                                 if ui.button("Retry").clicked() {
+                                    // Clear both status and message before retrying
                                     self.status = ContactRequestStatus::NotStarted;
                                     self.message = None;
                                     inner_action |= self.send_contact_request();
@@ -431,7 +521,6 @@ impl ScreenLike for AddContactScreen {
                         }
                     });
                 });
-
             });
 
             inner_action
@@ -485,7 +574,8 @@ impl ScreenLike for AddContactScreen {
                     };
 
                     self.status = ContactRequestStatus::Error(error.clone());
-                    self.display_message(&error.user_message(), MessageType::Error);
+                    // Don't set message field to avoid duplicate error display
+                    self.message = None;
                 } else {
                     self.status = ContactRequestStatus::NotStarted;
                     self.display_message(&message, MessageType::Info);

@@ -551,7 +551,7 @@ impl ProfileScreen {
                                     RichText::new("Edit Profile")
                                         .color(egui::Color32::WHITE)
                                 ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-                                
+
                                 if ui.add(edit_button).clicked() {
                                     self.start_editing();
                                 }
@@ -597,7 +597,7 @@ impl ProfileScreen {
                             RichText::new("Create Profile")
                                 .color(egui::Color32::WHITE)
                         ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-                        
+
                         if ui.add(create_button).clicked() {
                             self.start_editing();
                         }

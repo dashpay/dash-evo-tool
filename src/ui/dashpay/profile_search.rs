@@ -100,7 +100,7 @@ impl ProfileSearchScreen {
         // Convert the identity ID to a base58 string and navigate to the Add Contact screen
         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
         let identity_id_string = identity_id.to_string(Encoding::Base58);
-        
+
         // Navigate to the Add Contact screen with the pre-populated identity ID
         AppAction::AddScreen(
             ScreenType::DashPayAddContactWithId(identity_id_string)

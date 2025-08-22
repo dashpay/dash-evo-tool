@@ -219,16 +219,14 @@ impl SendPaymentScreen {
                     } else {
                         let send_enabled = self.amount.value() > 0;
                         let send_button = egui::Button::new(
-                            RichText::new("Send Payment")
-                                .color(egui::Color32::WHITE)
-                        ).fill(
-                            if send_enabled {
-                                egui::Color32::from_rgb(0, 141, 228) // Dash blue
-                            } else {
-                                egui::Color32::GRAY
-                            }
-                        );
-                        
+                            RichText::new("Send Payment").color(egui::Color32::WHITE),
+                        )
+                        .fill(if send_enabled {
+                            egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                        } else {
+                            egui::Color32::GRAY
+                        });
+
                         if ui.add_enabled(send_enabled, send_button).clicked() {
                             if self.memo.len() > 100 {
                                 self.display_message(

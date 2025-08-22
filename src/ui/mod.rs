@@ -5,6 +5,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::wallet::Wallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
     DocumentActionScreen, DocumentActionType,
@@ -26,6 +27,8 @@ use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
+use crate::ui::wallets::asset_lock_detail_screen::AssetLockDetailScreen;
+use crate::ui::wallets::create_asset_lock_screen::CreateAssetLockScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
@@ -43,6 +46,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokens::burn_tokens_screen::BurnTokensScreen;
 use tokens::claim_tokens_screen::ClaimTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -172,7 +176,7 @@ impl From<RootScreenType> for ScreenType {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum ScreenType {
     #[default]
     Identities,
@@ -233,6 +237,10 @@ pub enum ScreenType {
     UpdateTokenConfigScreen(IdentityTokenInfo),
     PurchaseTokenScreen(IdentityTokenInfo),
     SetTokenPriceScreen(IdentityTokenInfo),
+
+    // Wallet screens
+    AssetLockDetail([u8; 32], usize),
+    CreateAssetLock(Arc<RwLock<Wallet>>),
 }
 
 impl ScreenType {
@@ -413,6 +421,12 @@ impl ScreenType {
             ScreenType::SetTokenPriceScreen(identity_token_info) => Screen::SetTokenPriceScreen(
                 SetTokenPriceScreen::new(identity_token_info.clone(), app_context),
             ),
+            ScreenType::AssetLockDetail(wallet_seed_hash, index) => Screen::AssetLockDetailScreen(
+                AssetLockDetailScreen::new(*wallet_seed_hash, *index, app_context),
+            ),
+            ScreenType::CreateAssetLock(wallet) => Screen::CreateAssetLockScreen(
+                CreateAssetLockScreen::new(wallet.clone(), app_context),
+            ),
         }
     }
 }
@@ -463,6 +477,8 @@ pub enum Screen {
     AddTokenById(AddTokenByIdScreen),
     PurchaseTokenScreen(PurchaseTokenScreen),
     SetTokenPriceScreen(SetTokenPriceScreen),
+    AssetLockDetailScreen(AssetLockDetailScreen),
+    CreateAssetLockScreen(CreateAssetLockScreen),
 }
 
 impl Screen {
@@ -512,6 +528,8 @@ impl Screen {
             Screen::AddTokenById(screen) => screen.app_context = app_context,
             Screen::PurchaseTokenScreen(screen) => screen.app_context = app_context,
             Screen::SetTokenPriceScreen(screen) => screen.app_context = app_context,
+            Screen::AssetLockDetailScreen(screen) => screen.app_context = app_context,
+            Screen::CreateAssetLockScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -535,6 +553,20 @@ pub trait ScreenLike {
     }
 
     fn pop_on_success(&mut self) {}
+}
+
+// Manual PartialEq implementation for ScreenType
+impl PartialEq for ScreenType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ScreenType::CreateAssetLock(a), ScreenType::CreateAssetLock(b)) => Arc::ptr_eq(a, b),
+            (ScreenType::AssetLockDetail(a1, a2), ScreenType::AssetLockDetail(b1, b2)) => {
+                a1 == b1 && a2 == b2
+            }
+            // For all other variants, use discriminant comparison
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
 }
 
 // Implement Debug for Screen using the ScreenType
@@ -668,6 +700,12 @@ impl Screen {
             Screen::SetTokenPriceScreen(screen) => {
                 ScreenType::SetTokenPriceScreen(screen.identity_token_info.clone())
             }
+            Screen::AssetLockDetailScreen(screen) => {
+                ScreenType::AssetLockDetail(screen.wallet_seed_hash, screen.asset_lock_index)
+            }
+            Screen::CreateAssetLockScreen(screen) => {
+                ScreenType::CreateAssetLock(screen.wallet.clone())
+            }
             Screen::TokensScreen(_) => {
                 // Default fallback for any unmatched TokensScreen variants
                 ScreenType::TokenBalances
@@ -723,6 +761,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.refresh(),
             Screen::PurchaseTokenScreen(screen) => screen.refresh(),
             Screen::SetTokenPriceScreen(screen) => screen.refresh(),
+            Screen::AssetLockDetailScreen(screen) => screen.refresh(),
+            Screen::CreateAssetLockScreen(screen) => screen.refresh(),
         }
     }
 
@@ -772,6 +812,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.refresh_on_arrival(),
             Screen::PurchaseTokenScreen(screen) => screen.refresh_on_arrival(),
             Screen::SetTokenPriceScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AssetLockDetailScreen(screen) => screen.refresh_on_arrival(),
+            Screen::CreateAssetLockScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -821,6 +863,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.ui(ctx),
             Screen::PurchaseTokenScreen(screen) => screen.ui(ctx),
             Screen::SetTokenPriceScreen(screen) => screen.ui(ctx),
+            Screen::AssetLockDetailScreen(screen) => screen.ui(ctx),
+            Screen::CreateAssetLockScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -886,6 +930,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.display_message(message, message_type),
             Screen::PurchaseTokenScreen(screen) => screen.display_message(message, message_type),
             Screen::SetTokenPriceScreen(screen) => screen.display_message(message, message_type),
+            Screen::AssetLockDetailScreen(screen) => screen.display_message(message, message_type),
+            Screen::CreateAssetLockScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -1009,6 +1055,12 @@ impl ScreenLike for Screen {
             Screen::SetTokenPriceScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::AssetLockDetailScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::CreateAssetLockScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
         }
     }
 
@@ -1058,6 +1110,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.pop_on_success(),
             Screen::PurchaseTokenScreen(screen) => screen.pop_on_success(),
             Screen::SetTokenPriceScreen(screen) => screen.pop_on_success(),
+            Screen::AssetLockDetailScreen(screen) => screen.pop_on_success(),
+            Screen::CreateAssetLockScreen(screen) => screen.pop_on_success(),
         }
     }
 }

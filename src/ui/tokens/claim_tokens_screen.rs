@@ -22,7 +22,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
@@ -245,6 +245,24 @@ impl ClaimTokensScreen {
 }
 
 impl ScreenLike for ClaimTokensScreen {
+    fn display_task_result(
+        &mut self,
+        backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
+    ) {
+        if let BackendTaskSuccessResult::TokensClaimed(amount) = backend_task_success_result {
+            if amount > 0 {
+                self.display_message(
+                    &format!("Claimed {} tokens successfully!", amount),
+                    MessageType::Success,
+                );
+                self.status = ClaimTokensStatus::Complete;
+            } else {
+                self.status =
+                    ClaimTokensStatus::ErrorMessage("No tokens available to claim.".to_string());
+            }
+        }
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {

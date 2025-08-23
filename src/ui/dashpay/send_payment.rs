@@ -526,6 +526,14 @@ impl PaymentHistory {
                     ui.group(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         ui.horizontal(|ui| {
+                            // Avatar placeholder
+                            ui.vertical(|ui| {
+                                ui.add_space(5.0);
+                                ui.label(RichText::new("👤").size(30.0));
+                            });
+                            
+                            ui.add_space(5.0);
+                            
                             // Direction indicator
                             if payment.is_incoming {
                                 ui.label(

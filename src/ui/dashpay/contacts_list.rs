@@ -526,6 +526,16 @@ impl ContactsList {
                 for contact in filtered_contacts {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
+                            // Avatar placeholder or actual avatar
+                            ui.vertical(|ui| {
+                                ui.add_space(5.0);
+                                // TODO: Display actual avatar if avatar_url is present
+                                // For now, always show placeholder
+                                ui.label(RichText::new("👤").size(40.0));
+                            });
+                            
+                            ui.add_space(10.0);
+                            
                             ui.vertical(|ui| {
                                 // Display name or username
                                 let name = contact

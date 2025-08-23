@@ -8,6 +8,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, Ui};
@@ -50,14 +51,42 @@ impl ContactProfileViewerScreen {
             .load_contact_private_info(&identity.identity.id(), &contact_id)
             .unwrap_or((String::new(), String::new(), false));
 
+        // Try to load cached contact profile from database
+        let profile = if let Ok(contacts) = app_context
+            .db
+            .load_dashpay_contacts(&identity.identity.id())
+        {
+            contacts
+                .iter()
+                .find(|c| {
+                    if let Ok(id) = Identifier::from_bytes(&c.contact_identity_id) {
+                        id == contact_id
+                    } else {
+                        false
+                    }
+                })
+                .map(|c| ContactPublicProfile {
+                    identity_id: contact_id,
+                    display_name: c.display_name.clone(),
+                    public_message: c.public_message.clone(),
+                    avatar_url: c.avatar_url.clone(),
+                    avatar_hash: None,        // Not stored in contacts table yet
+                    avatar_fingerprint: None, // Not stored in contacts table yet
+                })
+        } else {
+            None
+        };
+
+        let initial_fetch_done = profile.is_some(); // Check before moving
+
         Self {
             app_context,
             identity,
             contact_id,
-            profile: None,
+            profile,
             message: None,
             loading: false,
-            initial_fetch_done: false,
+            initial_fetch_done, // If we have cached data, don't auto-fetch
             nickname,
             notes,
             is_hidden,
@@ -522,27 +551,46 @@ impl ScreenLike for ContactProfileViewerScreen {
                         dash_sdk::platform::Document::V0(doc_v0) => doc_v0.properties(),
                     };
 
+                    let display_name = properties
+                        .get("displayName")
+                        .and_then(|v| v.as_text())
+                        .map(|s| s.to_string());
+                    let public_message = properties
+                        .get("publicMessage")
+                        .and_then(|v| v.as_text())
+                        .map(|s| s.to_string());
+                    let avatar_url = properties
+                        .get("avatarUrl")
+                        .and_then(|v| v.as_text())
+                        .map(|s| s.to_string());
+                    let avatar_hash = properties
+                        .get("avatarHash")
+                        .and_then(|v| v.as_bytes().map(|b| b.to_vec()));
+                    let avatar_fingerprint = properties
+                        .get("avatarFingerprint")
+                        .and_then(|v| v.as_bytes().map(|b| b.to_vec()));
+
                     self.profile = Some(ContactPublicProfile {
                         identity_id: self.contact_id,
-                        display_name: properties
-                            .get("displayName")
-                            .and_then(|v| v.as_text())
-                            .map(|s| s.to_string()),
-                        public_message: properties
-                            .get("publicMessage")
-                            .and_then(|v| v.as_text())
-                            .map(|s| s.to_string()),
-                        avatar_url: properties
-                            .get("avatarUrl")
-                            .and_then(|v| v.as_text())
-                            .map(|s| s.to_string()),
-                        avatar_hash: properties
-                            .get("avatarHash")
-                            .and_then(|v| v.as_bytes().map(|b| b.to_vec())),
-                        avatar_fingerprint: properties
-                            .get("avatarFingerprint")
-                            .and_then(|v| v.as_bytes().map(|b| b.to_vec())),
+                        display_name: display_name.clone(),
+                        public_message: public_message.clone(),
+                        avatar_url: avatar_url.clone(),
+                        avatar_hash: avatar_hash.clone(),
+                        avatar_fingerprint: avatar_fingerprint.clone(),
                     });
+
+                    // Save the contact profile to the database
+                    if let Err(e) = self.app_context.db.save_dashpay_contact(
+                        &self.identity.identity.id(),
+                        &self.contact_id,
+                        None, // username will be fetched separately if needed
+                        display_name.as_deref(),
+                        avatar_url.as_deref(),
+                        public_message.as_deref(),
+                        "accepted", // Status is accepted since we can view their profile
+                    ) {
+                        eprintln!("Failed to save contact profile to database: {}", e);
+                    }
 
                     self.message = None;
                 } else {

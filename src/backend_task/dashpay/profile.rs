@@ -46,7 +46,8 @@ pub async fn load_profile(
                 .get("displayName")
                 .and_then(|v| v.as_text())
                 .unwrap_or_default();
-            let public_message = doc
+            // The "publicMessage" field in the DashPay contract is actually the bio
+            let bio = doc
                 .get("publicMessage")
                 .and_then(|v| v.as_text())
                 .unwrap_or_default();
@@ -57,7 +58,7 @@ pub async fn load_profile(
 
             Ok(BackendTaskSuccessResult::DashPayProfile(Some((
                 display_name.to_string(),
-                public_message.to_string(),
+                bio.to_string(),  // Return bio, not publicMessage
                 avatar_url.to_string(),
             ))))
         } else {

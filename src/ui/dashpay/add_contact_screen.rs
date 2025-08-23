@@ -297,14 +297,14 @@ impl ScreenLike for AddContactScreen {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(
                     RichText::new("Please select an identity above to send contact request from")
-                        .color(DashColors::warning_color(dark_mode))
+                        .color(DashColors::warning_color(dark_mode)),
                 );
                 ui.add_space(5.0);
             } else if self.selected_key.is_none() {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(
                     RichText::new("Please select a signing key above")
-                        .color(DashColors::warning_color(dark_mode))
+                        .color(DashColors::warning_color(dark_mode)),
                 );
                 ui.add_space(5.0);
             }

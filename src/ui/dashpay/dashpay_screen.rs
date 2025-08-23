@@ -87,7 +87,7 @@ impl ScreenLike for DashPayScreen {
         let right_buttons = match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => vec![
                 (
-                    "Load Contacts",
+                    "Refresh Contacts",
                     DesiredAppAction::Custom("fetch_contacts".to_string()),
                 ),
                 (
@@ -104,15 +104,15 @@ impl ScreenLike for DashPayScreen {
                 ),
             ],
             DashPaySubscreen::Requests => vec![(
-                "Load Contact Requests",
+                "Refresh Contacts",
                 DesiredAppAction::Custom("fetch_requests".to_string()),
             )],
             DashPaySubscreen::Profile => vec![(
-                "Load Profile",
+                "Refresh Profiles",
                 DesiredAppAction::Custom("load_profile".to_string()),
             )],
             DashPaySubscreen::Payments => vec![(
-                "Load Payments",
+                "Refresh Payment History",
                 DesiredAppAction::Custom("fetch_payment_history".to_string()),
             )],
             DashPaySubscreen::ProfileSearch => vec![],

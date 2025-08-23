@@ -47,8 +47,8 @@ pub struct ContactRequests {
 
 impl ContactRequests {
     pub fn new(app_context: Arc<AppContext>) -> Self {
-        Self {
-            app_context,
+        let mut new_self = Self {
+            app_context: app_context.clone(),
             incoming_requests: BTreeMap::new(),
             outgoing_requests: BTreeMap::new(),
             accepted_requests: HashSet::new(),
@@ -59,6 +59,82 @@ impl ContactRequests {
             message: None,
             loading: false,
             has_fetched_requests: false,
+        };
+
+        // Auto-select first identity on creation if available
+        if let Ok(identities) = app_context.load_local_qualified_identities() {
+            if !identities.is_empty() {
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                new_self.selected_identity = Some(identities[0].clone());
+                new_self.selected_identity_string = identities[0]
+                    .identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+                // Load requests from database for this identity
+                new_self.load_requests_from_database();
+            }
+        }
+
+        new_self
+    }
+
+    fn load_requests_from_database(&mut self) {
+        // Load saved contact requests for the selected identity from database
+        if let Some(identity) = &self.selected_identity {
+            let identity_id = identity.identity.id();
+
+            // Clear existing requests before loading
+            self.incoming_requests.clear();
+            self.outgoing_requests.clear();
+
+            // Load pending incoming requests from database
+            if let Ok(incoming) = self
+                .app_context
+                .db
+                .load_pending_contact_requests(&identity_id, "received")
+            {
+                for request in incoming {
+                    if let Ok(from_id) = Identifier::from_bytes(&request.from_identity_id) {
+                        let contact_request = ContactRequest {
+                            request_id: Identifier::new([0; 32]), // We'll need to store this in DB
+                            from_identity: from_id,
+                            to_identity: identity_id,
+                            from_username: request.to_username, // This field is misnamed in DB
+                            from_display_name: None,
+                            account_reference: 0,
+                            account_label: request.account_label,
+                            timestamp: request.created_at as u64,
+                            auto_accept_proof: None,
+                        };
+                        self.incoming_requests.insert(from_id, contact_request);
+                    }
+                }
+            }
+
+            // Load pending outgoing requests from database
+            if let Ok(outgoing) = self
+                .app_context
+                .db
+                .load_pending_contact_requests(&identity_id, "sent")
+            {
+                for request in outgoing {
+                    if let Ok(to_id) = Identifier::from_bytes(&request.to_identity_id) {
+                        let contact_request = ContactRequest {
+                            request_id: Identifier::new([0; 32]), // We'll need to store this in DB
+                            from_identity: identity_id,
+                            to_identity: to_id,
+                            from_username: None,
+                            from_display_name: None,
+                            account_reference: 0,
+                            account_label: request.account_label,
+                            timestamp: request.created_at as u64,
+                            auto_accept_proof: None,
+                        };
+                        self.outgoing_requests.insert(to_id, contact_request);
+                    }
+                }
+            }
         }
     }
 
@@ -87,6 +163,25 @@ impl ContactRequests {
         // Only clear temporary states
         self.message = None;
         self.loading = false;
+
+        // Auto-select first identity if none selected
+        if self.selected_identity.is_none() {
+            if let Ok(identities) = self.app_context.load_local_qualified_identities() {
+                if !identities.is_empty() {
+                    self.selected_identity = Some(identities[0].clone());
+                    self.selected_identity_string = identities[0].display_string();
+                }
+            }
+        }
+
+        // Load requests from database if we have an identity selected and no requests loaded
+        if self.selected_identity.is_some()
+            && self.incoming_requests.is_empty()
+            && self.outgoing_requests.is_empty()
+        {
+            self.load_requests_from_database();
+        }
+
         AppAction::None
     }
 
@@ -130,6 +225,9 @@ impl ContactRequests {
                     self.outgoing_requests.clear();
                     self.message = None;
                     self.has_fetched_requests = false;
+
+                    // Load requests from database for the newly selected identity
+                    self.load_requests_from_database();
                 }
             });
         }
@@ -401,6 +499,16 @@ impl ContactRequests {
 }
 
 impl ScreenLike for ContactRequests {
+    fn refresh_on_arrival(&mut self) {
+        // Load requests from database when screen is shown
+        if self.selected_identity.is_some()
+            && self.incoming_requests.is_empty()
+            && self.outgoing_requests.is_empty()
+        {
+            self.load_requests_from_database();
+        }
+    }
+
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         // Create a simple central panel for rendering
         let mut action = AppAction::None;
@@ -430,6 +538,9 @@ impl ScreenLike for ContactRequests {
                 // Mark as fetched
                 self.has_fetched_requests = true;
 
+                // Get current identity for saving to database
+                let current_identity_id = self.selected_identity.as_ref().unwrap().identity.id();
+
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {
                     let properties = doc.properties();
@@ -446,7 +557,7 @@ impl ScreenLike for ContactRequests {
                     let request = ContactRequest {
                         request_id: *id,
                         from_identity,
-                        to_identity: self.selected_identity.as_ref().unwrap().identity.id(),
+                        to_identity: current_identity_id,
                         from_username: None, // TODO: Resolve username from identity
                         from_display_name: None, // TODO: Fetch from profile
                         account_reference,
@@ -455,7 +566,16 @@ impl ScreenLike for ContactRequests {
                         auto_accept_proof: None,
                     };
 
-                    self.incoming_requests.insert(*id, request);
+                    self.incoming_requests.insert(*id, request.clone());
+
+                    // Save to database as received request
+                    let _ = self.app_context.db.save_contact_request(
+                        &from_identity,
+                        &current_identity_id,
+                        None, // to_username
+                        request.account_label.as_deref(),
+                        "received",
+                    );
                 }
 
                 // Process outgoing requests
@@ -476,7 +596,7 @@ impl ScreenLike for ContactRequests {
 
                     let request = ContactRequest {
                         request_id: *id,
-                        from_identity: self.selected_identity.as_ref().unwrap().identity.id(),
+                        from_identity: current_identity_id,
                         to_identity,
                         from_username: None,     // This would be our username
                         from_display_name: None, // This would be our display name
@@ -486,7 +606,16 @@ impl ScreenLike for ContactRequests {
                         auto_accept_proof: None,
                     };
 
-                    self.outgoing_requests.insert(*id, request);
+                    self.outgoing_requests.insert(*id, request.clone());
+
+                    // Save to database as sent request
+                    let _ = self.app_context.db.save_contact_request(
+                        &current_identity_id,
+                        &to_identity,
+                        None, // to_username
+                        request.account_label.as_deref(),
+                        "sent",
+                    );
                 }
 
                 // Don't show a message, just display the results

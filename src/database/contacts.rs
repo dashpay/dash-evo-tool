@@ -1,6 +1,15 @@
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
 
+#[derive(Debug, Clone)]
+pub struct ContactPrivateInfo {
+    pub owner_identity_id: Vec<u8>,
+    pub contact_identity_id: Vec<u8>,
+    pub nickname: String,
+    pub notes: String,
+    pub is_hidden: bool,
+}
+
 impl crate::database::Database {
     pub fn init_contacts_tables(&self) -> rusqlite::Result<()> {
         let sql = "
@@ -76,6 +85,32 @@ impl crate::database::Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok((String::new(), String::new(), false)),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn load_all_contact_private_info(
+        &self,
+        owner_identity_id: &Identifier,
+    ) -> rusqlite::Result<Vec<ContactPrivateInfo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT owner_identity_id, contact_identity_id, nickname, notes, is_hidden 
+             FROM contact_private_info 
+             WHERE owner_identity_id = ?1",
+        )?;
+
+        let infos = stmt
+            .query_map(params![owner_identity_id.to_buffer().to_vec()], |row| {
+                Ok(ContactPrivateInfo {
+                    owner_identity_id: row.get(0)?,
+                    contact_identity_id: row.get(1)?,
+                    nickname: row.get(2)?,
+                    notes: row.get(3)?,
+                    is_hidden: row.get::<_, i32>(4)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(infos)
     }
 
     pub fn delete_contact_private_info(

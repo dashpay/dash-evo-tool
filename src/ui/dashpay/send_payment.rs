@@ -14,6 +14,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -316,13 +317,89 @@ pub struct PaymentRecord {
 
 impl PaymentHistory {
     pub fn new(app_context: Arc<AppContext>) -> Self {
-        Self {
-            app_context,
+        let mut new_self = Self {
+            app_context: app_context.clone(),
             selected_identity: None,
             selected_identity_string: String::new(),
             payments: Vec::new(),
             message: None,
             loading: false,
+        };
+
+        // Auto-select first identity on creation if available
+        if let Ok(identities) = app_context.load_local_qualified_identities() {
+            if !identities.is_empty() {
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                new_self.selected_identity = Some(identities[0].clone());
+                new_self.selected_identity_string =
+                    identities[0].identity.id().to_string(Encoding::Base58);
+
+                // Load payments from database for this identity
+                new_self.load_payments_from_database();
+            }
+        }
+
+        new_self
+    }
+
+    fn load_payments_from_database(&mut self) {
+        // Load saved payment history for the selected identity from database
+        if let Some(identity) = &self.selected_identity {
+            let identity_id = identity.identity.id();
+
+            // Clear existing payments before loading
+            self.payments.clear();
+
+            // Load payment history from database (limit 100)
+            if let Ok(stored_payments) = self.app_context.db.load_payment_history(&identity_id, 100)
+            {
+                for payment in stored_payments {
+                    // Determine if incoming or outgoing based on identity
+                    let is_incoming = payment.to_identity_id == identity_id.to_buffer().to_vec();
+                    let contact_id = if is_incoming {
+                        payment.from_identity_id
+                    } else {
+                        payment.to_identity_id
+                    };
+
+                    // Try to resolve contact name
+                    let contact_name = if let Ok(contact_id) = Identifier::from_bytes(&contact_id) {
+                        // First check if we have a saved contact with username
+                        if let Ok(contacts) =
+                            self.app_context.db.load_dashpay_contacts(&identity_id)
+                        {
+                            contacts
+                                .iter()
+                                .find(|c| c.contact_identity_id == contact_id.to_buffer().to_vec())
+                                .and_then(|c| c.username.clone().or(c.display_name.clone()))
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Unknown ({})",
+                                        contact_id.to_string(Encoding::Base58)[0..8].to_string()
+                                    )
+                                })
+                        } else {
+                            format!(
+                                "Unknown ({})",
+                                contact_id.to_string(Encoding::Base58)[0..8].to_string()
+                            )
+                        }
+                    } else {
+                        "Unknown".to_string()
+                    };
+
+                    let payment_record = PaymentRecord {
+                        tx_id: payment.tx_id,
+                        contact_name,
+                        amount: Credits::from(payment.amount as u64),
+                        is_incoming,
+                        timestamp: payment.created_at as u64,
+                        memo: payment.memo,
+                    };
+
+                    self.payments.push(payment_record);
+                }
+            }
         }
     }
 
@@ -342,10 +419,24 @@ impl PaymentHistory {
     }
 
     pub fn refresh(&mut self) {
-        // Don't auto-fetch, just clear state
-        self.payments.clear();
+        // Don't clear if we have data, just clear temporary states
         self.message = None;
         self.loading = false;
+
+        // Auto-select first identity if none selected
+        if self.selected_identity.is_none() {
+            if let Ok(identities) = self.app_context.load_local_qualified_identities() {
+                if !identities.is_empty() {
+                    self.selected_identity = Some(identities[0].clone());
+                    self.selected_identity_string = identities[0].display_string();
+                }
+            }
+        }
+
+        // Load payments from database if we have an identity selected and no payments loaded
+        if self.selected_identity.is_some() && self.payments.is_empty() {
+            self.load_payments_from_database();
+        }
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -383,6 +474,9 @@ impl PaymentHistory {
 
                 if response.changed() {
                     self.refresh();
+
+                    // Load payments from database for the newly selected identity
+                    self.load_payments_from_database();
                 }
             });
         }
@@ -515,17 +609,69 @@ impl PaymentHistory {
             BackendTaskSuccessResult::DashPayPaymentHistory(payment_data) => {
                 self.payments.clear();
 
-                // Convert backend data to PaymentRecord structs
-                for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
-                    let payment = PaymentRecord {
-                        tx_id,
-                        contact_name,
-                        amount: Credits::from(amount),
-                        is_incoming,
-                        timestamp: 0, // TODO: Include timestamp in backend data
-                        memo: if memo.is_empty() { None } else { Some(memo) },
-                    };
-                    self.payments.push(payment);
+                // Get current identity for saving to database
+                if let Some(identity) = &self.selected_identity {
+                    let identity_id = identity.identity.id();
+
+                    // Convert backend data to PaymentRecord structs and save to database
+                    for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
+                        // Parse contact identity from contact_name if it contains ID
+                        let contact_id = if contact_name.contains("(") && contact_name.contains(")")
+                        {
+                            // Extract ID from format "Unknown (abcd1234)"
+                            let start = contact_name.find('(').unwrap() + 1;
+                            let end = contact_name.find(')').unwrap();
+                            let id_str = &contact_name[start..end];
+                            // This is likely a partial base58 ID, we'd need the full ID
+                            // For now, we'll use a placeholder
+                            Identifier::new([0; 32])
+                        } else {
+                            Identifier::new([0; 32])
+                        };
+
+                        let payment = PaymentRecord {
+                            tx_id: tx_id.clone(),
+                            contact_name,
+                            amount: Credits::from(amount),
+                            is_incoming,
+                            timestamp: 0, // TODO: Include timestamp in backend data
+                            memo: if memo.is_empty() {
+                                None
+                            } else {
+                                Some(memo.clone())
+                            },
+                        };
+                        self.payments.push(payment);
+
+                        // Save to database
+                        let (from_id, to_id, payment_type) = if is_incoming {
+                            (contact_id, identity_id, "received")
+                        } else {
+                            (identity_id, contact_id, "sent")
+                        };
+
+                        let _ = self.app_context.db.save_payment(
+                            &tx_id,
+                            &from_id,
+                            &to_id,
+                            amount as i64,
+                            if memo.is_empty() { None } else { Some(&memo) },
+                            payment_type,
+                        );
+                    }
+                } else {
+                    // No selected identity, just populate in-memory
+                    for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
+                        let payment = PaymentRecord {
+                            tx_id,
+                            contact_name,
+                            amount: Credits::from(amount),
+                            is_incoming,
+                            timestamp: 0, // TODO: Include timestamp in backend data
+                            memo: if memo.is_empty() { None } else { Some(memo) },
+                        };
+                        self.payments.push(payment);
+                    }
                 }
 
                 self.message = Some((

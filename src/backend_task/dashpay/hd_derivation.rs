@@ -1,4 +1,3 @@
-use dash_sdk::dpp::dashcore::hashes::sha256;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::dashcore::{
     Network,
@@ -126,6 +125,7 @@ fn derive_256bit_child(
 
 /// Generate the extended public key data for a contact request
 /// Returns (parent_fingerprint, chain_code, public_key_bytes)
+#[allow(clippy::type_complexity)]
 pub fn generate_contact_xpub_data(
     master_seed: &[u8],
     network: Network,

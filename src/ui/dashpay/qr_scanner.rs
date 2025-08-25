@@ -213,9 +213,9 @@ impl QRScannerScreen {
                         .spacing([10.0, 5.0])
                         .show(ui, |ui| {
                             ui.label("Contact Identity:");
-                            ui.label(format!("{}", qr_data.identity_id.to_string(
+                            ui.label(qr_data.identity_id.to_string(
                                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
-                            )));
+                            ));
                             ui.end_row();
 
                             ui.label("Account Reference:");

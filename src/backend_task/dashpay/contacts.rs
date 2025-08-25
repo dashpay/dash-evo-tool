@@ -69,14 +69,14 @@ fn derive_contact_info_keys(
     // Derive two keys using HMAC-SHA256
     // Key 1 for encToUserId (offset 2^16)
     let mut hasher = Sha256::new();
-    hasher.update(&private_key);
-    hasher.update(&(65536u32 + derivation_index).to_le_bytes());
+    hasher.update(private_key);
+    hasher.update((65536u32 + derivation_index).to_le_bytes());
     let key1 = hasher.finalize();
 
     // Key 2 for privateData (offset 2^16 + 1)
     let mut hasher2 = Sha256::new();
-    hasher2.update(&private_key);
-    hasher2.update(&(65537u32 + derivation_index).to_le_bytes());
+    hasher2.update(private_key);
+    hasher2.update((65537u32 + derivation_index).to_le_bytes());
     let key2 = hasher2.finalize();
 
     Ok((key1.into(), key2.into()))
@@ -343,7 +343,7 @@ pub async fn load_contacts(
             contact_info_map
                 .get(&contact_id)
                 .cloned()
-                .unwrap_or_else(|| ContactData {
+                .unwrap_or(ContactData {
                     identity_id: contact_id,
                     nickname: None,
                     note: None,

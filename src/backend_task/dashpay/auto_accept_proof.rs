@@ -1,6 +1,5 @@
 use super::hd_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
-use bip39::rand::{RngCore, SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -246,7 +245,7 @@ pub fn create_auto_accept_proof_bytes(
 pub fn verify_auto_accept_proof(
     proof_data: &[u8],
     sender_identity_id: Identifier,
-    our_identity: &QualifiedIdentity,
+    _our_identity: &QualifiedIdentity,
     stored_proofs: &[StoredProof],
 ) -> Result<bool, String> {
     // The proof data should contain:

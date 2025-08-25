@@ -1,19 +1,14 @@
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::auto_accept_proof::{StoredProof, verify_auto_accept_proof};
-use crate::backend_task::dashpay::contact_requests::{
-    accept_contact_request, send_contact_request,
-};
+use crate::backend_task::dashpay::contact_requests::accept_contact_request;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Process incoming contact requests and check for autoAcceptProof
@@ -127,7 +122,7 @@ fn mark_proof_as_used(_proof_data: &[u8], _identity: &QualifiedIdentity) -> Resu
 /// This is called when sending a contact request after scanning someone's QR code
 pub fn generate_proof_for_request(
     scanned_qr_data: &str,
-    our_identity: &QualifiedIdentity,
+    _our_identity: &QualifiedIdentity,
 ) -> Result<Vec<u8>, String> {
     // Parse the QR code data
     let proof_data =

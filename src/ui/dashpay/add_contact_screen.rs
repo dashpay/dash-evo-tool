@@ -480,7 +480,7 @@ impl ScreenLike for AddContactScreen {
                 }
 
                 ui.group(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let _dark_mode = ui.ctx().style().visuals.dark_mode;
 
                     // Action buttons
                     ui.horizontal(|ui| {

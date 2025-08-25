@@ -39,31 +39,27 @@ pub async fn load_profile(
         .await
         .map_err(|e| format!("Error fetching profile: {}", e))?;
 
-    if let Some((_, doc_opt)) = profile_docs.iter().next() {
-        if let Some(doc) = doc_opt {
-            // Extract profile fields from the document
-            let display_name = doc
-                .get("displayName")
-                .and_then(|v| v.as_text())
-                .unwrap_or_default();
-            // The "publicMessage" field in the DashPay contract is actually the bio
-            let bio = doc
-                .get("publicMessage")
-                .and_then(|v| v.as_text())
-                .unwrap_or_default();
-            let avatar_url = doc
-                .get("avatarUrl")
-                .and_then(|v| v.as_text())
-                .unwrap_or_default();
+    if let Some((_, Some(doc))) = profile_docs.iter().next() {
+        // Extract profile fields from the document
+        let display_name = doc
+            .get("displayName")
+            .and_then(|v| v.as_text())
+            .unwrap_or_default();
+        // The "publicMessage" field in the DashPay contract is actually the bio
+        let bio = doc
+            .get("publicMessage")
+            .and_then(|v| v.as_text())
+            .unwrap_or_default();
+        let avatar_url = doc
+            .get("avatarUrl")
+            .and_then(|v| v.as_text())
+            .unwrap_or_default();
 
-            Ok(BackendTaskSuccessResult::DashPayProfile(Some((
-                display_name.to_string(),
-                bio.to_string(),  // Return bio, not publicMessage
-                avatar_url.to_string(),
-            ))))
-        } else {
-            Ok(BackendTaskSuccessResult::DashPayProfile(None))
-        }
+        Ok(BackendTaskSuccessResult::DashPayProfile(Some((
+            display_name.to_string(),
+            bio.to_string(), // Return bio, not publicMessage
+            avatar_url.to_string(),
+        ))))
     } else {
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
     }
@@ -185,12 +181,12 @@ pub async fn update_profile(
         }
 
         let _result = sdk
-            .document_replace(builder, &identity_key, &identity)
+            .document_replace(builder, identity_key, &identity)
             .await
             .map_err(|e| format!("Error replacing profile: {}", e))?;
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
-            identity.identity.id()
+            identity.identity.id(),
         ))
     } else {
         // Create new profile using DocumentCreateTransitionBuilder
@@ -232,12 +228,12 @@ pub async fn update_profile(
         }
 
         let _result = sdk
-            .document_create(builder, &identity_key, &identity)
+            .document_create(builder, identity_key, &identity)
             .await
             .map_err(|e| format!("Error creating profile: {}", e))?;
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
-            identity.identity.id()
+            identity.identity.id(),
         ))
     }
 }

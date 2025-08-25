@@ -101,7 +101,7 @@ pub fn encrypt_extended_public_key(
     // Combine IV and ciphertext (16 + 80 = 96 bytes total)
     let mut result = Vec::with_capacity(96);
     result.extend_from_slice(&iv);
-    result.extend_from_slice(&ciphertext);
+    result.extend_from_slice(ciphertext);
 
     Ok(result)
 }
@@ -148,12 +148,13 @@ pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u
     // Combine IV and ciphertext (16 + (32-64) = 48-80 bytes total)
     let mut result = Vec::with_capacity(16 + ciphertext.len());
     result.extend_from_slice(&iv);
-    result.extend_from_slice(&ciphertext);
+    result.extend_from_slice(ciphertext);
 
     Ok(result)
 }
 
 /// Decrypt extended public key using CBC-AES-256
+#[allow(clippy::type_complexity)]
 pub fn decrypt_extended_public_key(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],

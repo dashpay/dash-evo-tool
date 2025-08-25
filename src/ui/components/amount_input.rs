@@ -1,7 +1,7 @@
 use crate::model::amount::Amount;
 use crate::ui::components::{Component, ComponentResponse};
 use dash_sdk::dpp::fee::Credits;
-use egui::{InnerResponse, Response, TextEdit, Ui, Vec2, WidgetText};
+use egui::{InnerResponse, Response, TextEdit, Ui, WidgetText};
 
 /// Response from the amount input widget
 #[derive(Clone)]

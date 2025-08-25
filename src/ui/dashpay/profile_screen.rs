@@ -91,25 +91,27 @@ impl ProfileScreen {
             original_avatar_url: String::new(),
         };
 
-
         // Auto-select identity on creation - prefer one with a profile
         if let Ok(identities) = app_context.load_local_qualified_identities() {
             if !identities.is_empty() {
                 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                
+
                 // Try to find an identity with an actual profile (not just a "no profile" marker)
                 let mut selected_idx = 0;
                 for (idx, identity) in identities.iter().enumerate() {
                     let identity_id = identity.identity.id();
                     if let Ok(Some(profile)) = app_context.db.load_dashpay_profile(&identity_id) {
                         // Check if this is an actual profile with data (not a "no profile" marker)
-                        if profile.display_name.is_some() || profile.bio.is_some() || profile.avatar_url.is_some() {
+                        if profile.display_name.is_some()
+                            || profile.bio.is_some()
+                            || profile.avatar_url.is_some()
+                        {
                             selected_idx = idx;
                             break;
                         }
                     }
                 }
-                
+
                 new_self.selected_identity = Some(identities[selected_idx].clone());
                 new_self.selected_identity_string = identities[selected_idx]
                     .identity
@@ -177,9 +179,10 @@ impl ProfileScreen {
             match self.app_context.db.load_dashpay_profile(&identity_id) {
                 Ok(Some(stored_profile)) => {
                     // Check if this is a "no profile exists" marker (all fields are None)
-                    if stored_profile.display_name.is_none() 
-                        && stored_profile.bio.is_none() 
-                        && stored_profile.avatar_url.is_none() {
+                    if stored_profile.display_name.is_none()
+                        && stored_profile.bio.is_none()
+                        && stored_profile.avatar_url.is_none()
+                    {
                         // This is a cached "no profile" state
                         self.profile = None;
                         self.profile_load_attempted = true;
@@ -196,7 +199,7 @@ impl ProfileScreen {
                             self.edit_display_name = profile.display_name.clone();
                             self.edit_bio = profile.bio.clone();
                             self.edit_avatar_url = profile.avatar_url.clone();
-                            
+
                             // Store original values for change detection
                             self.original_display_name = profile.display_name.clone();
                             self.original_bio = profile.bio.clone();
@@ -207,12 +210,9 @@ impl ProfileScreen {
                         self.profile_load_attempted = true;
                     }
                 }
-                Ok(None) => {
-                }
-                Err(e) => {
-                }
+                Ok(None) => {}
+                Err(_e) => {}
             }
-        } else {
         }
     }
 
@@ -380,7 +380,7 @@ impl ProfileScreen {
                     self.validation_errors.clear();
                     self.has_unsaved_changes = false;
                     self.message = None;
-                    
+
                     // Load profile from database for the newly selected identity
                     self.load_profile_from_database();
                 }
@@ -731,7 +731,6 @@ impl ProfileScreen {
         match result {
             BackendTaskSuccessResult::DashPayProfile(profile_data) => {
                 if let Some((display_name, bio, avatar_url)) = profile_data {
-                    
                     self.profile = Some(DashPayProfile {
                         display_name: display_name.clone(),
                         bio: bio.clone(),
@@ -742,7 +741,7 @@ impl ProfileScreen {
                     if let Some(ref identity) = self.selected_identity {
                         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                         let identity_id = identity.identity.id();
-                        
+
                         if let Err(e) = self.app_context.db.save_dashpay_profile(
                             &identity_id,
                             Some(&display_name),
@@ -757,12 +756,12 @@ impl ProfileScreen {
                 } else {
                     // No profile found - clear any existing profile and show create button
                     self.profile = None;
-                    
+
                     // Save "no profile" state to database to avoid repeated network queries
                     if let Some(ref identity) = self.selected_identity {
                         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                         let identity_id = identity.identity.id();
-                        
+
                         // Save with all fields as None to indicate "no profile exists"
                         // This prevents unnecessary network queries on app restart
                         if let Err(e) = self.app_context.db.save_dashpay_profile(

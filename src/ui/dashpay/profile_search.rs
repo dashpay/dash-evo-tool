@@ -9,7 +9,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
 use dash_sdk::platform::{Document, Identifier};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;

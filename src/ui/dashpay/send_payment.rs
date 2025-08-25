@@ -125,7 +125,7 @@ impl SendPaymentScreen {
                     );
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.label(
-                        RichText::new(&self.from_identity.to_string())
+                        RichText::new(self.from_identity.to_string())
                             .color(DashColors::text_primary(dark_mode)),
                     );
                 });
@@ -161,7 +161,7 @@ impl SendPaymentScreen {
                     } else {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         ui.label(
-                            RichText::new(&format!("{}", self.to_contact_id))
+                            RichText::new(format!("{}", self.to_contact_id))
                                 .color(DashColors::text_primary(dark_mode)),
                         );
                     }
@@ -170,7 +170,7 @@ impl SendPaymentScreen {
                 ui.separator();
 
                 // Amount input
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let _dark_mode = ui.ctx().style().visuals.dark_mode;
                 let balance = self.from_identity.identity.balance();
                 let amount_input = self.amount_input.get_or_insert_with(|| {
                     AmountInput::new(&self.amount)
@@ -375,13 +375,13 @@ impl PaymentHistory {
                                 .unwrap_or_else(|| {
                                     format!(
                                         "Unknown ({})",
-                                        contact_id.to_string(Encoding::Base58)[0..8].to_string()
+                                        &contact_id.to_string(Encoding::Base58)[0..8]
                                     )
                                 })
                         } else {
                             format!(
                                 "Unknown ({})",
-                                contact_id.to_string(Encoding::Base58)[0..8].to_string()
+                                &contact_id.to_string(Encoding::Base58)[0..8]
                             )
                         }
                     } else {
@@ -531,9 +531,9 @@ impl PaymentHistory {
                                 ui.add_space(5.0);
                                 ui.label(RichText::new("👤").size(30.0));
                             });
-                            
+
                             ui.add_space(5.0);
-                            
+
                             // Direction indicator
                             if payment.is_incoming {
                                 ui.label(
@@ -557,7 +557,7 @@ impl PaymentHistory {
                                     );
 
                                     // Amount
-                                    let amount_str = format!("{} Dash", payment.amount.to_string());
+                                    let amount_str = format!("{} Dash", payment.amount);
                                     if payment.is_incoming {
                                         ui.label(
                                             RichText::new(format!("+{}", amount_str))
@@ -629,7 +629,7 @@ impl PaymentHistory {
                             // Extract ID from format "Unknown (abcd1234)"
                             let start = contact_name.find('(').unwrap() + 1;
                             let end = contact_name.find(')').unwrap();
-                            let id_str = &contact_name[start..end];
+                            let _id_str = &contact_name[start..end];
                             // This is likely a partial base58 ID, we'd need the full ID
                             // For now, we'll use a placeholder
                             Identifier::new([0; 32])

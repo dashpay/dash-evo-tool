@@ -200,12 +200,11 @@ impl QRCodeGeneratorScreen {
                         self.generate_qr_code();
                     }
 
-                    if self.generated_qr_data.is_some() {
-                        if ui.button("Clear").clicked() {
+                    if self.generated_qr_data.is_some()
+                        && ui.button("Clear").clicked() {
                             self.generated_qr_data = None;
                             self.message = None;
                         }
-                    }
                 });
             });
 
@@ -253,7 +252,7 @@ impl QRCodeGeneratorScreen {
                     ui.horizontal(|ui| {
                         let copy_text = qr_data.clone();
                         if ui.button("Copy Data to Clipboard").clicked() {
-                            ui.output_mut(|o| o.copied_text = copy_text);
+                            ui.ctx().copy_text(copy_text);
                             show_copied_message = true;
                         }
                     });

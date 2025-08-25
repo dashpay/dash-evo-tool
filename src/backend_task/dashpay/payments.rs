@@ -4,14 +4,12 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::dashcore::consensus::encode;
-use dash_sdk::dpp::dashcore::{Address, Network, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Payment record for local storage
@@ -174,7 +172,7 @@ pub async fn derive_contact_payment_address(
     use dash_sdk::dpp::dashcore::bip32::{ChainCode, ChildNumber, ExtendedPubKey, Fingerprint};
     use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1};
 
-    let secp = Secp256k1::new();
+    let _secp = Secp256k1::new();
     let pubkey =
         PublicKey::from_slice(&public_key).map_err(|e| format!("Invalid public key: {}", e))?;
 
@@ -266,7 +264,7 @@ pub async fn send_payment_to_contact(
 /// Store a payment record in the local database
 async fn store_payment_record(
     _app_context: &Arc<AppContext>,
-    payment: &PaymentRecord,
+    _payment: &PaymentRecord,
 ) -> Result<(), String> {
     // TODO: Implement database storage
     // This would store the payment in a local SQLite database

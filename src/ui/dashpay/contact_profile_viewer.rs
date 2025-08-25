@@ -8,7 +8,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
-use dash_sdk::dpp::identity::Identity;
+
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, Ui};
@@ -414,10 +414,8 @@ impl ContactProfileViewerScreen {
                                         self.is_hidden = hidden;
                                     }
                                 }
-                            } else {
-                                if ui.button("Edit").clicked() {
-                                    self.editing_private_info = true;
-                                }
+                            } else if ui.button("Edit").clicked() {
+                                self.editing_private_info = true;
                             }
                         });
                     });

@@ -15,16 +15,14 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::documents::transitions::{
-    DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
-};
+use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 // ContactInfo private data structure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ContactInfoPrivateData {
     pub version: u32,
     pub alias_name: Option<String>,
@@ -35,13 +33,7 @@ pub struct ContactInfoPrivateData {
 
 impl ContactInfoPrivateData {
     pub fn new() -> Self {
-        Self {
-            version: 0,
-            alias_name: None,
-            note: None,
-            display_hidden: false,
-            accepted_accounts: Vec::new(),
-        }
+        Self::default()
     }
 
     // Serialize to bytes for encryption
@@ -121,14 +113,14 @@ fn derive_contact_info_keys(
     // Derive two keys using HMAC-SHA256
     // Key 1 for encToUserId (offset 2^16)
     let mut hasher = Sha256::new();
-    hasher.update(&private_key);
-    hasher.update(&(65536u32 + derivation_index).to_le_bytes());
+    hasher.update(private_key);
+    hasher.update((65536u32 + derivation_index).to_le_bytes());
     let key1 = hasher.finalize();
 
     // Key 2 for privateData (offset 2^16 + 1)
     let mut hasher2 = Sha256::new();
-    hasher2.update(&private_key);
-    hasher2.update(&(65537u32 + derivation_index).to_le_bytes());
+    hasher2.update(private_key);
+    hasher2.update((65537u32 + derivation_index).to_le_bytes());
     let key2 = hasher2.finalize();
 
     Ok((key1.into(), key2.into()))
@@ -209,6 +201,7 @@ fn encrypt_private_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> 
 }
 
 // Decrypt private data using AES-256-CBC
+#[allow(dead_code)]
 fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     use cbc::cipher::BlockDecryptMut;
     use cbc::cipher::block_padding::Pkcs7;
@@ -233,6 +226,7 @@ fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>
     Ok(decrypted.to_vec())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_or_update_contact_info(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -413,7 +407,7 @@ pub async fn create_or_update_contact_info(
         }
 
         let _result = sdk
-            .document_create(builder, &signing_key, &identity)
+            .document_create(builder, signing_key, &identity)
             .await
             .map_err(|e| format!("Error creating contact info: {}", e))?;
     } else {
@@ -444,7 +438,7 @@ pub async fn create_or_update_contact_info(
         }
 
         let _result = sdk
-            .document_replace(builder, &signing_key, &identity)
+            .document_replace(builder, signing_key, &identity)
             .await
             .map_err(|e| format!("Error updating contact info: {}", e))?;
     }

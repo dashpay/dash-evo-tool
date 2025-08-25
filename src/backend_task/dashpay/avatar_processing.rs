@@ -1,5 +1,4 @@
 use sha2::{Digest, Sha256};
-use std::cmp;
 
 /// Calculate SHA-256 hash of image bytes
 pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
@@ -51,15 +50,22 @@ pub struct DHashCalculator {
     height: usize,
 }
 
-impl DHashCalculator {
-    pub fn new() -> Self {
+impl Default for DHashCalculator {
+    fn default() -> Self {
         Self {
             width: 9,
             height: 8,
         }
     }
+}
+
+impl DHashCalculator {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Convert RGB pixels to grayscale
+    #[allow(dead_code)]
     fn to_grayscale(&self, rgb: &[u8]) -> Vec<u8> {
         let mut grayscale = Vec::new();
         for chunk in rgb.chunks(3) {

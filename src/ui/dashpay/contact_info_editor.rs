@@ -32,7 +32,7 @@ impl ContactInfoEditorScreen {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     ) -> Self {
-        let screen = Self {
+        Self {
             app_context,
             identity,
             contact_id,
@@ -44,8 +44,7 @@ impl ContactInfoEditorScreen {
             account_input: String::new(),
             message: None,
             saving: false,
-        };
-        screen
+        }
     }
 
     fn load_contact_info(&mut self) -> AppAction {
@@ -303,11 +302,8 @@ impl ScreenLike for ContactInfoEditorScreen {
 
         // Handle custom actions from top panel
         if let AppAction::Custom(command) = &action {
-            match command.as_str() {
-                "refresh_contact_info" => {
-                    action = self.load_contact_info();
-                }
-                _ => {}
+            if command.as_str() == "refresh_contact_info" {
+                action = self.load_contact_info();
             }
         }
 

@@ -1,5 +1,5 @@
 use dash_sdk::platform::Identifier;
-use rusqlite::{Connection, params};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 /// DashPay profile data stored locally
@@ -270,7 +270,6 @@ impl crate::database::Database {
         avatar_url: Option<&str>,
         public_message: Option<&str>,
     ) -> rusqlite::Result<()> {
-        
         let sql = "
             INSERT OR REPLACE INTO dashpay_profiles 
             (identity_id, display_name, bio, avatar_url, public_message, updated_at)
@@ -287,7 +286,7 @@ impl crate::database::Database {
                 public_message,
             ],
         );
-        
+
         result?;
         Ok(())
     }
@@ -297,8 +296,7 @@ impl crate::database::Database {
         identity_id: &Identifier,
     ) -> rusqlite::Result<Option<StoredProfile>> {
         let conn = self.conn.lock().unwrap();
-        
-        
+
         let mut stmt = conn.prepare(
             "SELECT identity_id, display_name, bio, avatar_url, avatar_hash, 
                     avatar_fingerprint, public_message, created_at, updated_at 
@@ -321,20 +319,15 @@ impl crate::database::Database {
         });
 
         match result {
-            Ok(profile) => {
-                Ok(Some(profile))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Ok(None)
-            }
-            Err(e) => {
-                Err(e)
-            }
+            Ok(profile) => Ok(Some(profile)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     // Contact operations
 
+    #[allow(clippy::too_many_arguments)]
     pub fn save_dashpay_contact(
         &self,
         owner_identity_id: &Identifier,

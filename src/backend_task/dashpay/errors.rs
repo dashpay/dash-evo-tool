@@ -168,28 +168,28 @@ impl DashPayError {
 
     /// Check if error is recoverable (user can retry)
     pub fn is_recoverable(&self) -> bool {
-        match self {
-            DashPayError::NetworkError { .. } => true,
-            DashPayError::PlatformError { .. } => true,
-            DashPayError::RateLimited { .. } => true,
-            DashPayError::BroadcastFailed { .. } => true,
-            DashPayError::QueryFailed { .. } => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            DashPayError::NetworkError { .. }
+                | DashPayError::PlatformError { .. }
+                | DashPayError::RateLimited { .. }
+                | DashPayError::BroadcastFailed { .. }
+                | DashPayError::QueryFailed { .. }
+        )
     }
 
     /// Check if error requires user action (not a system error)
     pub fn requires_user_action(&self) -> bool {
-        match self {
-            DashPayError::UsernameResolutionFailed { .. } => true,
-            DashPayError::InvalidQrCode { .. } => true,
-            DashPayError::QrCodeExpired { .. } => true,
-            DashPayError::ValidationFailed { .. } => true,
-            DashPayError::AccountLabelTooLong { .. } => true,
-            DashPayError::InvalidUsername { .. } => true,
-            DashPayError::MissingField { .. } => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            DashPayError::UsernameResolutionFailed { .. }
+                | DashPayError::InvalidQrCode { .. }
+                | DashPayError::QrCodeExpired { .. }
+                | DashPayError::ValidationFailed { .. }
+                | DashPayError::AccountLabelTooLong { .. }
+                | DashPayError::InvalidUsername { .. }
+                | DashPayError::MissingField { .. }
+        )
     }
 }
 

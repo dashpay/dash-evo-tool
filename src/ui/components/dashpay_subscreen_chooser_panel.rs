@@ -1,14 +1,14 @@
+use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use crate::{app::AppAction, ui};
 use egui::{Context, Frame, Margin, RichText, SidePanel};
 use std::sync::Arc;
 
 pub fn add_dashpay_subscreen_chooser_panel(
     ctx: &Context,
-    app_context: &Arc<AppContext>,
+    _app_context: &Arc<AppContext>,
     current_subscreen: DashPaySubscreen,
 ) -> AppAction {
     let mut action = AppAction::None;

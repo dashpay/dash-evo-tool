@@ -306,8 +306,7 @@ impl ContactRequests {
                                         let name = request
                                             .from_display_name
                                             .as_ref()
-                                            .or(request.from_username.as_ref())
-                                            .map(|s| s.clone())
+                                            .or(request.from_username.as_ref()).cloned()
                                             .unwrap_or_else(|| {
                                                 // Show truncated identity ID if no name available
                                                 let id_str = request.from_identity.to_string(Encoding::Base58);

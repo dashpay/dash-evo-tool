@@ -67,7 +67,7 @@ pub enum BackendTaskSuccessResult {
     None,
     Refresh,
     Message(String), // TODO: Remove this and only use proper result types.
-                     // Right now we are matching the strings from this in the UI which is unreliable.
+    // Right now we are matching the strings from this in the UI which is unreliable.
 
     // Specific results
     #[allow(dead_code)] // May be used for individual document operations
@@ -190,7 +190,7 @@ impl AppContext {
             }
             BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
             BackendTask::DashPayTask(dashpay_task) => {
-                self.run_dashpay_task(*dashpay_task, &sdk, sender).await
+                self.run_dashpay_task(*dashpay_task, &sdk).await
             }
             BackendTask::BroadcastStateTransition(state_transition) => {
                 self.broadcast_state_transition(state_transition, &sdk)

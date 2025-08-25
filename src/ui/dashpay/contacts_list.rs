@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::database::contacts::ContactPrivateInfo;
+
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
@@ -114,7 +114,7 @@ impl ContactsList {
                             display_name: stored_contact.display_name.clone().or_else(|| {
                                 Some(format!(
                                     "Contact ({})",
-                                    contact_id.to_string(Encoding::Base58)[0..8].to_string()
+                                    &contact_id.to_string(Encoding::Base58)[0..8]
                                 ))
                             }),
                             avatar_url: stored_contact.avatar_url.clone(),
@@ -280,7 +280,7 @@ impl ContactsList {
                     });
                     ui.vertical(|ui| {
                         ui.add_space(4.0);
-                        egui::ComboBox::from_id_source("filter_combo")
+                        egui::ComboBox::from_id_salt("filter_combo")
                             .selected_text(match self.search_filter {
                                 SearchFilter::All => "All",
                                 SearchFilter::WithUsernames => "With usernames",
@@ -332,7 +332,7 @@ impl ContactsList {
                     });
                     ui.vertical(|ui| {
                         ui.add_space(4.0);
-                        egui::ComboBox::from_id_source("sort_combo")
+                        egui::ComboBox::from_id_salt("sort_combo")
                             .selected_text(match self.sort_order {
                                 SortOrder::Name => "Name",
                                 SortOrder::Username => "Username",
@@ -533,9 +533,9 @@ impl ContactsList {
                                 // For now, always show placeholder
                                 ui.label(RichText::new("👤").size(40.0));
                             });
-                            
+
                             ui.add_space(10.0);
-                            
+
                             ui.vertical(|ui| {
                                 // Display name or username
                                 let name = contact
@@ -543,7 +543,7 @@ impl ContactsList {
                                     .as_ref()
                                     .or(contact.display_name.as_ref())
                                     .or(contact.username.as_ref())
-                                    .map(|s| s.clone())
+                                    .cloned()
                                     .unwrap_or_else(|| "Unknown".to_string());
 
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -671,7 +671,7 @@ impl ScreenLike for ContactsList {
                         username: None,
                         display_name: Some(format!(
                             "Contact ({})",
-                            contact_id.to_string(Encoding::Base58)[0..8].to_string()
+                            &contact_id.to_string(Encoding::Base58)[0..8]
                         )),
                         avatar_url: None,
                         bio: None,
@@ -704,8 +704,7 @@ impl ScreenLike for ContactsList {
                             username: None,
                             display_name: Some(format!(
                                 "Contact ({})",
-                                contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                                    .to_string()
+                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
                             )),
                             avatar_url: None,
                             bio: None,
@@ -745,8 +744,7 @@ impl ScreenLike for ContactsList {
                             username: None,
                             display_name: Some(format!(
                                 "Contact ({})",
-                                contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                                    .to_string()
+                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
                             )),
                             avatar_url: None,
                             bio: None,

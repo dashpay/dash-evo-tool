@@ -169,8 +169,7 @@ impl ContactDetailsScreen {
                                 .nickname
                                 .as_ref()
                                 .or(info.display_name.as_ref())
-                                .or(info.username.as_ref())
-                                .map(|s| s.clone())
+                                .or(info.username.as_ref()).cloned()
                                 .unwrap_or_else(|| "Unknown".to_string());
                             ui.label(RichText::new(name).heading());
 
@@ -229,10 +228,8 @@ impl ContactDetailsScreen {
                                 if ui.button("Save").clicked() {
                                     self.save_contact_info();
                                 }
-                            } else {
-                                if ui.button("Edit").clicked() {
-                                    self.start_editing();
-                                }
+                            } else if ui.button("Edit").clicked() {
+                                self.start_editing();
                             }
                         });
                     });
@@ -317,7 +314,7 @@ impl ContactDetailsScreen {
                                     ui.horizontal(|ui| {
                                         // Amount
                                         let amount_str =
-                                            format!("{} Dash", payment.amount.to_string());
+                                            format!("{} Dash", payment.amount);
                                         if payment.is_incoming {
                                             ui.label(
                                                 RichText::new(format!("+{}", amount_str))

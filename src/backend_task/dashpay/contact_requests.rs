@@ -1,7 +1,7 @@
 use super::encryption::{
     encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
 };
-use super::hd_derivation::{calculate_account_reference, generate_contact_xpub_data};
+use super::hd_derivation::generate_contact_xpub_data;
 use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
@@ -79,17 +79,7 @@ pub async fn load_contact_requests(
     // 3. Mark the contact as auto-accepted
     let mut incoming: Vec<(Identifier, Document)> = incoming_docs
         .into_iter()
-        .filter_map(|(id, doc)| {
-            if let Some(d) = doc {
-                // Check for autoAcceptProof here in future implementation
-                // if let Some(Value::Bytes(_proof)) = d.properties().get("autoAcceptProof") {
-                //     // Verify and handle auto-acceptance
-                // }
-                Some((id, d))
-            } else {
-                None
-            }
-        })
+        .filter_map(|(id, doc)| doc.map(|d| (id, d)))
         .collect();
 
     let mut outgoing: Vec<(Identifier, Document)> = outgoing_docs
@@ -242,13 +232,13 @@ pub async fn send_contact_request_with_proof(
         .map(|(_, private_key)| private_key)
         .ok_or_else(|| "Sender private key not found".to_string())?;
 
-    let shared_key = generate_ecdh_shared_key(&sender_private_key, &recipient_key)
+    let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| format!("Failed to generate ECDH shared key: {}", e))?;
 
     // Generate extended public key for this contact using proper HD derivation
     // For now, use the sender's private key as seed material
     // In production, this would derive from the wallet's HD seed/mnemonic
-    let wallet_seed = sender_private_key.clone();
+    let wallet_seed = sender_private_key;
 
     // Get the network from app context
     let network = app_context.network;
@@ -290,7 +280,7 @@ pub async fn send_contact_request_with_proof(
             Ok(None) => {
                 (0u32, None) // Fallback if no quorum info available
             }
-            Err(e) => {
+            Err(_e) => {
                 (0u32, None) // Fallback on error
             }
         };
@@ -319,7 +309,7 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Log any warnings
-    for warning in &validation.warnings {}
+    for _warning in &validation.warnings {}
 
     // Step 6: Create contact request document
     let mut properties = BTreeMap::new();
@@ -416,12 +406,12 @@ pub async fn send_contact_request_with_proof(
     }
 
     let _result = sdk
-        .document_create(builder, &identity_key, &identity)
+        .document_create(builder, identity_key, &identity)
         .await
         .map_err(|e| format!("Error creating contact request: {}", e))?;
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
-        to_username_or_id.to_string()
+        to_username_or_id.to_string(),
     ))
 }
 
@@ -568,7 +558,9 @@ pub async fn accept_contact_request(
     .await;
 
     match result {
-        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)),
+        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
+            request_id,
+        )),
         Err(e) => Err(e),
     }
 }
@@ -612,6 +604,6 @@ pub async fn reject_contact_request(
     .await?;
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
-        request_id
+        request_id,
     ))
 }

@@ -3,7 +3,6 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::Identifier;
 
 /// Validation result for contact request fields
@@ -14,13 +13,19 @@ pub struct ContactRequestValidation {
     pub warnings: Vec<String>,
 }
 
-impl ContactRequestValidation {
-    pub fn new() -> Self {
+impl Default for ContactRequestValidation {
+    fn default() -> Self {
         Self {
             is_valid: true,
             errors: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+}
+
+impl ContactRequestValidation {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn add_error(&mut self, error: String) {
@@ -123,8 +128,8 @@ pub fn validate_sender_key_index(
 
 /// Validate recipient key index exists and is suitable for encryption
 pub async fn validate_recipient_key_index(
-    sdk: &Sdk,
-    recipient_identity_id: Identifier,
+    _sdk: &Sdk,
+    _recipient_identity_id: Identifier,
     key_index: u32,
 ) -> Result<ContactRequestValidation, String> {
     let mut validation = ContactRequestValidation::new();
@@ -346,6 +351,7 @@ pub fn validate_contact_info_field_sizes(
 }
 
 /// Comprehensive validation of a contact request before sending
+#[allow(clippy::too_many_arguments)]
 pub async fn validate_contact_request_before_send(
     sdk: &Sdk,
     sender_identity: &QualifiedIdentity,
@@ -383,6 +389,7 @@ pub async fn validate_contact_request_before_send(
 }
 
 /// Validate an incoming contact request
+#[allow(clippy::too_many_arguments)]
 pub async fn validate_incoming_contact_request(
     sdk: &Sdk,
     our_identity: &QualifiedIdentity,

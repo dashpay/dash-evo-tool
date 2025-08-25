@@ -1,7 +1,5 @@
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::Sdk;
 use std::sync::Arc;
 
@@ -88,7 +86,6 @@ impl AppContext {
         self: &Arc<Self>,
         task: DashPayTask,
         sdk: &Sdk,
-        _sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             DashPayTask::LoadProfile { identity } => {
@@ -160,17 +157,18 @@ impl AppContext {
             } => contact_requests::reject_contact_request(self, sdk, identity, request_id).await,
             DashPayTask::LoadPaymentHistory { identity: _ } => {
                 // TODO: Implement payment history loading according to DIP-0015
-                // This requires:
+                // This requires an SPV client to query the blockchain, which is not yet available.
+                // Once SPV support is added, the implementation would:
                 // 1. Get all established contacts (bidirectional contact requests)
                 // 2. For each contact, derive payment addresses from their encrypted extended public key
-                // 3. Query blockchain for transactions to/from those addresses
+                // 3. Query blockchain via SPV for transactions to/from those addresses
                 // 4. Build payment history records with amount, timestamp, memo, etc.
                 // 5. Store in local database for faster access
                 //
                 // The derivation path for DashPay addresses is:
                 // m/9'/5'/15'/account'/(our_identity_id)/(contact_identity_id)/index
                 //
-                // For now, return empty payment history
+                // For now, return empty payment history until SPV client is available
                 Ok(BackendTaskSuccessResult::DashPayPaymentHistory(Vec::new()))
             }
             DashPayTask::UpdateContactInfo {

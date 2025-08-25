@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 11;
+pub const DEFAULT_DB_VERSION: u16 = 12;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,10 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            12 => {
+                // Add DashPay tables in version 12
+                self.init_dashpay_tables_in_tx(tx)?;
+            }
             11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
             10 => {
                 self.add_theme_preference_column(tx)?;
@@ -385,6 +389,10 @@ impl Database {
         self.initialize_identity_order_table(&conn)?;
         self.initialize_token_order_table(&conn)?;
         self.initialize_identity_token_balances_table(&conn)?;
+
+        // Initialize contacts table
+        self.init_contacts_tables()?;
+        self.init_dashpay_tables()?;
 
         Ok(())
     }

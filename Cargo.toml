@@ -50,6 +50,7 @@ zeroize = "1.8.1"
 zxcvbn = "3.1.0"
 argon2 = "0.5.3" # For Argon2 key derivation
 aes-gcm = "0.10.3" # For AES-256-GCM encryption
+cbc = "0.1.2" # For CBC mode encryption
 crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"

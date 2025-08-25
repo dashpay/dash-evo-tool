@@ -1,6 +1,8 @@
 mod asset_lock_transaction;
+pub(crate) mod contacts;
 mod contested_names;
 pub(crate) mod contracts;
+mod dashpay;
 mod identities;
 mod initialization;
 mod proof_log;

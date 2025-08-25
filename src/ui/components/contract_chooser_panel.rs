@@ -225,6 +225,7 @@ pub fn add_contract_chooser_panel(
                                     Some("keyword_search") => "Keyword Search".to_string(),
                                     Some("token_history") => "Token History".to_string(),
                                     Some("withdrawals") => "Withdrawals".to_string(),
+                                    Some("dashpay") => "DashPay".to_string(),
                                     Some(alias) => alias.to_string(),
                                     None => contract_id.clone(),
                                 };

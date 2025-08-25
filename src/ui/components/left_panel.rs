@@ -58,6 +58,11 @@ pub fn add_left_panel(
     let buttons = [
         ("I", RootScreenType::RootScreenIdentities, "identity.png"),
         ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
+        (
+            "P",
+            RootScreenType::RootScreenDashPayContacts,
+            "dashpay.png",
+        ),
         ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
         (
             "C",

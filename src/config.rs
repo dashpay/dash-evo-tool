@@ -28,7 +28,7 @@ pub enum ConfigError {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct NetworkConfig {
-    /// Hostname of the Dash Platform node to connect to
+    /// Hostname of Dash Platform node to connect to
     pub dapi_addresses: String,
     /// Host of the Dash Core RPC interface
     pub core_host: String,

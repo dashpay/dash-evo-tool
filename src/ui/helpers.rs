@@ -13,7 +13,7 @@ use dash_sdk::{
             group::{Group, accessors::v0::GroupV0Getters},
         },
         identity::{
-            Purpose, SecurityLevel, accessors::IdentityGettersV0,
+            KeyType, Purpose, SecurityLevel, accessors::IdentityGettersV0,
             identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
         },
         platform_value::string_encoding::Encoding,
@@ -114,6 +114,8 @@ pub enum TransactionType {
     TokenTransfer,
     /// Token action of claiming
     TokenClaim,
+    /// DashPay contact request - requires Authentication keys with ECDSA_SECP256K1 key type for ECDH
+    ContactRequest,
 }
 
 impl TransactionType {
@@ -131,6 +133,7 @@ impl TransactionType {
             TransactionType::TokenTransfer | TransactionType::TokenClaim => {
                 vec![Purpose::TRANSFER, Purpose::AUTHENTICATION]
             }
+            TransactionType::ContactRequest => vec![Purpose::AUTHENTICATION],
         }
     }
 
@@ -149,6 +152,11 @@ impl TransactionType {
             TransactionType::TokenAction
             | TransactionType::TokenTransfer
             | TransactionType::TokenClaim => vec![SecurityLevel::CRITICAL],
+            TransactionType::ContactRequest => vec![
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ],
         }
     }
 
@@ -163,6 +171,7 @@ impl TransactionType {
             TransactionType::TokenAction => "Token Action",
             TransactionType::TokenTransfer => "Token Transfer",
             TransactionType::TokenClaim => "Token Claim",
+            TransactionType::ContactRequest => "Contact Request",
         }
     }
 }
@@ -294,8 +303,17 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                                 let is_allowed = if is_dev_mode {
                                     true
                                 } else {
-                                    allowed_purposes.contains(&key.purpose())
-                                        && allowed_security_levels.contains(&key.security_level())
+                                    let basic_requirements = allowed_purposes
+                                        .contains(&key.purpose())
+                                        && allowed_security_levels.contains(&key.security_level());
+
+                                    // Additional filtering for ContactRequest - only ECDSA_SECP256K1 keys for ECDH
+                                    if transaction_type == TransactionType::ContactRequest {
+                                        basic_requirements
+                                            && key.key_type() == KeyType::ECDSA_SECP256K1
+                                    } else {
+                                        basic_requirements
+                                    }
                                 };
 
                                 if is_allowed {

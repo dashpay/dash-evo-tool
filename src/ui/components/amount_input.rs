@@ -1,7 +1,7 @@
 use crate::model::amount::Amount;
 use crate::ui::components::{Component, ComponentResponse};
 use dash_sdk::dpp::fee::Credits;
-use egui::{InnerResponse, Response, TextEdit, Ui, Vec2, WidgetText};
+use egui::{InnerResponse, Response, TextEdit, Ui, WidgetText};
 
 /// Response from the amount input widget
 #[derive(Clone)]
@@ -294,7 +294,7 @@ impl AmountInput {
             if self.show_max_button {
                 // ensure we have height predefined to correctly vertically align the input field;
                 // see StyledButton::show() to see how y is calculated
-                ui.allocate_space(Vec2::new(0.0, 30.0));
+                ui.set_min_height(30.0);
             }
             // Show label if provided
             if let Some(label) = &self.label {

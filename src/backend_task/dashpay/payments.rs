@@ -256,12 +256,11 @@ pub async fn send_payment_to_contact(
     // TODO: Store payment record in local database
     store_payment_record(app_context, &payment).await?;
 
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Payment of {} Dash to {} at address {} prepared (RPC integration pending)",
-        amount_dash,
+    Ok(BackendTaskSuccessResult::DashPayPaymentSent(
         to_contact_id.to_string(Encoding::Base58),
-        to_address
-    )))
+        to_address.to_string(),
+        amount_dash,
+    ))
 }
 
 /// Store a payment record in the local database

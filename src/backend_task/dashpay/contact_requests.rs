@@ -420,10 +420,9 @@ pub async fn send_contact_request_with_proof(
         .await
         .map_err(|e| format!("Error creating contact request: {}", e))?;
 
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Contact request sent successfully to {}",
-        to_username_or_id
-    )))
+    Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
+        to_username_or_id.to_string()
+    ))
 }
 
 async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, String> {
@@ -532,8 +531,8 @@ pub async fn accept_contact_request(
         .map_err(|e| format!("Error checking existing requests: {}", e))?;
 
     if !existing.is_empty() {
-        return Ok(BackendTaskSuccessResult::Message(
-            "Contact already established (request already sent in reverse direction)".to_string(),
+        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(
+            from_identity_id,
         ));
     }
 
@@ -568,12 +567,10 @@ pub async fn accept_contact_request(
     )
     .await;
 
-    match &result {
-        Ok(_) => {}
-        Err(_) => {}
+    match result {
+        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)),
+        Err(e) => Err(e),
     }
-
-    result
 }
 
 pub async fn reject_contact_request(
@@ -614,8 +611,7 @@ pub async fn reject_contact_request(
     )
     .await?;
 
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Contact request from {} has been rejected and marked as hidden.",
-        from_identity_id.to_string(Encoding::Base58)
-    )))
+    Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
+        request_id
+    ))
 }

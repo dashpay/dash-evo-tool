@@ -685,25 +685,8 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
-                            // For DashPay screens, also call display_task_result to clear loading/saving states
-                            let is_dashpay_screen = matches!(
-                                self.visible_screen_mut().screen_type(),
-                                ScreenType::DashPayProfile
-                                    | ScreenType::DashPayContacts
-                                    | ScreenType::DashPayRequests
-                                    | ScreenType::DashPayPayments
-                                    | ScreenType::DashPayContactDetails(..)
-                                    | ScreenType::DashPaySendPayment(..)
-                                    | ScreenType::DashPayContactInfoEditor(..)
-                            );
-
-                            if is_dashpay_screen {
-                                self.visible_screen_mut()
-                                    .display_task_result(unboxed_message.clone());
-                            } else {
-                                self.visible_screen_mut()
-                                    .display_message(msg, MessageType::Success);
-                            }
+                            self.visible_screen_mut()
+                                .display_message(msg, MessageType::Success);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
@@ -722,11 +705,6 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                             self.visible_screen_mut().refresh();
-                        }
-                        BackendTaskSuccessResult::DashPayProfile(_) => {
-                            // DashPay profile results need to go through display_task_result
-                            self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
                         }
                         _ => {
                             self.visible_screen_mut()

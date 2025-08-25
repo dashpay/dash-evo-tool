@@ -449,7 +449,7 @@ pub async fn create_or_update_contact_info(
             .map_err(|e| format!("Error updating contact info: {}", e))?;
     }
 
-    Ok(BackendTaskSuccessResult::Message(
-        "Contact information updated successfully".to_string(),
+    Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated(
+        contact_user_id,
     ))
 }

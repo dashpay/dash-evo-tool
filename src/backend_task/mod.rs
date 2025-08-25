@@ -63,9 +63,13 @@ pub enum BackendTask {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
+    // General results
     None,
     Refresh,
-    Message(String),
+    Message(String), // TODO: Remove this and only use proper result types.
+                     // Right now we are matching the strings from this in the UI which is unreliable.
+
+    // Specific results
     #[allow(dead_code)] // May be used for individual document operations
     Document(Document),
     Documents(Documents),
@@ -92,16 +96,6 @@ pub enum BackendTaskSuccessResult {
         TokenAmount,
         IntervalEvaluationExplanation,
     ),
-    DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
-    DashPayContactProfile(Option<Document>),          // Contact's public profile document
-    DashPayProfileSearchResults(Vec<(Identifier, Document)>), // Search results: (identity_id, profile_document)
-    DashPayContactRequests {
-        incoming: Vec<(Identifier, Document)>, // (request_id, document)
-        outgoing: Vec<(Identifier, Document)>, // (request_id, document)
-    },
-    DashPayContacts(Vec<Identifier>), // List of contact identity IDs
-    DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
-    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
@@ -112,6 +106,25 @@ pub enum BackendTaskSuccessResult {
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
+
+    // DashPay related results
+    DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
+    DashPayContactProfile(Option<Document>),          // Contact's public profile document
+    DashPayProfileSearchResults(Vec<(Identifier, Document)>), // Search results: (identity_id, profile_document)
+    DashPayContactRequests {
+        incoming: Vec<(Identifier, Document)>, // (request_id, document)
+        outgoing: Vec<(Identifier, Document)>, // (request_id, document)
+    },
+    DashPayContacts(Vec<Identifier>), // List of contact identity IDs
+    DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
+    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
+    DashPayProfileUpdated(Identifier), // Identity ID of updated profile
+    DashPayContactRequestSent(String), // Username or ID of recipient
+    DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
+    DashPayContactRequestRejected(Identifier), // Request ID that was rejected
+    DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
+    DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
+    DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
 }
 
 impl BackendTaskSuccessResult {}

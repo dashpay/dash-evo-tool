@@ -189,10 +189,9 @@ pub async fn update_profile(
             .await
             .map_err(|e| format!("Error replacing profile: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(format!(
-            "Profile updated successfully for identity {}",
-            identity.identity.id().to_string(Encoding::Base58)
-        )))
+        Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
+            identity.identity.id()
+        ))
     } else {
         // Create new profile using DocumentCreateTransitionBuilder
         // Generate document ID
@@ -237,10 +236,9 @@ pub async fn update_profile(
             .await
             .map_err(|e| format!("Error creating profile: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(format!(
-            "Profile created successfully for identity {}",
-            identity.identity.id().to_string(Encoding::Base58)
-        )))
+        Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
+            identity.identity.id()
+        ))
     }
 }
 

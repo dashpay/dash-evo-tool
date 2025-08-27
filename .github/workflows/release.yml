@@ -174,17 +174,23 @@ jobs:
 
       - name: Code sign with hardened runtime and timestamp
         run: |
-          codesign --force --options runtime --timestamp \
-            --sign "${{ steps.signid.outputs.IDENTITY }}" \
-            --entitlements - \
-            build/dash-evo-tool <<< '<?xml version="1.0" encoding="UTF-8"?>
+          # Create entitlements file
+          cat > entitlements.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
             <true/>
           </dict>
-          </plist>'
+          </plist>
+          EOF
+          
+          codesign --force --options runtime --timestamp \
+            --sign "${{ steps.signid.outputs.IDENTITY }}" \
+            --entitlements entitlements.plist \
+            build/dash-evo-tool
+          
           codesign --verify --verbose=2 build/dash-evo-tool
 
       - name: Create DMG

@@ -33,14 +33,6 @@ jobs:
             runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
             platform: "arm64-linux"
-          - name: "macos-x86_64"
-            runs-on: "macos-13"
-            target: "x86_64-apple-darwin"
-            platform: "x86_64-mac"
-          - name: "macos-arm64"
-            runs-on: "macos-latest"
-            target: "aarch64-apple-darwin"
-            platform: "arm64-mac"
           - name: "Windows"
             runs-on: "ubuntu-22.04"
             target: "x86_64-pc-windows-gnu"
@@ -98,18 +90,6 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Install protoc (Mac x64)
-        if: ${{ matrix.target == 'x86_64-apple-darwin' }}
-        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-x86_64.zip && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-x86_64.zip && uname -a
-        env:
-          PROTOC: /usr/local/bin/protoc
-
-      - name: Install protoc (Mac ARM)
-        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
-        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-aarch_64.zip && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-aarch_64.zip
-        env:
-          PROTOC: /usr/local/bin/protoc
-
       - name: Windows libsql
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
@@ -138,9 +118,114 @@ jobs:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
 
+  build-macos-universal:
+    name: Build macOS Universal Binary (Signed & Notarized)
+    runs-on: macos-14
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Install protoc
+        run: |
+          brew install protobuf
+          protoc --version
+
+      - name: Build both architectures and create universal binary
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p build
+          lipo -create \
+            -output build/dash-evo-tool \
+            target/aarch64-apple-darwin/release/dash-evo-tool \
+            target/x86_64-apple-darwin/release/dash-evo-tool
+          chmod +x build/dash-evo-tool
+
+      - name: Import signing certificates
+        uses: Apple-Actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Resolve signing identity
+        id: signid
+        run: |
+          ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | sed -E 's/.*"(.+)"/\1/' | head -n1)
+          echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Code sign with hardened runtime and timestamp
+        run: |
+          codesign --force --options runtime --timestamp \
+            --sign "${{ steps.signid.outputs.IDENTITY }}" \
+            --entitlements - \
+            build/dash-evo-tool <<< '<?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+            <true/>
+          </dict>
+          </plist>'
+          codesign --verify --verbose=2 build/dash-evo-tool
+
+      - name: Create DMG
+        run: |
+          mkdir -p dmg-content
+          cp build/dash-evo-tool dmg-content/
+          
+          # Create a simple Applications symlink
+          ln -s /Applications dmg-content/Applications
+          
+          # Create DMG
+          hdiutil create -volname "Dash Evo Tool" \
+            -srcfolder dmg-content \
+            -ov -format UDZO \
+            dash-evo-tool-macos-universal.dmg
+          
+          # Sign the DMG
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-universal.dmg
+
+      - name: Notarize DMG
+        run: |
+          xcrun notarytool submit dash-evo-tool-macos-universal.dmg \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --wait
+          
+          # Staple the notarization ticket to the DMG
+          xcrun stapler staple dash-evo-tool-macos-universal.dmg
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dash-evo-tool-macos-universal.dmg'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-evo-tool-macos-universal.dmg
+          path: dash-evo-tool-macos-universal.dmg
+
   release:
     name: Create GitHub Release
-    needs: build-and-release
+    needs: [build-and-release, build-macos-universal]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux AMD64 Artifact
@@ -151,14 +236,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dash-evo-tool-arm64-linux.zip
-      - name: Download MacOS AMD64 Artifact
+      - name: Download macOS Universal Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-x86_64-mac.zip
-      - name: Download MacOS ARM64 Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dash-evo-tool-arm64-mac.zip
+          name: dash-evo-tool-macos-universal.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
@@ -173,8 +254,7 @@ jobs:
           files: |
             ./dash-evo-tool-x86_64-linux.zip
             ./dash-evo-tool-arm64-linux.zip
-            ./dash-evo-tool-x86_64-mac.zip
-            ./dash-evo-tool-arm64-mac.zip
+            ./dash-evo-tool-macos-universal.dmg
             ./dash-evo-tool-windows.zip
           draft: false
           prerelease: true

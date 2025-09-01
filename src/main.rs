@@ -41,13 +41,12 @@ fn load_icon() -> egui::IconData {
 async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
-    
+
     let native_options = eframe::NativeOptions {
         persist_window: true, // Persist window size and position
         centered: true,       // Center window on startup if not maximized
         persistence_path: Some(app_data_dir.join("app.ron")),
-        viewport: egui::ViewportBuilder::default()
-            .with_icon(icon_data),
+        viewport: egui::ViewportBuilder::default().with_icon(icon_data),
         ..Default::default()
     };
 

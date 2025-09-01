@@ -138,7 +138,7 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        
+
       - name: Add Rust targets
         run: |
           rustup target add aarch64-apple-darwin
@@ -185,40 +185,57 @@ jobs:
           </dict>
           </plist>
           EOF
-          
+
           codesign --force --options runtime --timestamp \
             --sign "${{ steps.signid.outputs.IDENTITY }}" \
             --entitlements entitlements.plist \
             build/dash-evo-tool
-          
+
           codesign --verify --verbose=2 build/dash-evo-tool
 
       - name: Create DMG
         run: |
           mkdir -p dmg-content
           cp build/dash-evo-tool dmg-content/
-          
+
           # Create a simple Applications symlink
           ln -s /Applications dmg-content/Applications
-          
+
           # Create DMG
           hdiutil create -volname "Dash Evo Tool" \
             -srcfolder dmg-content \
             -ov -format UDZO \
             dash-evo-tool-macos-universal.dmg
-          
+
           # Sign the DMG
           codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-universal.dmg
 
+      - name: Validate Apple credentials
+        run: |
+          if [ -z "${{ secrets.APPLE_ID }}" ]; then
+            echo "Error: APPLE_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            echo "Error: APPLE_TEAM_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
+            echo "Error: APPLE_APP_SPECIFIC_PASSWORD secret is not set"
+            exit 1
+          fi
+          echo "Apple credentials validation passed"
+
       - name: Notarize DMG
         run: |
+          echo "Submitting DMG for notarization..."
           xcrun notarytool submit dash-evo-tool-macos-universal.dmg \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-            --wait
-          
-          # Staple the notarization ticket to the DMG
+            --wait --verbose
+
+          echo "Stapling notarization ticket..."
           xcrun stapler staple dash-evo-tool-macos-universal.dmg
 
       - name: Attest

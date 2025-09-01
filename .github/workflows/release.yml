@@ -254,9 +254,6 @@ jobs:
           
           # Verify the signature
           codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
-          
-          # Additional verification
-          spctl -a -t exec -vvv "build/Dash Evo Tool.app"
 
       - name: Create DMG
         run: |

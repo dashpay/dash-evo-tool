@@ -159,18 +159,18 @@ jobs:
             target/aarch64-apple-darwin/release/dash-evo-tool \
             target/x86_64-apple-darwin/release/dash-evo-tool
           chmod +x build/dash-evo-tool
-          
+
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
           mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
-          
+
           # Move binary into app bundle
           cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
-          
+
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset
-          
-          # Create all required icon sizes from the logo (which already has 3% padding)
+
+          # Create all required icon sizes from the logo (which already has 8% padding)
           sips -z 16 16     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16.png
           sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16@2x.png
           sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32.png
@@ -183,7 +183,7 @@ jobs:
           sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
           iconutil -c icns AppIcon.iconset
           cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
-          
+
           # Create Info.plist
           cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -253,7 +253,7 @@ jobs:
             --sign "${{ steps.signid.outputs.IDENTITY }}" \
             --entitlements entitlements.plist \
             "build/Dash Evo Tool.app"
-          
+
           # Verify the signature
           codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
 

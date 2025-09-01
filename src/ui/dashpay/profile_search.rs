@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -50,26 +50,12 @@ impl ProfileSearchScreen {
             return AppAction::None;
         }
 
-        // Use any available identity for the search (just needed for SDK context)
-        // The identity doesn't affect what profiles can be searched - they're all public
-        let identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
-        if identities.is_empty() {
-            self.display_message(
-                "No identities available. Please load an identity first.",
-                MessageType::Error,
-            );
-            return AppAction::None;
-        }
-
         self.loading = true;
         self.search_results.clear();
         self.has_searched = true; // Mark that a search has been performed
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
-            identity: identities[0].clone(), // Just use any available identity
+            identity: None, // No identity needed for searching public profiles
             search_query: self.search_query.trim().to_string(),
         }));
 
@@ -153,13 +139,6 @@ impl ProfileSearchScreen {
 
                 if ui.button("Search").clicked() {
                     action = self.search_profiles();
-                }
-
-                if ui.button("Clear").clicked() {
-                    self.search_query.clear();
-                    self.search_results.clear();
-                    self.message = None;
-                    self.has_searched = false; // Reset search state
                 }
             });
 
@@ -295,15 +274,15 @@ impl ScreenLike for ProfileSearchScreen {
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         let mut action = AppAction::None;
 
-        // Add top panel
+        // Add top panel - consistent with other DashPay subscreens
         action |= add_top_panel(
             ctx,
             &self.app_context,
+            vec![("DashPay", AppAction::None)],
             vec![
-                ("DashPay", AppAction::None),
-                ("Profile Search", AppAction::None),
+                // Add a Clear Results button to maintain consistent panel size
+                ("Clear Results", DesiredAppAction::Custom("clear_search".to_string())),
             ],
-            vec![],
         );
 
         // Add left panel for DashPay navigation
@@ -322,6 +301,17 @@ impl ScreenLike for ProfileSearchScreen {
 
         // Main content area with island styling
         action |= island_central_panel(ctx, |ui| self.render(ui));
+
+        // Handle custom action from top panel button
+        if let AppAction::Custom(command) = &action {
+            if command == "clear_search" {
+                self.search_query.clear();
+                self.search_results.clear();
+                self.has_searched = false;
+                self.message = None;
+                action = AppAction::None; // Consume the action
+            }
+        }
 
         action
     }

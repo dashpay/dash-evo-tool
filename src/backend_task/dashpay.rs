@@ -44,7 +44,7 @@ pub enum DashPayTask {
         contact_id: Identifier,
     },
     SearchProfiles {
-        identity: QualifiedIdentity,
+        identity: Option<QualifiedIdentity>, // Made optional - not needed for public search
         search_query: String,
     },
     SendContactRequest {

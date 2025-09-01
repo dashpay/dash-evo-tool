@@ -335,7 +335,7 @@ pub async fn fetch_contact_profile(
 pub async fn search_profiles(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
-    _identity: QualifiedIdentity, // May be needed for future privacy features
+    _identity: Option<QualifiedIdentity>, // May be needed for future privacy features
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, String> {
     let dashpay_contract = app_context.dashpay_contract.clone();

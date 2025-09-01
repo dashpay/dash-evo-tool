@@ -123,7 +123,7 @@ impl QRCodeGeneratorScreen {
             if identities.is_empty() {
                 ui.colored_label(
                     DashColors::warning_color(dark_mode),
-                    "⚠️ No identities loaded. Please load or create an identity first.",
+                    "No identities loaded. Please load or create an identity first.",
                 );
                 return;
             }

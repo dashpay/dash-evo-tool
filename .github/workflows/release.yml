@@ -159,6 +159,62 @@ jobs:
             target/aarch64-apple-darwin/release/dash-evo-tool \
             target/x86_64-apple-darwin/release/dash-evo-tool
           chmod +x build/dash-evo-tool
+          
+          # Create app bundle structure
+          mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
+          mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
+          
+          # Move binary into app bundle
+          cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+          
+          # Create icon set and convert to ICNS
+          mkdir -p AppIcon.iconset
+          sips -z 16 16     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
+          iconutil -c icns AppIcon.iconset
+          cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
+          
+          # Create Info.plist
+          cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>dash-evo-tool</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIdentifier</key>
+            <string>org.dash.evo-tool</string>
+            <key>CFBundleName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleDisplayName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleSignature</key>
+            <string>????</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSSupportsAutomaticGraphicsSwitching</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
 
       - name: Import signing certificates
         uses: Apple-Actions/import-codesign-certs@v3
@@ -172,7 +228,7 @@ jobs:
           ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | sed -E 's/.*"(.+)"/\1/' | head -n1)
           echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
 
-      - name: Code sign with hardened runtime and timestamp
+      - name: Code sign app bundle with hardened runtime and timestamp
         run: |
           # Create entitlements file
           cat > entitlements.plist <<EOF
@@ -182,21 +238,30 @@ jobs:
           <dict>
             <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
             <true/>
+            <key>com.apple.security.cs.allow-jit</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
           </dict>
           </plist>
           EOF
 
-          codesign --force --options runtime --timestamp \
+          # Sign the app bundle (deep signing to get all components)
+          codesign --force --deep --options runtime --timestamp \
             --sign "${{ steps.signid.outputs.IDENTITY }}" \
             --entitlements entitlements.plist \
-            build/dash-evo-tool
-
-          codesign --verify --verbose=2 build/dash-evo-tool
+            "build/Dash Evo Tool.app"
+          
+          # Verify the signature
+          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
+          
+          # Additional verification
+          spctl -a -t exec -vvv "build/Dash Evo Tool.app"
 
       - name: Create DMG
         run: |
           mkdir -p dmg-content
-          cp build/dash-evo-tool dmg-content/
+          cp -r "build/Dash Evo Tool.app" dmg-content/
 
           # Create a simple Applications symlink
           ln -s /Applications dmg-content/Applications

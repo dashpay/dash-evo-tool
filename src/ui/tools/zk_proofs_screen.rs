@@ -322,7 +322,8 @@ impl ZKProofsScreen {
         #[cfg(debug_assertions)]
         {
             self.error_message = Some(
-                "ZK proof generation requires release mode. Please run with: cargo run --release".to_string()
+                "ZK proof generation requires release mode. Please run with: cargo run --release"
+                    .to_string(),
             );
             return AppAction::None;
         }

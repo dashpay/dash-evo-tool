@@ -68,7 +68,7 @@ pub enum ZKProofTask {
         document_id: String,
         key_id: u32,
         private_key: [u8; 32],
-        public_key: [u8; 32],  // Add public key from storage
+        public_key: [u8; 32], // Add public key from storage
         security_level: u32,
         grinding_bits: u32,
     },

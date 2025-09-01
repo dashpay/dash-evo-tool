@@ -167,18 +167,29 @@ jobs:
           # Move binary into app bundle
           cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
           
-          # Create icon set and convert to ICNS
+          # Create icon set and convert to ICNS with proper padding for rounded corners
           mkdir -p AppIcon.iconset
-          sips -z 16 16     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16.png
-          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16@2x.png
-          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32.png
-          sips -z 64 64     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32@2x.png
-          sips -z 128 128   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128.png
-          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128@2x.png
-          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256.png
-          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256@2x.png
-          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
-          sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
+          
+          # Add 10% padding to the icon for proper macOS appearance
+          # This ensures the icon doesn't fill the entire square and leaves room for rounded corners
+          sips -z 14 14     assets/DET_LOGO.png --out temp_16.png
+          sips -p 16 16     temp_16.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 29 29     assets/DET_LOGO.png --out temp_32.png  
+          sips -p 32 32     temp_32.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -p 32 32     temp_32.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 58 58     assets/DET_LOGO.png --out temp_64.png
+          sips -p 64 64     temp_64.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 115 115   assets/DET_LOGO.png --out temp_128.png
+          sips -p 128 128   temp_128.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 230 230   assets/DET_LOGO.png --out temp_256.png
+          sips -p 256 256   temp_256.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -p 256 256   temp_256.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 460 460   assets/DET_LOGO.png --out temp_512.png
+          sips -p 512 512   temp_512.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -p 512 512   temp_512.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 920 920   assets/DET_LOGO.png --out temp_1024.png
+          sips -p 1024 1024 temp_1024.png --out AppIcon.iconset/icon_512x512@2x.png
+          rm temp_*.png
           iconutil -c icns AppIcon.iconset
           cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
           

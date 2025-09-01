@@ -25,11 +25,29 @@ fn main() -> eframe::Result<()> {
     runtime.block_on(start(&app_data_dir))
 }
 
+fn load_icon() -> egui::IconData {
+    let icon_bytes = include_bytes!("../assets/DET_LOGO.png");
+    let image = image::load_from_memory(icon_bytes)
+        .expect("Failed to load icon")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
+
 async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
+    // Load icon for the window
+    let icon_data = load_icon();
+    
     let native_options = eframe::NativeOptions {
         persist_window: true, // Persist window size and position
         centered: true,       // Center window on startup if not maximized
         persistence_path: Some(app_data_dir.join("app.ron")),
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(icon_data),
         ..Default::default()
     };
 

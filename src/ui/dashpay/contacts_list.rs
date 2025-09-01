@@ -79,17 +79,9 @@ impl ContactsList {
                 new_self.selected_identity = Some(identities[0].clone());
                 new_self.selected_identity_string =
                     identities[0].identity.id().to_string(Encoding::Base58);
-                eprintln!(
-                    "[ContactsList::new] Auto-selected identity on creation: {}",
-                    new_self.selected_identity_string
-                );
 
                 // Load contacts from database for this identity
                 new_self.load_contacts_from_database();
-                eprintln!(
-                    "[ContactsList::new] Loaded {} contacts from database on creation",
-                    new_self.contacts.len()
-                );
             }
         }
 
@@ -187,25 +179,13 @@ impl ContactsList {
                     self.selected_identity = Some(identities[0].clone());
                     self.selected_identity_string =
                         identities[0].identity.id().to_string(Encoding::Base58);
-                    eprintln!(
-                        "[ContactsList] Auto-selected identity: {}",
-                        self.selected_identity_string
-                    );
                 }
             }
         }
 
         // Load contacts from database if we have an identity selected and no contacts loaded
         if self.selected_identity.is_some() && self.contacts.is_empty() {
-            eprintln!(
-                "[ContactsList] Loading contacts from database for identity: {}",
-                self.selected_identity_string
-            );
             self.load_contacts_from_database();
-            eprintln!(
-                "[ContactsList] Loaded {} contacts from database",
-                self.contacts.len()
-            );
         }
 
         AppAction::None

@@ -253,12 +253,10 @@ pub fn add_top_panel(
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
-                    // Load Dash logo
-                    // let dash_logo_texture: Option<TextureHandle> = load_icon(ctx, "dash.png");
-
-                    ui.columns(3, |columns| {
-                        // Left column: connection indicator and location
-                        columns[0].with_layout(
+                    // Use horizontal layout instead of columns for better control
+                    ui.horizontal(|ui| {
+                        // Left section: connection indicator and location
+                        ui.with_layout(
                             egui::Layout::left_to_right(egui::Align::Center)
                                 .with_cross_align(Align::Center),
                             |ui| {
@@ -267,17 +265,8 @@ pub fn add_top_panel(
                             },
                         );
 
-                        // Center column: Placeholder for future logo placement
-                        columns[1].with_layout(
-                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                            |ui| {
-                                // Placeholder - logo moved back to left panel for now
-                                ui.label("");
-                            },
-                        );
-
-                        // Right column: action buttons (right-aligned)
-                        columns[2].with_layout(
+                        // Use all remaining space for right-aligned buttons
+                        ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center)
                                 .with_cross_align(Align::Center),
                             |ui| {

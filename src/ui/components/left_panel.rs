@@ -5,7 +5,7 @@ use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Color32, Context, Frame, ImageButton, RichText, SidePanel, TextureHandle};
+use egui::{Color32, Context, Frame, RichText, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 
@@ -56,13 +56,13 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
-        ("I", RootScreenType::RootScreenIdentities, "identity.png"),
-        ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         (
             "P",
             RootScreenType::RootScreenDashPayContacts,
             "dashpay.png",
         ),
+        ("I", RootScreenType::RootScreenIdentities, "identity.png"),
+        ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
         ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
         (
             "C",
@@ -113,10 +113,15 @@ pub fn add_left_panel(
 
                             // Add icon-based button if texture is loaded
                             if let Some(ref texture) = texture {
-                                let button =
-                                    ImageButton::new(texture).frame(false).tint(button_color);
+                                // Create an Image widget with a fixed size
+                                let icon_size = egui::vec2(50.0, 50.0); // Fixed size for all icons
+                                let image = egui::Image::new(texture)
+                                    .fit_to_exact_size(icon_size)
+                                    .tint(button_color)
+                                    .texture_options(egui::TextureOptions::LINEAR)
+                                    .sense(egui::Sense::click());
 
-                                let added = ui.add(button);
+                                let added = ui.add(image);
                                 if added.clicked() {
                                     action =
                                         AppAction::SetMainScreenThenGoToMainScreen(*screen_type);

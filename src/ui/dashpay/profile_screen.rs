@@ -692,18 +692,16 @@ impl ProfileScreen {
                     });
                 } else if self.profile_load_attempted {
                     // No profile exists (only show after we've tried to load)
-                    ui.group(|ui| {
-                        ui.label("No DashPay profile found for this identity.");
-                        ui.add_space(10.0);
-                        let create_button = egui::Button::new(
-                            RichText::new("Create Profile")
-                                .color(egui::Color32::WHITE)
-                        ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                    ui.label("No DashPay profile found for this identity.");
+                    ui.add_space(10.0);
+                    let create_button = egui::Button::new(
+                        RichText::new("Create Profile")
+                            .color(egui::Color32::WHITE)
+                    ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
-                        if ui.add(create_button).clicked() {
-                            self.start_editing();
-                        }
-                    });
+                    if ui.add(create_button).clicked() {
+                        self.start_editing();
+                    }
                 }
 
             }

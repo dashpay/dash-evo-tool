@@ -6,9 +6,7 @@ use crate::context::AppContext;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use egui::{
-    Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
-};
+use egui::{Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 
@@ -257,7 +255,7 @@ pub fn add_top_panel(
                                 action |= add_location_view(ui, location, dark_mode);
                             },
                         );
-                        
+
                         // Right column: buttons (right-aligned)
                         columns[1].with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),

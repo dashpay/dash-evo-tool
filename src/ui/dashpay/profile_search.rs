@@ -281,7 +281,10 @@ impl ScreenLike for ProfileSearchScreen {
             vec![("DashPay", AppAction::None)],
             vec![
                 // Add a Clear Results button to maintain consistent panel size
-                ("Clear Results", DesiredAppAction::Custom("clear_search".to_string())),
+                (
+                    "Clear Results",
+                    DesiredAppAction::Custom("clear_search".to_string()),
+                ),
             ],
         );
 

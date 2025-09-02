@@ -118,8 +118,8 @@ jobs:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
 
-  build-macos-universal:
-    name: Build macOS Universal Binary (Signed & Notarized)
+  build-macos-arm64:
+    name: Build macOS ARM64 (Signed & Notarized)
     runs-on: macos-14
     steps:
       - name: Check out code
@@ -132,32 +132,26 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            macos-cargo-
+            macos-arm64-cargo-
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add Rust targets
-        run: |
-          rustup target add aarch64-apple-darwin
-          rustup target add x86_64-apple-darwin
+      - name: Add Rust target
+        run: rustup target add aarch64-apple-darwin
 
       - name: Install protoc
         run: |
           brew install protobuf
           protoc --version
 
-      - name: Build both architectures and create universal binary
+      - name: Build ARM64 architecture
         run: |
           cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
           mkdir -p build
-          lipo -create \
-            -output build/dash-evo-tool \
-            target/aarch64-apple-darwin/release/dash-evo-tool \
-            target/x86_64-apple-darwin/release/dash-evo-tool
+          cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
 
           # Create app bundle structure
@@ -269,10 +263,10 @@ jobs:
           hdiutil create -volname "Dash Evo Tool" \
             -srcfolder dmg-content \
             -ov -format UDZO \
-            dash-evo-tool-macos-universal.dmg
+            dash-evo-tool-macos-arm64.dmg
 
           # Sign the DMG
-          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-universal.dmg
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-arm64.dmg
 
       - name: Validate Apple credentials
         run: |
@@ -293,29 +287,218 @@ jobs:
       - name: Notarize DMG
         run: |
           echo "Submitting DMG for notarization..."
-          xcrun notarytool submit dash-evo-tool-macos-universal.dmg \
+          xcrun notarytool submit dash-evo-tool-macos-arm64.dmg \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
             --wait --verbose
 
           echo "Stapling notarization ticket..."
-          xcrun stapler staple dash-evo-tool-macos-universal.dmg
+          xcrun stapler staple dash-evo-tool-macos-arm64.dmg
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-macos-universal.dmg'
+          subject-path: 'dash-evo-tool-macos-arm64.dmg'
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-macos-universal.dmg
-          path: dash-evo-tool-macos-universal.dmg
+          name: dash-evo-tool-macos-arm64.dmg
+          path: dash-evo-tool-macos-arm64.dmg
+
+  build-macos-x86:
+    name: Build macOS x86_64 (Signed & Notarized)
+    runs-on: macos-14
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-x86-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-x86-cargo-
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Install protoc
+        run: |
+          brew install protobuf
+          protoc --version
+
+      - name: Build x86_64 architecture
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p build
+          cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
+          chmod +x build/dash-evo-tool
+
+          # Create app bundle structure
+          mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
+          mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
+
+          # Move binary into app bundle
+          cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+
+          # Create icon set and convert to ICNS
+          mkdir -p AppIcon.iconset
+
+          # Create all required icon sizes from the logo (which already has 8% padding)
+          sips -z 16 16     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
+          iconutil -c icns AppIcon.iconset
+          cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
+
+          # Create Info.plist
+          cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>dash-evo-tool</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIdentifier</key>
+            <string>org.dash.evo-tool</string>
+            <key>CFBundleName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleDisplayName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleSignature</key>
+            <string>????</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSSupportsAutomaticGraphicsSwitching</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Import signing certificates
+        uses: Apple-Actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Resolve signing identity
+        id: signid
+        run: |
+          ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | sed -E 's/.*"(.+)"/\1/' | head -n1)
+          echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Code sign app bundle with hardened runtime and timestamp
+        run: |
+          # Create entitlements file
+          cat > entitlements.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+            <true/>
+            <key>com.apple.security.cs.allow-jit</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Sign the app bundle (deep signing to get all components)
+          codesign --force --deep --options runtime --timestamp \
+            --sign "${{ steps.signid.outputs.IDENTITY }}" \
+            --entitlements entitlements.plist \
+            "build/Dash Evo Tool.app"
+
+          # Verify the signature
+          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
+
+      - name: Create DMG
+        run: |
+          mkdir -p dmg-content
+          cp -r "build/Dash Evo Tool.app" dmg-content/
+
+          # Create a simple Applications symlink
+          ln -s /Applications dmg-content/Applications
+
+          # Create DMG
+          hdiutil create -volname "Dash Evo Tool" \
+            -srcfolder dmg-content \
+            -ov -format UDZO \
+            dash-evo-tool-macos-x86_64.dmg
+
+          # Sign the DMG
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg
+
+      - name: Validate Apple credentials
+        run: |
+          if [ -z "${{ secrets.APPLE_ID }}" ]; then
+            echo "Error: APPLE_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            echo "Error: APPLE_TEAM_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
+            echo "Error: APPLE_APP_SPECIFIC_PASSWORD secret is not set"
+            exit 1
+          fi
+          echo "Apple credentials validation passed"
+
+      - name: Notarize DMG
+        run: |
+          echo "Submitting DMG for notarization..."
+          xcrun notarytool submit dash-evo-tool-macos-x86_64.dmg \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --wait --verbose
+
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple dash-evo-tool-macos-x86_64.dmg
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dash-evo-tool-macos-x86_64.dmg'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-evo-tool-macos-x86_64.dmg
+          path: dash-evo-tool-macos-x86_64.dmg
 
   release:
     name: Create GitHub Release
-    needs: [build-and-release, build-macos-universal]
+    needs: [build-and-release, build-macos-arm64, build-macos-x86]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux AMD64 Artifact
@@ -326,10 +509,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dash-evo-tool-arm64-linux.zip
-      - name: Download macOS Universal Artifact
+      - name: Download macOS ARM64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-macos-universal.dmg
+          name: dash-evo-tool-macos-arm64.dmg
+      - name: Download macOS x86_64 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dash-evo-tool-macos-x86_64.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
@@ -344,7 +531,8 @@ jobs:
           files: |
             ./dash-evo-tool-x86_64-linux.zip
             ./dash-evo-tool-arm64-linux.zip
-            ./dash-evo-tool-macos-universal.dmg
+            ./dash-evo-tool-macos-arm64.dmg
+            ./dash-evo-tool-macos-x86_64.dmg
             ./dash-evo-tool-windows.zip
           draft: false
           prerelease: true

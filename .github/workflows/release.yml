@@ -153,7 +153,7 @@ jobs:
           mkdir -p build
           cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
-          
+
           # Clean up build artifacts to free space
           rm -rf target/aarch64-apple-darwin/release/deps
           rm -rf target/aarch64-apple-darwin/release/build
@@ -348,7 +348,7 @@ jobs:
           mkdir -p build
           cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
-          
+
           # Clean up build artifacts to free space
           rm -rf target/x86_64-apple-darwin/release/deps
           rm -rf target/x86_64-apple-darwin/release/build

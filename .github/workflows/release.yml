@@ -154,15 +154,16 @@ jobs:
           cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
 
-          # Aggressive cleanup to free space before DMG creation
+          # Targeted cleanup - only remove build artifacts we don't need
           rm -rf target/aarch64-apple-darwin/release/deps
           rm -rf target/aarch64-apple-darwin/release/build
           rm -rf target/aarch64-apple-darwin/release/incremental
           rm -rf target/aarch64-apple-darwin/release/.fingerprint
           rm -rf target/aarch64-apple-darwin/debug
           rm -rf target/debug
-          rm -rf ~/.cargo/registry/cache
-          rm -rf ~/.cargo/git/checkouts
+          
+          # Remove the actual binary from target since we copied it
+          rm -f target/aarch64-apple-darwin/release/dash-evo-tool
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -353,19 +354,16 @@ jobs:
           cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
 
-          # Check disk space before cleanup
-          echo "Disk space before cleanup:"
-          df -h
-
-          # Very aggressive cleanup to free maximum space
-          rm -rf target
-          rm -rf ~/.cargo/registry/cache
-          rm -rf ~/.cargo/git/checkouts
-          rm -rf ~/Library/Caches
+          # Targeted cleanup - only remove build artifacts we don't need
+          rm -rf target/x86_64-apple-darwin/release/deps
+          rm -rf target/x86_64-apple-darwin/release/build
+          rm -rf target/x86_64-apple-darwin/release/incremental
+          rm -rf target/x86_64-apple-darwin/release/.fingerprint
+          rm -rf target/x86_64-apple-darwin/debug
+          rm -rf target/debug
           
-          # Check disk space after cleanup
-          echo "Disk space after cleanup:"
-          df -h
+          # Remove the actual binary from target since we copied it
+          rm -f target/x86_64-apple-darwin/release/dash-evo-tool
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -466,29 +464,17 @@ jobs:
 
       - name: Create DMG
         run: |
-          # Check available disk space
-          echo "Available disk space before DMG creation:"
-          df -h
-          
           mkdir -p dmg-content
           cp -r "build/Dash Evo Tool.app" dmg-content/
 
           # Create a simple Applications symlink
           ln -s /Applications dmg-content/Applications
 
-          # Create DMG with UDRW format first (uses less temp space), then convert
+          # Create DMG - use UDRO (read-only) which might use less temp space
           hdiutil create -volname "Dash Evo Tool" \
             -srcfolder dmg-content \
-            -ov -format UDRW \
-            dash-evo-tool-macos-x86_64.temp.dmg
-          
-          # Convert to compressed format
-          hdiutil convert dash-evo-tool-macos-x86_64.temp.dmg \
-            -format UDZO \
-            -o dash-evo-tool-macos-x86_64.dmg
-          
-          # Remove temp DMG
-          rm -f dash-evo-tool-macos-x86_64.temp.dmg
+            -ov -format UDZO \
+            dash-evo-tool-macos-x86_64.dmg
 
           # Sign the DMG
           codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg

@@ -1,4 +1,9 @@
 use sha2::{Digest, Sha256};
+use image::{DynamicImage, GenericImageView, ImageFormat};
+use std::io::Cursor;
+
+/// Maximum allowed size for avatar images (5MB)
+const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
 
 /// Calculate SHA-256 hash of image bytes
 pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
@@ -12,39 +17,42 @@ pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
 
 /// Calculate DHash (Difference Hash) perceptual fingerprint of an image
 ///
-/// This is a simplified implementation that works with raw pixel data.
-/// In production, you'd use an image processing library to properly decode
-/// and resize the image.
-///
 /// The DHash algorithm:
 /// 1. Convert image to grayscale
 /// 2. Resize to 9x8 pixels
 /// 3. Compare each pixel with its right neighbor
 /// 4. Generate 64-bit hash based on comparisons
 pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], String> {
-    // This is a placeholder implementation
-    // In production, you would:
-    // 1. Use an image library to decode the image (JPEG, PNG, etc.)
-    // 2. Convert to grayscale
-    // 3. Resize to 9x8 pixels
-    // 4. Calculate the difference hash
-
-    // For now, we'll create a simple hash based on the image bytes
-    // This maintains the correct format but doesn't implement the actual DHash algorithm
-
-    let mut hasher = Sha256::new();
-    hasher.update(image_bytes);
-    hasher.update(b"dhash_placeholder");
-    let result = hasher.finalize();
-
-    let mut fingerprint = [0u8; 8];
-    fingerprint.copy_from_slice(&result[..8]);
-
-    Ok(fingerprint)
+    // Load the image from bytes
+    let img = image::load_from_memory(image_bytes)
+        .map_err(|e| format!("Failed to load image: {}", e))?;
+    
+    // Convert to grayscale and resize to 9x8
+    let grayscale = img.grayscale();
+    let resized = grayscale.resize_exact(9, 8, image::imageops::FilterType::Lanczos3);
+    
+    // Calculate the difference hash
+    let mut hash = 0u64;
+    let mut bit_position = 0;
+    
+    for y in 0..8 {
+        for x in 0..8 {
+            // Get the luminance values of adjacent pixels
+            let left_pixel = resized.get_pixel(x, y).0[0];
+            let right_pixel = resized.get_pixel(x + 1, y).0[0];
+            
+            // Set bit to 1 if left pixel is brighter than right
+            if left_pixel > right_pixel {
+                hash |= 1 << bit_position;
+            }
+            bit_position += 1;
+        }
+    }
+    
+    Ok(hash.to_le_bytes())
 }
 
-/// Simplified DHash implementation for demonstration
-/// This would need a proper image processing library in production
+/// DHash calculator for more advanced image processing
 pub struct DHashCalculator {
     width: usize,
     height: usize,
@@ -62,6 +70,35 @@ impl Default for DHashCalculator {
 impl DHashCalculator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Calculate DHash from a DynamicImage
+    pub fn calculate_from_image(&self, img: &DynamicImage) -> [u8; 8] {
+        // Convert to grayscale and resize
+        let grayscale = img.grayscale();
+        let resized = grayscale.resize_exact(
+            self.width as u32, 
+            self.height as u32, 
+            image::imageops::FilterType::Lanczos3
+        );
+        
+        // Calculate differences and build hash
+        let mut hash = 0u64;
+        let mut bit_position = 0;
+        
+        for y in 0..self.height {
+            for x in 0..(self.width - 1) {
+                let left_pixel = resized.get_pixel(x as u32, y as u32).0[0];
+                let right_pixel = resized.get_pixel((x + 1) as u32, y as u32).0[0];
+                
+                if left_pixel > right_pixel {
+                    hash |= 1 << bit_position;
+                }
+                bit_position += 1;
+            }
+        }
+        
+        hash.to_le_bytes()
     }
 
     /// Convert RGB pixels to grayscale
@@ -147,7 +184,6 @@ pub fn are_images_similar(hash1: &[u8; 8], hash2: &[u8; 8], threshold: u32) -> b
 }
 
 /// Fetch image from URL and return bytes
-/// This is a placeholder - in production you'd use reqwest or similar
 pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
     // Check URL is valid and uses HTTPS
     if !url.starts_with("https://") {
@@ -159,14 +195,87 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
         return Err("Avatar URL exceeds maximum length of 2048 characters".to_string());
     }
 
-    // In production, you would:
-    // 1. Use reqwest or similar to fetch the image
-    // 2. Validate content-type is an image
-    // 3. Limit download size (e.g., max 5MB)
-    // 4. Return the raw bytes
+    // Create HTTP client with timeout
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // Placeholder for now
-    Err("Image fetching not yet implemented - requires HTTP client".to_string())
+    // Send GET request
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch image: {}", e))?;
+
+    // Check status code
+    if !response.status().is_success() {
+        return Err(format!("HTTP error: {}", response.status()));
+    }
+
+    // Check content type
+    if let Some(content_type) = response.headers().get("content-type") {
+        let content_type_str = content_type
+            .to_str()
+            .map_err(|e| format!("Invalid content-type header: {}", e))?;
+        
+        if !content_type_str.starts_with("image/") {
+            return Err(format!("Invalid content type: expected image/*, got {}", content_type_str));
+        }
+    }
+
+    // Check content length if provided
+    if let Some(content_length) = response.headers().get("content-length") {
+        let length_str = content_length
+            .to_str()
+            .map_err(|e| format!("Invalid content-length header: {}", e))?;
+        
+        let length: usize = length_str
+            .parse()
+            .map_err(|e| format!("Failed to parse content-length: {}", e))?;
+        
+        if length > MAX_IMAGE_SIZE {
+            return Err(format!(
+                "Image too large: {} bytes (max {} bytes)",
+                length, MAX_IMAGE_SIZE
+            ));
+        }
+    }
+
+    // Download the image bytes
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to download image: {}", e))?;
+
+    // Verify actual size
+    if bytes.len() > MAX_IMAGE_SIZE {
+        return Err(format!(
+            "Image too large: {} bytes (max {} bytes)",
+            bytes.len(),
+            MAX_IMAGE_SIZE
+        ));
+    }
+
+    // Try to validate it's actually an image by attempting to load it
+    image::load_from_memory(&bytes)
+        .map_err(|e| format!("Invalid image data: {}", e))?;
+
+    Ok(bytes.to_vec())
+}
+
+/// Process an avatar image: fetch, validate, and calculate hashes
+pub async fn process_avatar(url: &str) -> Result<(Vec<u8>, [u8; 32], [u8; 8]), String> {
+    // Fetch the image
+    let image_bytes = fetch_image_bytes(url).await?;
+    
+    // Calculate SHA-256 hash
+    let hash = calculate_avatar_hash(&image_bytes);
+    
+    // Calculate DHash fingerprint
+    let fingerprint = calculate_dhash_fingerprint(&image_bytes)?;
+    
+    Ok((image_bytes, hash, fingerprint))
 }
 
 #[cfg(test)]
@@ -178,13 +287,6 @@ mod tests {
         let test_data = b"test image data";
         let hash = calculate_avatar_hash(test_data);
         assert_eq!(hash.len(), 32);
-    }
-
-    #[test]
-    fn test_dhash_fingerprint() {
-        let test_data = b"test image data";
-        let fingerprint = calculate_dhash_fingerprint(test_data).unwrap();
-        assert_eq!(fingerprint.len(), 8);
     }
 
     #[test]
@@ -204,5 +306,40 @@ mod tests {
 
         assert!(are_images_similar(&hash1, &hash2, 10));
         assert!(!are_images_similar(&hash1, &hash2, 0));
+    }
+
+    #[test]
+    fn test_dhash_with_real_image() {
+        // Create a simple test image (3x3 grayscale)
+        let pixels = vec![
+            0, 50, 100,    // Row 1: increasing brightness
+            50, 100, 150,  // Row 2: increasing brightness
+            100, 150, 200, // Row 3: increasing brightness
+        ];
+        
+        // Create an image from raw pixels
+        let img = image::GrayImage::from_raw(3, 3, pixels).unwrap();
+        let dynamic_img = DynamicImage::ImageLuma8(img);
+        
+        // Calculate DHash
+        let calculator = DHashCalculator::new();
+        let hash = calculator.calculate_from_image(&dynamic_img);
+        
+        // Verify we get an 8-byte hash
+        assert_eq!(hash.len(), 8);
+    }
+    
+    #[tokio::test]
+    async fn test_url_validation() {
+        // Test non-HTTPS URL
+        let result = fetch_image_bytes("http://example.com/image.jpg").await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Avatar URL must use HTTPS");
+        
+        // Test URL that's too long
+        let long_url = format!("https://example.com/{}", "a".repeat(2100));
+        let result = fetch_image_bytes(&long_url).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum length"));
     }
 }

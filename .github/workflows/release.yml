@@ -353,15 +353,19 @@ jobs:
           cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
 
-          # Aggressive cleanup to free space before DMG creation
-          rm -rf target/x86_64-apple-darwin/release/deps
-          rm -rf target/x86_64-apple-darwin/release/build
-          rm -rf target/x86_64-apple-darwin/release/incremental
-          rm -rf target/x86_64-apple-darwin/release/.fingerprint
-          rm -rf target/x86_64-apple-darwin/debug
-          rm -rf target/debug
+          # Check disk space before cleanup
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Very aggressive cleanup to free maximum space
+          rm -rf target
           rm -rf ~/.cargo/registry/cache
           rm -rf ~/.cargo/git/checkouts
+          rm -rf ~/Library/Caches
+          
+          # Check disk space after cleanup
+          echo "Disk space after cleanup:"
+          df -h
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -462,17 +466,29 @@ jobs:
 
       - name: Create DMG
         run: |
+          # Check available disk space
+          echo "Available disk space before DMG creation:"
+          df -h
+          
           mkdir -p dmg-content
           cp -r "build/Dash Evo Tool.app" dmg-content/
 
           # Create a simple Applications symlink
           ln -s /Applications dmg-content/Applications
 
-          # Create DMG
+          # Create DMG with UDRW format first (uses less temp space), then convert
           hdiutil create -volname "Dash Evo Tool" \
             -srcfolder dmg-content \
-            -ov -format UDZO \
-            dash-evo-tool-macos-x86_64.dmg
+            -ov -format UDRW \
+            dash-evo-tool-macos-x86_64.temp.dmg
+          
+          # Convert to compressed format
+          hdiutil convert dash-evo-tool-macos-x86_64.temp.dmg \
+            -format UDZO \
+            -o dash-evo-tool-macos-x86_64.dmg
+          
+          # Remove temp DMG
+          rm -f dash-evo-tool-macos-x86_64.temp.dmg
 
           # Sign the DMG
           codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg

@@ -9,6 +9,7 @@ pub mod avatar_processing;
 pub mod contact_info;
 pub mod contact_requests;
 pub mod contacts;
+pub mod dip14_derivation;
 pub mod encryption;
 pub mod encryption_tests;
 pub mod errors;
@@ -44,7 +45,6 @@ pub enum DashPayTask {
         contact_id: Identifier,
     },
     SearchProfiles {
-        identity: Option<QualifiedIdentity>, // Made optional - not needed for public search
         search_query: String,
     },
     SendContactRequest {
@@ -107,10 +107,9 @@ impl AppContext {
                 identity,
                 contact_id,
             } => profile::fetch_contact_profile(self, sdk, identity, contact_id).await,
-            DashPayTask::SearchProfiles {
-                identity,
-                search_query,
-            } => profile::search_profiles(self, sdk, identity, search_query).await,
+            DashPayTask::SearchProfiles { search_query } => {
+                profile::search_profiles(self, sdk, search_query).await
+            }
             DashPayTask::SendContactRequest {
                 identity,
                 signing_key,

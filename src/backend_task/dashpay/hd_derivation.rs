@@ -6,6 +6,9 @@ use dash_sdk::dpp::dashcore::{
 use dash_sdk::platform::Identifier;
 use std::str::FromStr;
 
+// Import our DIP-14 compliant derivation functions
+use super::dip14_derivation::derive_dashpay_incoming_xpub_dip14;
+
 /// DashPay feature index as defined in DIP-0009
 const DASHPAY_INCOMING_FUNDS_FEATURE: u32 = 15;
 /// DashPay auto-accept proof feature index
@@ -16,6 +19,8 @@ const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
 ///
 /// This creates a unique derivation path for each contact relationship,
 /// allowing for unique payment addresses between any two identities.
+/// 
+/// This function now uses DIP-14 compliant 256-bit derivation for identity IDs.
 pub fn derive_dashpay_incoming_xpub(
     master_seed: &[u8],
     network: Network,
@@ -23,43 +28,14 @@ pub fn derive_dashpay_incoming_xpub(
     sender_id: &Identifier,
     recipient_id: &Identifier,
 ) -> Result<ExtendedPubKey, String> {
-    // Create extended private key from seed
-    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)
-        .map_err(|e| format!("Failed to create master key: {}", e))?;
-
-    // Build derivation path: m/9'/5'/15'/account'
-    let base_path = DerivationPath::from_str(&format!(
-        "m/9'/5'/{}'/{}'/",
-        DASHPAY_INCOMING_FUNDS_FEATURE, account
-    ))
-    .map_err(|e| format!("Invalid derivation path: {}", e))?;
-
-    // Derive to the account level
-    let account_xprv = master_xprv
-        .derive_priv(
-            &dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new(),
-            &base_path,
-        )
-        .map_err(|e| format!("Failed to derive account key: {}", e))?;
-
-    // For the identity-based derivation, we need to use 256-bit derivation as per DIP-0014
-    // Convert identity IDs to child numbers (non-hardened)
-    let sender_child = identity_to_child_number(sender_id, false)?;
-    let recipient_child = identity_to_child_number(recipient_id, false)?;
-
-    // Derive: account_key/sender_id
-    let sender_level = derive_256bit_child(&account_xprv, sender_child)?;
-
-    // Derive: sender_level/recipient_id
-    let contact_xprv = derive_256bit_child(&sender_level, recipient_child)?;
-
-    // Convert to extended public key
-    let xpub = ExtendedPubKey::from_priv(
-        &dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new(),
-        &contact_xprv,
-    );
-
-    Ok(xpub)
+    // Use the DIP-14 compliant implementation
+    derive_dashpay_incoming_xpub_dip14(
+        master_seed,
+        network,
+        account,
+        sender_id,
+        recipient_id,
+    )
 }
 
 /// Derive a specific payment address for a contact
@@ -88,19 +64,16 @@ pub fn derive_payment_address(
     Ok(address)
 }
 
-/// Convert an Identifier to a ChildNumber for 256-bit derivation
-/// According to DIP-0014, we use the full 256-bit identifier
+/// Convert an Identifier to a ChildNumber for compatibility with existing code
+/// Note: This is only used for backwards compatibility. The actual DIP-14
+/// compliant derivation is handled in the dip14_derivation module.
 fn identity_to_child_number(id: &Identifier, hardened: bool) -> Result<ChildNumber, String> {
     let id_bytes = id.to_buffer();
 
-    // For 256-bit derivation, we need to handle this specially
-    // The standard BIP32 only supports 32-bit indices, so we need to chain multiple derivations
-    // or use a custom implementation. For now, we'll use a truncated version.
-
-    // Take first 4 bytes and convert to u32 (this is a simplification)
-    // In production, you'd want to implement full 256-bit derivation per DIP-0014
+    // Take last 4 bytes for ChildNumber representation
+    // This is just for storage/display purposes, actual derivation uses full 256-bit
     let mut index_bytes = [0u8; 4];
-    index_bytes.copy_from_slice(&id_bytes[..4]);
+    index_bytes.copy_from_slice(&id_bytes[28..32]);
     let index = u32::from_be_bytes(index_bytes);
 
     if hardened {
@@ -108,19 +81,6 @@ fn identity_to_child_number(id: &Identifier, hardened: bool) -> Result<ChildNumb
     } else {
         ChildNumber::from_normal_idx(index).map_err(|e| format!("Invalid normal index: {}", e))
     }
-}
-
-/// Perform 256-bit child key derivation as specified in DIP-0014
-/// This is a simplified version - full implementation would need proper 256-bit handling
-fn derive_256bit_child(
-    parent: &ExtendedPrivKey,
-    child: ChildNumber,
-) -> Result<ExtendedPrivKey, String> {
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-
-    parent
-        .derive_priv(&secp, &[child])
-        .map_err(|e| format!("Failed to derive child: {}", e))
 }
 
 /// Generate the extended public key data for a contact request

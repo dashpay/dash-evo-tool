@@ -346,7 +346,7 @@ mod tests {
             from_address: None,
             to_address: Address::p2pkh(
                 &dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33]).unwrap(),
-                Network::Testnet,
+                dash_sdk::dpp::dashcore::Network::Testnet,
             ),
             amount: 100_000_000, // 1 Dash
             tx_id: None,

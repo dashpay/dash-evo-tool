@@ -55,7 +55,6 @@ impl ProfileSearchScreen {
         self.has_searched = true; // Mark that a search has been performed
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
-            identity: None, // No identity needed for searching public profiles
             search_query: self.search_query.trim().to_string(),
         }));
 

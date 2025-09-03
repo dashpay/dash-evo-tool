@@ -262,6 +262,35 @@ jobs:
           # Verify the signature
           codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
 
+      - name: Free up disk space before DMG creation
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          
+          # Clean up homebrew cache
+          brew cleanup --prune=all
+          
+          # Remove any unnecessary Xcode simulators and caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
+          
+          # Clean up more Cargo build artifacts after copying the binary
+          rm -rf target/aarch64-apple-darwin/release/*.rlib 2>/dev/null || true
+          rm -rf target/aarch64-apple-darwin/release/*.d 2>/dev/null || true
+          rm -rf ~/.cargo/registry/cache 2>/dev/null || true
+          
+          # Remove temporary icon files after creating the app bundle
+          rm -rf AppIcon.iconset 2>/dev/null || true
+          
+          # Clean system caches
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          
+          echo "Disk usage after cleanup:"
+          df -h
+
       - name: Create DMG
         run: |
           mkdir -p dmg-content
@@ -470,8 +499,23 @@ jobs:
           # Clean up homebrew cache
           brew cleanup --prune=all
           
-          # Remove any unnecessary Xcode simulators
+          # Remove any unnecessary Xcode simulators and caches
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
+          
+          # Clean up more Cargo build artifacts after copying the binary
+          rm -rf target/x86_64-apple-darwin/release/*.rlib 2>/dev/null || true
+          rm -rf target/x86_64-apple-darwin/release/*.d 2>/dev/null || true
+          rm -rf ~/.cargo/registry/cache 2>/dev/null || true
+          
+          # Remove temporary icon files after creating the app bundle
+          rm -rf AppIcon.iconset 2>/dev/null || true
+          
+          # Clean system caches
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
           
           echo "Disk usage after cleanup:"
           df -h

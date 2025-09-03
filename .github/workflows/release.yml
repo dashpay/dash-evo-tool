@@ -125,22 +125,32 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            macos-arm64-cargo-
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Rust target
         run: rustup target add aarch64-apple-darwin
+
+      - name: Initial disk cleanup
+        run: |
+          echo "Disk usage before initial cleanup:"
+          df -h
+          
+          # Clean up homebrew cache
+          brew cleanup --prune=all || true
+          
+          # Remove Xcode caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
+          
+          # Clean system caches
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          
+          echo "Disk usage after initial cleanup:"
+          df -h
 
       - name: Install protoc
         run: |
@@ -354,22 +364,32 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-x86-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            macos-x86-cargo-
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Rust target
         run: rustup target add x86_64-apple-darwin
+
+      - name: Initial disk cleanup
+        run: |
+          echo "Disk usage before initial cleanup:"
+          df -h
+          
+          # Clean up homebrew cache
+          brew cleanup --prune=all || true
+          
+          # Remove Xcode caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
+          
+          # Clean system caches
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          
+          echo "Disk usage after initial cleanup:"
+          df -h
 
       - name: Install protoc
         run: |

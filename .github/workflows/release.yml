@@ -349,7 +349,7 @@ jobs:
 
   build-macos-x86:
     name: Build macOS x86_64 (Signed & Notarized)
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4

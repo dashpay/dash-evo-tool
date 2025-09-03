@@ -120,7 +120,7 @@ jobs:
 
   build-macos-arm64:
     name: Build macOS ARM64 (Signed & Notarized)
-    runs-on: macos-14
+    runs-on: macos-latest-large
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -370,7 +370,7 @@ jobs:
 
   build-macos-x86:
     name: Build macOS x86_64 (Signed & Notarized)
-    runs-on: macos-latest
+    runs-on: macos-latest-large
     steps:
       - name: Check out code
         uses: actions/checkout@v4

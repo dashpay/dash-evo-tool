@@ -215,8 +215,8 @@ impl ContactDetailsScreen {
                         crate::ui::helpers::info_icon_button(
                             ui,
                             "About Private Contact Information:\n\n\
-                            • This information is stored locally on your device\n\
-                            • It is never shared with the contact or published\n\
+                            • This information is encrypted and stored on Platform\n\
+                            • It is never shared with the contact - only you can decrypt it\n\
                             • Only you can see these nicknames and notes\n\
                             • Use this to organize and remember your contacts",
                         );

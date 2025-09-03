@@ -269,13 +269,7 @@ impl ContactRequests {
                 // Loading indicator
                 if self.loading {
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        let spinner_color = if dark_mode {
-                            egui::Color32::from_gray(200)
-                        } else {
-                            egui::Color32::from_gray(60)
-                        };
-                        ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                        ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
 
                         // Show specific loading message based on current message
                         if let Some((msg, _)) = &self.message {
@@ -294,13 +288,13 @@ impl ContactRequests {
                         let requests: Vec<_> = self.incoming_requests.values().cloned().collect();
                         for request in requests {
                             ui.group(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.horizontal(|ui| {
+                                        ui.horizontal(|ui| {
                                     // Avatar placeholder
                                     ui.add(egui::Label::new(RichText::new("👤").size(30.0)));
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                         // Display name or username or identity ID
                                         let name = request
@@ -411,13 +405,7 @@ impl ContactRequests {
                 // Loading indicator
                 if self.loading {
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        let spinner_color = if dark_mode {
-                            egui::Color32::from_gray(200)
-                        } else {
-                            egui::Color32::from_gray(60)
-                        };
-                        ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                        ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
 
                         // Show specific loading message based on current message
                         if let Some((msg, _)) = &self.message {
@@ -436,13 +424,13 @@ impl ContactRequests {
                         let requests: Vec<_> = self.outgoing_requests.values().cloned().collect();
                         for request in requests {
                             ui.group(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                ui.horizontal(|ui| {
+                                        ui.horizontal(|ui| {
                                     // Avatar placeholder
                                     ui.add(egui::Label::new(RichText::new("👤").size(30.0)));
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                         // For outgoing requests, show the TO identity
                                         let id_str = request.to_identity.to_string(Encoding::Base58);

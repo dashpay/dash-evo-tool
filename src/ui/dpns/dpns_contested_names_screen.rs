@@ -2091,7 +2091,7 @@ impl ScreenLike for DPNSScreen {
                         RichText::new(format!("Refreshing... Time taken so far: {}", elapsed))
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
                 ui.add_space(2.0); // Space below
             } else if let Some((msg, msg_type, timestamp)) = self.message.clone() {

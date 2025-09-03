@@ -148,18 +148,21 @@ impl ProfileSearchScreen {
                 .small()
                 .color(DashColors::text_secondary(dark_mode)),
             );
+            
+            ui.label(
+                RichText::new(
+                    "Note: Text search is limited to the most recent 100 profiles due to Platform limitations",
+                )
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+            );
 
             ui.add_space(10.0);
 
             // Loading indicator
             if self.loading {
                 ui.horizontal(|ui| {
-                    let spinner_color = if dark_mode {
-                        egui::Color32::from_gray(200)
-                    } else {
-                        egui::Color32::from_gray(60)
-                    };
-                    ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                     ui.label("Searching...");
                 });
                 return;
@@ -179,9 +182,7 @@ impl ProfileSearchScreen {
                     for result in &search_results {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                // Avatar placeholder
-                                ui.add(egui::Label::new(RichText::new("👤").size(30.0)));
-
+                                // No avatar display in search results
                                 ui.vertical(|ui| {
                                     // Display name
                                     if let Some(display_name) = &result.display_name {

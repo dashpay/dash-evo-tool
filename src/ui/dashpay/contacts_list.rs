@@ -53,6 +53,7 @@ pub struct ContactsList {
     search_query: String,
     message: Option<(String, MessageType)>,
     loading: bool,
+    has_loaded: bool,  // Track if we've ever loaded contacts
     show_hidden: bool,
     search_filter: SearchFilter,
     sort_order: SortOrder,
@@ -68,6 +69,7 @@ impl ContactsList {
             search_query: String::new(),
             message: None,
             loading: false,
+            has_loaded: false,
             show_hidden: false,
             search_filter: SearchFilter::All,
             sort_order: SortOrder::Name,
@@ -357,13 +359,7 @@ impl ContactsList {
         // Loading indicator
         if self.loading {
             ui.horizontal(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let spinner_color = if dark_mode {
-                    egui::Color32::from_gray(200)
-                } else {
-                    egui::Color32::from_gray(60)
-                };
-                ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 ui.label("Loading contacts...");
             });
             return action;
@@ -499,7 +495,11 @@ impl ContactsList {
         // Contacts list
         ScrollArea::vertical().show(ui, |ui| {
             if self.contacts.is_empty() {
-                ui.label("No contacts loaded");
+                if self.has_loaded {
+                    ui.label("No contacts found");
+                } else {
+                    ui.label("No contacts loaded");
+                }
             } else if filtered_contacts.is_empty() {
                 ui.label("No contacts match your search");
             } else {
@@ -662,12 +662,9 @@ impl ScreenLike for ContactsList {
                     self.contacts.insert(contact_id, contact);
                 }
 
-                // Only show message if no contacts found
-                if self.contacts.is_empty() {
-                    self.message = Some(("No contacts found".to_string(), MessageType::Info));
-                } else {
-                    self.message = None; // Clear any existing message
-                }
+                // Mark as loaded and clear message
+                self.has_loaded = true;
+                self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
                 // Clear existing contacts
@@ -676,9 +673,17 @@ impl ScreenLike for ContactsList {
                 // Save contacts to database if we have a selected identity
                 if let Some(identity) = &self.selected_identity {
                     let owner_id = identity.identity.id();
+                    
+                    // Clear all existing contacts for this identity from database first
+                    // This prevents stale contacts from persisting
+                    let _ = self.app_context.db.clear_dashpay_contacts(&owner_id);
 
                     // Convert ContactData to Contact structs and save to database
                     for contact_data in contacts_data {
+                        // Skip self-contacts (where contact is the same as the owner)
+                        if contact_data.identity_id == owner_id {
+                            continue;
+                        }
                         let contact = Contact {
                             identity_id: contact_data.identity_id,
                             username: None,
@@ -736,12 +741,9 @@ impl ScreenLike for ContactsList {
                     }
                 }
 
-                // Only show message if no contacts found
-                if self.contacts.is_empty() {
-                    self.message = Some(("No contacts found".to_string(), MessageType::Info));
-                } else {
-                    self.message = None; // Clear any existing message
-                }
+                // Mark as loaded and clear message
+                self.has_loaded = true;
+                self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactProfile(profile_doc) => {
                 // Extract profile information from the document

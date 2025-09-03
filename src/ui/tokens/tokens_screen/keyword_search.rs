@@ -9,6 +9,7 @@ use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
+use crate::ui::theme::DashColors;
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 
@@ -95,7 +96,7 @@ impl TokensScreen {
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
                     ui.label(format!("Searching... {} seconds", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
             }
             ContractSearchStatus::Complete => {

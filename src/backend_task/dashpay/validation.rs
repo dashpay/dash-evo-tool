@@ -276,11 +276,11 @@ pub fn validate_profile_field_sizes(
         }
     }
 
-    // Validate publicMessage (0-250 characters)
+    // Validate publicMessage (0-140 characters)
     if let Some(msg) = public_message {
-        if msg.chars().count() > 250 {
+        if msg.chars().count() > 140 {
             validation.add_error(format!(
-                "publicMessage must be 0-250 characters, got {}",
+                "publicMessage must be 0-140 characters, got {}",
                 msg.chars().count()
             ));
         }

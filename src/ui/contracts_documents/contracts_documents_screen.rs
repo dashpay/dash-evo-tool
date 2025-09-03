@@ -356,7 +356,7 @@ impl DocumentQueryScreen {
                             ));
                             ui.add(
                                 egui::widgets::Spinner::default()
-                                    .color(Color32::from_rgb(0, 128, 255)),
+                                    .color(DashColors::DASH_BLUE),
                             );
                         });
                     }

@@ -414,6 +414,20 @@ impl crate::database::Database {
         Ok(())
     }
 
+    /// Clear all contacts for a specific owner identity
+    pub fn clear_dashpay_contacts(
+        &self,
+        owner_identity_id: &Identifier,
+    ) -> rusqlite::Result<()> {
+        let sql = "DELETE FROM dashpay_contacts WHERE owner_identity_id = ?1";
+        
+        self.execute(
+            sql,
+            params![owner_identity_id.to_buffer().to_vec()],
+        )?;
+        Ok(())
+    }
+
     // Contact request operations
 
     pub fn save_contact_request(

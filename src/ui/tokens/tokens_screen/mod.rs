@@ -45,6 +45,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
+use crate::ui::theme::DashColors;
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
@@ -2757,7 +2758,7 @@ impl ScreenLike for TokensScreen {
                             ui.label(format!("Refreshing... Time so far: {}", elapsed));
                             ui.add(
                                 egui::widgets::Spinner::default()
-                                    .color(Color32::from_rgb(0, 128, 255)),
+                                    .color(DashColors::DASH_BLUE),
                             );
                         });
                         ui.add_space(2.0); // Space below

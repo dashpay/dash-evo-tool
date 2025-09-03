@@ -381,8 +381,9 @@ pub async fn search_profiles(
         let mut query = DocumentQuery::new(dashpay_contract, "profile")
             .map_err(|e| format!("Failed to create profile query: {}", e))?;
 
-        // Limit results to prevent too much data
-        query.limit = 50;
+        // Set to max allowed limit - Platform doesn't support text search
+        // so we need to fetch as many as possible and filter client-side
+        query.limit = 100;
 
         let all_results = Document::fetch_many(sdk, query)
             .await

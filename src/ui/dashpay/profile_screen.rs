@@ -7,8 +7,9 @@ use crate::ui::MessageType;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{ColorImage, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::sync::Arc;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct DashPayProfile {
@@ -34,7 +35,7 @@ impl ValidationError {
             }
             ValidationError::DisplayNameEmpty => "Display name cannot be empty".to_string(),
             ValidationError::BioTooLong(len) => {
-                format!("Bio is {} characters, must be 250 or less", len)
+                format!("Bio is {} characters, must be 140 or less", len)
             }
             ValidationError::InvalidAvatarUrl(url) => {
                 format!(
@@ -67,6 +68,9 @@ pub struct ProfileScreen {
     original_display_name: String,
     original_bio: String,
     original_avatar_url: String,
+    avatar_textures: HashMap<String, TextureHandle>, // Cache for avatar textures
+    avatar_loading: bool, // Track if avatar is being loaded
+    pending_action: Option<Box<AppAction>>, // Action to execute on next frame
 }
 
 impl ProfileScreen {
@@ -89,6 +93,9 @@ impl ProfileScreen {
             original_display_name: String::new(),
             original_bio: String::new(),
             original_avatar_url: String::new(),
+            avatar_textures: HashMap::new(),
+            avatar_loading: false,
+            pending_action: None,
         };
 
         // Auto-select identity on creation - prefer one with a profile
@@ -141,7 +148,7 @@ impl ProfileScreen {
         }
 
         // Bio validation
-        if self.edit_bio.len() > 250 {
+        if self.edit_bio.len() > 140 {
             self.validation_errors
                 .push(ValidationError::BioTooLong(self.edit_bio.len()));
         }
@@ -338,8 +345,51 @@ impl ProfileScreen {
         self.message = None;
     }
 
+    fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
+        let _texture_id = format!("avatar_{}", url);
+        let ctx_clone = ctx.clone();
+        let url_clone = url.to_string();
+        
+        // Spawn async task to fetch and load the image
+        tokio::spawn(async move {
+            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone).await {
+                Ok(image_bytes) => {
+                    // Try to load the image
+                    if let Ok(image) = image::load_from_memory(&image_bytes) {
+                        // Convert to RGBA
+                        let rgba_image = image.to_rgba8();
+                        let size = [rgba_image.width() as usize, rgba_image.height() as usize];
+                        let pixels = rgba_image.into_raw();
+                        
+                        // Create ColorImage
+                        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+                        
+                        // Request repaint to load texture in UI thread
+                        ctx_clone.request_repaint();
+                        
+                        // Store the image data temporarily for the UI thread to pick up
+                        ctx_clone.data_mut(|data| {
+                            data.insert_temp(
+                                egui::Id::new(format!("avatar_data_{}", url_clone)),
+                                color_image
+                            );
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to fetch avatar image: {}", e);
+                }
+            }
+        });
+    }
+
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        
+        // Check for pending action from previous frame
+        if let Some(pending) = self.pending_action.take() {
+            action = *pending;
+        }
 
         // Header
         ui.heading("My DashPay Profile");
@@ -380,6 +430,8 @@ impl ProfileScreen {
                     self.validation_errors.clear();
                     self.has_unsaved_changes = false;
                     self.message = None;
+                    self.avatar_loading = false;
+                    self.avatar_textures.clear();
 
                     // Load profile from database for the newly selected identity
                     self.load_profile_from_database();
@@ -419,12 +471,7 @@ impl ProfileScreen {
         if self.loading || self.saving {
             ui.horizontal(|ui| {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let spinner_color = if dark_mode {
-                    egui::Color32::from_gray(200)
-                } else {
-                    egui::Color32::from_gray(60)
-                };
-                ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 let status_text = if self.saving {
                     "Saving profile..."
                 } else {
@@ -456,15 +503,6 @@ impl ProfileScreen {
                             });
 
                             ui.separator();
-
-                            // Unsaved changes indicator
-                            if self.has_unsaved_changes {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("⚠").color(egui::Color32::ORANGE));
-                                    ui.label(RichText::new("You have unsaved changes").color(egui::Color32::ORANGE).small());
-                                });
-                                ui.separator();
-                            }
 
                             // Display Name Field
                             ui.horizontal(|ui| {
@@ -510,14 +548,14 @@ impl ProfileScreen {
 
                             // Bio character count with color coding
                             let bio_count = self.edit_bio.len();
-                            let bio_count_color = if bio_count > 250 {
+                            let bio_count_color = if bio_count > 140 {
                                 egui::Color32::RED
-                            } else if bio_count > 225 {
+                            } else if bio_count > 120 {
                                 egui::Color32::ORANGE
                             } else {
                                 DashColors::text_secondary(dark_mode)
                             };
-                            ui.label(RichText::new(format!("{}/250", bio_count)).small().color(bio_count_color));
+                            ui.label(RichText::new(format!("{}/140", bio_count)).small().color(bio_count_color));
 
                             if bio_response.changed() {
                                 self.check_for_changes();
@@ -594,11 +632,7 @@ impl ProfileScreen {
                                     action |= self.save_profile();
                                 }
 
-                                // Show save status
-                                if self.has_unsaved_changes {
-                                    ui.add_space(10.0);
-                                    ui.label(RichText::new("Unsaved").color(egui::Color32::ORANGE).small());
-                                }
+                                // Save status removed to avoid UI disruption
                             });
                         });
                     });
@@ -608,12 +642,69 @@ impl ProfileScreen {
                 if let Some(profile) = self.profile.clone() {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            // Avatar placeholder
+                            // Avatar display
                             ui.vertical(|ui| {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
                                     ui.add_space(10.0);
-                                    ui.label(RichText::new("👤").size(50.0));
+                                    
+                                    // Check if we have an avatar URL and try to display it
+                                    if !profile.avatar_url.is_empty() {
+                                        let texture_id = format!("avatar_{}", profile.avatar_url);
+                                        
+                                        // Check if texture is already cached
+                                        if let Some(texture) = self.avatar_textures.get(&texture_id) {
+                                            // Display the cached avatar image
+                                            ui.add(
+                                                egui::Image::new(texture)
+                                                    .fit_to_exact_size(egui::vec2(50.0, 50.0))
+                                                    .corner_radius(5.0)
+                                            );
+                                        } else {
+                                            // Check if image data was loaded by async task
+                                            let data_id = format!("avatar_data_{}", profile.avatar_url);
+                                            let color_image = ui.ctx().data_mut(|data| {
+                                                data.get_temp::<ColorImage>(egui::Id::new(&data_id))
+                                            });
+                                            
+                                            if let Some(color_image) = color_image {
+                                                // Create texture from loaded image
+                                                let texture = ui.ctx().load_texture(
+                                                    &texture_id,
+                                                    color_image,
+                                                    egui::TextureOptions::LINEAR
+                                                );
+                                                
+                                                // Display the image
+                                                ui.add(
+                                                    egui::Image::new(&texture)
+                                                        .fit_to_exact_size(egui::vec2(50.0, 50.0))
+                                                        .corner_radius(5.0)
+                                                );
+                                                
+                                                // Cache the texture
+                                                self.avatar_textures.insert(texture_id, texture);
+                                                self.avatar_loading = false;
+                                                
+                                                // Clear the temporary data
+                                                ui.ctx().data_mut(|data| {
+                                                    data.remove::<ColorImage>(egui::Id::new(&data_id));
+                                                });
+                                            } else if !self.avatar_loading {
+                                                // Start loading the avatar
+                                                self.avatar_loading = true;
+                                                self.load_avatar_texture(ui.ctx(), &profile.avatar_url);
+                                                // Show spinner while loading
+                                                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                                            } else {
+                                                // Show loading indicator
+                                                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                                            }
+                                        }
+                                    } else {
+                                        // No avatar URL, show default emoji
+                                        ui.label(RichText::new("👤").size(50.0));
+                                    }
                                 });
                             });
 
@@ -775,17 +866,25 @@ impl ProfileScreen {
                     // Don't show a message - let the UI show "Create Profile" button
                 }
             }
+            BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
+                // Profile was successfully updated, now load it to display
+                self.cancel_editing(); // Exit edit mode
+                self.profile_load_attempted = false; // Reset flag to allow reload
+                // Queue the load profile action to be executed
+                self.pending_action = Some(Box::new(self.trigger_load_profile()));
+            }
             BackendTaskSuccessResult::Message(message) => {
                 if message.contains("successfully") {
-                    self.display_message(&message, MessageType::Success);
-                    // After successful profile update, reset flag so user can reload
+                    // Profile created/updated successfully, load it
+                    self.cancel_editing();
                     self.profile_load_attempted = false;
+                    self.pending_action = Some(Box::new(self.trigger_load_profile()));
                 } else {
                     self.display_message(&message, MessageType::Info);
                 }
             }
             _ => {
-                self.display_message("Operation completed", MessageType::Success);
+                // Don't show "Operation completed" message
             }
         }
     }

@@ -114,14 +114,8 @@ impl PlatformInfoScreen {
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
 
-                // Show spinner with theme-aware color
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let spinner_color = if dark_mode {
-                    Color32::from_gray(200)
-                } else {
-                    Color32::from_gray(60)
-                };
-                ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                // Show spinner with Dash blue color
+                ui.add(egui::widgets::Spinner::default().color(crate::ui::theme::DashColors::DASH_BLUE));
 
                 ui.add_space(10.0);
                 ui.heading("Loading...");

@@ -701,7 +701,7 @@ impl TokensScreen {
                     "Registering token contract... elapsed {}s",
                     elapsed
                 ));
-                ui.add(egui::widgets::Spinner::default());
+                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
             });
         }
 

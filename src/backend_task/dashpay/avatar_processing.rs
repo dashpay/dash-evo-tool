@@ -1,6 +1,5 @@
 use sha2::{Digest, Sha256};
-use image::{DynamicImage, GenericImageView, ImageFormat};
-use std::io::Cursor;
+use image::{DynamicImage, GenericImageView};
 
 /// Maximum allowed size for avatar images (5MB)
 const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;

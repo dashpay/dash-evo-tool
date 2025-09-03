@@ -27,6 +27,7 @@ use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
 use egui::{Color32, Frame, Margin, RichText, Ui};
+use crate::ui::theme::DashColors;
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -1021,7 +1022,7 @@ impl ScreenLike for IdentitiesScreen {
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     ui.label(format!("Refreshing... Time taken so far: {}", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
                 ui.add_space(2.0); // Space below
             } else if let Some((message, message_type, timestamp)) = self.backend_message.clone() {

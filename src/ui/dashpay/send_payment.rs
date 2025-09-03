@@ -303,6 +303,7 @@ pub struct PaymentHistory {
     payments: Vec<PaymentRecord>,
     message: Option<(String, MessageType)>,
     loading: bool,
+    has_searched: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -324,6 +325,7 @@ impl PaymentHistory {
             payments: Vec::new(),
             message: None,
             loading: false,
+            has_searched: false,
         };
 
         // Auto-select first identity on creation if available
@@ -520,7 +522,11 @@ impl PaymentHistory {
         // Payment list
         ScrollArea::vertical().show(ui, |ui| {
             if self.payments.is_empty() {
-                ui.label("No payments loaded");
+                if self.has_searched {
+                    ui.label("No payments found");
+                } else {
+                    ui.label("No payments loaded");
+                }
             } else {
                 for payment in &self.payments {
                     ui.group(|ui| {
@@ -616,6 +622,7 @@ impl PaymentHistory {
         match result {
             BackendTaskSuccessResult::DashPayPaymentHistory(payment_data) => {
                 self.payments.clear();
+                self.has_searched = true;
 
                 // Get current identity for saving to database
                 if let Some(identity) = &self.selected_identity {
@@ -682,10 +689,8 @@ impl PaymentHistory {
                     }
                 }
 
-                self.message = Some((
-                    format!("Found {} payments", self.payments.len()),
-                    MessageType::Success,
-                ));
+                // Don't show message - let the UI handle empty state
+                self.message = None;
             }
             _ => {
                 self.message = Some(("Operation completed".to_string(), MessageType::Success));

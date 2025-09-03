@@ -276,30 +276,41 @@ jobs:
         run: |
           echo "Disk usage before cleanup:"
           df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
           
-          # Clean up homebrew cache
+          # Remove the ENTIRE target directory since we already copied the binary
+          rm -rf target
+          
+          # Remove the entire Cargo directory
+          rm -rf ~/.cargo
+          
+          # Clean up homebrew completely
           brew cleanup --prune=all
+          rm -rf $(brew --cache)
           
           # Remove any unnecessary Xcode simulators and caches
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
-          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
-          
-          # Clean up more Cargo build artifacts after copying the binary
-          rm -rf target/aarch64-apple-darwin/release/*.rlib 2>/dev/null || true
-          rm -rf target/aarch64-apple-darwin/release/*.d 2>/dev/null || true
-          rm -rf ~/.cargo/registry/cache 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches 2>/dev/null || true
           
           # Remove temporary icon files after creating the app bundle
           rm -rf AppIcon.iconset 2>/dev/null || true
           
-          # Clean system caches
+          # Clean system caches more aggressively
           sudo rm -rf /Library/Caches/* 2>/dev/null || true
           sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
           sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
+          
+          # Remove any iOS simulators and SDKs we don't need
+          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
           
           echo "Disk usage after cleanup:"
           df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
 
       - name: Create DMG
         run: |
@@ -515,30 +526,41 @@ jobs:
         run: |
           echo "Disk usage before cleanup:"
           df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
           
-          # Clean up homebrew cache
+          # Remove the ENTIRE target directory since we already copied the binary
+          rm -rf target
+          
+          # Remove the entire Cargo directory
+          rm -rf ~/.cargo
+          
+          # Clean up homebrew completely
           brew cleanup --prune=all
+          rm -rf $(brew --cache)
           
           # Remove any unnecessary Xcode simulators and caches
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
-          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
-          
-          # Clean up more Cargo build artifacts after copying the binary
-          rm -rf target/x86_64-apple-darwin/release/*.rlib 2>/dev/null || true
-          rm -rf target/x86_64-apple-darwin/release/*.d 2>/dev/null || true
-          rm -rf ~/.cargo/registry/cache 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches 2>/dev/null || true
           
           # Remove temporary icon files after creating the app bundle
           rm -rf AppIcon.iconset 2>/dev/null || true
           
-          # Clean system caches
+          # Clean system caches more aggressively
           sudo rm -rf /Library/Caches/* 2>/dev/null || true
           sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
           sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
+          
+          # Remove any iOS simulators and SDKs we don't need
+          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
           
           echo "Disk usage after cleanup:"
           df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
 
       - name: Create DMG
         run: |

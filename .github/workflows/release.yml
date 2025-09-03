@@ -462,6 +462,20 @@ jobs:
           # Verify the signature
           codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
 
+      - name: Free up disk space before DMG creation
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          
+          # Clean up homebrew cache
+          brew cleanup --prune=all
+          
+          # Remove any unnecessary Xcode simulators
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          
+          echo "Disk usage after cleanup:"
+          df -h
+
       - name: Create DMG
         run: |
           mkdir -p dmg-content
@@ -470,7 +484,7 @@ jobs:
           # Create a simple Applications symlink
           ln -s /Applications dmg-content/Applications
 
-          # Create DMG - use UDRO (read-only) which might use less temp space
+          # Create DMG
           hdiutil create -volname "Dash Evo Tool" \
             -srcfolder dmg-content \
             -ov -format UDZO \

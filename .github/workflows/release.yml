@@ -120,7 +120,7 @@ jobs:
 
   build-macos-arm64:
     name: Build macOS ARM64 (Signed & Notarized)
-    runs-on: macos-latest-large
+    runs-on: macos-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -314,17 +314,29 @@ jobs:
 
       - name: Create DMG
         run: |
-          mkdir -p dmg-content
-          cp -r "build/Dash Evo Tool.app" dmg-content/
-
-          # Create a simple Applications symlink
-          ln -s /Applications dmg-content/Applications
-
-          # Create DMG
-          hdiutil create -volname "Dash Evo Tool" \
-            -srcfolder dmg-content \
-            -ov -format UDZO \
-            dash-evo-tool-macos-arm64.dmg
+          # Get app size for sparse image
+          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
+          DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
+          
+          # Create a sparse image instead of using srcfolder
+          # Sparse images only use disk space as needed
+          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
+          
+          # Mount the sparse image
+          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
+          
+          # Copy app to mounted volume
+          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
+          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+          
+          # Unmount
+          hdiutil detach /Volumes/"Dash Evo Tool"
+          
+          # Convert sparse image to compressed DMG
+          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-arm64.dmg
+          
+          # Clean up sparse image
+          rm -f temp.sparseimage
 
           # Sign the DMG
           codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-arm64.dmg
@@ -370,7 +382,7 @@ jobs:
 
   build-macos-x86:
     name: Build macOS x86_64 (Signed & Notarized)
-    runs-on: macos-latest-large
+    runs-on: macos-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -564,17 +576,29 @@ jobs:
 
       - name: Create DMG
         run: |
-          mkdir -p dmg-content
-          cp -r "build/Dash Evo Tool.app" dmg-content/
-
-          # Create a simple Applications symlink
-          ln -s /Applications dmg-content/Applications
-
-          # Create DMG
-          hdiutil create -volname "Dash Evo Tool" \
-            -srcfolder dmg-content \
-            -ov -format UDZO \
-            dash-evo-tool-macos-x86_64.dmg
+          # Get app size for sparse image
+          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
+          DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
+          
+          # Create a sparse image instead of using srcfolder
+          # Sparse images only use disk space as needed
+          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
+          
+          # Mount the sparse image
+          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
+          
+          # Copy app to mounted volume
+          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
+          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+          
+          # Unmount
+          hdiutil detach /Volumes/"Dash Evo Tool"
+          
+          # Convert sparse image to compressed DMG
+          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-x86_64.dmg
+          
+          # Clean up sparse image
+          rm -f temp.sparseimage
 
           # Sign the DMG
           codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg

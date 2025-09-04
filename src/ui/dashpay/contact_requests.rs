@@ -3,6 +3,8 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -43,6 +45,8 @@ pub struct ContactRequests {
     message: Option<(String, MessageType)>,
     loading: bool,
     has_fetched_requests: bool,
+    accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
+    reject_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
 }
 
 impl ContactRequests {
@@ -59,6 +63,8 @@ impl ContactRequests {
             message: None,
             loading: false,
             has_fetched_requests: false,
+            accept_confirmation_dialog: None,
+            reject_confirmation_dialog: None,
         };
 
         // Auto-select first identity on creation if available
@@ -188,6 +194,51 @@ impl ContactRequests {
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
+        // Handle accept confirmation dialog
+        if let Some((dialog, request)) = &mut self.accept_confirmation_dialog {
+            let response = dialog.show(ui);
+            if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
+                if let Some(identity) = &self.selected_identity {
+                    // Don't mark as accepted yet - wait for backend confirmation
+                    self.loading = true;
+                    self.message = Some(("Accepting contact request...".to_string(), MessageType::Info));
+
+                    let task = BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                        identity: identity.clone(),
+                        request_id: request.request_id,
+                    }));
+
+                    action |= AppAction::BackendTask(task);
+                }
+                self.accept_confirmation_dialog = None;
+            } else if response.inner.dialog_response == Some(ConfirmationStatus::Canceled) {
+                self.accept_confirmation_dialog = None;
+            }
+        }
+
+        // Handle reject confirmation dialog
+        if let Some((dialog, request)) = &mut self.reject_confirmation_dialog {
+            let response = dialog.show(ui);
+            if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
+                if let Some(identity) = &self.selected_identity {
+                    self.loading = true;
+                    self.message = Some(("Rejecting contact request...".to_string(), MessageType::Info));
+
+                    // Don't mark as rejected yet - wait for backend confirmation
+
+                    let task = BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
+                        identity: identity.clone(),
+                        request_id: request.request_id,
+                    }));
+
+                    action |= AppAction::BackendTask(task);
+                }
+                self.reject_confirmation_dialog = None;
+            } else if response.inner.dialog_response == Some(ConfirmationStatus::Canceled) {
+                self.reject_confirmation_dialog = None;
+            }
+        }
+
         // Header
         ui.heading("Contact Requests");
 
@@ -233,6 +284,19 @@ impl ContactRequests {
         }
 
         ui.separator();
+
+        // Show error message if any
+        if let Some((message, message_type)) = &self.message {
+            let color = match message_type {
+                MessageType::Success => egui::Color32::DARK_GREEN,
+                MessageType::Error => egui::Color32::DARK_RED,
+                MessageType::Info => egui::Color32::LIGHT_BLUE,
+            };
+            if message_type == &MessageType::Error {
+                ui.colored_label(color, RichText::new(message).strong());
+            }
+            ui.separator();
+        }
 
         // No identity selected or no identities available
         if identities.is_empty() {
@@ -345,50 +409,60 @@ impl ContactRequests {
                                             if self.accepted_requests.contains(&request.request_id) {
                                                 // Show checkmark and "Accepted" text
                                                 ui.label(
-                                                    RichText::new("✓ Accepted")
+                                                    RichText::new("Accepted")
                                                         .color(egui::Color32::from_rgb(0, 150, 0))
                                                         .strong()
                                                 );
                                             } else if self.rejected_requests.contains(&request.request_id) {
                                                 // Show X and "Rejected" text
                                                 ui.label(
-                                                    RichText::new("✗ Rejected")
+                                                    RichText::new("Rejected")
                                                         .color(egui::Color32::from_rgb(150, 0, 0))
                                                         .strong()
                                                 );
                                             } else {
                                                 // Show Accept/Reject buttons
                                                 if ui.button("Reject").clicked() {
-                                                    if let Some(identity) = &self.selected_identity {
-                                                        self.loading = true;
-                                                        self.message = Some(("Rejecting contact request...".to_string(), MessageType::Info));
-
-                                                        // Mark as rejected immediately for UI feedback
-                                                        self.rejected_requests.insert(request.request_id);
-
-                                                        let task = BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
-                                                            identity: identity.clone(),
-                                                            request_id: request.request_id,
-                                                        }));
-
-                                                        action |= AppAction::BackendTask(task);
-                                                    }
+                                                    // Show confirmation dialog for reject
+                                                    let name = request.from_display_name.as_ref()
+                                                        .or(request.from_username.as_ref())
+                                                        .cloned()
+                                                        .unwrap_or_else(|| {
+                                                            let id_str = request.from_identity.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+                                                            format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
+                                                        });
+                                                    
+                                                    self.reject_confirmation_dialog = Some((
+                                                        ConfirmationDialog::new(
+                                                            "Reject Contact Request",
+                                                            format!("Are you sure you want to reject the contact request from {}?", name)
+                                                        )
+                                                        .confirm_text(Some("Reject"))
+                                                        .cancel_text(Some("Cancel"))
+                                                        .danger_mode(true),
+                                                        request.clone()
+                                                    ));
                                                 }
 
                                                 if ui.button("Accept").clicked() {
-                                                    if let Some(identity) = &self.selected_identity {
-                                                        // Mark as accepted immediately for UI feedback
-                                                        self.accepted_requests.insert(request.request_id);
-                                                        self.loading = true;
-                                                        self.message = Some(("Accepting contact request...".to_string(), MessageType::Info));
-
-                                                        let task = BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
-                                                            identity: identity.clone(),
-                                                            request_id: request.request_id,
-                                                        }));
-
-                                                        action |= AppAction::BackendTask(task);
-                                                    }
+                                                    // Show confirmation dialog for accept
+                                                    let name = request.from_display_name.as_ref()
+                                                        .or(request.from_username.as_ref())
+                                                        .cloned()
+                                                        .unwrap_or_else(|| {
+                                                            let id_str = request.from_identity.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+                                                            format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
+                                                        });
+                                                    
+                                                    self.accept_confirmation_dialog = Some((
+                                                        ConfirmationDialog::new(
+                                                            "Accept Contact Request",
+                                                            format!("Are you sure you want to accept the contact request from {}?", name)
+                                                        )
+                                                        .confirm_text(Some("Accept"))
+                                                        .cancel_text(Some("Cancel")),
+                                                        request.clone()
+                                                    ));
                                                 }
                                             }
                                         },
@@ -607,13 +681,20 @@ impl ScreenLike for ContactRequests {
 
                 // Don't show a message, just display the results
             }
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
+                // Mark as accepted only after successful backend operation
+                self.accepted_requests.insert(request_id);
+                self.message = Some(("Contact request accepted successfully".to_string(), MessageType::Success));
+            }
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+                // Mark as rejected only after successful backend operation
+                self.rejected_requests.insert(request_id);
+                self.message = Some(("Contact request rejected".to_string(), MessageType::Success));
+            }
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
+                self.message = Some(("Contact already established".to_string(), MessageType::Info));
+            }
             BackendTaskSuccessResult::Message(msg) => {
-                // Refresh the list after successful accept/reject operations
-                if msg.contains("Accepted") || msg.contains("Rejected") {
-                    // Trigger a refresh
-                    // Note: We can't return an action from display_task_result,
-                    // so we'll need to handle this differently
-                }
                 self.message = Some((msg, MessageType::Success));
             }
             _ => {

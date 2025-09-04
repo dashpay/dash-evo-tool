@@ -197,7 +197,7 @@ impl Amount {
 
     /// Converts the Amount to a f64 representation with the specified decimal places.
     ///
-    /// Note this is a non-precise conversion, as f64 cannot represent all decimal values exactly.        
+    /// Note this is a non-precise conversion, as f64 cannot represent all decimal values exactly.
     pub fn to_f64(&self) -> f64 {
         (self.value as f64) / 10u64.pow(self.decimal_places as u32) as f64
     }

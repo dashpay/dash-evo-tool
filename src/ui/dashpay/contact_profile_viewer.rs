@@ -129,10 +129,12 @@ impl ContactProfileViewerScreen {
         let _texture_id = format!("contact_avatar_{}", url);
         let ctx_clone = ctx.clone();
         let url_clone = url.to_string();
-        
+
         // Spawn async task to fetch and load the image
         tokio::spawn(async move {
-            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone).await {
+            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone)
+                .await
+            {
                 Ok(image_bytes) => {
                     // Try to load the image
                     if let Ok(image) = image::load_from_memory(&image_bytes) {
@@ -140,18 +142,18 @@ impl ContactProfileViewerScreen {
                         let rgba_image = image.to_rgba8();
                         let size = [rgba_image.width() as usize, rgba_image.height() as usize];
                         let pixels = rgba_image.into_raw();
-                        
+
                         // Create ColorImage
                         let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-                        
+
                         // Request repaint to load texture in UI thread
                         ctx_clone.request_repaint();
-                        
+
                         // Store the image data temporarily for the UI thread to pick up
                         ctx_clone.data_mut(|data| {
                             data.insert_temp(
                                 egui::Id::new(format!("contact_avatar_data_{}", url_clone)),
-                                color_image
+                                color_image,
                             );
                         });
                     }
@@ -228,7 +230,7 @@ impl ContactProfileViewerScreen {
                                 if let Some(avatar_url) = &profile.avatar_url {
                                     if !avatar_url.is_empty() {
                                         let texture_id = format!("contact_avatar_{}", avatar_url);
-                                        
+
                                         // Check if texture is already cached
                                         if let Some(texture) = self.avatar_textures.get(&texture_id) {
                                             // Display the cached avatar image
@@ -243,7 +245,7 @@ impl ContactProfileViewerScreen {
                                             let color_image = ui.ctx().data_mut(|data| {
                                                 data.get_temp::<ColorImage>(egui::Id::new(&data_id))
                                             });
-                                            
+
                                             if let Some(color_image) = color_image {
                                                 // Create texture from loaded image
                                                 let texture = ui.ctx().load_texture(
@@ -251,18 +253,18 @@ impl ContactProfileViewerScreen {
                                                     color_image,
                                                     egui::TextureOptions::LINEAR
                                                 );
-                                                
+
                                                 // Display the image
                                                 ui.add(
                                                     egui::Image::new(&texture)
                                                         .fit_to_exact_size(egui::vec2(60.0, 60.0))
                                                         .corner_radius(5.0)
                                                 );
-                                                
+
                                                 // Cache the texture
                                                 self.avatar_textures.insert(texture_id, texture);
                                                 self.avatar_loading = false;
-                                                
+
                                                 // Clear the temporary data
                                                 ui.ctx().data_mut(|data| {
                                                     data.remove::<ColorImage>(egui::Id::new(&data_id));

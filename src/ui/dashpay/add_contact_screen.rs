@@ -249,20 +249,13 @@ impl ScreenLike for AddContactScreen {
             ui.group(|ui| {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(
-                    RichText::new("From (Your Identity)")
+                    RichText::new("From (Sender)")
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
-                ui.label(
-                    RichText::new(
-                        "Select your identity and signing key to send the contact request from.",
-                    )
-                    .small()
-                    .color(DashColors::text_secondary(dark_mode)),
-                );
                 ui.separator();
 
-                add_identity_key_chooser(
+                let key_action = add_identity_key_chooser(
                     ui,
                     &self.app_context,
                     identities.iter(),
@@ -270,44 +263,12 @@ impl ScreenLike for AddContactScreen {
                     &mut self.selected_key,
                     TransactionType::ContactRequest,
                 );
-
-                // Show selected identity info
-                if let Some(identity) = &self.selected_identity {
-                    ui.add_space(5.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Sending as:")
-                                .small()
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                        ui.label(
-                            RichText::new(identity.to_string())
-                                .small()
-                                .strong()
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
+                if !matches!(key_action, AppAction::None) {
+                    inner_action = key_action;
                 }
             });
 
             ui.add_space(10.0);
-
-            // Show helpful messages if identity/key not selected
-            if self.selected_identity.is_none() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(
-                    RichText::new("Please select an identity above to send contact request from")
-                        .color(DashColors::warning_color(dark_mode)),
-                );
-                ui.add_space(5.0);
-            } else if self.selected_key.is_none() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(
-                    RichText::new("Please select a signing key above")
-                        .color(DashColors::warning_color(dark_mode)),
-                );
-                ui.add_space(5.0);
-            }
 
             // Loading indicator
             if matches!(self.status, ContactRequestStatus::Sending) {
@@ -348,7 +309,7 @@ impl ScreenLike for AddContactScreen {
                                     ui.label(RichText::new("Tip: Make sure the username is spelled correctly and exists on Dash Platform.").small().color(DashColors::text_secondary(dark_mode)));
                                 }
                                 DashPayError::InvalidUsername { .. } => {
-                                    ui.label(RichText::new("Tip: Usernames must end with '.dash' (e.g., alice.dash).").small().color(DashColors::text_secondary(dark_mode)));
+                                    ui.label(RichText::new("Tip: Usernames must end with '.dash' (e.g., alice).").small().color(DashColors::text_secondary(dark_mode)));
                                 }
                                 DashPayError::AccountLabelTooLong { .. } => {
                                     ui.label(RichText::new("Tip: Try a shorter, more descriptive label.").small().color(DashColors::text_secondary(dark_mode)));
@@ -371,54 +332,38 @@ impl ScreenLike for AddContactScreen {
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    ui.label(
-                        RichText::new("Who do you want to send the contact request to?")
-                            .small()
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
                     ui.separator();
 
-                    // Username or Identity ID input
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Username or Identity ID:")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(10.0);
-                    });
-                    ui.add(
-                        TextEdit::singleline(&mut self.username_or_id)
-                            .hint_text("e.g., alice.dash or identity ID")
-                            .desired_width(400.0),
-                    );
-                    ui.label(
-                        RichText::new("Enter their DashPay username or identity ID")
-                            .small()
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
+                    // Username/ID and Relationship Label in 2x2 grid
+                    egui::Grid::new("contact_request_form")
+                        .num_columns(2)
+                        .spacing([10.0, 10.0])
+                        .show(ui, |ui| {
+                            // Row 1: Username/ID
+                            ui.label(
+                                RichText::new("Username or Identity ID:")
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            ui.add(
+                                TextEdit::singleline(&mut self.username_or_id)
+                                    .hint_text("e.g., alice.dash or identity ID")
+                                    .desired_width(350.0),
+                            );
+                            ui.end_row();
+
+                            // Row 2: Relationship Label
+                            ui.label(
+                                RichText::new("Relationship Label (optional):")
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            ui.add(
+                                TextEdit::singleline(&mut self.account_label)
+                                    .hint_text("e.g., Friend, Family, Business Partner")
+                                    .desired_width(350.0),
+                            );
+                        });
 
                     ui.add_space(10.0);
-
-                    // Account label (optional)
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Relationship Label (optional):")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(10.0);
-                    });
-                    ui.add(
-                        TextEdit::singleline(&mut self.account_label)
-                            .hint_text("e.g., Friend, Family, Business Partner")
-                            .desired_width(400.0),
-                    );
-                    ui.label(
-                        RichText::new("A label to help you remember this contact relationship")
-                            .small()
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-
-                    ui.add_space(20.0);
                 });
 
                 // Show summary if all required fields are filled

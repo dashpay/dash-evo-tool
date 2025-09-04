@@ -19,7 +19,7 @@ const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
 ///
 /// This creates a unique derivation path for each contact relationship,
 /// allowing for unique payment addresses between any two identities.
-/// 
+///
 /// This function now uses DIP-14 compliant 256-bit derivation for identity IDs.
 pub fn derive_dashpay_incoming_xpub(
     master_seed: &[u8],
@@ -29,13 +29,7 @@ pub fn derive_dashpay_incoming_xpub(
     recipient_id: &Identifier,
 ) -> Result<ExtendedPubKey, String> {
     // Use the DIP-14 compliant implementation
-    derive_dashpay_incoming_xpub_dip14(
-        master_seed,
-        network,
-        account,
-        sender_id,
-        recipient_id,
-    )
+    derive_dashpay_incoming_xpub_dip14(master_seed, network, account, sender_id, recipient_id)
 }
 
 /// Derive a specific payment address for a contact
@@ -67,6 +61,7 @@ pub fn derive_payment_address(
 /// Convert an Identifier to a ChildNumber for compatibility with existing code
 /// Note: This is only used for backwards compatibility. The actual DIP-14
 /// compliant derivation is handled in the dip14_derivation module.
+#[allow(dead_code)]
 fn identity_to_child_number(id: &Identifier, hardened: bool) -> Result<ChildNumber, String> {
     let id_bytes = id.to_buffer();
 

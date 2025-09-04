@@ -395,7 +395,7 @@ impl ScreenLike for AddNewWalletScreen {
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
                         let fill_color = match self.password_strength as i32 {
                             0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
-                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow  
+                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
                             51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
                             _ => Color32::from_rgb(90, 200, 90),           // Medium green
                         };

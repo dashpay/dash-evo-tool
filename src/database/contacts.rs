@@ -37,7 +37,7 @@ impl crate::database::Database {
         is_hidden: bool,
     ) -> rusqlite::Result<()> {
         let sql = "
-            INSERT OR REPLACE INTO contact_private_info 
+            INSERT OR REPLACE INTO contact_private_info
             (owner_identity_id, contact_identity_id, nickname, notes, is_hidden, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
         ";
@@ -62,7 +62,7 @@ impl crate::database::Database {
     ) -> rusqlite::Result<(String, String, bool)> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT nickname, notes, is_hidden FROM contact_private_info 
+            "SELECT nickname, notes, is_hidden FROM contact_private_info
              WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
         )?;
 
@@ -93,8 +93,8 @@ impl crate::database::Database {
     ) -> rusqlite::Result<Vec<ContactPrivateInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, nickname, notes, is_hidden 
-             FROM contact_private_info 
+            "SELECT owner_identity_id, contact_identity_id, nickname, notes, is_hidden
+             FROM contact_private_info
              WHERE owner_identity_id = ?1",
         )?;
 

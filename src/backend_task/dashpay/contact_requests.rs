@@ -153,21 +153,28 @@ pub async fn send_contact_request_with_proof(
     auto_accept_proof: Option<Vec<u8>>,
 ) -> Result<BackendTaskSuccessResult, String> {
     // Step 1: Resolve the recipient identity
-    let to_identity = if to_username_or_id.contains('.') {
-        // It's a username, resolve via DPNS
+    let to_identity = if to_username_or_id.ends_with(".dash") {
+        // It's a complete username, resolve via DPNS
         resolve_username_to_identity(sdk, &to_username_or_id).await?
     } else {
-        // It's an identity ID
-        let to_id = Identifier::from_string_try_encodings(
+        // Try to parse as identity ID first
+        match Identifier::from_string_try_encodings(
             &to_username_or_id,
             &[Encoding::Base58, Encoding::Hex],
-        )
-        .map_err(|e| format!("Invalid identity ID: {}", e))?;
-
-        Identity::fetch(sdk, to_id)
-            .await
-            .map_err(|e| format!("Failed to fetch identity: {}", e))?
-            .ok_or_else(|| format!("Identity {} not found", to_username_or_id))?
+        ) {
+            Ok(to_id) => {
+                // Successfully parsed as ID, fetch the identity
+                Identity::fetch(sdk, to_id)
+                    .await
+                    .map_err(|e| format!("Failed to fetch identity: {}", e))?
+                    .ok_or_else(|| format!("Identity {} not found", to_username_or_id))?
+            }
+            Err(_) => {
+                // Not a valid ID format, assume it's a username without .dash suffix
+                let username_with_suffix = format!("{}.dash", to_username_or_id);
+                resolve_username_to_identity(sdk, &username_with_suffix).await?
+            }
+        }
     };
 
     let to_identity_id = to_identity.id();
@@ -230,7 +237,7 @@ pub async fn send_contact_request_with_proof(
         )
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| "Sender private key not found".to_string())?;
+        .ok_or_else(|| "Sender does not have a ECDSA_SECP256K1 authentication private key loaded into Dash Evo Tool.".to_string())?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| format!("Failed to generate ECDH shared key: {}", e))?;
@@ -267,16 +274,10 @@ pub async fn send_contact_request_with_proof(
     // Step 5: Get the current core chain height for synchronization
     let (core_height, current_height_for_validation) =
         match CurrentQuorumsInfo::fetch_unproved(sdk, NoParamQuery {}).await {
-            Ok(Some(quorum_info)) => {
-                eprintln!(
-                    "DEBUG: Got core height: {}",
-                    quorum_info.last_core_block_height
-                );
-                (
-                    quorum_info.last_core_block_height,
-                    Some(quorum_info.last_core_block_height),
-                )
-            }
+            Ok(Some(quorum_info)) => (
+                quorum_info.last_core_block_height,
+                Some(quorum_info.last_core_block_height),
+            ),
             Ok(None) => {
                 (0u32, None) // Fallback if no quorum info available
             }
@@ -331,8 +332,7 @@ pub async fn send_contact_request_with_proof(
         Value::Bytes(encrypted_public_key),
     );
 
-    // Add $coreHeightCreatedAt as required by DIP-0015
-    properties.insert("$coreHeightCreatedAt".to_string(), Value::U32(core_height));
+    // Note: $coreHeightCreatedAt is handled automatically by the platform
 
     // Add encrypted account label if provided
     if let Some(label) = account_label {
@@ -351,10 +351,8 @@ pub async fn send_contact_request_with_proof(
             proof.len()
         );
         properties.insert("autoAcceptProof".to_string(), Value::Bytes(proof));
-    } else {
-        // Empty proof for normal requests
-        properties.insert("autoAcceptProof".to_string(), Value::Bytes(vec![]));
     }
+    // If no proof, don't include the field at all (schema requires 38-102 bytes if present)
 
     // Generate random entropy for the document transition
     let mut rng = StdRng::from_entropy();
@@ -474,12 +472,6 @@ pub async fn accept_contact_request(
     // According to DashPay DIP, accepting means sending a contact request back
     // First, we need to fetch the incoming contact request to get the sender's identity
 
-    eprintln!(
-        "DEBUG: Accepting contact request {} for identity {}",
-        request_id.to_string(Encoding::Base58),
-        identity.identity.id().to_string(Encoding::Base58)
-    );
-
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Fetch the specific contact request document by creating a query with its ID
@@ -494,10 +486,6 @@ pub async fn accept_contact_request(
 
     // Get the sender's identity (the owner of the incoming request)
     let from_identity_id = doc.owner_id();
-    eprintln!(
-        "DEBUG: Sender identity ID: {}",
-        from_identity_id.to_string(Encoding::Base58)
-    );
 
     // Check if we already sent a contact request to this identity
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
@@ -539,14 +527,9 @@ pub async fn accept_contact_request(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found for identity")?
+        .ok_or("Cannot accept contact request: This identity does not have a suitable ECDSA_SECP256K1 authentication key. Please add one in the Identities screen.")?
         .clone();
 
-    // Now send a contact request back to establish the friendship
-    eprintln!(
-        "DEBUG: Sending contact request back to {}...",
-        from_identity_id.to_string(Encoding::Base58)
-    );
     let result = send_contact_request(
         app_context,
         sdk,

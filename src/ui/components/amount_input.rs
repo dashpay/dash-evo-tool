@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn test_initialization_with_non_zero_amount_and_unit() {
         // Test that AmountInput correctly initializes from an existing amount
-        let amount = Amount::new_dash(1.5); // 1.5 DASH 
+        let amount = Amount::new_dash(1.5); // 1.5 DASH
 
         assert_eq!(amount.unit_name(), Some("DASH"));
         assert_eq!(format!("{}", amount), "1.5 DASH");

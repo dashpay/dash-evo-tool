@@ -354,10 +354,7 @@ impl DocumentQueryScreen {
                                 "Fetching documents... Time taken so far: {} seconds",
                                 time_elapsed
                             ));
-                            ui.add(
-                                egui::widgets::Spinner::default()
-                                    .color(DashColors::DASH_BLUE),
-                            );
+                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                         });
                     }
                     DocumentQueryStatus::Complete => match self.document_display_mode {

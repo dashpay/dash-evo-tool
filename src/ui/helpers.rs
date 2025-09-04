@@ -4,6 +4,7 @@ use crate::{
     app::AppAction,
     context::AppContext,
     model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
+    ui::{Screen, identities::keys::add_key_screen::AddKeyScreen},
 };
 use dash_sdk::{
     dpp::{
@@ -179,12 +180,13 @@ impl TransactionType {
 /// Identity key chooser that filters keys based on transaction type and dev mode
 pub fn add_identity_key_chooser<'a, T>(
     ui: &mut Ui,
-    app_context: &AppContext,
+    app_context: &Arc<AppContext>,
     identities: T,
     selected_identity: &mut Option<QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
-) where
+) -> AppAction
+where
     T: Iterator<Item = &'a QualifiedIdentity>,
 {
     add_identity_key_chooser_with_doc_type(
@@ -201,16 +203,18 @@ pub fn add_identity_key_chooser<'a, T>(
 /// Identity key chooser that filters keys based on transaction type, document type and dev mode
 pub fn add_identity_key_chooser_with_doc_type<'a, T>(
     ui: &mut Ui,
-    app_context: &AppContext,
+    app_context: &Arc<AppContext>,
     identities: T,
     selected_identity: &mut Option<QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
     document_type: Option<&DocumentType>,
-) where
+) -> AppAction
+where
     T: Iterator<Item = &'a QualifiedIdentity>,
 {
     let is_dev_mode = app_context.is_developer_mode();
+    let mut action = AppAction::None;
 
     egui::Grid::new("identity_key_chooser_grid")
         .num_columns(2)
@@ -253,6 +257,105 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
             ui.label("Key:");
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                // Check if selected identity has suitable keys
+                let mut show_combo = true;
+                if let Some(qi) = selected_identity {
+                    let allowed_purposes = transaction_type.allowed_purposes();
+                    let allowed_security_levels = if transaction_type == TransactionType::DocumentAction
+                        && document_type.is_some()
+                    {
+                        let required_level = document_type.unwrap().security_level_requirement();
+                        let allowed_levels = SecurityLevel::CRITICAL as u8..=required_level as u8;
+                        [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]
+                            .iter()
+                            .cloned()
+                            .filter(|level| allowed_levels.contains(&(*level as u8)))
+                            .collect()
+                    } else {
+                        transaction_type.allowed_security_levels()
+                    };
+
+                    // Check for keys with private keys loaded
+                    let has_suitable_keys_with_private = qi
+                        .private_keys
+                        .identity_public_keys()
+                        .iter()
+                        .any(|key_ref| {
+                            let key = &key_ref.1.identity_public_key;
+                            let basic_ok = allowed_purposes.contains(&key.purpose())
+                                && allowed_security_levels.contains(&key.security_level());
+
+                            // For ContactRequest, also check key type
+                            if transaction_type == TransactionType::ContactRequest {
+                                basic_ok && key.key_type() == KeyType::ECDSA_SECP256K1
+                            } else {
+                                basic_ok
+                            }
+                        });
+
+                    // Check if there are eligible public keys without private keys
+                    let has_eligible_public_keys_without_private = qi
+                        .identity
+                        .public_keys()
+                        .iter()
+                        .any(|(_, pub_key)| {
+                            // Check if this public key meets the criteria
+                            let basic_ok = allowed_purposes.contains(&pub_key.purpose())
+                                && allowed_security_levels.contains(&pub_key.security_level());
+
+                            let type_ok = if transaction_type == TransactionType::ContactRequest {
+                                pub_key.key_type() == KeyType::ECDSA_SECP256K1
+                            } else {
+                                true
+                            };
+
+                            // Check if we don't have the private key for this public key
+                            let has_private = qi.private_keys
+                                .identity_public_keys()
+                                .iter()
+                                .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
+
+                            basic_ok && type_ok && !has_private
+                        });
+
+                    if !is_dev_mode && !has_suitable_keys_with_private {
+                        show_combo = false;
+                        // Show message and buttons in a proper group/frame
+                        ui.group(|ui| {
+                            ui.set_min_width(220.0); // Match the combo box width
+                            ui.vertical(|ui| {
+                                // Identity has eligible keys but private keys not loaded
+                                ui.label("⚠ No eligible key. This transaction type requires:");
+                                if transaction_type == TransactionType::ContactRequest {
+                                    ui.label("• ECDSA secp256k1 key");
+                                } else {
+                                    ui.label(format!("• {} key", transaction_type.label()));
+                                }
+
+                                if has_eligible_public_keys_without_private {
+                                    ui.label(format!(
+                                        "This Identity already has an eligible public key but the private key isn't loaded into Dash Evo Tool yet.",
+                                    ));
+                                    ui.label("Go to the Identities screen to load an existing private key, or use the button below to add a new key:");
+                                }
+
+                                ui.add_space(5.0);
+
+                                // Always show option to add new key
+                                if ui.button("Add New Key to Identity").clicked() {
+                                    action = AppAction::AddScreen(Screen::AddKeyScreen(
+                                        AddKeyScreen::new(
+                                            qi.clone(),
+                                            app_context,
+                                        ),
+                                    ));
+                                }
+                            });
+                        });
+                    }
+                }
+
+                if show_combo {
                 ComboBox::from_id_salt("key_combo")
                     .width(220.0)
                     .selected_text(
@@ -349,30 +452,16 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                                 }
                             }
 
-                            if !is_dev_mode
-                                && qi
-                                    .private_keys
-                                    .identity_public_keys()
-                                    .iter()
-                                    .all(|key_ref| {
-                                        let key = &key_ref.1.identity_public_key;
-                                        !allowed_purposes.contains(&key.purpose())
-                                            || !allowed_security_levels
-                                                .contains(&key.security_level())
-                                    })
-                            {
-                                kui.label(format!(
-                                    "No suitable keys for {}",
-                                    transaction_type.label()
-                                ));
-                            }
                         } else {
                             kui.label("Pick an identity first");
                         }
                     });
+                }
             });
             ui.end_row();
         });
+
+    action
 }
 
 pub fn add_contract_doc_type_chooser_with_filtering(

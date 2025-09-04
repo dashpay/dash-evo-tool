@@ -53,7 +53,7 @@ pub struct ContactsList {
     search_query: String,
     message: Option<(String, MessageType)>,
     loading: bool,
-    has_loaded: bool,  // Track if we've ever loaded contacts
+    has_loaded: bool, // Track if we've ever loaded contacts
     show_hidden: bool,
     search_filter: SearchFilter,
     sort_order: SortOrder,
@@ -673,7 +673,7 @@ impl ScreenLike for ContactsList {
                 // Save contacts to database if we have a selected identity
                 if let Some(identity) = &self.selected_identity {
                     let owner_id = identity.identity.id();
-                    
+
                     // Clear all existing contacts for this identity from database first
                     // This prevents stale contacts from persisting
                     let _ = self.app_context.db.clear_dashpay_contacts(&owner_id);

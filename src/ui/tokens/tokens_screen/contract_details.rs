@@ -20,7 +20,11 @@ impl TokensScreen {
                 ui.add_space(50.0);
                 ui.heading("Loading contract details...");
                 ui.add_space(20.0);
-                ui.add(egui::widgets::Spinner::default().size(50.0).color(crate::ui::theme::DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .size(50.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                );
             });
             return action;
         }

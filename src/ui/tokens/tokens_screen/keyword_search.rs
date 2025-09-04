@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
 };
@@ -9,7 +10,6 @@ use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
-use crate::ui::theme::DashColors;
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 

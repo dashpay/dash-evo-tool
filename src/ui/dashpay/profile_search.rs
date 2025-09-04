@@ -148,7 +148,7 @@ impl ProfileSearchScreen {
                 .small()
                 .color(DashColors::text_secondary(dark_mode)),
             );
-            
+
             ui.label(
                 RichText::new(
                     "Note: Text search is limited to the most recent 100 profiles due to Platform limitations",

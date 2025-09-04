@@ -1,5 +1,5 @@
-use sha2::{Digest, Sha256};
 use image::{DynamicImage, GenericImageView};
+use sha2::{Digest, Sha256};
 
 /// Maximum allowed size for avatar images (5MB)
 const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
@@ -23,23 +23,23 @@ pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
 /// 4. Generate 64-bit hash based on comparisons
 pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], String> {
     // Load the image from bytes
-    let img = image::load_from_memory(image_bytes)
-        .map_err(|e| format!("Failed to load image: {}", e))?;
-    
+    let img =
+        image::load_from_memory(image_bytes).map_err(|e| format!("Failed to load image: {}", e))?;
+
     // Convert to grayscale and resize to 9x8
     let grayscale = img.grayscale();
     let resized = grayscale.resize_exact(9, 8, image::imageops::FilterType::Lanczos3);
-    
+
     // Calculate the difference hash
     let mut hash = 0u64;
     let mut bit_position = 0;
-    
+
     for y in 0..8 {
         for x in 0..8 {
             // Get the luminance values of adjacent pixels
             let left_pixel = resized.get_pixel(x, y).0[0];
             let right_pixel = resized.get_pixel(x + 1, y).0[0];
-            
+
             // Set bit to 1 if left pixel is brighter than right
             if left_pixel > right_pixel {
                 hash |= 1 << bit_position;
@@ -47,7 +47,7 @@ pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], String
             bit_position += 1;
         }
     }
-    
+
     Ok(hash.to_le_bytes())
 }
 
@@ -76,27 +76,27 @@ impl DHashCalculator {
         // Convert to grayscale and resize
         let grayscale = img.grayscale();
         let resized = grayscale.resize_exact(
-            self.width as u32, 
-            self.height as u32, 
-            image::imageops::FilterType::Lanczos3
+            self.width as u32,
+            self.height as u32,
+            image::imageops::FilterType::Lanczos3,
         );
-        
+
         // Calculate differences and build hash
         let mut hash = 0u64;
         let mut bit_position = 0;
-        
+
         for y in 0..self.height {
             for x in 0..(self.width - 1) {
                 let left_pixel = resized.get_pixel(x as u32, y as u32).0[0];
                 let right_pixel = resized.get_pixel((x + 1) as u32, y as u32).0[0];
-                
+
                 if left_pixel > right_pixel {
                     hash |= 1 << bit_position;
                 }
                 bit_position += 1;
             }
         }
-        
+
         hash.to_le_bytes()
     }
 
@@ -217,9 +217,12 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
         let content_type_str = content_type
             .to_str()
             .map_err(|e| format!("Invalid content-type header: {}", e))?;
-        
+
         if !content_type_str.starts_with("image/") {
-            return Err(format!("Invalid content type: expected image/*, got {}", content_type_str));
+            return Err(format!(
+                "Invalid content type: expected image/*, got {}",
+                content_type_str
+            ));
         }
     }
 
@@ -228,11 +231,11 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
         let length_str = content_length
             .to_str()
             .map_err(|e| format!("Invalid content-length header: {}", e))?;
-        
+
         let length: usize = length_str
             .parse()
             .map_err(|e| format!("Failed to parse content-length: {}", e))?;
-        
+
         if length > MAX_IMAGE_SIZE {
             return Err(format!(
                 "Image too large: {} bytes (max {} bytes)",
@@ -257,8 +260,7 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
     }
 
     // Try to validate it's actually an image by attempting to load it
-    image::load_from_memory(&bytes)
-        .map_err(|e| format!("Invalid image data: {}", e))?;
+    image::load_from_memory(&bytes).map_err(|e| format!("Invalid image data: {}", e))?;
 
     Ok(bytes.to_vec())
 }
@@ -267,13 +269,13 @@ pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
 pub async fn process_avatar(url: &str) -> Result<(Vec<u8>, [u8; 32], [u8; 8]), String> {
     // Fetch the image
     let image_bytes = fetch_image_bytes(url).await?;
-    
+
     // Calculate SHA-256 hash
     let hash = calculate_avatar_hash(&image_bytes);
-    
+
     // Calculate DHash fingerprint
     let fingerprint = calculate_dhash_fingerprint(&image_bytes)?;
-    
+
     Ok((image_bytes, hash, fingerprint))
 }
 
@@ -311,30 +313,30 @@ mod tests {
     fn test_dhash_with_real_image() {
         // Create a simple test image (3x3 grayscale)
         let pixels = vec![
-            0, 50, 100,    // Row 1: increasing brightness
-            50, 100, 150,  // Row 2: increasing brightness
+            0, 50, 100, // Row 1: increasing brightness
+            50, 100, 150, // Row 2: increasing brightness
             100, 150, 200, // Row 3: increasing brightness
         ];
-        
+
         // Create an image from raw pixels
         let img = image::GrayImage::from_raw(3, 3, pixels).unwrap();
         let dynamic_img = DynamicImage::ImageLuma8(img);
-        
+
         // Calculate DHash
         let calculator = DHashCalculator::new();
         let hash = calculator.calculate_from_image(&dynamic_img);
-        
+
         // Verify we get an 8-byte hash
         assert_eq!(hash.len(), 8);
     }
-    
+
     #[tokio::test]
     async fn test_url_validation() {
         // Test non-HTTPS URL
         let result = fetch_image_bytes("http://example.com/image.jpg").await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Avatar URL must use HTTPS");
-        
+
         // Test URL that's too long
         let long_url = format!("https://example.com/{}", "a".repeat(2100));
         let result = fetch_image_bytes(&long_url).await;

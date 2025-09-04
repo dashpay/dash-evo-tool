@@ -117,13 +117,13 @@ impl crate::database::Database {
 
         // Create index for faster queries
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_contact_requests_from 
+            "CREATE INDEX IF NOT EXISTS idx_contact_requests_from
              ON dashpay_contact_requests(from_identity_id)",
             [],
         )?;
 
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_contact_requests_to 
+            "CREATE INDEX IF NOT EXISTS idx_contact_requests_to
              ON dashpay_contact_requests(to_identity_id)",
             [],
         )?;
@@ -147,13 +147,13 @@ impl crate::database::Database {
 
         // Create index for faster queries
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_payments_from 
+            "CREATE INDEX IF NOT EXISTS idx_payments_from
              ON dashpay_payments(from_identity_id)",
             [],
         )?;
 
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_payments_to 
+            "CREATE INDEX IF NOT EXISTS idx_payments_to
              ON dashpay_payments(to_identity_id)",
             [],
         )?;
@@ -216,13 +216,13 @@ impl crate::database::Database {
 
         // Create index for faster queries
         self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_contact_requests_from 
+            "CREATE INDEX IF NOT EXISTS idx_contact_requests_from
              ON dashpay_contact_requests(from_identity_id)",
             [],
         )?;
 
         self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_contact_requests_to 
+            "CREATE INDEX IF NOT EXISTS idx_contact_requests_to
              ON dashpay_contact_requests(to_identity_id)",
             [],
         )?;
@@ -246,13 +246,13 @@ impl crate::database::Database {
 
         // Create index for faster queries
         self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_payments_from 
+            "CREATE INDEX IF NOT EXISTS idx_payments_from
              ON dashpay_payments(from_identity_id)",
             [],
         )?;
 
         self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_payments_to 
+            "CREATE INDEX IF NOT EXISTS idx_payments_to
              ON dashpay_payments(to_identity_id)",
             [],
         )?;
@@ -271,7 +271,7 @@ impl crate::database::Database {
         public_message: Option<&str>,
     ) -> rusqlite::Result<()> {
         let sql = "
-            INSERT OR REPLACE INTO dashpay_profiles 
+            INSERT OR REPLACE INTO dashpay_profiles
             (identity_id, display_name, bio, avatar_url, public_message, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
         ";
@@ -298,9 +298,9 @@ impl crate::database::Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT identity_id, display_name, bio, avatar_url, avatar_hash, 
-                    avatar_fingerprint, public_message, created_at, updated_at 
-             FROM dashpay_profiles 
+            "SELECT identity_id, display_name, bio, avatar_url, avatar_hash,
+                    avatar_fingerprint, public_message, created_at, updated_at
+             FROM dashpay_profiles
              WHERE identity_id = ?1",
         )?;
 
@@ -339,8 +339,8 @@ impl crate::database::Database {
         contact_status: &str,
     ) -> rusqlite::Result<()> {
         let sql = "
-            INSERT OR REPLACE INTO dashpay_contacts 
-            (owner_identity_id, contact_identity_id, username, display_name, 
+            INSERT OR REPLACE INTO dashpay_contacts
+            (owner_identity_id, contact_identity_id, username, display_name,
              avatar_url, public_message, contact_status, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())
         ";
@@ -366,9 +366,9 @@ impl crate::database::Database {
     ) -> rusqlite::Result<Vec<StoredContact>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, username, display_name, 
+            "SELECT owner_identity_id, contact_identity_id, username, display_name,
                     avatar_url, public_message, contact_status, created_at, updated_at, last_seen
-             FROM dashpay_contacts 
+             FROM dashpay_contacts
              WHERE owner_identity_id = ?1
              ORDER BY updated_at DESC",
         )?;
@@ -399,7 +399,7 @@ impl crate::database::Database {
         contact_identity_id: &Identifier,
     ) -> rusqlite::Result<()> {
         let sql = "
-            UPDATE dashpay_contacts 
+            UPDATE dashpay_contacts
             SET last_seen = unixepoch(), updated_at = unixepoch()
             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2
         ";
@@ -415,16 +415,10 @@ impl crate::database::Database {
     }
 
     /// Clear all contacts for a specific owner identity
-    pub fn clear_dashpay_contacts(
-        &self,
-        owner_identity_id: &Identifier,
-    ) -> rusqlite::Result<()> {
+    pub fn clear_dashpay_contacts(&self, owner_identity_id: &Identifier) -> rusqlite::Result<()> {
         let sql = "DELETE FROM dashpay_contacts WHERE owner_identity_id = ?1";
-        
-        self.execute(
-            sql,
-            params![owner_identity_id.to_buffer().to_vec()],
-        )?;
+
+        self.execute(sql, params![owner_identity_id.to_buffer().to_vec()])?;
         Ok(())
     }
 
@@ -439,7 +433,7 @@ impl crate::database::Database {
         request_type: &str,
     ) -> rusqlite::Result<i64> {
         let sql = "
-            INSERT INTO dashpay_contact_requests 
+            INSERT INTO dashpay_contact_requests
             (from_identity_id, to_identity_id, to_username, account_label, request_type)
             VALUES (?1, ?2, ?3, ?4, ?5)
         ";
@@ -465,7 +459,7 @@ impl crate::database::Database {
         status: &str,
     ) -> rusqlite::Result<()> {
         let sql = "
-            UPDATE dashpay_contact_requests 
+            UPDATE dashpay_contact_requests
             SET status = ?1, responded_at = unixepoch()
             WHERE id = ?2
         ";
@@ -481,15 +475,15 @@ impl crate::database::Database {
     ) -> rusqlite::Result<Vec<StoredContactRequest>> {
         let conn = self.conn.lock().unwrap();
         let sql = if request_type == "sent" {
-            "SELECT id, from_identity_id, to_identity_id, to_username, account_label, 
+            "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
                     request_type, status, created_at, responded_at, expires_at
-             FROM dashpay_contact_requests 
+             FROM dashpay_contact_requests
              WHERE from_identity_id = ?1 AND request_type = 'sent' AND status = 'pending'
              ORDER BY created_at DESC"
         } else {
-            "SELECT id, from_identity_id, to_identity_id, to_username, account_label, 
+            "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
                     request_type, status, created_at, responded_at, expires_at
-             FROM dashpay_contact_requests 
+             FROM dashpay_contact_requests
              WHERE to_identity_id = ?1 AND request_type = 'received' AND status = 'pending'
              ORDER BY created_at DESC"
         };
@@ -527,7 +521,7 @@ impl crate::database::Database {
         payment_type: &str,
     ) -> rusqlite::Result<i64> {
         let sql = "
-            INSERT INTO dashpay_payments 
+            INSERT INTO dashpay_payments
             (tx_id, from_identity_id, to_identity_id, amount, memo, payment_type)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ";
@@ -550,11 +544,11 @@ impl crate::database::Database {
 
     pub fn update_payment_status(&self, payment_id: i64, status: &str) -> rusqlite::Result<()> {
         let sql = if status == "confirmed" {
-            "UPDATE dashpay_payments 
+            "UPDATE dashpay_payments
              SET status = ?1, confirmed_at = unixepoch()
              WHERE id = ?2"
         } else {
-            "UPDATE dashpay_payments 
+            "UPDATE dashpay_payments
              SET status = ?1
              WHERE id = ?2"
         };
@@ -570,9 +564,9 @@ impl crate::database::Database {
     ) -> rusqlite::Result<Vec<StoredPayment>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, tx_id, from_identity_id, to_identity_id, amount, memo, 
+            "SELECT id, tx_id, from_identity_id, to_identity_id, amount, memo,
                     payment_type, status, created_at, confirmed_at
-             FROM dashpay_payments 
+             FROM dashpay_payments
              WHERE from_identity_id = ?1 OR to_identity_id = ?1
              ORDER BY created_at DESC
              LIMIT ?2",
@@ -620,14 +614,14 @@ impl crate::database::Database {
 
         // Delete contact requests
         self.execute(
-            "DELETE FROM dashpay_contact_requests 
+            "DELETE FROM dashpay_contact_requests
              WHERE from_identity_id = ?1 OR to_identity_id = ?1",
             params![&identity_bytes],
         )?;
 
         // Delete payments
         self.execute(
-            "DELETE FROM dashpay_payments 
+            "DELETE FROM dashpay_payments
              WHERE from_identity_id = ?1 OR to_identity_id = ?1",
             params![&identity_bytes],
         )?;

@@ -8,8 +8,8 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct DashPayProfile {
@@ -69,8 +69,8 @@ pub struct ProfileScreen {
     original_bio: String,
     original_avatar_url: String,
     avatar_textures: HashMap<String, TextureHandle>, // Cache for avatar textures
-    avatar_loading: bool, // Track if avatar is being loaded
-    pending_action: Option<Box<AppAction>>, // Action to execute on next frame
+    avatar_loading: bool,                            // Track if avatar is being loaded
+    pending_action: Option<Box<AppAction>>,          // Action to execute on next frame
 }
 
 impl ProfileScreen {
@@ -349,10 +349,12 @@ impl ProfileScreen {
         let _texture_id = format!("avatar_{}", url);
         let ctx_clone = ctx.clone();
         let url_clone = url.to_string();
-        
+
         // Spawn async task to fetch and load the image
         tokio::spawn(async move {
-            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone).await {
+            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone)
+                .await
+            {
                 Ok(image_bytes) => {
                     // Try to load the image
                     if let Ok(image) = image::load_from_memory(&image_bytes) {
@@ -360,18 +362,18 @@ impl ProfileScreen {
                         let rgba_image = image.to_rgba8();
                         let size = [rgba_image.width() as usize, rgba_image.height() as usize];
                         let pixels = rgba_image.into_raw();
-                        
+
                         // Create ColorImage
                         let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-                        
+
                         // Request repaint to load texture in UI thread
                         ctx_clone.request_repaint();
-                        
+
                         // Store the image data temporarily for the UI thread to pick up
                         ctx_clone.data_mut(|data| {
                             data.insert_temp(
                                 egui::Id::new(format!("avatar_data_{}", url_clone)),
-                                color_image
+                                color_image,
                             );
                         });
                     }
@@ -385,7 +387,7 @@ impl ProfileScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        
+
         // Check for pending action from previous frame
         if let Some(pending) = self.pending_action.take() {
             action = *pending;
@@ -647,11 +649,11 @@ impl ProfileScreen {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
                                     ui.add_space(10.0);
-                                    
+
                                     // Check if we have an avatar URL and try to display it
                                     if !profile.avatar_url.is_empty() {
                                         let texture_id = format!("avatar_{}", profile.avatar_url);
-                                        
+
                                         // Check if texture is already cached
                                         if let Some(texture) = self.avatar_textures.get(&texture_id) {
                                             // Display the cached avatar image
@@ -666,7 +668,7 @@ impl ProfileScreen {
                                             let color_image = ui.ctx().data_mut(|data| {
                                                 data.get_temp::<ColorImage>(egui::Id::new(&data_id))
                                             });
-                                            
+
                                             if let Some(color_image) = color_image {
                                                 // Create texture from loaded image
                                                 let texture = ui.ctx().load_texture(
@@ -674,18 +676,18 @@ impl ProfileScreen {
                                                     color_image,
                                                     egui::TextureOptions::LINEAR
                                                 );
-                                                
+
                                                 // Display the image
                                                 ui.add(
                                                     egui::Image::new(&texture)
                                                         .fit_to_exact_size(egui::vec2(50.0, 50.0))
                                                         .corner_radius(5.0)
                                                 );
-                                                
+
                                                 // Cache the texture
                                                 self.avatar_textures.insert(texture_id, texture);
                                                 self.avatar_loading = false;
-                                                
+
                                                 // Clear the temporary data
                                                 ui.ctx().data_mut(|data| {
                                                     data.remove::<ColorImage>(egui::Id::new(&data_id));

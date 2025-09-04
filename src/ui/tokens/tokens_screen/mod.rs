@@ -2756,10 +2756,7 @@ impl ScreenLike for TokensScreen {
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
                             ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                            ui.add(
-                                egui::widgets::Spinner::default()
-                                    .color(DashColors::DASH_BLUE),
-                            );
+                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                         });
                         ui.add_space(2.0); // Space below
                     } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {

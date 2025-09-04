@@ -114,10 +114,30 @@ pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u
 
     let label_bytes = label.as_bytes();
 
-    // Label length check (must fit in 32-64 bytes after padding)
-    if label_bytes.len() > 64 {
-        return Err("Account label too long (max 64 characters)".to_string());
+    // Label length check
+    if label_bytes.is_empty() {
+        return Err("Account label cannot be empty".to_string());
     }
+    if label_bytes.len() > 63 {
+        return Err("Account label too long (max 63 characters)".to_string());
+    }
+
+    // To ensure minimum ciphertext size of 32 bytes, pad the label to at least 16 bytes
+    // This way, with PKCS7 padding, we'll get at least 32 bytes of ciphertext
+    // We use a simple length prefix approach: [len][label][zeros...]
+    let min_label_len = 16;
+    let padded_label = if label_bytes.len() < min_label_len {
+        let mut padded = vec![label_bytes.len() as u8]; // Store original length as first byte
+        padded.extend_from_slice(label_bytes);
+        // Pad with zeros to reach min_label_len
+        padded.resize(min_label_len, 0);
+        padded
+    } else {
+        // For longer labels, just prepend the length
+        let mut padded = vec![label_bytes.len() as u8];
+        padded.extend_from_slice(label_bytes);
+        padded
+    };
 
     // Generate random IV (16 bytes for CBC)
     let mut iv = [0u8; 16];
@@ -127,28 +147,34 @@ pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u
     type Aes256CbcEnc = cbc::Encryptor<Aes256>;
     let cipher = Aes256CbcEnc::new(shared_key.into(), &iv.into());
 
-    // Encrypt with padding (will be padded to next multiple of 16)
-    // Calculate padded length (next multiple of 16) with extra space for padding
-    let padded_len = ((label_bytes.len() + 16) / 16) * 16; // Add full block for padding
-    let mut buffer = vec![0u8; padded_len];
-    buffer[..label_bytes.len()].copy_from_slice(label_bytes);
+    // Calculate buffer size for PKCS7 padding
+    let padded_len = if padded_label.len() % 16 == 0 {
+        padded_label.len() + 16 // Add full padding block
+    } else {
+        ((padded_label.len() / 16) + 1) * 16 // Round up to next multiple of 16
+    };
 
+    let mut buffer = vec![0u8; padded_len];
+    buffer[..padded_label.len()].copy_from_slice(&padded_label);
+
+    // Encrypt with PKCS7 padding
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, label_bytes.len())
+        .encrypt_padded_mut::<Pkcs7>(&mut buffer, padded_label.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
-    // Verify the ciphertext is within expected range (32-64 bytes)
-    if ciphertext.len() < 32 || ciphertext.len() > 64 {
-        return Err(format!(
-            "Unexpected ciphertext length: {} (expected 32-64)",
-            ciphertext.len()
-        ));
-    }
-
-    // Combine IV and ciphertext (16 + (32-64) = 48-80 bytes total)
+    // Combine IV and ciphertext
     let mut result = Vec::with_capacity(16 + ciphertext.len());
     result.extend_from_slice(&iv);
     result.extend_from_slice(ciphertext);
+
+    // Verify the final result is within expected range (48-80 bytes as per validation)
+    // IV: 16 bytes + ciphertext: 32-64 bytes = 48-80 bytes total
+    if result.len() < 48 || result.len() > 80 {
+        return Err(format!(
+            "Unexpected encrypted result length: {} (expected 48-80)",
+            result.len()
+        ));
+    }
 
     Ok(result)
 }
@@ -227,7 +253,20 @@ pub fn decrypt_account_label(
         .decrypt_padded_mut::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
+    // Extract the actual label from our custom format: [len][label][padding...]
+    if decrypted.is_empty() {
+        return Err("Decrypted data is empty".to_string());
+    }
+
+    let label_len = decrypted[0] as usize;
+    if label_len == 0 || label_len > decrypted.len() - 1 {
+        return Err(format!("Invalid label length: {}", label_len));
+    }
+
+    // Extract the actual label bytes
+    let label_bytes = &decrypted[1..=label_len];
+
     // Convert to string
-    String::from_utf8(decrypted.to_vec())
+    String::from_utf8(label_bytes.to_vec())
         .map_err(|e| format!("Invalid UTF-8 in decrypted label: {}", e))
 }

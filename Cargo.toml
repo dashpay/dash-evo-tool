@@ -20,7 +20,6 @@ eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
 dash-sdk = { path = "../Dash/platform/packages/rs-sdk" }
 grovestark = { path = "../Dash/grovestark" }
-winterfell = { version = "0.13.1", features = ["concurrent"] }
 rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"

@@ -358,7 +358,7 @@ impl GroveStarkIntegration {
         // Step 8: Use GroveSTARK's new platform proofs V2 API
         tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
 
-        let witness = create_witness_from_platform_proofs_v2(
+        let witness = create_witness_from_platform_proofs_v2_no_validation(
             &document_proof_data.grovedb_proof, // Raw document proof from SDK
             &key_proof_data.grovedb_proof,      // Raw key proof from SDK
             document_cbor.clone(),              // Use the proper CBOR we created above

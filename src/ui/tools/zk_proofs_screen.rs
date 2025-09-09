@@ -907,9 +907,10 @@ impl ZKProofsScreen {
         let mut action = None;
         ui.horizontal(|ui| {
             if self.is_generating {
-                ui.spinner();
+                // Use Dash blue spinner instead of default
+                ui.add(egui::widgets::Spinner::new().color(DashColors::DASH_BLUE));
                 ui.vertical(|ui| {
-                    ui.label("🔄 Generating ZK proof...");
+                    ui.label("Generating ZK proof...");
                 });
             } else if ui
                 .add_enabled(can_generate, Button::new("🔐 Generate Proof"))
@@ -996,8 +997,9 @@ impl ZKProofsScreen {
         let mut action = None;
         ui.horizontal(|ui| {
             if self.is_verifying {
-                ui.spinner();
-                ui.label("Verifying proof...");
+                // Use Dash blue spinner instead of default
+                ui.add(egui::widgets::Spinner::new().color(DashColors::DASH_BLUE));
+                ui.label("Verifying ZK proof...");
             } else if ui
                 .add_enabled(can_verify, Button::new("✅ Verify Proof"))
                 .clicked()

@@ -490,6 +490,7 @@ impl ScreenLike for TopUpIdentityScreen {
 
                 if funding_method == FundingMethod::UseWalletBalance
                     || funding_method == FundingMethod::UseUnusedAssetLock
+                    || funding_method == FundingMethod::AddressWithQRCode
                 {
                     ui.heading(format!(
                         "{}. Choose the wallet to use to top up this identity.",

@@ -328,8 +328,12 @@ impl ZKProofsScreen {
             return AppAction::None;
         }
 
+        // Reset any prior messages/results before starting a new generation
         self.is_generating = true;
         self.error_message = None;
+        self.generated_proof = None;
+        self.proof_size = None;
+        self.generation_time = None;
 
         // Get the required IDs
         let identity_id = match &self.selected_identity {

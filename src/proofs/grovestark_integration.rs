@@ -1,7 +1,6 @@
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::platform::documents::document_query::DocumentQuery;
@@ -10,8 +9,8 @@ use dash_sdk::platform::{
 };
 use ed25519_dalek::{Signer, SigningKey};
 use grovestark::{
-    GroveSTARK, PublicInputs, STARKConfig, STARKProof, create_witness_from_platform_proofs_v2,
-    ed25519_helpers::create_witness_from_platform_proofs_v2_no_validation,
+    GroveSTARK, PublicInputs, STARKConfig, STARKProof, create_witness_from_platform_proofs,
+    ed25519_helpers::create_witness_from_platform_proofs_no_validation,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -358,7 +357,7 @@ impl GroveStarkIntegration {
         // Step 8: Use GroveSTARK's new platform proofs V2 API
         tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
 
-        let witness = create_witness_from_platform_proofs_v2_no_validation(
+        let witness = create_witness_from_platform_proofs_no_validation(
             &document_proof_data.grovedb_proof, // Raw document proof from SDK
             &key_proof_data.grovedb_proof,      // Raw key proof from SDK
             document_cbor.clone(),              // Use the proper CBOR we created above

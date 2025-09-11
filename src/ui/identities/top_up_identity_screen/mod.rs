@@ -25,7 +25,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
-use egui::{ComboBox, ScrollArea, Ui};
+use egui::{Color32, ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -143,11 +143,22 @@ impl TopUpIdentityScreen {
                         self.wallet = Some(wallet.clone());
                     }
                 }
+                ui.label(format!(
+                    "Using only loaded wallet: {}",
+                    self.wallet
+                        .as_ref()
+                        .and_then(|w| w.read().ok()?.alias.clone())
+                        .unwrap_or_else(|| "(unnamed wallet)".to_string())
+                ));
                 false
             } else {
                 false
             }
         } else {
+            ui.colored_label(
+                Color32::DARK_RED,
+                "No wallets available. Please create or import a wallet first.",
+            );
             false
         }
     }
@@ -298,22 +309,12 @@ impl TopUpIdentityScreen {
             ui.label("Amount (DASH):");
 
             // Render the text input field for the funding amount
-            let amount_input = ui
-                .add(egui::TextEdit::singleline(&mut self.funding_amount).desired_width(100.0))
+            ui.add(egui::TextEdit::singleline(&mut self.funding_amount).desired_width(100.0))
                 .lost_focus();
 
             self.funding_amount_exact = self.funding_amount.parse::<f64>().ok().map(|f| {
                 (f * 1e8) as u64 // Convert the amount to Duffs
             });
-
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if amount_input && enter_pressed {
-                // Optional: Validate the input when Enter is pressed
-                if self.funding_amount.parse::<f64>().is_err() {
-                    ui.label("Invalid amount. Please enter a valid number.");
-                }
-            }
         });
 
         ui.add_space(10.0);
@@ -530,6 +531,10 @@ impl ScreenLike for TopUpIdentityScreen {
                     }
                 }
             });
+
+            if let Some(error_message) = self.error_message.as_ref() {
+                ui.colored_label(Color32::DARK_RED, error_message);
+            }
 
             inner_action
         });

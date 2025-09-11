@@ -5,7 +5,7 @@ use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
-use egui::{Color32, Ui};
+use egui::Ui;
 use std::sync::Arc;
 
 impl TopUpIdentityScreen {
@@ -140,11 +140,6 @@ impl TopUpIdentityScreen {
             }
 
             ui.add_space(20.0);
-
-            if let Some(error_message) = self.error_message.as_ref() {
-                ui.colored_label(Color32::DARK_RED, error_message);
-                ui.add_space(20.0);
-            }
 
             match step {
                 WalletFundedScreenStep::ChooseFundingMethod => {}

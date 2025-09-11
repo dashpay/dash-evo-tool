@@ -453,6 +453,7 @@ impl ZKProofsScreen {
             *verifying_key.as_bytes()
         };
 
+        // Use fixed parameters for simplicity and consistency
         let task = BackendTask::ZKProofTask(ZKProofTask::GenerateProof {
             identity_id,
             contract_id,
@@ -461,8 +462,8 @@ impl ZKProofsScreen {
             key_id: selected_key.id(),
             private_key,
             public_key,
-            security_level: self.security_level,
-            grinding_bits: self.grinding_bits.max(16),
+            security_level: 128,
+            grinding_bits: 16,
         });
 
         AppAction::BackendTask(task)
@@ -846,58 +847,7 @@ impl ZKProofsScreen {
                 }
             });
 
-        ui.separator();
-
-        // Advanced Options
-        if render_collapsing_header(ui, "Advanced Options", self.advanced_expanded) {
-            self.advanced_expanded = !self.advanced_expanded;
-        }
-
-        if self.advanced_expanded {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Security Level:");
-                    crate::ui::helpers::info_icon_button(ui,
-                        "Security Level controls the overall soundness of the STARK proof system:\n\n\
-                        • 128-bit (recommended): Standard security level used in production. Provides 2^-128 probability \
-                        of accepting an invalid proof. This means an attacker would need approximately 2^128 attempts \
-                        to forge a proof.\n\n\
-                        • 192-bit: Ultra-high security for critical applications. Provides 2^-192 probability of accepting \
-                        an invalid proof. Results in:\n  \
-                          - 50% larger proofs\n  \
-                          - 2-3x longer generation time\n  \
-                          - More query rounds in the FRI protocol\n\n\
-                        The security level affects:\n\
-                        • Number of FRI query rounds (more rounds = higher security)\n\
-                        • Field extension degree\n\
-                        • Overall proof size\n\n\
-                        For reference: 128-bit security is considered quantum-resistant and exceeds \
-                        the security of Bitcoin's SHA-256.");
-                    ui.radio_value(&mut self.security_level, 128, "128-bit");
-                    ui.radio_value(&mut self.security_level, 192, "192-bit");
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Grinding Bits:");
-                    crate::ui::helpers::info_icon_button(ui,
-                        "Grinding Bits add proof-of-work to prevent proof forgery attacks:\n\n\
-                        • Default (16): Fast development setting requiring ~65k hash attempts (2^16). \
-                        Typically under a second on modern hardware.\n\n\
-                        • Lower (16-20): Faster generation but less resistant to grinding attacks.\n\n\
-                        • Higher (24-30): Stronger protection for high-value proofs; expect multi-second to minute-scale times.\n\n\
-                        How it works:\n\
-                        The prover must find a nonce where SHA3(proof||nonce) has the specified number \
-                        of leading zero bits. This throttles bulk proof attempts.\n\n\
-                        Example times (approximate):\n\
-                        • 16 bits: <1 second\n\
-                        • 20 bits: ~1 second\n\
-                        • 24 bits: ~5 seconds\n\
-                        • 28 bits: ~60 seconds\n\n\
-                        Note: Some deployments prefer 24 bits for production. This tool defaults to 16 for faster iteration.");
-                    ui.add(egui::Slider::new(&mut self.grinding_bits, 16..=30));
-                });
-            });
-        }
+        // Advanced Options removed to reduce confusion; defaults are used.
 
         ui.separator();
 

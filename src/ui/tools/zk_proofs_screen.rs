@@ -112,7 +112,8 @@ pub struct ZKProofsScreen {
     advanced_expanded: bool,
 
     // Error handling
-    error_message: Option<String>,
+    gen_error_message: Option<String>,
+    verify_error_message: Option<String>,
 }
 
 impl ZKProofsScreen {
@@ -193,7 +194,8 @@ impl ZKProofsScreen {
             is_verifying: false,
             verification_result: None,
             advanced_expanded: false,
-            error_message: None,
+            gen_error_message: None,
+            verify_error_message: None,
         }
     }
 
@@ -321,7 +323,7 @@ impl ZKProofsScreen {
         // Check if running in release mode
         #[cfg(debug_assertions)]
         {
-            self.error_message = Some(
+            self.gen_error_message = Some(
                 "ZK proof generation requires release mode. Please run with: cargo run --release"
                     .to_string(),
             );
@@ -330,7 +332,7 @@ impl ZKProofsScreen {
 
         // Reset any prior messages/results before starting a new generation
         self.is_generating = true;
-        self.error_message = None;
+        self.gen_error_message = None;
         self.generated_proof = None;
         self.proof_size = None;
         self.generation_time = None;
@@ -347,7 +349,7 @@ impl ZKProofsScreen {
                 id.clone()
             }
             None => {
-                self.error_message = Some("No identity selected".to_string());
+                self.gen_error_message = Some("No identity selected".to_string());
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -356,7 +358,7 @@ impl ZKProofsScreen {
         let selected_key = match &self.selected_key {
             Some(key) => key,
             None => {
-                self.error_message = Some("No key selected".to_string());
+                self.gen_error_message = Some("No key selected".to_string());
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -372,7 +374,7 @@ impl ZKProofsScreen {
                 id.clone()
             }
             None => {
-                self.error_message = Some("No contract selected".to_string());
+                self.gen_error_message = Some("No contract selected".to_string());
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -384,7 +386,7 @@ impl ZKProofsScreen {
                 doc_type.clone()
             }
             None => {
-                self.error_message = Some("No document type selected".to_string());
+                self.gen_error_message = Some("No document type selected".to_string());
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -400,7 +402,7 @@ impl ZKProofsScreen {
                 id.clone()
             }
             None => {
-                self.error_message = Some("No document selected".to_string());
+                self.gen_error_message = Some("No document selected".to_string());
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -424,19 +426,19 @@ impl ZKProofsScreen {
                 ) {
                     Ok(Some((_, private_key_bytes))) => private_key_bytes,
                     Ok(None) => {
-                        self.error_message = Some("Private key not found in storage".to_string());
+                        self.gen_error_message = Some("Private key not found in storage".to_string());
                         self.is_generating = false;
                         return AppAction::None;
                     }
                     Err(e) => {
-                        self.error_message = Some(format!("Failed to get private key: {}", e));
+                        self.gen_error_message = Some(format!("Failed to get private key: {}", e));
                         self.is_generating = false;
                         return AppAction::None;
                     }
                 }
             }
             None => {
-                self.error_message = Some("Qualified identity not found".to_string());
+                self.gen_error_message = Some("Qualified identity not found".to_string());
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -468,7 +470,7 @@ impl ZKProofsScreen {
 
     fn verify_proof(&mut self, _app_context: &AppContext) -> AppAction {
         self.is_verifying = true;
-        self.error_message = None;
+        self.verify_error_message = None;
         self.verification_result = None; // Clear any previous results
 
         // Parse the proof from pasted text
@@ -492,7 +494,7 @@ impl ZKProofsScreen {
                 AppAction::BackendTask(task)
             }
             Err(e) => {
-                self.error_message = Some(format!("Failed to parse proof: {}", e));
+                self.verify_error_message = Some(format!("Failed to parse proof: {}", e));
                 self.is_verifying = false;
                 AppAction::None
             }
@@ -926,7 +928,7 @@ impl ZKProofsScreen {
         }
 
         // Error Display
-        if let Some(error) = &self.error_message {
+        if let Some(error) = &self.gen_error_message {
             ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
         }
 
@@ -989,7 +991,7 @@ impl ZKProofsScreen {
         ui.separator();
 
         // Error Display (above the button)
-        if let Some(error) = &self.error_message {
+        if let Some(error) = &self.verify_error_message {
             ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
         }
 
@@ -1096,11 +1098,12 @@ impl ScreenLike for ZKProofsScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
-        // Always show error messages
-        self.error_message = Some(message.to_string());
-
-        // Reset loading states when an error occurs
+        // Only record errors and scope them to the active mode
         if message_type == crate::ui::MessageType::Error {
+            match self.mode {
+                ProofMode::Generate => self.gen_error_message = Some(message.to_string()),
+                ProofMode::Verify => self.verify_error_message = Some(message.to_string()),
+            }
             self.is_generating = false;
             self.is_verifying = false;
         }
@@ -1128,7 +1131,7 @@ impl ScreenLike for ZKProofsScreen {
                 self.generation_time = Some(std::time::Duration::from_millis(
                     proof_data.metadata.generation_time_ms,
                 ));
-                self.error_message = None;
+                self.gen_error_message = None;
             }
             BackendTaskSuccessResult::VerifiedZKProof(is_valid, proof_data) => {
                 self.is_verifying = false;
@@ -1152,7 +1155,7 @@ impl ScreenLike for ZKProofsScreen {
                         if is_valid { "VALID" } else { "INVALID" }
                     ),
                 });
-                self.error_message = None;
+                self.verify_error_message = None;
             }
             _ => {}
         }

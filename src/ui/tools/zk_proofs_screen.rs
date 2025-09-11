@@ -188,7 +188,7 @@ impl ZKProofsScreen {
             proof_size: None,
             generation_time: None,
             security_level: 128,
-            grinding_bits: 24,
+            grinding_bits: 16,
             proof_text: String::new(),
             is_verifying: false,
             verification_result: None,
@@ -460,7 +460,7 @@ impl ZKProofsScreen {
             private_key,
             public_key,
             security_level: self.security_level,
-            grinding_bits: self.grinding_bits,
+            grinding_bits: self.grinding_bits.max(16),
         });
 
         AppAction::BackendTask(task)
@@ -879,22 +879,20 @@ impl ZKProofsScreen {
                     ui.label("Grinding Bits:");
                     crate::ui::helpers::info_icon_button(ui,
                         "Grinding Bits add proof-of-work to prevent proof forgery attacks:\n\n\
-                        • Default (24): Production setting requiring ~16 million hash attempts (2^24). \
-                        Takes 1-5 seconds on modern hardware.\n\n\
-                        • Lower (10-15): Testing only. Faster generation but vulnerable to grinding attacks \
-                        where attackers could try multiple proof attempts.\n\n\
-                        • Higher (25-30): Maximum security for high-value proofs. May take 30+ seconds.\n\n\
+                        • Default (16): Fast development setting requiring ~65k hash attempts (2^16). \
+                        Typically under a second on modern hardware.\n\n\
+                        • Lower (16-20): Faster generation but less resistant to grinding attacks.\n\n\
+                        • Higher (24-30): Stronger protection for high-value proofs; expect multi-second to minute-scale times.\n\n\
                         How it works:\n\
                         The prover must find a nonce where SHA3(proof||nonce) has the specified number \
-                        of leading zero bits. This prevents attackers from generating many proof attempts \
-                        quickly.\n\n\
+                        of leading zero bits. This throttles bulk proof attempts.\n\n\
                         Example times (approximate):\n\
-                        • 16 bits: ~0.1 seconds\n\
+                        • 16 bits: <1 second\n\
                         • 20 bits: ~1 second\n\
-                        • 24 bits: ~5 seconds (default)\n\
+                        • 24 bits: ~5 seconds\n\
                         • 28 bits: ~60 seconds\n\n\
-                        Note: GroveSTARK defaults to 24 bits for production use.");
-                    ui.add(egui::Slider::new(&mut self.grinding_bits, 10..=30));
+                        Note: Some deployments prefer 24 bits for production. This tool defaults to 16 for faster iteration.");
+                    ui.add(egui::Slider::new(&mut self.grinding_bits, 16..=30));
                 });
             });
         }
@@ -1044,7 +1042,7 @@ impl ZKProofsScreen {
                                 ui.end_row();
 
                                 ui.label("Contract:");
-                                ui.label(Self::truncate_id(&result.contract_id));
+                                ui.label(&result.contract_id);
                                 ui.end_row();
 
                                 ui.label("Security Level:");

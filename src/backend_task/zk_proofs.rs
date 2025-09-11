@@ -20,8 +20,10 @@ pub async fn process_zk_proof_task(
                 private_key,
                 public_key,
                 security_level,
-                grinding_bits,
+                mut grinding_bits,
             } => {
+                // Enforce minimum grinding bits of 16
+                grinding_bits = grinding_bits.max(16);
                 let integration = GroveStarkIntegration::new(security_level, grinding_bits);
 
                 match integration

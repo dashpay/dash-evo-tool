@@ -605,11 +605,12 @@ impl ScreenLike for GroupActionsScreen {
                 && let (Some(contract), Some(identity)) = (
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
-                ) {
-                    action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::FetchActiveGroupActions(contract, identity),
-                    )));
-                }
+                )
+            {
+                action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchActiveGroupActions(contract, identity),
+                )));
+            }
 
             if let FetchGroupActionsStatus::Complete(group_actions) =
                 &self.fetch_group_actions_status

@@ -45,10 +45,12 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+type HeightHash = (u32, BlockHash);
+
 enum SelectedQRItem {
     SelectedSnapshot(QuorumSnapshot),
-    MNListDiff(MnListDiff),
-    QuorumEntry(QualifiedQuorumEntry),
+    MNListDiff(Box<MnListDiff>),
+    QuorumEntry(Box<QualifiedQuorumEntry>),
 }
 
 /// Screen for viewing MNList diffs (diffs in the masternode list and quorums)
@@ -575,7 +577,7 @@ impl MasternodeListDiffScreen {
         }
     }
 
-    fn parse_heights(&mut self) -> Result<((u32, BlockHash), (u32, BlockHash)), String> {
+    fn parse_heights(&mut self) -> Result<(HeightHash, HeightHash), String> {
         let base = if self.base_block_height.is_empty() {
             self.base_block_height = "0".to_string();
             match self
@@ -1283,9 +1285,9 @@ impl MasternodeListDiffScreen {
                     latest_masternode_list.known_height,
                     &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
                 )
-            {
-                self.error = Some(e.to_string());
-            }
+        {
+            self.error = Some(e.to_string());
+        }
 
         // Reset selections when new data is loaded
         self.selected_dml_diff_key = None;
@@ -1431,7 +1433,7 @@ impl MasternodeListDiffScreen {
         ui.heading("New Quorums");
 
         let should_get_heights = if let Some(selected_key) = self.selected_dml_diff_key {
-            if self.mnlist_diffs.get(&selected_key).is_some() {
+            if self.mnlist_diffs.contains_key(&selected_key) {
                 !self
                     .dml_diffs_with_cached_quorum_heights
                     .contains(&selected_key)
@@ -1608,23 +1610,24 @@ impl MasternodeListDiffScreen {
                         }
                     }
                 }
-                self
-                    .masternode_list_quorum_hash_cache.entry(mn_list.block_hash).or_insert_with(|| {
-                    let mut btree_map = BTreeMap::new();
-                    for (llmq_type, quorum_map) in &mn_list.quorums {
-                        let quorums_by_height = quorum_map
-                            .iter()
-                            .map(|(quorum_hash, quorum_entry)| {
-                                (
-                                    heights.get(quorum_hash).copied().unwrap_or_default(),
-                                    quorum_entry.clone(),
-                                )
-                            })
-                            .collect();
-                        btree_map.insert(*llmq_type, quorums_by_height);
-                    }
-                    btree_map
-                });
+                self.masternode_list_quorum_hash_cache
+                    .entry(mn_list.block_hash)
+                    .or_insert_with(|| {
+                        let mut btree_map = BTreeMap::new();
+                        for (llmq_type, quorum_map) in &mn_list.quorums {
+                            let quorums_by_height = quorum_map
+                                .iter()
+                                .map(|(quorum_hash, quorum_entry)| {
+                                    (
+                                        heights.get(quorum_hash).copied().unwrap_or_default(),
+                                        quorum_entry.clone(),
+                                    )
+                                })
+                                .collect();
+                            btree_map.insert(*llmq_type, quorums_by_height);
+                        }
+                        btree_map
+                    });
             }
         }
         if let Some(quorums) = masternode_block_hash
@@ -1746,48 +1749,45 @@ impl MasternodeListDiffScreen {
                 .masternode_list_engine
                 .masternode_lists
                 .contains_key(&selected_height)
-            {
-                ui.heading("Masternodes in List");
-                self.render_search_bar(ui);
-            }
+        {
+            ui.heading("Masternodes in List");
+            self.render_search_bar(ui);
+        }
         if let Some(selected_height) = self.selected_dml_height_key
             && let Some(mn_list) = self
                 .masternode_list_engine
                 .masternode_lists
                 .get(&selected_height)
-            {
-                let filtered_masternodes = self.filter_masternodes(mn_list);
-                ScrollArea::vertical()
-                    .id_salt("masternode_list_scroll_area")
-                    .show(ui, |ui| {
-                        for (pro_tx_hash, masternode) in filtered_masternodes.iter() {
-                            if ui
-                                .selectable_label(
-                                    self.selected_masternode_pro_tx_hash == Some(*pro_tx_hash),
-                                    format!(
-                                        "{} {} {}",
-                                        if masternode.masternode_list_entry.mn_type
-                                            == EntryMasternodeType::Regular
-                                        {
-                                            "MN"
-                                        } else {
-                                            "EN"
-                                        },
-                                        masternode
-                                            .masternode_list_entry
-                                            .service_address
-                                            .ip(),
-                                        pro_tx_hash.to_string().as_str().split_at(5).0
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                self.selected_quorum_hash_in_mnlist_diff = None;
-                                self.selected_masternode_pro_tx_hash = Some(*pro_tx_hash);
-                            }
+        {
+            let filtered_masternodes = self.filter_masternodes(mn_list);
+            ScrollArea::vertical()
+                .id_salt("masternode_list_scroll_area")
+                .show(ui, |ui| {
+                    for (pro_tx_hash, masternode) in filtered_masternodes.iter() {
+                        if ui
+                            .selectable_label(
+                                self.selected_masternode_pro_tx_hash == Some(*pro_tx_hash),
+                                format!(
+                                    "{} {} {}",
+                                    if masternode.masternode_list_entry.mn_type
+                                        == EntryMasternodeType::Regular
+                                    {
+                                        "MN"
+                                    } else {
+                                        "EN"
+                                    },
+                                    masternode.masternode_list_entry.service_address.ip(),
+                                    pro_tx_hash.to_string().as_str().split_at(5).0
+                                ),
+                            )
+                            .clicked()
+                        {
+                            self.selected_quorum_hash_in_mnlist_diff = None;
+                            self.selected_masternode_pro_tx_hash = Some(*pro_tx_hash);
                         }
-                    });
-            }
+                    }
+                });
+        }
     }
 
     fn render_masternode_list_page(&mut self, ui: &mut Ui) {
@@ -2097,22 +2097,23 @@ impl MasternodeListDiffScreen {
     fn render_mn_diff_chain_locks(&mut self, ui: &mut Ui) {
         ui.heading("MN list diff chain locks");
         if let Some(selected_key) = self.selected_dml_diff_key
-            && let Some(dml) = self.mnlist_diffs.get(&selected_key) {
-                ScrollArea::vertical()
-                    .id_salt("quorum_list_chain_locks_scroll_area")
-                    .show(ui, |ui| {
-                        for (index, sig) in dml.quorums_chainlock_signatures.iter().enumerate() {
-                            ui.group(|ui| {
-                                ui.label(format!("Signature #{}", index));
-                                ui.monospace(format!(
-                                    "Signature: {}",
-                                    hex::encode(sig.signature.as_bytes())
-                                ));
-                                ui.label(format!("Index Set: {:?}", sig.index_set));
-                            });
-                        }
-                    });
-            }
+            && let Some(dml) = self.mnlist_diffs.get(&selected_key)
+        {
+            ScrollArea::vertical()
+                .id_salt("quorum_list_chain_locks_scroll_area")
+                .show(ui, |ui| {
+                    for (index, sig) in dml.quorums_chainlock_signatures.iter().enumerate() {
+                        ui.group(|ui| {
+                            ui.label(format!("Signature #{}", index));
+                            ui.monospace(format!(
+                                "Signature: {}",
+                                hex::encode(sig.signature.as_bytes())
+                            ));
+                            ui.label(format!("Index Set: {:?}", sig.index_set));
+                        });
+                    }
+                });
+        }
     }
 
     fn save_mn_list_diff(&mut self) {
@@ -2188,7 +2189,7 @@ impl MasternodeListDiffScreen {
 
         // Determine the selected category and display corresponding information
         if let Some(selected_key) = self.selected_dml_diff_key {
-            if self.mnlist_diffs.get(&selected_key).is_some() {
+            if self.mnlist_diffs.contains_key(&selected_key) {
                 ScrollArea::vertical()
                     .id_salt("dml_items_scroll_area")
                     .show(ui, |ui| match selected_index {
@@ -2335,12 +2336,10 @@ impl MasternodeListDiffScreen {
                                     if let Ok(Some(sig)) = self.get_chain_lock_sig(&hash) {
                                         hex::encode(sig)
                                     } else {
-                                        "Error (Did not find chain lock sig for hash)"
-                                            .to_string()
+                                        "Error (Did not find chain lock sig for hash)".to_string()
                                     }
                                 } else {
-                                    "Error (Did not find block hash of 8 blocks ago)"
-                                        .to_string()
+                                    "Error (Did not find block hash of 8 blocks ago)".to_string()
                                 }
                             } else {
                                 "Error (Did not find quorum hash height)".to_string()
@@ -2483,19 +2482,18 @@ impl MasternodeListDiffScreen {
                 .masternode_lists
                 .get(&selected_height)
                 && let Some(selected_pro_tx_hash) = self.selected_masternode_pro_tx_hash
-                    && let Some(qualified_masternode) =
-                        mn_list.masternodes.get(&selected_pro_tx_hash)
-                    {
-                        let masternode = &qualified_masternode.masternode_list_entry;
-                        Frame::NONE
-                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                && let Some(qualified_masternode) = mn_list.masternodes.get(&selected_pro_tx_hash)
+            {
+                let masternode = &qualified_masternode.masternode_list_entry;
+                Frame::NONE
+                    .stroke(Stroke::new(1.0, Color32::BLACK))
+                    .show(ui, |ui| {
+                        ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
+                        ScrollArea::vertical()
+                            .id_salt("render_mn_details_2")
                             .show(ui, |ui| {
-                                ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().id_salt("render_mn_details_2").show(
-                                    ui,
-                                    |ui| {
-                                        ui.label(format!(
-                                            "Version: {}\n\
+                                ui.label(format!(
+                                    "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
                                      Service Address: {}:{}\n\
@@ -2505,44 +2503,42 @@ impl MasternodeListDiffScreen {
                                      Masternode Type: {}\n\
                                      Entry Hash: {}\n\
                                      Confirmed Hash hashed with ProRegTx: {}\n",
-                                            masternode.version,
-                                            masternode.pro_reg_tx_hash.reverse(),
-                                            match masternode.confirmed_hash {
-                                                None => "No confirmed hash".to_string(),
-                                                Some(confirmed_hash) =>
-                                                    confirmed_hash.reverse().to_string(),
-                                            },
-                                            masternode.service_address.ip(),
-                                            masternode.service_address.port(),
-                                            masternode.operator_public_key,
-                                            masternode.key_id_voting,
-                                            masternode.is_valid,
-                                            match masternode.mn_type {
-                                                EntryMasternodeType::Regular =>
-                                                    "Regular".to_string(),
-                                                EntryMasternodeType::HighPerformance {
-                                                    platform_http_port,
-                                                    platform_node_id,
-                                                } => {
-                                                    format!(
-                                                        "High Performance (Port: {}, Node ID: {})",
-                                                        platform_http_port, platform_node_id
-                                                    )
-                                                }
-                                            },
-                                            hex::encode(qualified_masternode.entry_hash),
-                                            if let Some(hash) = qualified_masternode
-                                                .confirmed_hash_hashed_with_pro_reg_tx
-                                            {
-                                                hash.reverse().to_string()
-                                            } else {
-                                                "None".to_string()
-                                            },
-                                        ));
+                                    masternode.version,
+                                    masternode.pro_reg_tx_hash.reverse(),
+                                    match masternode.confirmed_hash {
+                                        None => "No confirmed hash".to_string(),
+                                        Some(confirmed_hash) =>
+                                            confirmed_hash.reverse().to_string(),
                                     },
-                                );
+                                    masternode.service_address.ip(),
+                                    masternode.service_address.port(),
+                                    masternode.operator_public_key,
+                                    masternode.key_id_voting,
+                                    masternode.is_valid,
+                                    match masternode.mn_type {
+                                        EntryMasternodeType::Regular => "Regular".to_string(),
+                                        EntryMasternodeType::HighPerformance {
+                                            platform_http_port,
+                                            platform_node_id,
+                                        } => {
+                                            format!(
+                                                "High Performance (Port: {}, Node ID: {})",
+                                                platform_http_port, platform_node_id
+                                            )
+                                        }
+                                    },
+                                    hex::encode(qualified_masternode.entry_hash),
+                                    if let Some(hash) =
+                                        qualified_masternode.confirmed_hash_hashed_with_pro_reg_tx
+                                    {
+                                        hash.reverse().to_string()
+                                    } else {
+                                        "None".to_string()
+                                    },
+                                ));
                             });
-                    }
+                    });
+            }
         } else {
             ui.label("Select a block height and Masternode.");
         }
@@ -2601,37 +2597,37 @@ impl MasternodeListDiffScreen {
                     && let Some(path) = FileDialog::new()
                         .add_filter("Data Files", &["dat"])
                         .pick_file()
-                    {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                // Let's first try consensus decode
-                                match QRInfo::consensus_decode(&mut std::io::Cursor::new(&bytes)) {
-                                    Ok(qr_info) => {
-                                        let key = qr_info.mn_list_diff_tip.block_hash;
-                                        self.qr_infos.insert(key, qr_info.clone());
-                                        self.feed_qr_info_and_get_dmls(qr_info, None);
-                                    }
-                                    Err(_) => {
-                                        match bincode::decode_from_slice::<QRInfo, _>(
-                                            &bytes,
-                                            bincode::config::standard(),
-                                        ) {
-                                            Ok((qr_info, _)) => {
-                                                let key = qr_info.mn_list_diff_tip.block_hash;
-                                                self.qr_infos.insert(key, qr_info);
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to decode QRInfo: {}", e);
-                                            }
+                {
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            // Let's first try consensus decode
+                            match QRInfo::consensus_decode(&mut std::io::Cursor::new(&bytes)) {
+                                Ok(qr_info) => {
+                                    let key = qr_info.mn_list_diff_tip.block_hash;
+                                    self.qr_infos.insert(key, qr_info.clone());
+                                    self.feed_qr_info_and_get_dmls(qr_info, None);
+                                }
+                                Err(_) => {
+                                    match bincode::decode_from_slice::<QRInfo, _>(
+                                        &bytes,
+                                        bincode::config::standard(),
+                                    ) {
+                                        Ok((qr_info, _)) => {
+                                            let key = qr_info.mn_list_diff_tip.block_hash;
+                                            self.qr_infos.insert(key, qr_info);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to decode QRInfo: {}", e);
                                         }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Failed to read file: {}", e);
-                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read file: {}", e);
                         }
                     }
+                }
                 return;
             };
             selected_qr_info.clone()
@@ -3225,7 +3221,8 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(string);
-                self.selected_qr_item = Some(SelectedQRItem::MNListDiff((*mn_diff4c).clone()));
+                self.selected_qr_item =
+                    Some(SelectedQRItem::MNListDiff(Box::new((*mn_diff4c).clone())));
             }
         }
 
@@ -3235,7 +3232,7 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(name.to_string());
-                self.selected_qr_item = Some(SelectedQRItem::MNListDiff((*diff).clone()));
+                self.selected_qr_item = Some(SelectedQRItem::MNListDiff(Box::new((*diff).clone())));
             }
         });
     }
@@ -3257,11 +3254,7 @@ impl MasternodeListDiffScreen {
                 self.masternode_list_engine
                     .rotated_quorums_per_cycle
                     .keys()
-                    .map(|key| format!(
-                        "{}, {}",
-                        self.get_height_or_error_as_string(key),
-                        key
-                    ))
+                    .map(|key| format!("{}, {}", self.get_height_or_error_as_string(key), key))
                     .join(", ")
             ));
             return;
@@ -3292,7 +3285,8 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(index.to_string());
-                self.selected_qr_item = Some(SelectedQRItem::QuorumEntry(commitment.clone()));
+                self.selected_qr_item =
+                    Some(SelectedQRItem::QuorumEntry(Box::new(commitment.clone())));
             }
         }
     }
@@ -3322,7 +3316,7 @@ impl MasternodeListDiffScreen {
                 .clicked()
             {
                 self.selected_qr_list_index = Some(index.to_string());
-                self.selected_qr_item = Some(SelectedQRItem::MNListDiff(diff.clone()));
+                self.selected_qr_item = Some(SelectedQRItem::MNListDiff(Box::new(diff.clone())));
             }
         }
     }
@@ -3427,15 +3421,16 @@ impl MasternodeListDiffScreen {
 
                                         // Show tooltip on hover if there's an error message
                                         if let Some(tooltip) = tooltip_text
-                                            && status_response.hovered() {
-                                                ui.ctx().debug_painter().text(
-                                                    status_response.rect.center(),
-                                                    egui::Align2::CENTER_CENTER,
-                                                    tooltip,
-                                                    egui::FontId::proportional(14.0),
-                                                    egui::Color32::RED,
-                                                );
-                                            }
+                                            && status_response.hovered()
+                                        {
+                                            ui.ctx().debug_painter().text(
+                                                status_response.rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                tooltip,
+                                                egui::FontId::proportional(14.0),
+                                                egui::Color32::RED,
+                                            );
+                                        }
 
                                         ui.end_row();
                                     }
@@ -3794,39 +3789,39 @@ impl MasternodeListDiffScreen {
                 .masternode_list_engine
                 .masternode_lists
                 .last_key_value()
-                && *base_block_height < chain_lock.block_height {
-                    let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None)
-                    {
-                        Ok(p2p_handler) => p2p_handler,
-                        Err(e) => {
-                            self.error = Some(e);
-                            return;
-                        }
-                    };
-
-                    let Some(qr_info) = self.fetch_rotated_quorum_info(
-                        &mut p2p_handler,
-                        masternode_list.block_hash,
-                        chain_lock.block_hash.to_byte_array().into(),
-                    ) else {
-                        return;
-                    };
-
-                    self.feed_qr_info_and_get_dmls(qr_info, Some(p2p_handler));
-
-                    // self.fetch_single_dml(
-                    //     &mut p2p_handler,
-                    //     masternode_list.block_hash,
-                    //     *base_block_height,
-                    //     BlockHash::from_byte_array(chain_lock.block_hash.to_byte_array()),
-                    //     chain_lock.block_height,
-                    //     true,
-                    // );
-
-                    // Reset selections when new data is loaded
-                    self.selected_dml_diff_key = None;
-                    self.selected_quorum_in_diff_index = None;
+            && *base_block_height < chain_lock.block_height
+        {
+            let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
+                Ok(p2p_handler) => p2p_handler,
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
                 }
+            };
+
+            let Some(qr_info) = self.fetch_rotated_quorum_info(
+                &mut p2p_handler,
+                masternode_list.block_hash,
+                chain_lock.block_hash.to_byte_array().into(),
+            ) else {
+                return;
+            };
+
+            self.feed_qr_info_and_get_dmls(qr_info, Some(p2p_handler));
+
+            // self.fetch_single_dml(
+            //     &mut p2p_handler,
+            //     masternode_list.block_hash,
+            //     *base_block_height,
+            //     BlockHash::from_byte_array(chain_lock.block_hash.to_byte_array()),
+            //     chain_lock.block_height,
+            //     true,
+            // );
+
+            // Reset selections when new data is loaded
+            self.selected_dml_diff_key = None;
+            self.selected_quorum_in_diff_index = None;
+        }
         self.chain_locked_blocks
             .insert(chain_lock.block_height, (block, chain_lock, valid));
     }

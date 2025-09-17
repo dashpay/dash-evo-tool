@@ -249,14 +249,15 @@ impl UpdateDataContractScreen {
         }
 
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
-            && let ContractTask::UpdateDataContract(_, _, _) = **contract_task {
-                self.broadcast_status = BroadcastStatus::FetchingNonce(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                );
-            }
+            && let ContractTask::UpdateDataContract(_, _, _) = **contract_task
+        {
+            self.broadcast_status = BroadcastStatus::FetchingNonce(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
+        }
 
         app_action
     }

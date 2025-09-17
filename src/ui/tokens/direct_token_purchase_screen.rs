@@ -342,9 +342,9 @@ impl ScreenLike for PurchaseTokenScreen {
             && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
-            {
-                self.identity_token_info.identity = updated_identity;
-            }
+        {
+            self.identity_token_info.identity = updated_identity;
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

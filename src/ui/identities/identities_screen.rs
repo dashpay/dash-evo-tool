@@ -124,9 +124,10 @@ impl IdentitiesScreen {
                 break;
             }
             if let Some(current_idx) = lock.get_index_of(&id)
-                && current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
+                && current_idx != desired_idx
+            {
+                lock.swap_indices(current_idx, desired_idx);
+            }
         }
     }
 
@@ -199,12 +200,12 @@ impl IdentitiesScreen {
         if let Some(master_identity_public_key) = qi.private_keys.find_master_key()
             && let Some(wallet_derivation_path) =
                 &master_identity_public_key.in_wallet_at_derivation_path
-                && let Some(alias) = self
-                    .wallet_seed_hash_cache
-                    .get(&wallet_derivation_path.wallet_seed_hash)
-                {
-                    return alias.clone();
-                }
+            && let Some(alias) = self
+                .wallet_seed_hash_cache
+                .get(&wallet_derivation_path.wallet_seed_hash)
+        {
+            return alias.clone();
+        }
         "".to_owned()
     }
 
@@ -269,9 +270,10 @@ impl IdentitiesScreen {
     fn move_identity_up(&mut self, identity_id: &Identifier) {
         let mut lock = self.identities.lock().unwrap();
         if let Some(idx) = lock.get_index_of(identity_id)
-            && idx > 0 {
-                lock.swap_indices(idx, idx - 1);
-            }
+            && idx > 0
+        {
+            lock.swap_indices(idx, idx - 1);
+        }
         drop(lock);
         self.save_current_order();
     }
@@ -280,9 +282,10 @@ impl IdentitiesScreen {
     fn move_identity_down(&mut self, identity_id: &Identifier) {
         let mut lock = self.identities.lock().unwrap();
         if let Some(idx) = lock.get_index_of(identity_id)
-            && idx + 1 < lock.len() {
-                lock.swap_indices(idx, idx + 1);
-            }
+            && idx + 1 < lock.len()
+        {
+            lock.swap_indices(idx, idx + 1);
+        }
         drop(lock);
         self.save_current_order();
     }
@@ -303,9 +306,10 @@ impl IdentitiesScreen {
         for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
             let id = qi.identity.id();
             if let Some(current_idx) = lock.get_index_of(&id)
-                && current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
+                && current_idx != desired_idx
+            {
+                lock.swap_indices(current_idx, desired_idx);
+            }
         }
     }
 

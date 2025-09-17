@@ -244,8 +244,9 @@ impl AppState {
         let chosen_network = settings.network;
         network_chooser_screen.current_network = chosen_network;
 
-        if chosen_network == Network::Testnet && testnet_app_context.is_some() {
-            let testnet_app_context = testnet_app_context.as_ref().unwrap();
+        if let (Network::Testnet, Some(testnet_app_context)) =
+            (chosen_network, testnet_app_context.as_ref())
+        {
             identities_screen = IdentitiesScreen::new(testnet_app_context);
             dpns_active_contests_screen =
                 DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
@@ -268,8 +269,9 @@ impl AppState {
                 TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
-        } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
-            let devnet_app_context = devnet_app_context.as_ref().unwrap();
+        } else if let (Network::Devnet, Some(devnet_app_context)) =
+            (chosen_network, devnet_app_context.as_ref())
+        {
             identities_screen = IdentitiesScreen::new(devnet_app_context);
             dpns_active_contests_screen =
                 DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
@@ -292,8 +294,9 @@ impl AppState {
                 TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
-        } else if chosen_network == Network::Regtest && local_app_context.is_some() {
-            let local_app_context = local_app_context.as_ref().unwrap();
+        } else if let (Network::Regtest, Some(local_app_context)) =
+            (chosen_network, local_app_context.as_ref())
+        {
             identities_screen = IdentitiesScreen::new(local_app_context);
             dpns_active_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
             dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
@@ -618,9 +621,10 @@ impl App for AppState {
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
         if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv()
-            && let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
-                *status = event;
-            }
+            && let Ok(mut status) = self.current_app_context().zmq_connection_status.lock()
+        {
+            *status = event;
+        }
 
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {

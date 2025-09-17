@@ -69,8 +69,9 @@ impl AppContext {
 
         let wallets = self.wallets.read().unwrap().clone();
 
-        if identity_type != IdentityType::User && owner_private_key_bytes.is_some() {
-            let owner_private_key_bytes = owner_private_key_bytes.unwrap();
+        if identity_type != IdentityType::User
+            && let Some(owner_private_key_bytes) = owner_private_key_bytes
+        {
             let key =
                 self.verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)?;
             let key_id = key.id();
@@ -89,8 +90,9 @@ impl AppContext {
             );
         }
 
-        if identity_type != IdentityType::User && payout_address_private_key_bytes.is_some() {
-            let payout_address_private_key_bytes = payout_address_private_key_bytes.unwrap();
+        if identity_type != IdentityType::User
+            && let Some(payout_address_private_key_bytes) = payout_address_private_key_bytes
+        {
             let key = self.verify_payout_address_key_exists_on_identity(
                 &identity,
                 &payout_address_private_key_bytes,
@@ -112,46 +114,49 @@ impl AppContext {
         }
 
         // If the identity type is not a User, and we have a voting private key, verify it
-        let associated_voter_identity = if identity_type != IdentityType::User
-            && voting_private_key_bytes.is_some()
-        {
-            let voting_private_key_bytes = voting_private_key_bytes.unwrap();
-            if let Ok(private_key) =
-                PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
-            {
-                // Make the vote identifier
-                let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
-                let voter_identifier =
-                    Identifier::create_voter_identifier(identity_id.as_bytes(), address.as_ref());
-
-                // Fetch the voter identifier
-                let voter_identity =
-                    match Identity::fetch_by_identifier(sdk, voter_identifier).await {
-                        Ok(Some(identity)) => identity,
-                        Ok(None) => return Err("Voter Identity not found".to_string()),
-                        Err(e) => return Err(format!("Error fetching voter identity: {}", e)),
-                    };
-
-                let key = self.verify_voting_key_exists_on_identity(
-                    &voter_identity,
-                    &voting_private_key_bytes,
-                )?;
-                let qualified_key =
-                    QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
-                        key.clone(),
-                        self.network,
-                        &wallets.values().collect::<Vec<_>>(),
+        let associated_voter_identity = if identity_type != IdentityType::User {
+            if let Some(voting_private_key_bytes) = voting_private_key_bytes {
+                if let Ok(private_key) =
+                    PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
+                {
+                    // Make the vote identifier
+                    let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
+                    let voter_identifier = Identifier::create_voter_identifier(
+                        identity_id.as_bytes(),
+                        address.as_ref(),
                     );
-                encrypted_private_keys.insert(
-                    (PrivateKeyOnVoterIdentity, key.id()),
-                    (
-                        qualified_key,
-                        PrivateKeyData::Clear(voting_private_key_bytes),
-                    ),
-                );
-                Some((voter_identity, key))
+
+                    // Fetch the voter identifier
+                    let voter_identity =
+                        match Identity::fetch_by_identifier(sdk, voter_identifier).await {
+                            Ok(Some(identity)) => identity,
+                            Ok(None) => return Err("Voter Identity not found".to_string()),
+                            Err(e) => return Err(format!("Error fetching voter identity: {}", e)),
+                        };
+
+                    let key = self.verify_voting_key_exists_on_identity(
+                        &voter_identity,
+                        &voting_private_key_bytes,
+                    )?;
+                    let qualified_key =
+                        QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                            key.clone(),
+                            self.network,
+                            &wallets.values().collect::<Vec<_>>(),
+                        );
+                    encrypted_private_keys.insert(
+                        (PrivateKeyOnVoterIdentity, key.id()),
+                        (
+                            qualified_key,
+                            PrivateKeyData::Clear(voting_private_key_bytes),
+                        ),
+                    );
+                    Some((voter_identity, key))
+                } else {
+                    return Err("Voting private key is not valid".to_string());
+                }
             } else {
-                return Err("Voting private key is not valid".to_string());
+                None
             }
         } else {
             None

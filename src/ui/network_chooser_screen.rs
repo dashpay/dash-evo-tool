@@ -607,36 +607,33 @@ impl NetworkChooserScreen {
             if ui.button("Save Password").clicked() {
                 // 1) Reload the config
                 if let Ok(mut config) = Config::load()
-                    && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone() {
-                        let updated_local_config = local_cfg
-                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
-                        config.update_config_for_network(
-                            Network::Regtest,
-                            updated_local_config.clone(),
-                        );
-                        if let Err(e) = config.save() {
-                            eprintln!("Failed to save config to .env: {e}");
+                    && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+                {
+                    let updated_local_config = local_cfg
+                        .update_core_rpc_password(self.local_network_dashmate_password.clone());
+                    config
+                        .update_config_for_network(Network::Regtest, updated_local_config.clone());
+                    if let Err(e) = config.save() {
+                        eprintln!("Failed to save config to .env: {e}");
+                    }
+
+                    // 5) Update our local AppContext in memory
+                    if let Some(local_app_context) = &self.local_app_context {
+                        {
+                            // Overwrite the config field with the new password
+                            let mut cfg_lock = local_app_context.config.write().unwrap();
+                            *cfg_lock = updated_local_config;
                         }
 
-                        // 5) Update our local AppContext in memory
-                        if let Some(local_app_context) = &self.local_app_context {
-                            {
-                                // Overwrite the config field with the new password
-                                let mut cfg_lock = local_app_context.config.write().unwrap();
-                                *cfg_lock = updated_local_config;
-                            }
-
-                            // 6) Re-init the client & sdk from the updated config
-                            if let Err(e) =
-                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
-                            {
-                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
-                            } else {
-                                // Trigger SwitchNetworks
-                                app_action = AppAction::SwitchNetwork(Network::Regtest);
-                            }
+                        // 6) Re-init the client & sdk from the updated config
+                        if let Err(e) = Arc::clone(local_app_context).reinit_core_client_and_sdk() {
+                            eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                        } else {
+                            // Trigger SwitchNetworks
+                            app_action = AppAction::SwitchNetwork(Network::Regtest);
                         }
                     }
+                }
             }
         } else {
             ui.label("");

@@ -270,9 +270,9 @@ impl ScreenLike for ClaimTokensScreen {
             && let Some(updated) = all
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
-            {
-                self.identity = updated;
-            }
+        {
+            self.identity = updated;
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

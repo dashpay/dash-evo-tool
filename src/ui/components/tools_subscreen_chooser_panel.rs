@@ -10,9 +10,9 @@ pub enum ToolsSubscreen {
     TransactionViewer,
     DocumentViewer,
     ProofViewer,
-    MasternodeListDiff,
     ContractViewer,
     PlatformInfo,
+    MasternodeListDiff,
 }
 
 impl ToolsSubscreen {
@@ -37,10 +37,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::ProofLog,
         ToolsSubscreen::ProofViewer,
         ToolsSubscreen::TransactionViewer,
-        ToolsSubscreen::MasternodeListDiff,
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
         ToolsSubscreen::PlatformInfo,
+        ToolsSubscreen::MasternodeListDiff,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -50,9 +50,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::TransactionViewer
             }
             ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
-            ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
-                ToolsSubscreen::MasternodeListDiff
-            }
             ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
                 ToolsSubscreen::DocumentViewer
             }
@@ -60,6 +57,9 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::ContractViewer
             }
             ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
+            ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
+                ToolsSubscreen::MasternodeListDiff
+            }
             _ => ToolsSubscreen::ProofLog,
         },
         _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
@@ -139,10 +139,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                             RootScreenType::RootScreenToolsProofVisualizerScreen,
                                         )
                                     }
-                                    ToolsSubscreen::MasternodeListDiff => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsMasternodeListDiffScreen)
-                                    }
                                     ToolsSubscreen::DocumentViewer => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsDocumentVisualizerScreen,
@@ -157,6 +153,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsPlatformInfoScreen,
                                         )
+                                    }
+                                    ToolsSubscreen::MasternodeListDiff => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsMasternodeListDiffScreen)
                                     }
                                 }
                             }

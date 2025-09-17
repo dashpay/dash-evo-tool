@@ -38,7 +38,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use eframe::egui::{self, Context, ScrollArea, Ui};
-use egui::{Align, Color32, Frame, Layout, Stroke, TextEdit, Vec2};
+use egui::{Align, Color32, Frame, Layout, Margin, RichText, Stroke, TextEdit, Vec2};
 use itertools::Itertools;
 use rfd::FileDialog;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -898,6 +898,7 @@ impl MasternodeListDiffScreen {
         self.mnlist_diffs
             .insert((base_block_height, block_height), list_diff);
     }
+
     // fn fetch_range_dml(&mut self, step: u32, include_at_minus_8: bool, count: u32) {
     //     let ((base_block_height, base_block_hash), (block_height, block_hash)) =
     //         match self.parse_heights() {
@@ -1025,6 +1026,7 @@ impl MasternodeListDiffScreen {
     //     self.selected_quorum_in_diff_index = None;
     // }
 
+    /// Clear all data and reset to initial state
     fn clear(&mut self) {
         self.masternode_list_engine =
             MasternodeListEngine::default_for_network(self.app_context.network);
@@ -1038,8 +1040,10 @@ impl MasternodeListDiffScreen {
         self.selected_quorum_hash_in_mnlist_diff = None;
         self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
+        self.error = None;
     }
 
+    /// Clear all data except the oldest MNList diff starting from height 0
     fn clear_keep_base(&mut self) {
         let (engine, start_end_diff) =
             if let Some(((start, end), oldest_diff)) = self.mnlist_diffs.first_key_value() {
@@ -1311,7 +1315,7 @@ impl MasternodeListDiffScreen {
                     if ui.button("Get single end QR info").clicked() {
                         self.fetch_end_qr_info();
                     }
-                    if ui.button("Get DMLs wo/ rotation").clicked() {
+                    if ui.button("Get DMLs w/o rotation").clicked() {
                         self.fetch_end_dml_diff(true);
                     }
                     if ui.button("Get DMLs w/ rotation").clicked() {
@@ -1323,10 +1327,20 @@ impl MasternodeListDiffScreen {
                     if ui.button("Get chain locks").clicked() {
                         self.fetch_chain_locks();
                     }
-                    if ui.button("Clear").clicked() {
+                    if ui
+                        .button("Clear")
+                        .on_hover_text("Clear all data and reset to initial state.")
+                        .clicked()
+                    {
                         self.clear();
                     }
-                    if ui.button("Clear keep base").clicked() {
+                    if ui
+                        .button("Clear keep base")
+                        .on_hover_text(
+                            "Clear all data except the oldest MNList diff starting from height 0.",
+                        )
+                        .clicked()
+                    {
                         self.clear_keep_base();
                     }
                 });
@@ -1798,40 +1812,48 @@ impl MasternodeListDiffScreen {
     }
 
     fn render_masternode_list_page(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            // Left column (Fixed width: 120px)
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(120.0, 1000.0),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    self.render_masternode_lists(ui);
-                },
-            );
+        // Use a left-to-right layout that fills the available height so columns can expand fully
+        let full_w = ui.available_width();
+        let full_h = ui.available_height();
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(full_w, full_h),
+            Layout::left_to_right(Align::Min),
+            |ui| {
+                // Left column (Fixed width: 120px)
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(120.0, ui.available_height()),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        self.render_masternode_lists(ui);
+                    },
+                );
 
-            ui.separator();
+                ui.separator();
 
-            // Middle column (50% of the remaining space)
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(ui.available_width() * 0.4, 1000.0),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    self.render_selected_masternode_list_items(ui);
-                },
-            );
+                // Middle column (40% of the remaining space)
+                let mid_w = ui.available_width() * 0.4;
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(mid_w, ui.available_height()),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        self.render_selected_masternode_list_items(ui);
+                    },
+                );
 
-            // Right column (Remaining space)
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(ui.available_width(), ui.available_height()),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    if self.selected_quorum_hash_in_mnlist_diff.is_some() {
-                        self.render_quorum_details(ui);
-                    } else if self.selected_masternode_pro_tx_hash.is_some() {
-                        self.render_mn_details(ui);
-                    }
-                },
-            );
-        });
+                // Right column (Remaining space)
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(ui.available_width(), ui.available_height()),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        if self.selected_quorum_hash_in_mnlist_diff.is_some() {
+                            self.render_quorum_details(ui);
+                        } else if self.selected_masternode_pro_tx_hash.is_some() {
+                            self.render_mn_details(ui);
+                        }
+                    },
+                );
+            },
+        );
     }
 
     fn render_selected_tab(&mut self, ui: &mut Ui) {
@@ -1885,15 +1907,34 @@ impl MasternodeListDiffScreen {
 
         ui.separator();
 
-        match self.selected_tab {
-            0 => self.render_masternode_list_page(ui),
-            1 => self.render_quorums(ui),
-            2 => self.render_diffs(ui),
-            3 => self.render_qr_info(ui),
-            4 => self.render_engine_known_blocks(ui),
-            5 => self.render_known_chain_lock_sigs(ui),
-            6 => self.render_core_items(ui),
-            _ => {}
+        // Scroll only the content below the tab row; for the Masternode Lists page,
+        // let its own columns manage scrolling independently.
+        if self.selected_tab == 0 {
+            // Make the Masternode Lists section occupy remaining height
+            let full_w = ui.available_width();
+            let full_h = ui.available_height();
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(full_w, full_h),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    self.render_masternode_list_page(ui);
+                },
+            );
+        } else {
+            ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .id_salt("dml_tab_content_scroll")
+                .show(ui, |ui| {
+                    match self.selected_tab {
+                        1 => self.render_quorums(ui),
+                        2 => self.render_diffs(ui),
+                        3 => self.render_qr_info(ui),
+                        4 => self.render_engine_known_blocks(ui),
+                        5 => self.render_known_chain_lock_sigs(ui),
+                        6 => self.render_core_items(ui),
+                        _ => {}
+                    }
+                });
         }
 
         // Render the confirmation popup if needed
@@ -3884,13 +3925,30 @@ impl ScreenLike for MasternodeListDiffScreen {
 
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
-        // Styled central panel consistent with other tool screens
+        // Styled central panel consistent with other tool screens; scroll only below tab row
         action |= island_central_panel(ctx, |ui| {
             // Top: input area (base/end block height + Get DMLs button)
             self.render_input_area(ui);
 
-            if let Some(error) = &self.error {
-                ui.label(error);
+            if let Some(error_msg) = self.error.clone() {
+                let message_color = Color32::from_rgb(255, 100, 100);
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(error_msg).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.error = None;
+                                }
+                            });
+                        });
+                });
+                ui.add_space(10.0);
             }
 
             ui.separator();

@@ -824,7 +824,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
                     MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::from_rgb(100, 255, 100),
+                    MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
                 // Display message in a prominent frame

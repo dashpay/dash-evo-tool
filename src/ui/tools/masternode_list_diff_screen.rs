@@ -143,6 +143,7 @@ pub struct MasternodeListDiffScreen {
     selected_qr_item: Option<SelectedQRItem>,
     pending: Option<PendingTask>,
     queued_task: Option<BackendTask>,
+    message: Option<(String, MessageType)>,
 }
 
 impl MasternodeListDiffScreen {
@@ -246,6 +247,7 @@ impl MasternodeListDiffScreen {
             chain_lock_reversed_sig_cache: Default::default(),
             pending: None,
             queued_task: None,
+            message: None,
         }
     }
 
@@ -273,10 +275,10 @@ impl MasternodeListDiffScreen {
         // Compute target validation heights (h-8)
         let mut heights: BTreeSet<u32> = BTreeSet::new();
         for quorum_hash in &hashes {
-            if let Ok(h) = self.get_height(quorum_hash) {
-                if h >= 8 {
-                    heights.insert(h - 8);
-                }
+            if let Ok(h) = self.get_height(quorum_hash)
+                && h >= 8
+            {
+                heights.insert(h - 8);
             }
         }
         if heights.is_empty() {
@@ -399,6 +401,7 @@ impl MasternodeListDiffScreen {
         Ok(height)
     }
 
+    #[allow(dead_code)]
     fn get_chain_lock_sig_and_cache(
         &mut self,
         block_hash: &BlockHash,
@@ -494,6 +497,7 @@ impl MasternodeListDiffScreen {
         Ok(*block_hash)
     }
 
+    #[allow(dead_code)]
     fn get_block_hash_and_cache(&mut self, height: CoreBlockHeight) -> Result<BlockHash, String> {
         // First, try to get the hash from masternode_list_engine's block_container.
         if let Some(block_hash) = self
@@ -1117,6 +1121,7 @@ impl MasternodeListDiffScreen {
         self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
         self.error = None;
+        self.message = None;
         // Also clear known chain lock signatures caches
         self.chain_lock_sig_cache.clear();
         self.chain_lock_reversed_sig_cache.clear();
@@ -1163,6 +1168,7 @@ impl MasternodeListDiffScreen {
         self.selected_quorum_hash_in_mnlist_diff = None;
         self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
+        self.message = None;
         // Clear chain lock signatures caches as these are independent of the retained base diff
         self.chain_lock_sig_cache.clear();
         self.chain_lock_reversed_sig_cache.clear();
@@ -1171,6 +1177,7 @@ impl MasternodeListDiffScreen {
     /// Fetch the MNList diffs between the given base and end block heights.
     /// In a real implementation, you would replace the dummy function below with a call to
     /// dash_core’s DB (or other data source) to retrieve the MNList diffs.
+    #[allow(dead_code)]
     fn fetch_end_dml_diff(&mut self, validate_quorums: bool) {
         let ((base_block_height, base_block_hash), (block_height, block_hash)) =
             match self.parse_heights() {
@@ -1203,6 +1210,7 @@ impl MasternodeListDiffScreen {
         self.selected_quorum_in_diff_index = None;
     }
 
+    #[allow(dead_code)]
     fn fetch_end_qr_info(&mut self) {
         let ((_, base_block_hash), (_, block_hash)) = match self.parse_heights() {
             Ok(a) => a,
@@ -1227,6 +1235,7 @@ impl MasternodeListDiffScreen {
         self.selected_quorum_in_diff_index = None;
     }
 
+    #[allow(dead_code)]
     fn fetch_chain_locks(&mut self) {
         let ((base_block_height, _base_block_hash), (block_height, _block_hash)) =
             match self.parse_heights() {
@@ -1260,6 +1269,7 @@ impl MasternodeListDiffScreen {
         }
     }
 
+    #[allow(dead_code)]
     fn sync(&mut self) {
         if !self.syncing {
             self.syncing = true;
@@ -1267,6 +1277,7 @@ impl MasternodeListDiffScreen {
         }
     }
 
+    #[allow(dead_code)]
     fn fetch_end_qr_info_with_dmls(&mut self) {
         let ((_, base_block_hash), (_, block_hash)) = match self.parse_heights() {
             Ok(a) => a,
@@ -1392,77 +1403,77 @@ impl MasternodeListDiffScreen {
                     ui.add(TextEdit::singleline(&mut self.base_block_height).desired_width(80.0));
                     ui.label("End Block Height:");
                     ui.add(TextEdit::singleline(&mut self.end_block_height).desired_width(80.0));
-                    if ui.button("Get single end DML diff").clicked() {
-                        if let Ok(((base_h, base_hash), (h, hash))) = self.parse_heights() {
-                            self.pending = Some(PendingTask::DmlDiffSingle);
-                            action = AppAction::BackendTask(BackendTask::MnListTask(
-                                MnListTask::FetchEndDmlDiff {
-                                    base_block_height: base_h,
-                                    base_block_hash: base_hash,
-                                    block_height: h,
-                                    block_hash: hash,
-                                    validate_quorums: false,
-                                },
-                            ));
-                        }
+                    if ui.button("Get single end DML diff").clicked()
+                        && let Ok(((base_h, base_hash), (h, hash))) = self.parse_heights()
+                    {
+                        self.pending = Some(PendingTask::DmlDiffSingle);
+                        action = AppAction::BackendTask(BackendTask::MnListTask(
+                            MnListTask::FetchEndDmlDiff {
+                                base_block_height: base_h,
+                                base_block_hash: base_hash,
+                                block_height: h,
+                                block_hash: hash,
+                                validate_quorums: false,
+                            },
+                        ));
                     }
-                    if ui.button("Get single end QR info").clicked() {
-                        if let Ok(((_, base_hash), (_, hash))) = self.parse_heights() {
-                            self.pending = Some(PendingTask::QrInfo);
-                            action = AppAction::BackendTask(BackendTask::MnListTask(
-                                MnListTask::FetchEndQrInfo {
-                                    base_block_hash: base_hash,
-                                    block_hash: hash,
-                                },
-                            ));
-                        }
+                    if ui.button("Get single end QR info").clicked()
+                        && let Ok(((_, base_hash), (_, hash))) = self.parse_heights()
+                    {
+                        self.pending = Some(PendingTask::QrInfo);
+                        action = AppAction::BackendTask(BackendTask::MnListTask(
+                            MnListTask::FetchEndQrInfo {
+                                base_block_hash: base_hash,
+                                block_hash: hash,
+                            },
+                        ));
                     }
-                    if ui.button("Get DMLs w/o rotation").clicked() {
-                        if let Ok(((base_h, base_hash), (h, hash))) = self.parse_heights() {
-                            self.pending = Some(PendingTask::DmlDiffNoRotation);
-                            action = AppAction::BackendTask(BackendTask::MnListTask(
-                                MnListTask::FetchEndDmlDiff {
-                                    base_block_height: base_h,
-                                    base_block_hash: base_hash,
-                                    block_height: h,
-                                    block_hash: hash,
-                                    validate_quorums: true,
-                                },
-                            ));
-                        }
+                    if ui.button("Get DMLs w/o rotation").clicked()
+                        && let Ok(((base_h, base_hash), (h, hash))) = self.parse_heights()
+                    {
+                        self.pending = Some(PendingTask::DmlDiffNoRotation);
+                        action = AppAction::BackendTask(BackendTask::MnListTask(
+                            MnListTask::FetchEndDmlDiff {
+                                base_block_height: base_h,
+                                base_block_hash: base_hash,
+                                block_height: h,
+                                block_hash: hash,
+                                validate_quorums: true,
+                            },
+                        ));
                     }
-                    if ui.button("Get DMLs w/ rotation").clicked() {
-                        if let Ok(((_, base_hash), (_, hash))) = self.parse_heights() {
-                            self.pending = Some(PendingTask::QrInfoWithDmls);
-                            action = AppAction::BackendTask(BackendTask::MnListTask(
-                                MnListTask::FetchEndQrInfoWithDmls {
-                                    base_block_hash: base_hash,
-                                    block_hash: hash,
-                                },
-                            ));
-                        }
+                    if ui.button("Get DMLs w/ rotation").clicked()
+                        && let Ok(((_, base_hash), (_, hash))) = self.parse_heights()
+                    {
+                        self.pending = Some(PendingTask::QrInfoWithDmls);
+                        action = AppAction::BackendTask(BackendTask::MnListTask(
+                            MnListTask::FetchEndQrInfoWithDmls {
+                                base_block_hash: base_hash,
+                                block_hash: hash,
+                            },
+                        ));
                     }
-                    if ui.button("Sync").clicked() {
-                        if let Ok(((_, base_hash), (_, hash))) = self.parse_heights() {
-                            self.pending = Some(PendingTask::QrInfoWithDmls);
-                            action = AppAction::BackendTask(BackendTask::MnListTask(
-                                MnListTask::FetchEndQrInfoWithDmls {
-                                    base_block_hash: base_hash,
-                                    block_hash: hash,
-                                },
-                            ));
-                        }
+                    if ui.button("Sync").clicked()
+                        && let Ok(((_, base_hash), (_, hash))) = self.parse_heights()
+                    {
+                        self.pending = Some(PendingTask::QrInfoWithDmls);
+                        action = AppAction::BackendTask(BackendTask::MnListTask(
+                            MnListTask::FetchEndQrInfoWithDmls {
+                                base_block_hash: base_hash,
+                                block_hash: hash,
+                            },
+                        ));
                     }
-                    if ui.button("Get chain locks").clicked() {
-                        if let Ok(((base_h, _), (h, _))) = self.parse_heights() {
-                            self.pending = Some(PendingTask::ChainLocks);
-                            action = AppAction::BackendTask(BackendTask::MnListTask(
-                                MnListTask::FetchChainLocks {
-                                    base_block_height: base_h,
-                                    block_height: h,
-                                },
-                            ));
-                        }
+                    if ui.button("Get chain locks").clicked()
+                        && let Ok(((base_h, _), (h, _))) = self.parse_heights()
+                    {
+                        self.pending = Some(PendingTask::ChainLocks);
+                        action = AppAction::BackendTask(BackendTask::MnListTask(
+                            MnListTask::FetchChainLocks {
+                                base_block_height: base_h,
+                                block_height: h,
+                            },
+                        ));
                     }
                     if ui
                         .button("Clear")
@@ -1470,6 +1481,7 @@ impl MasternodeListDiffScreen {
                         .clicked()
                     {
                         self.clear();
+                        self.display_message("Cleared all data", MessageType::Success);
                     }
                     if ui
                         .button("Clear keep base")
@@ -1479,6 +1491,10 @@ impl MasternodeListDiffScreen {
                         .clicked()
                     {
                         self.clear_keep_base();
+                        self.display_message(
+                            "Cleared data and kept base diff",
+                            MessageType::Success,
+                        );
                     }
                 });
                 // Add bottom padding so the horizontal scrollbar doesn't overlap buttons
@@ -4021,9 +4037,17 @@ impl MasternodeListDiffScreen {
 
 impl ScreenLike for MasternodeListDiffScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if matches!(message_type, MessageType::Error) {
-            self.pending = None;
-            self.error = Some(message.to_string());
+        match message_type {
+            MessageType::Error => {
+                self.pending = None;
+                self.error = Some(message.to_string());
+            }
+            MessageType::Success => {
+                self.message = Some((message.to_string(), message_type));
+            }
+            MessageType::Info => {
+                // Do not show transient info messages to avoid noisy black text banners.
+            }
         }
     }
 
@@ -4070,6 +4094,10 @@ impl ScreenLike for MasternodeListDiffScreen {
                 if matches!(self.pending, Some(PendingTask::DmlDiffNoRotation)) {
                     if let Some(task) = self.build_validation_diffs_task() {
                         self.queued_task = Some(task);
+                        self.display_message(
+                            "Fetched DMLs (no rotation); fetching validation diffs…",
+                            MessageType::Info,
+                        );
                     } else if !self.masternode_list_engine.masternode_lists.is_empty() {
                         // Fallback: attempt verification directly
                         if let Err(e) = self
@@ -4082,11 +4110,14 @@ impl ScreenLike for MasternodeListDiffScreen {
                             self.error = Some(e.to_string());
                         }
                         self.pending = None;
+                        self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
                     } else {
                         self.pending = None;
+                        self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
                     }
                 } else {
                     self.pending = None;
+                    self.display_message("Fetched DML diff", MessageType::Success);
                 }
                 self.selected_dml_diff_key = None;
                 self.selected_quorum_in_diff_index = None;
@@ -4143,8 +4174,13 @@ impl ScreenLike for MasternodeListDiffScreen {
                 // Queue extra diffs required for verification (previous behavior)
                 if let Some(task) = self.build_validation_diffs_task() {
                     self.queued_task = Some(task);
+                    self.display_message(
+                        "Fetched QR info + DMLs; fetching validation diffs…",
+                        MessageType::Info,
+                    );
                 } else {
                     self.pending = None;
+                    self.display_message("Fetched QR info + DMLs", MessageType::Success);
                 }
             }
             BackendTaskSuccessResult::MnListFetchedDiffs { items } => {
@@ -4180,22 +4216,24 @@ impl ScreenLike for MasternodeListDiffScreen {
                 // Verify non-rotating quorums as before
                 if let Some(latest_masternode_list) =
                     self.masternode_list_engine.latest_masternode_list()
-                {
-                    if let Err(e) = self
+                    && let Err(e) = self
                         .masternode_list_engine
                         .verify_non_rotating_masternode_list_quorums(
                             latest_masternode_list.known_height,
                             &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
                         )
-                    {
-                        self.error = Some(e.to_string());
-                    }
+                {
+                    self.error = Some(e.to_string());
                 }
                 self.pending = None;
+                self.display_message(
+                    "Fetched validation diffs and verified non-rotating quorums",
+                    MessageType::Success,
+                );
             }
             BackendTaskSuccessResult::MnListChainLockSigs { entries } => {
                 for ((h, bh), sig) in entries {
-                    self.chain_lock_sig_cache.insert((h, bh), sig.clone());
+                    self.chain_lock_sig_cache.insert((h, bh), sig);
                     if let Some(sig) = sig {
                         self.chain_lock_reversed_sig_cache
                             .entry(sig)
@@ -4204,6 +4242,7 @@ impl ScreenLike for MasternodeListDiffScreen {
                     }
                 }
                 self.pending = None;
+                self.display_message("Fetched chain lock signatures", MessageType::Success);
             }
             _ => {}
         }
@@ -4237,6 +4276,33 @@ impl ScreenLike for MasternodeListDiffScreen {
             // If we queued a backend task from a prior result processing, send it now
             if let Some(task) = self.queued_task.take() {
                 inner |= AppAction::BackendTask(task);
+            }
+
+            if let Some((msg, msg_type)) = self.message.clone() {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let message_color = match msg_type {
+                    MessageType::Error => Color32::from_rgb(255, 100, 100),
+                    MessageType::Info => crate::ui::theme::DashColors::text_primary(dark_mode),
+                    // Dark green for success text
+                    MessageType::Success => Color32::DARK_GREEN,
+                };
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(msg).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.message = None;
+                                }
+                            });
+                        });
+                });
+                ui.add_space(10.0);
             }
 
             if let Some(error_msg) = self.error.clone() {

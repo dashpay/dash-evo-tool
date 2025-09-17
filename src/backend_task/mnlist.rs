@@ -4,8 +4,6 @@ use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
-use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::dashcore::{BlockHash, Network};
 
 #[derive(Debug, Clone, PartialEq)]

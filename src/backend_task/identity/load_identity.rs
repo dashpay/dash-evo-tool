@@ -117,7 +117,7 @@ impl AppContext {
         {
             let voting_private_key_bytes = voting_private_key_bytes.unwrap();
             if let Ok(private_key) =
-                PrivateKey::from_slice(voting_private_key_bytes.as_slice(), self.network)
+                PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
             {
                 // Make the vote identifier
                 let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
@@ -167,7 +167,7 @@ impl AppContext {
                         verify_key_input(key_string, "User Key")
                             .transpose()?
                             .and_then(|sk| {
-                                PrivateKey::from_slice(sk.as_slice(), self.network)
+                                PrivateKey::from_byte_array(&sk, self.network)
                                     .map_err(|e| e.to_string())
                             }),
                     )

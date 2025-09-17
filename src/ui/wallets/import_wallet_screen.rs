@@ -14,8 +14,8 @@ use crate::ui::wallets::add_new_wallet_screen::{
 use bip39::Mnemonic;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::key_wallet::bip32::DerivationPath;
-use dash_sdk::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use egui::{Color32, ComboBox, Direction, Grid, Layout, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};

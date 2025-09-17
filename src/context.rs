@@ -1,6 +1,5 @@
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
-use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
@@ -518,7 +517,7 @@ impl AppContext {
     /// The cache is invalidated immediately and the guard prevents concurrent access
     /// until the database operation is complete. This ensures atomicity and prevents
     /// race conditions regardless of whether the database operation succeeds or fails.
-    pub fn invalidate_settings_cache(&self) -> SettingsCacheGuard {
+    pub fn invalidate_settings_cache(&'_ self) -> SettingsCacheGuard<'_> {
         let mut guard = self.cached_settings.write().unwrap();
         *guard = None;
         guard

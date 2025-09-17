@@ -16,9 +16,9 @@ use dash_sdk::dpp::dashcore::{
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
-use dash_sdk::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use rusqlite::params;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;

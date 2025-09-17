@@ -41,7 +41,7 @@ impl PartialEq for CoreTask {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CoreItem {
+pub enum CoreItem {
     InstantLockedTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>, InstantLock),
     ReceivedAvailableUTXOTransaction(Transaction, Vec<(OutPoint, TxOut, Address)>),
     ChainLock(ChainLock, Network),

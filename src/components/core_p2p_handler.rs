@@ -29,14 +29,6 @@ const HEADER_LENGTH: usize = 24;
 /// Maximum message payload size (e.g. 0x02000000 bytes)
 const MAX_MSG_LENGTH: usize = 0x02000000;
 
-fn read_exact(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>, String> {
-    let mut buf = vec![0u8; len];
-    stream
-        .read_exact(&mut buf)
-        .map_err(|e| format!("Failed to read: {}", e))?;
-    Ok(buf)
-}
-
 /// Compute double-SHA256 on the given data.
 fn double_sha256(data: &[u8]) -> [u8; 32] {
     let hash1 = Sha256::digest(data);
@@ -55,7 +47,7 @@ impl CoreP2PHandler {
             Network::Regtest => 29999, // Dash Regtest default
             _ => panic!("Unsupported network type"),
         });
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        let stream = TcpStream::connect(format!("127.0.0.1:{}", port))
             .map_err(|e| format!("Failed to connect: {}", e))?;
         println!("Connected to Dash Core at 127.0.0.1:{}", port);
         Ok(CoreP2PHandler {
@@ -74,7 +66,7 @@ impl CoreP2PHandler {
         if !self.handshake_success {
             self.handshake()?;
         }
-        let mut stream = &mut self.stream;
+        let stream = &mut self.stream;
         let raw_message = RawNetworkMessage {
             magic: self.network.magic(),
             payload: network_message,
@@ -129,7 +121,7 @@ impl CoreP2PHandler {
         if !self.handshake_success {
             self.handshake()?;
         }
-        let mut stream = &mut self.stream;
+        let stream = &mut self.stream;
         let raw_message = RawNetworkMessage {
             magic: self.network.magic(),
             payload: network_message,

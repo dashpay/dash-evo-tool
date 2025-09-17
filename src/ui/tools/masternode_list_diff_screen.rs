@@ -13,7 +13,6 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::consensus::serialize as serialize2;
 use dash_sdk::dpp::dashcore::consensus::{Decodable, deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::hashes::Hash as tempHash;
 use dash_sdk::dpp::dashcore::network::constants::NetworkExt;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
@@ -278,6 +277,7 @@ impl MasternodeListDiffScreen {
         Ok(height)
     }
 
+    #[allow(dead_code)]
     fn get_height_and_cache_or_error_as_string(&mut self, block_hash: &BlockHash) -> String {
         match self.get_height_and_cache(block_hash) {
             Ok(height) => height.to_string(),
@@ -495,6 +495,7 @@ impl MasternodeListDiffScreen {
     //     }
     // }
 
+    #[allow(dead_code)]
     fn feed_qr_info_block_heights(&mut self, qr_info: &QRInfo) {
         let mn_list_diffs = [
             &qr_info.mn_list_diff_tip,
@@ -1180,7 +1181,7 @@ impl MasternodeListDiffScreen {
     }
 
     fn fetch_end_qr_info_with_dmls(&mut self) {
-        let ((_, base_block_hash), (block_height, block_hash)) = match self.parse_heights() {
+        let ((_, base_block_hash), (_, block_hash)) = match self.parse_heights() {
             Ok(a) => a,
             Err(e) => {
                 self.error = Some(e);
@@ -1354,7 +1355,7 @@ impl MasternodeListDiffScreen {
         }
     }
 
-    fn save_masternode_list_engine(&mut self, ui: &mut Ui) {
+    fn save_masternode_list_engine(&mut self) {
         // Serialize the masternode list engine
         let serialized = match self.serialize_masternode_list_engine() {
             Ok(serialized) => serialized,
@@ -1413,7 +1414,7 @@ impl MasternodeListDiffScreen {
         ScrollArea::vertical()
             .id_salt("dml_list_scroll_area")
             .show(ui, |ui| {
-                for (key, dml) in self.mnlist_diffs.iter() {
+                for (key, _dml) in self.mnlist_diffs.iter() {
                     let block_label = format!("Base: {} -> Block: {}", key.0, key.1);
 
                     if ui
@@ -1903,7 +1904,7 @@ impl MasternodeListDiffScreen {
 
                     ui.horizontal(|ui| {
                         if ui.button("Yes").clicked() {
-                            self.save_masternode_list_engine(ui);
+                            self.save_masternode_list_engine();
                             self.show_popup_for_render_masternode_list_engine = false;
                         }
                         if ui.button("Cancel").clicked() {
@@ -1988,10 +1989,7 @@ impl MasternodeListDiffScreen {
                         ui.end_row();
 
                         let MasternodeListEngineBlockContainer::BTreeMapContainer(map) =
-                            &self.masternode_list_engine.block_container
-                        else {
-                            return;
-                        };
+                            &self.masternode_list_engine.block_container;
 
                         // Sort block heights for ordered display
                         let mut known_blocks: Vec<_> = map.block_heights.iter().collect();
@@ -2002,7 +2000,7 @@ impl MasternodeListDiffScreen {
                             let hash_str = format!("{}", block_hash);
 
                             if ui.selectable_label(false, hash_str.clone()).clicked() {
-                                ui.output_mut(|o| o.copied_text = hash_str.clone());
+                                ui.ctx().copy_text(hash_str.clone());
                             }
 
                             ui.end_row();
@@ -2130,7 +2128,7 @@ impl MasternodeListDiffScreen {
         }
     }
 
-    fn save_mn_list_diff(&mut self, ui: &mut Ui) {
+    fn save_mn_list_diff(&mut self) {
         let Some(selected_key) = self.selected_dml_diff_key else {
             self.error = Some("No MNListDiff selected.".to_string());
             return;
@@ -2180,7 +2178,7 @@ impl MasternodeListDiffScreen {
             "Chain Locks",
             "Save Diff",
         ];
-        let mut selected_index = self.selected_option_index.unwrap_or(0);
+        let selected_index = self.selected_option_index.unwrap_or(0);
 
         // Render the selection buttons
         ui.horizontal(|ui| {
@@ -2191,7 +2189,7 @@ impl MasternodeListDiffScreen {
                 {
                     // If the user selects "Save MNListDiff", trigger save function
                     if index == 3 {
-                        self.save_mn_list_diff(ui);
+                        self.save_mn_list_diff();
                     } else {
                         self.selected_option_index = Some(index);
                     }
@@ -2235,15 +2233,12 @@ impl MasternodeListDiffScreen {
 
     /// Render the details for the selected quorum
     fn render_quorum_details(&mut self, ui: &mut Ui) {
-        if let Some(dml_key) = self.selected_dml_diff_key {
-            if let Some(dml) = self.mnlist_diffs.get(&dml_key) {}
-        }
         ui.heading("Quorum Details");
         if let Some(dml_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&dml_key) {
                 if let Some(q_index) = self.selected_quorum_in_diff_index {
                     if let Some(quorum) = dml.new_quorums.get(q_index) {
-                        Frame::none()
+                        Frame::NONE
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
@@ -2407,7 +2402,7 @@ impl MasternodeListDiffScreen {
                             None => "None set".to_string(),
                         };
 
-                        Frame::none()
+                        Frame::NONE
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
@@ -2447,7 +2442,7 @@ impl MasternodeListDiffScreen {
             if let Some(dml) = self.mnlist_diffs.get(&dml_key) {
                 if let Some(mn_index) = self.selected_masternode_in_diff_index {
                     if let Some(masternode) = dml.new_masternodes.get(mn_index) {
-                        Frame::none()
+                        Frame::NONE
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
@@ -2508,7 +2503,7 @@ impl MasternodeListDiffScreen {
                         mn_list.masternodes.get(&selected_pro_tx_hash)
                     {
                         let masternode = &qualified_masternode.masternode_list_entry;
-                        Frame::none()
+                        Frame::NONE
                             .stroke(Stroke::new(1.0, Color32::BLACK))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
@@ -3501,6 +3496,7 @@ impl MasternodeListDiffScreen {
         });
     }
 
+    #[allow(dead_code)]
     fn render_selected_item_details(&mut self, ui: &mut Ui, selected_item: String) {
         ui.heading("Details");
 

@@ -8,7 +8,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::Asset
 use dash_sdk::dpp::dashcore::{
     Address, Network, OutPoint, PrivateKey, ScriptBuf, Transaction, TxIn, TxOut,
 };
-use dash_sdk::key_wallet::psbt::serialize::Serialize;
+use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use std::collections::BTreeMap;
 
 impl Wallet {

@@ -4,6 +4,7 @@ use crate::backend_task::core::CoreItem;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -37,7 +38,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use eframe::egui::{self, Context, ScrollArea, Ui};
-use egui::{Align, Color32, Frame, Layout, Response, Stroke, TextEdit, Vec2};
+use egui::{Align, Color32, Frame, Layout, Stroke, TextEdit, Vec2};
 use itertools::Itertools;
 use rfd::FileDialog;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -257,11 +258,11 @@ impl MasternodeListDiffScreen {
             .get_height(block_hash)
         else {
             let Some(height) = self.block_height_cache.get(block_hash) else {
-                println!(
-                    "asking core for height no cache {} ({})",
-                    block_hash,
-                    block_hash.reverse()
-                );
+                // println!(
+                //     "Asking core for height no cache {} ({})",
+                //     block_hash,
+                //     block_hash.reverse()
+                // );
                 return match self
                     .app_context
                     .core_client
@@ -294,11 +295,11 @@ impl MasternodeListDiffScreen {
             .get_height(block_hash)
         else {
             let Some(height) = self.block_height_cache.get(block_hash) else {
-                println!(
-                    "asking core for height {} ({})",
-                    block_hash,
-                    block_hash.reverse()
-                );
+                // println!(
+                //     "Asking core for height {} ({})",
+                //     block_hash,
+                //     block_hash.reverse()
+                // );
                 return match self
                     .app_context
                     .core_client
@@ -400,7 +401,7 @@ impl MasternodeListDiffScreen {
             .get_hash(&height)
         else {
             let Some(block_hash) = self.block_hash_cache.get(&height) else {
-                println!("asking core for hash of {}", height);
+                // println!("Asking core for hash of {}", height);
                 return match self
                     .app_context
                     .core_client
@@ -433,7 +434,7 @@ impl MasternodeListDiffScreen {
         }
 
         // If not cached, retrieve from core client and insert into cache.
-        println!("Asking core for hash of {} and caching it", height);
+        // println!("Asking core for hash of {} and caching it", height);
         match self
             .app_context
             .core_client
@@ -1296,36 +1297,42 @@ impl MasternodeListDiffScreen {
 
     /// Render the input area at the top (base and end block height fields plus Get DMLs button)
     fn render_input_area(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Base Block Height:");
-            ui.add(TextEdit::singleline(&mut self.base_block_height).desired_width(80.0));
-            ui.label("End Block Height:");
-            ui.add(TextEdit::singleline(&mut self.end_block_height).desired_width(80.0));
-            if ui.button("Get single end DML diff").clicked() {
-                self.fetch_end_dml_diff(false);
-            }
-            if ui.button("Get single end QR info").clicked() {
-                self.fetch_end_qr_info();
-            }
-            if ui.button("Get DMLs wo/ rotation").clicked() {
-                self.fetch_end_dml_diff(true);
-            }
-            if ui.button("Get DMLs w/ rotation").clicked() {
-                self.fetch_end_qr_info_with_dmls();
-            }
-            if ui.button("Sync").clicked() {
-                self.sync();
-            }
-            if ui.button("Get chain locks").clicked() {
-                self.fetch_chain_locks();
-            }
-            if ui.button("Clear").clicked() {
-                self.clear();
-            }
-            if ui.button("Clear keep base").clicked() {
-                self.clear_keep_base();
-            }
-        });
+        ScrollArea::horizontal()
+            .id_salt("dml_input_row_scroll")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Base Block Height:");
+                    ui.add(TextEdit::singleline(&mut self.base_block_height).desired_width(80.0));
+                    ui.label("End Block Height:");
+                    ui.add(TextEdit::singleline(&mut self.end_block_height).desired_width(80.0));
+                    if ui.button("Get single end DML diff").clicked() {
+                        self.fetch_end_dml_diff(false);
+                    }
+                    if ui.button("Get single end QR info").clicked() {
+                        self.fetch_end_qr_info();
+                    }
+                    if ui.button("Get DMLs wo/ rotation").clicked() {
+                        self.fetch_end_dml_diff(true);
+                    }
+                    if ui.button("Get DMLs w/ rotation").clicked() {
+                        self.fetch_end_qr_info_with_dmls();
+                    }
+                    if ui.button("Sync").clicked() {
+                        self.sync();
+                    }
+                    if ui.button("Get chain locks").clicked() {
+                        self.fetch_chain_locks();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.clear();
+                    }
+                    if ui.button("Clear keep base").clicked() {
+                        self.clear_keep_base();
+                    }
+                });
+                // Add bottom padding so the horizontal scrollbar doesn't overlap buttons
+                ui.add_space(12.0);
+            });
     }
 
     fn load_masternode_list_engine(&mut self) {
@@ -1845,28 +1852,36 @@ impl MasternodeListDiffScreen {
             tabs.push("Stop Syncing");
         }
 
-        // Render the selection buttons
-        ui.horizontal(|ui| {
-            for (index, tab) in tabs.iter().enumerate() {
-                let response: Response = ui.selectable_label(self.selected_tab == index, *tab);
-
-                if response.clicked() {
-                    match index {
-                        7 => {
-                            // Show the popup when "Masternode List Engine" is selected
-                            self.show_popup_for_render_masternode_list_engine = true;
+        // Render the selection buttons (scrollable horizontally) styled as buttons
+        ScrollArea::horizontal()
+            .id_salt("dml_tabs_scroll")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (index, tab) in tabs.iter().enumerate() {
+                        let is_selected = self.selected_tab == index;
+                        if is_selected {
+                            // Match the selected look used under "Masternode List Explorer"
+                            let _ = ui.selectable_label(true, *tab);
+                        } else if ui.button(*tab).clicked() {
+                            match index {
+                                7 => {
+                                    // Show the popup when "Masternode List Engine" is selected
+                                    self.show_popup_for_render_masternode_list_engine = true;
+                                }
+                                8 => {
+                                    self.load_masternode_list_engine();
+                                }
+                                9 => {
+                                    self.syncing = false;
+                                }
+                                index => self.selected_tab = index,
+                            }
                         }
-                        8 => {
-                            self.load_masternode_list_engine();
-                        }
-                        9 => {
-                            self.syncing = false;
-                        }
-                        index => self.selected_tab = index,
                     }
-                }
-            }
-        });
+                });
+                // Add bottom padding so the horizontal scrollbar doesn't overlap tabs
+                ui.add_space(12.0);
+            });
 
         ui.separator();
 
@@ -3869,8 +3884,8 @@ impl ScreenLike for MasternodeListDiffScreen {
 
         action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
-        // In this example we simply use the CentralPanel; you can add top/left panels as in your other screens.
-        egui::CentralPanel::default().show(ctx, |ui| {
+        // Styled central panel consistent with other tool screens
+        action |= island_central_panel(ctx, |ui| {
             // Top: input area (base/end block height + Get DMLs button)
             self.render_input_area(ui);
 
@@ -3881,6 +3896,7 @@ impl ScreenLike for MasternodeListDiffScreen {
             ui.separator();
 
             self.render_selected_tab(ui);
+            AppAction::None
         });
         action
     }

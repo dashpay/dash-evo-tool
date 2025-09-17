@@ -21,10 +21,10 @@ impl ToolsSubscreen {
             Self::ProofLog => "Proof logs",
             Self::TransactionViewer => "Transaction deserializer",
             Self::ProofViewer => "Proof deserializer",
-            Self::MasternodeListDiff => "Masternode list diff inspector",
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
             Self::PlatformInfo => "Platform info",
+            Self::MasternodeListDiff => "Masternode list diff inspector",
         }
     }
 }

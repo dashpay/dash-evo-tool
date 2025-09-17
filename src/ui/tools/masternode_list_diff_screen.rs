@@ -849,16 +849,14 @@ impl MasternodeListDiffScreen {
                     return;
                 }
             }
-        } else {
-            if let Err(e) = self.masternode_list_engine.apply_diff(
-                list_diff.clone(),
-                Some(block_height),
-                false,
-                None,
-            ) {
-                self.error = Some(e.to_string());
-                return;
-            }
+        } else if let Err(e) = self.masternode_list_engine.apply_diff(
+            list_diff.clone(),
+            Some(block_height),
+            false,
+            None,
+        ) {
+            self.error = Some(e.to_string());
+            return;
         }
 
         if validate_quorums && !self.masternode_list_engine.masternode_lists.is_empty() {
@@ -1167,7 +1165,7 @@ impl MasternodeListDiffScreen {
         let end_height = std::cmp::min(start_height + max_blocks, block_height);
 
         for i in start_height..end_height {
-            if let Some(block_hash) = self.get_block_hash_and_cache(i).ok() {
+            if let Ok(block_hash) = self.get_block_hash_and_cache(i) {
                 self.get_chain_lock_sig_and_cache(&block_hash).ok();
             }
         }
@@ -1278,8 +1276,8 @@ impl MasternodeListDiffScreen {
             self.block_height_cache.insert(*hash, height);
         }
 
-        if let Some(latest_masternode_list) = self.masternode_list_engine.latest_masternode_list() {
-            if let Err(e) = self
+        if let Some(latest_masternode_list) = self.masternode_list_engine.latest_masternode_list()
+            && let Err(e) = self
                 .masternode_list_engine
                 .verify_non_rotating_masternode_list_quorums(
                     latest_masternode_list.known_height,
@@ -1288,7 +1286,6 @@ impl MasternodeListDiffScreen {
             {
                 self.error = Some(e.to_string());
             }
-        }
 
         // Reset selections when new data is loaded
         self.selected_dml_diff_key = None;
@@ -1467,28 +1464,26 @@ impl MasternodeListDiffScreen {
             } else {
                 HashMap::new()
             }
-        } else {
-            if let Some(selected_key) = self.selected_dml_diff_key {
-                if let Some(quorums) = self
-                    .mnlist_diffs
-                    .get(&selected_key)
-                    .map(|dml| dml.new_quorums.clone())
-                {
-                    let mut map = HashMap::new();
-                    for quorum in quorums {
-                        let height = self
-                            .get_height(&quorum.quorum_hash)
-                            .ok()
-                            .unwrap_or_default();
-                        map.insert(quorum.quorum_hash, height);
-                    }
-                    map
-                } else {
-                    HashMap::new()
+        } else if let Some(selected_key) = self.selected_dml_diff_key {
+            if let Some(quorums) = self
+                .mnlist_diffs
+                .get(&selected_key)
+                .map(|dml| dml.new_quorums.clone())
+            {
+                let mut map = HashMap::new();
+                for quorum in quorums {
+                    let height = self
+                        .get_height(&quorum.quorum_hash)
+                        .ok()
+                        .unwrap_or_default();
+                    map.insert(quorum.quorum_hash, height);
                 }
+                map
             } else {
                 HashMap::new()
             }
+        } else {
+            HashMap::new()
         };
 
         let new_quorums = self
@@ -1500,7 +1495,7 @@ impl MasternodeListDiffScreen {
             ScrollArea::vertical()
                 .id_salt("quorum_list_scroll_area")
                 .show(ui, |ui| {
-                    for (q_index, quorum) in new_quorums.into_iter().enumerate() {
+                    for (q_index, quorum) in new_quorums.iter().enumerate() {
                         let quorum_height = heights
                             .get(&quorum.quorum_hash)
                             .copied()
@@ -1516,7 +1511,7 @@ impl MasternodeListDiffScreen {
                                         .quorum_index
                                         .map(|i| format!(" (index {})", i))
                                         .unwrap_or_default(),
-                                    QuorumType::from(quorum.llmq_type as u32).to_string()
+                                    QuorumType::from(quorum.llmq_type as u32)
                                 ),
                             )
                             .clicked()
@@ -1581,8 +1576,7 @@ impl MasternodeListDiffScreen {
                     .map(|list| {
                         list.quorums
                             .values()
-                            .map(|quorums| quorums.keys())
-                            .flatten()
+                            .flat_map(|quorums| quorums.keys())
                             .copied()
                             .collect::<BTreeSet<_>>()
                     })
@@ -1614,10 +1608,8 @@ impl MasternodeListDiffScreen {
                         }
                     }
                 }
-                if !self
-                    .masternode_list_quorum_hash_cache
-                    .contains_key(&mn_list.block_hash)
-                {
+                self
+                    .masternode_list_quorum_hash_cache.entry(mn_list.block_hash).or_insert_with(|| {
                     let mut btree_map = BTreeMap::new();
                     for (llmq_type, quorum_map) in &mn_list.quorums {
                         let quorums_by_height = quorum_map
@@ -1631,9 +1623,8 @@ impl MasternodeListDiffScreen {
                             .collect();
                         btree_map.insert(*llmq_type, quorums_by_height);
                     }
-                    self.masternode_list_quorum_hash_cache
-                        .insert(mn_list.block_hash, btree_map);
-                }
+                    btree_map
+                });
             }
         }
         if let Some(quorums) = masternode_block_hash
@@ -1661,7 +1652,7 @@ impl MasternodeListDiffScreen {
                                     format!(
                                         "Quorum {} Type: {} Valid {}",
                                         quorum_height,
-                                        QuorumType::from(*llmq_type as u32).to_string(),
+                                        QuorumType::from(*llmq_type as u32),
                                         quorum_entry.verified
                                             == LLMQEntryVerificationStatus::Verified
                                     ),
@@ -1750,8 +1741,8 @@ impl MasternodeListDiffScreen {
     }
 
     fn render_masternodes_in_masternode_list(&mut self, ui: &mut Ui) {
-        if let Some(selected_height) = self.selected_dml_height_key {
-            if self
+        if let Some(selected_height) = self.selected_dml_height_key
+            && self
                 .masternode_list_engine
                 .masternode_lists
                 .contains_key(&selected_height)
@@ -1759,9 +1750,8 @@ impl MasternodeListDiffScreen {
                 ui.heading("Masternodes in List");
                 self.render_search_bar(ui);
             }
-        }
-        if let Some(selected_height) = self.selected_dml_height_key {
-            if let Some(mn_list) = self
+        if let Some(selected_height) = self.selected_dml_height_key
+            && let Some(mn_list) = self
                 .masternode_list_engine
                 .masternode_lists
                 .get(&selected_height)
@@ -1786,8 +1776,7 @@ impl MasternodeListDiffScreen {
                                         masternode
                                             .masternode_list_entry
                                             .service_address
-                                            .ip()
-                                            .to_string(),
+                                            .ip(),
                                         pro_tx_hash.to_string().as_str().split_at(5).0
                                     ),
                                 )
@@ -1799,7 +1788,6 @@ impl MasternodeListDiffScreen {
                         }
                     });
             }
-        }
     }
 
     fn render_masternode_list_page(&mut self, ui: &mut Ui) {
@@ -2084,7 +2072,7 @@ impl MasternodeListDiffScreen {
                                         } else {
                                             "EN"
                                         },
-                                        masternode.service_address.ip().to_string(),
+                                        masternode.service_address.ip(),
                                         masternode
                                             .pro_reg_tx_hash
                                             .to_string()
@@ -2108,8 +2096,8 @@ impl MasternodeListDiffScreen {
 
     fn render_mn_diff_chain_locks(&mut self, ui: &mut Ui) {
         ui.heading("MN list diff chain locks");
-        if let Some(selected_key) = self.selected_dml_diff_key {
-            if let Some(dml) = self.mnlist_diffs.get(&selected_key) {
+        if let Some(selected_key) = self.selected_dml_diff_key
+            && let Some(dml) = self.mnlist_diffs.get(&selected_key) {
                 ScrollArea::vertical()
                     .id_salt("quorum_list_chain_locks_scroll_area")
                     .show(ui, |ui| {
@@ -2125,7 +2113,6 @@ impl MasternodeListDiffScreen {
                         }
                     });
             }
-        }
     }
 
     fn save_mn_list_diff(&mut self) {
@@ -2343,22 +2330,20 @@ impl MasternodeListDiffScreen {
                                     "heights [{}]",
                                     heights.iter().map(|h| h.to_string()).join(" | ")
                                 )
-                            } else {
-                                if let Some(height) = height {
-                                    if let Ok(hash) = self.get_block_hash(height - 8) {
-                                        if let Ok(Some(sig)) = self.get_chain_lock_sig(&hash) {
-                                            hex::encode(sig)
-                                        } else {
-                                            "Error (Did not find chain lock sig for hash)"
-                                                .to_string()
-                                        }
+                            } else if let Some(height) = height {
+                                if let Ok(hash) = self.get_block_hash(height - 8) {
+                                    if let Ok(Some(sig)) = self.get_chain_lock_sig(&hash) {
+                                        hex::encode(sig)
                                     } else {
-                                        "Error (Did not find block hash of 8 blocks ago)"
+                                        "Error (Did not find chain lock sig for hash)"
                                             .to_string()
                                     }
                                 } else {
-                                    "Error (Did not find quorum hash height)".to_string()
+                                    "Error (Did not find block hash of 8 blocks ago)"
+                                        .to_string()
                                 }
+                            } else {
+                                "Error (Did not find quorum hash height)".to_string()
                             };
 
                         let get_used_heights = |bls_signature: BLSSignature| {
@@ -2497,9 +2482,8 @@ impl MasternodeListDiffScreen {
                 .masternode_list_engine
                 .masternode_lists
                 .get(&selected_height)
-            {
-                if let Some(selected_pro_tx_hash) = self.selected_masternode_pro_tx_hash {
-                    if let Some(qualified_masternode) =
+                && let Some(selected_pro_tx_hash) = self.selected_masternode_pro_tx_hash
+                    && let Some(qualified_masternode) =
                         mn_list.masternodes.get(&selected_pro_tx_hash)
                     {
                         let masternode = &qualified_masternode.masternode_list_entry;
@@ -2559,8 +2543,6 @@ impl MasternodeListDiffScreen {
                                 );
                             });
                     }
-                }
-            }
         } else {
             ui.label("Select a block height and Masternode.");
         }
@@ -2615,8 +2597,8 @@ impl MasternodeListDiffScreen {
         let selected_qr_info = {
             let Some((_, selected_qr_info)) = self.qr_infos.first_key_value() else {
                 ui.label("No QRInfo available.");
-                if ui.button("Load QR Info").clicked() {
-                    if let Some(path) = FileDialog::new()
+                if ui.button("Load QR Info").clicked()
+                    && let Some(path) = FileDialog::new()
                         .add_filter("Data Files", &["dat"])
                         .pick_file()
                     {
@@ -2650,7 +2632,6 @@ impl MasternodeListDiffScreen {
                             }
                         }
                     }
-                }
                 return;
             };
             selected_qr_info.clone()
@@ -3279,7 +3260,7 @@ impl MasternodeListDiffScreen {
                     .map(|key| format!(
                         "{}, {}",
                         self.get_height_or_error_as_string(key),
-                        key.to_string()
+                        key
                     ))
                     .join(", ")
             ));
@@ -3445,8 +3426,8 @@ impl MasternodeListDiffScreen {
                                         let status_response = ui.label(status_symbol);
 
                                         // Show tooltip on hover if there's an error message
-                                        if let Some(tooltip) = tooltip_text {
-                                            if status_response.hovered() {
+                                        if let Some(tooltip) = tooltip_text
+                                            && status_response.hovered() {
                                                 ui.ctx().debug_painter().text(
                                                     status_response.rect.center(),
                                                     egui::Align2::CENTER_CENTER,
@@ -3455,7 +3436,6 @@ impl MasternodeListDiffScreen {
                                                     egui::Color32::RED,
                                                 );
                                             }
-                                        }
 
                                         ui.end_row();
                                     }
@@ -3666,7 +3646,7 @@ impl MasternodeListDiffScreen {
                     ui.label("No quorum".to_string());
                 }
                 Err(err) => {
-                    ui.label(format!("Error finding quorum: {}", err.to_string()));
+                    ui.label(format!("Error finding quorum: {}", err));
                 }
             };
 
@@ -3761,7 +3741,7 @@ impl MasternodeListDiffScreen {
                     }
                 }
                 Err(err) => {
-                    ui.label(format!("Error finding quorum: {}", err.to_string()));
+                    ui.label(format!("Error finding quorum: {}", err));
                 }
             };
 
@@ -3809,13 +3789,12 @@ impl MasternodeListDiffScreen {
     fn received_new_block(&mut self, block: Block, chain_lock: ChainLock) {
         let valid = self.attempt_verify_chain_lock(&chain_lock);
         self.end_block_height = chain_lock.block_height.to_string();
-        if self.syncing {
-            if let Some((base_block_height, masternode_list)) = self
+        if self.syncing
+            && let Some((base_block_height, masternode_list)) = self
                 .masternode_list_engine
                 .masternode_lists
                 .last_key_value()
-            {
-                if *base_block_height < chain_lock.block_height {
+                && *base_block_height < chain_lock.block_height {
                     let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None)
                     {
                         Ok(p2p_handler) => p2p_handler,
@@ -3848,8 +3827,6 @@ impl MasternodeListDiffScreen {
                     self.selected_dml_diff_key = None;
                     self.selected_quorum_in_diff_index = None;
                 }
-            }
-        }
         self.chain_locked_blocks
             .insert(chain_lock.block_height, (block, chain_lock, valid));
     }

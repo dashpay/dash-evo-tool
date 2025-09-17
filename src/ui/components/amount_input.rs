@@ -262,25 +262,23 @@ impl AmountInput {
                 }
 
                 // Check if amount exceeds maximum
-                if let Some(max_amount) = self.max_amount {
-                    if amount.value() > max_amount {
+                if let Some(max_amount) = self.max_amount
+                    && amount.value() > max_amount {
                         return Err(format!(
                             "Amount {} exceeds allowed maximum {}",
                             amount,
                             Amount::new(max_amount, self.decimal_places)
                         ));
                     }
-                }
 
                 // Check if amount is below minimum
-                if let Some(min_amount) = self.min_amount {
-                    if amount.value() < min_amount {
+                if let Some(min_amount) = self.min_amount
+                    && amount.value() < min_amount {
                         return Err(format!(
                             "Amount must be at least {}",
                             Amount::new(min_amount, self.decimal_places)
                         ));
                     }
-                }
 
                 Ok(Some(amount))
             }

@@ -96,12 +96,10 @@ impl AppContext {
                 MintResult::HistoricalDocument(document) => {
                     if let (Some(recipient_value), Some(amount_value)) =
                         (document.get("recipientId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
                             (recipient_value, amount_value)
-                        {
-                            if let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes) {
-                                if let Err(e) = self.insert_token_identity_balance(
+                            && let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes)
+                                && let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,
                                     *amount,
@@ -111,21 +109,16 @@ impl AppContext {
                                         e
                                     );
                                 }
-                            }
-                        }
-                    }
                 }
 
                 // Group action with document - assume completed if document exists
                 MintResult::GroupActionWithDocument(_, Some(document)) => {
                     if let (Some(recipient_value), Some(amount_value)) =
                         (document.get("recipientId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
                             (recipient_value, amount_value)
-                        {
-                            if let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes) {
-                                if let Err(e) = self.insert_token_identity_balance(
+                            && let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes)
+                                && let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,
                                     *amount,
@@ -135,9 +128,6 @@ impl AppContext {
                                         e
                                     );
                                 }
-                            }
-                        }
-                    }
                 }
 
                 // Group action with balance - only update if action is closed

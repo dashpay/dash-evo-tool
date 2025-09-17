@@ -89,12 +89,10 @@ impl AppContext {
                 BurnResult::HistoricalDocument(document) => {
                     if let (Some(owner_value), Some(amount_value)) =
                         (document.get("ownerId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(owner_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
                             (owner_value, amount_value)
-                        {
-                            if let Ok(owner_id) = Identifier::from_bytes(owner_bytes) {
-                                if let Err(e) = self
+                            && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                                && let Err(e) = self
                                     .insert_token_identity_balance(&token_id, &owner_id, *amount)
                                 {
                                     eprintln!(
@@ -102,21 +100,16 @@ impl AppContext {
                                         e
                                     );
                                 }
-                            }
-                        }
-                    }
                 }
 
                 // Group action with document - assume completed if document exists
                 BurnResult::GroupActionWithDocument(_, Some(document)) => {
                     if let (Some(owner_value), Some(amount_value)) =
                         (document.get("ownerId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(owner_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
                             (owner_value, amount_value)
-                        {
-                            if let Ok(owner_id) = Identifier::from_bytes(owner_bytes) {
-                                if let Err(e) = self
+                            && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                                && let Err(e) = self
                                     .insert_token_identity_balance(&token_id, &owner_id, *amount)
                                 {
                                     eprintln!(
@@ -124,9 +117,6 @@ impl AppContext {
                                         e
                                     );
                                 }
-                            }
-                        }
-                    }
                 }
 
                 // Group action with balance - only update if action is closed

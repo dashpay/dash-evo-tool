@@ -32,7 +32,7 @@ const MAX_MSG_LENGTH: usize = 0x02000000;
 /// Compute double-SHA256 on the given data.
 fn double_sha256(data: &[u8]) -> [u8; 32] {
     let hash1 = Sha256::digest(data);
-    let hash2 = Sha256::digest(&hash1);
+    let hash2 = Sha256::digest(hash1);
     let mut result = [0u8; 32];
     result.copy_from_slice(&hash2);
     result

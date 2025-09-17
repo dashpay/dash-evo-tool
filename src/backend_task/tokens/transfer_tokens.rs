@@ -99,8 +99,8 @@ impl AppContext {
                         document.get("senderAmount"),
                         document.get("recipientId"),
                         document.get("recipientAmount"),
-                    ) {
-                        if let (
+                    )
+                        && let (
                             Value::Identifier(sender_bytes),
                             Value::U64(sender_amount),
                             Value::Identifier(recipient_bytes),
@@ -110,8 +110,8 @@ impl AppContext {
                             sender_amount_value,
                             recipient_value,
                             recipient_amount_value,
-                        ) {
-                            if let (Ok(sender_id), Ok(recipient_id)) = (
+                        )
+                            && let (Ok(sender_id), Ok(recipient_id)) = (
                                 Identifier::from_bytes(sender_bytes),
                                 Identifier::from_bytes(recipient_bytes),
                             ) {
@@ -136,8 +136,6 @@ impl AppContext {
                                     );
                                 }
                             }
-                        }
-                    }
                 }
 
                 // Group action with document - assume completed if document exists
@@ -152,8 +150,8 @@ impl AppContext {
                         document.get("senderAmount"),
                         document.get("recipientId"),
                         document.get("recipientAmount"),
-                    ) {
-                        if let (
+                    )
+                        && let (
                             Value::Identifier(sender_bytes),
                             Value::U64(sender_amount),
                             Value::Identifier(recipient_bytes),
@@ -163,8 +161,8 @@ impl AppContext {
                             sender_amount_value,
                             recipient_value,
                             recipient_amount_value,
-                        ) {
-                            if let (Ok(sender_id), Ok(recipient_id)) = (
+                        )
+                            && let (Ok(sender_id), Ok(recipient_id)) = (
                                 Identifier::from_bytes(sender_bytes),
                                 Identifier::from_bytes(recipient_bytes),
                             ) {
@@ -189,8 +187,6 @@ impl AppContext {
                                     );
                                 }
                             }
-                        }
-                    }
                 }
 
                 // Other variants don't require balance updates

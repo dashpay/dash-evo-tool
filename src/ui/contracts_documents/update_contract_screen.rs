@@ -248,8 +248,8 @@ impl UpdateDataContractScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
-            if let ContractTask::UpdateDataContract(_, _, _) = **contract_task {
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
+            && let ContractTask::UpdateDataContract(_, _, _) = **contract_task {
                 self.broadcast_status = BroadcastStatus::FetchingNonce(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -257,7 +257,6 @@ impl UpdateDataContractScreen {
                         .as_secs(),
                 );
             }
-        }
 
         app_action
     }

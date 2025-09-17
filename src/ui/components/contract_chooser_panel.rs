@@ -479,8 +479,8 @@ pub fn add_contract_chooser_panel(
         });
 
     // Show context menu if right-clicked
-    if chooser_state.show_context_menu {
-        if let Some(ref contract_id_str) = chooser_state.right_click_contract_id {
+    if chooser_state.show_context_menu
+        && let Some(ref contract_id_str) = chooser_state.right_click_contract_id {
             // Find the contract that was right-clicked
             let contract_opt = contracts
                 .iter()
@@ -515,11 +515,9 @@ pub fn add_contract_chooser_panel(
                             // Convert contract to JSON
                             if let Ok(json_value) =
                                 contract.contract.to_json(app_context.platform_version())
-                            {
-                                if let Ok(json_string) = serde_json::to_string_pretty(&json_value) {
+                                && let Ok(json_string) = serde_json::to_string_pretty(&json_value) {
                                     ui.ctx().copy_text(json_string);
                                 }
-                            }
                             chooser_state.show_context_menu = false;
                         }
                     });
@@ -531,15 +529,13 @@ pub fn add_contract_chooser_panel(
                         chooser_state.context_menu_position,
                         egui::vec2(150.0, 70.0), // Approximate size
                     );
-                    if let Some(pointer_pos) = ctx.pointer_interact_pos() {
-                        if !menu_rect.contains(pointer_pos) {
+                    if let Some(pointer_pos) = ctx.pointer_interact_pos()
+                        && !menu_rect.contains(pointer_pos) {
                             chooser_state.show_context_menu = false;
                         }
-                    }
                 }
             }
         }
-    }
 
     action
 }

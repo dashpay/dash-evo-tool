@@ -379,12 +379,11 @@ impl DocumentActionScreen {
             }
         }
 
-        if let Some(backend_message) = &self.backend_message {
-            if backend_message.contains("No owned documents found") {
+        if let Some(backend_message) = &self.backend_message
+            && backend_message.contains("No owned documents found") {
                 ui.add_space(10.0);
                 ui.label("No owned documents found.");
             }
-        }
 
         // Show fetching status
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {

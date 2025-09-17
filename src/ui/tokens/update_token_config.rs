@@ -207,11 +207,10 @@ impl UpdateTokenConfigScreen {
                 .members()
                 .get(&self.identity_token_info.identity.identity.id());
 
-            if let Some(your_power) = your_power {
-                if your_power >= &group.required_power() {
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power() {
                     self.is_unilateral_group_member = true;
                 }
-            }
         }
     }
 
@@ -614,13 +613,12 @@ impl UpdateTokenConfigScreen {
                 ui.label(&self.update_text);
 
                 ui.horizontal(|ui| {
-                    if let Some(opt_json) = opt_json {
-                        if ui.button("View Current").clicked() {
+                    if let Some(opt_json) = opt_json
+                        && ui.button("View Current").clicked() {
                             self.update_text =
                                 serde_json::to_string_pretty(opt_json).unwrap_or_default();
                             // Update displayed text
                         }
-                    }
 
                     if !self.text_input_error.is_empty() {
                         ui.colored_label(Color32::RED, &self.text_input_error);
@@ -987,12 +985,11 @@ impl ScreenLike for UpdateTokenConfigScreen {
         // Central panel
         island_central_panel(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(msg) = &self.backend_message {
-                    if msg.1 == MessageType::Success {
+                if let Some(msg) = &self.backend_message
+                    && msg.1 == MessageType::Success {
                         action |= self.show_success_screen(ui);
                         return;
                     }
-                }
 
                 ui.heading("Update Token Configuration");
                 ui.add_space(10.0);

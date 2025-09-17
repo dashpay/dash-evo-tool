@@ -173,7 +173,7 @@ impl CoreZMQListener {
                                             Err(e) => {
                                                 eprintln!(
                                                     "Error deserializing chain locked block: bytes({}) error: {}",
-                                                    hex::encode(&data_bytes),
+                                                    hex::encode(data_bytes),
                                                     e
                                                 );
                                             }

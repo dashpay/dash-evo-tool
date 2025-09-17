@@ -163,19 +163,17 @@ impl UnfreezeTokensScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
+        if group.is_some()
+            && let Some((_, group)) = group.clone() {
                 let your_power = group
                     .members()
                     .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
+                if let Some(your_power) = your_power
+                    && your_power >= &group.required_power() {
                         is_unilateral_group_member = true;
                     }
-                }
-            }
-        };
+            };
 
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
@@ -370,14 +368,13 @@ impl ScreenLike for UnfreezeTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
             {
                 self.identity = updated_identity;
             }
-        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

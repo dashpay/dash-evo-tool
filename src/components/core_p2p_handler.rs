@@ -177,6 +177,8 @@ impl CoreP2PHandler {
             )),
         }
     }
+
+    // Note: get_dml_diff and get_qr_info are already defined above (lines ~351 and ~364)
     /// Perform the handshake (version/verack exchange) with the peer.
     pub fn handshake(&mut self) -> Result<(), String> {
         let mut rng = StdRng::from_entropy();

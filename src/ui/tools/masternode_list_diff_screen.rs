@@ -1,6 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreItem;
+use crate::backend_task::mnlist::MnListTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
@@ -140,6 +141,8 @@ pub struct MasternodeListDiffScreen {
     selected_qr_list_index: Option<String>,
     selected_core_item: Option<(CoreItem, bool)>,
     selected_qr_item: Option<SelectedQRItem>,
+    pending: Option<PendingTask>,
+    queued_task: Option<BackendTask>,
 }
 
 impl MasternodeListDiffScreen {
@@ -241,6 +244,8 @@ impl MasternodeListDiffScreen {
             masternode_lists_with_all_quorum_heights_known: Default::default(),
             chain_lock_sig_cache: Default::default(),
             chain_lock_reversed_sig_cache: Default::default(),
+            pending: None,
+            queued_task: None,
         }
     }
 
@@ -249,6 +254,77 @@ impl MasternodeListDiffScreen {
             Ok(height) => height.to_string(),
             Err(e) => format!("Failed to get height for {}: {}", block_hash, e),
         }
+    }
+
+    /// Build a backend task that fetches the extra diffs needed to validate non-rotating quorums.
+    /// Returns None if requirements cannot be computed.
+    fn build_validation_diffs_task(&self) -> Option<BackendTask> {
+        // Determine hashes we need to validate
+        let hashes = self
+            .masternode_list_engine
+            .latest_masternode_list_non_rotating_quorum_hashes(
+                &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                true,
+            );
+        if hashes.is_empty() {
+            return None;
+        }
+
+        // Compute target validation heights (h-8)
+        let mut heights: BTreeSet<u32> = BTreeSet::new();
+        for quorum_hash in &hashes {
+            if let Ok(h) = self.get_height(quorum_hash) {
+                if h >= 8 {
+                    heights.insert(h - 8);
+                }
+            }
+        }
+        if heights.is_empty() {
+            return None;
+        }
+
+        let client = self.app_context.core_client.read().unwrap();
+        let mut chain: Vec<(u32, BlockHash, u32, BlockHash)> = Vec::new();
+
+        // Determine base starting point similar to previous logic
+        let (first_engine_height, first_engine_hash_opt) = self
+            .masternode_list_engine
+            .masternode_lists
+            .first_key_value()
+            .map(|(h, l)| (*h, Some(l.block_hash)))
+            .unwrap_or((0, None));
+
+        let oldest_needed = *heights.first().unwrap();
+        let mut base_height: u32;
+        let mut base_hash: BlockHash;
+        if first_engine_height != 0 && first_engine_height < oldest_needed {
+            base_height = first_engine_height;
+            base_hash = first_engine_hash_opt.unwrap();
+        } else {
+            // Use genesis as base
+            base_height = 0;
+            let Ok(genesis) = client.get_block_hash(0) else {
+                return None;
+            };
+            base_hash = BlockHash::from_byte_array(genesis.to_byte_array());
+        }
+
+        for h in heights {
+            let Ok(bh) = client.get_block_hash(h) else {
+                continue;
+            };
+            let bh = BlockHash::from_byte_array(bh.to_byte_array());
+            chain.push((base_height, base_hash, h, bh));
+            base_height = h;
+            base_hash = bh;
+        }
+
+        if chain.is_empty() {
+            return None;
+        }
+        Some(BackendTask::MnListTask(MnListTask::FetchDiffsChain {
+            chain,
+        }))
     }
 
     fn get_height(&self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
@@ -1041,6 +1117,9 @@ impl MasternodeListDiffScreen {
         self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
         self.error = None;
+        // Also clear known chain lock signatures caches
+        self.chain_lock_sig_cache.clear();
+        self.chain_lock_reversed_sig_cache.clear();
     }
 
     /// Clear all data except the oldest MNList diff starting from height 0
@@ -1084,6 +1163,9 @@ impl MasternodeListDiffScreen {
         self.selected_quorum_hash_in_mnlist_diff = None;
         self.selected_masternode_pro_tx_hash = None;
         self.qr_infos = Default::default();
+        // Clear chain lock signatures caches as these are independent of the retained base diff
+        self.chain_lock_sig_cache.clear();
+        self.chain_lock_reversed_sig_cache.clear();
     }
 
     /// Fetch the MNList diffs between the given base and end block heights.
@@ -1300,7 +1382,8 @@ impl MasternodeListDiffScreen {
     }
 
     /// Render the input area at the top (base and end block height fields plus Get DMLs button)
-    fn render_input_area(&mut self, ui: &mut Ui) {
+    fn render_input_area(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         ScrollArea::horizontal()
             .id_salt("dml_input_row_scroll")
             .show(ui, |ui| {
@@ -1310,22 +1393,76 @@ impl MasternodeListDiffScreen {
                     ui.label("End Block Height:");
                     ui.add(TextEdit::singleline(&mut self.end_block_height).desired_width(80.0));
                     if ui.button("Get single end DML diff").clicked() {
-                        self.fetch_end_dml_diff(false);
+                        if let Ok(((base_h, base_hash), (h, hash))) = self.parse_heights() {
+                            self.pending = Some(PendingTask::DmlDiffSingle);
+                            action = AppAction::BackendTask(BackendTask::MnListTask(
+                                MnListTask::FetchEndDmlDiff {
+                                    base_block_height: base_h,
+                                    base_block_hash: base_hash,
+                                    block_height: h,
+                                    block_hash: hash,
+                                    validate_quorums: false,
+                                },
+                            ));
+                        }
                     }
                     if ui.button("Get single end QR info").clicked() {
-                        self.fetch_end_qr_info();
+                        if let Ok(((_, base_hash), (_, hash))) = self.parse_heights() {
+                            self.pending = Some(PendingTask::QrInfo);
+                            action = AppAction::BackendTask(BackendTask::MnListTask(
+                                MnListTask::FetchEndQrInfo {
+                                    base_block_hash: base_hash,
+                                    block_hash: hash,
+                                },
+                            ));
+                        }
                     }
                     if ui.button("Get DMLs w/o rotation").clicked() {
-                        self.fetch_end_dml_diff(true);
+                        if let Ok(((base_h, base_hash), (h, hash))) = self.parse_heights() {
+                            self.pending = Some(PendingTask::DmlDiffNoRotation);
+                            action = AppAction::BackendTask(BackendTask::MnListTask(
+                                MnListTask::FetchEndDmlDiff {
+                                    base_block_height: base_h,
+                                    base_block_hash: base_hash,
+                                    block_height: h,
+                                    block_hash: hash,
+                                    validate_quorums: true,
+                                },
+                            ));
+                        }
                     }
                     if ui.button("Get DMLs w/ rotation").clicked() {
-                        self.fetch_end_qr_info_with_dmls();
+                        if let Ok(((_, base_hash), (_, hash))) = self.parse_heights() {
+                            self.pending = Some(PendingTask::QrInfoWithDmls);
+                            action = AppAction::BackendTask(BackendTask::MnListTask(
+                                MnListTask::FetchEndQrInfoWithDmls {
+                                    base_block_hash: base_hash,
+                                    block_hash: hash,
+                                },
+                            ));
+                        }
                     }
                     if ui.button("Sync").clicked() {
-                        self.sync();
+                        if let Ok(((_, base_hash), (_, hash))) = self.parse_heights() {
+                            self.pending = Some(PendingTask::QrInfoWithDmls);
+                            action = AppAction::BackendTask(BackendTask::MnListTask(
+                                MnListTask::FetchEndQrInfoWithDmls {
+                                    base_block_hash: base_hash,
+                                    block_hash: hash,
+                                },
+                            ));
+                        }
                     }
                     if ui.button("Get chain locks").clicked() {
-                        self.fetch_chain_locks();
+                        if let Ok(((base_h, _), (h, _))) = self.parse_heights() {
+                            self.pending = Some(PendingTask::ChainLocks);
+                            action = AppAction::BackendTask(BackendTask::MnListTask(
+                                MnListTask::FetchChainLocks {
+                                    base_block_height: base_h,
+                                    block_height: h,
+                                },
+                            ));
+                        }
                     }
                     if ui
                         .button("Clear")
@@ -1347,6 +1484,7 @@ impl MasternodeListDiffScreen {
                 // Add bottom padding so the horizontal scrollbar doesn't overlap buttons
                 ui.add_space(12.0);
             });
+        action
     }
 
     fn load_masternode_list_engine(&mut self) {
@@ -1924,16 +2062,14 @@ impl MasternodeListDiffScreen {
             ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .id_salt("dml_tab_content_scroll")
-                .show(ui, |ui| {
-                    match self.selected_tab {
-                        1 => self.render_quorums(ui),
-                        2 => self.render_diffs(ui),
-                        3 => self.render_qr_info(ui),
-                        4 => self.render_engine_known_blocks(ui),
-                        5 => self.render_known_chain_lock_sigs(ui),
-                        6 => self.render_core_items(ui),
-                        _ => {}
-                    }
+                .show(ui, |ui| match self.selected_tab {
+                    1 => self.render_quorums(ui),
+                    2 => self.render_diffs(ui),
+                    3 => self.render_qr_info(ui),
+                    4 => self.render_engine_known_blocks(ui),
+                    5 => self.render_known_chain_lock_sigs(ui),
+                    6 => self.render_core_items(ui),
+                    _ => {}
                 });
         }
 
@@ -3884,8 +4020,11 @@ impl MasternodeListDiffScreen {
 }
 
 impl ScreenLike for MasternodeListDiffScreen {
-    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Optionally implement message display here
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if matches!(message_type, MessageType::Error) {
+            self.pending = None;
+            self.error = Some(message.to_string());
+        }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -3902,6 +4041,171 @@ impl ScreenLike for MasternodeListDiffScreen {
                 }
                 _ => {}
             }
+            return;
+        }
+        match backend_task_success_result {
+            BackendTaskSuccessResult::MnListFetchedDiff {
+                base_height,
+                height,
+                diff,
+            } => {
+                // Apply to engine similarly to original UI method
+                if base_height == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
+                    match MasternodeListEngine::initialize_with_diff_to_height(
+                        diff.clone(),
+                        height,
+                        self.app_context.network,
+                    ) {
+                        Ok(engine) => self.masternode_list_engine = engine,
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                } else if let Err(e) =
+                    self.masternode_list_engine
+                        .apply_diff(diff.clone(), Some(height), false, None)
+                {
+                    self.error = Some(e.to_string());
+                }
+                self.mnlist_diffs.insert((base_height, height), diff);
+                // If this was the no-rotation path, queue the extra diffs needed for verification (restored behavior)
+                if matches!(self.pending, Some(PendingTask::DmlDiffNoRotation)) {
+                    if let Some(task) = self.build_validation_diffs_task() {
+                        self.queued_task = Some(task);
+                    } else if !self.masternode_list_engine.masternode_lists.is_empty() {
+                        // Fallback: attempt verification directly
+                        if let Err(e) = self
+                            .masternode_list_engine
+                            .verify_non_rotating_masternode_list_quorums(
+                                height,
+                                &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                            )
+                        {
+                            self.error = Some(e.to_string());
+                        }
+                        self.pending = None;
+                    } else {
+                        self.pending = None;
+                    }
+                } else {
+                    self.pending = None;
+                }
+                self.selected_dml_diff_key = None;
+                self.selected_quorum_in_diff_index = None;
+            }
+            BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info } => {
+                // Apply to engine using the same closure as before to resolve heights
+                let block_height_cache = self.block_height_cache.clone();
+                let app_context = self.app_context.clone();
+                let get_height_fn = move |block_hash: &BlockHash| {
+                    if block_hash.as_byte_array() == &[0; 32] {
+                        return Ok(0);
+                    }
+                    if let Some(height) = block_height_cache.get(block_hash) {
+                        return Ok(*height);
+                    }
+                    match app_context
+                        .core_client
+                        .read()
+                        .unwrap()
+                        .get_block_header_info(
+                            &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
+                        ) {
+                        Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
+                        Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
+                            *block_hash,
+                        )),
+                    }
+                };
+                if let Err(e) = self.masternode_list_engine.feed_qr_info(
+                    qr_info.clone(),
+                    false,
+                    true,
+                    Some(get_height_fn),
+                ) {
+                    self.error = Some(e.to_string());
+                }
+                // Insert the diffs we received for quick access
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_c);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_2c);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_3c);
+                if let Some((_, d)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
+                    self.insert_mn_list_diff(d);
+                }
+                for d in &qr_info.mn_list_diff_list {
+                    self.insert_mn_list_diff(d);
+                }
+                // Store full qr_info for the QR tab
+                let key = qr_info.mn_list_diff_tip.block_hash;
+                self.qr_infos.insert(key, qr_info);
+                self.selected_dml_diff_key = None;
+                self.selected_quorum_in_diff_index = None;
+                // Queue extra diffs required for verification (previous behavior)
+                if let Some(task) = self.build_validation_diffs_task() {
+                    self.queued_task = Some(task);
+                } else {
+                    self.pending = None;
+                }
+            }
+            BackendTaskSuccessResult::MnListFetchedDiffs { items } => {
+                // Apply returned diffs sequentially
+                for ((base_h, h), diff) in items {
+                    if base_h == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
+                        if let Ok(engine) = MasternodeListEngine::initialize_with_diff_to_height(
+                            diff.clone(),
+                            h,
+                            self.app_context.network,
+                        ) {
+                            self.masternode_list_engine = engine;
+                        }
+                    } else {
+                        let _ = self.masternode_list_engine.apply_diff(
+                            diff.clone(),
+                            Some(h),
+                            false,
+                            None,
+                        );
+                    }
+                    self.mnlist_diffs.insert((base_h, h), diff);
+                }
+                // Update rotating quorum heights cache (previous behavior)
+                let hashes = self
+                    .masternode_list_engine
+                    .latest_masternode_list_rotating_quorum_hashes(&[]);
+                for hash in &hashes {
+                    if let Ok(height) = self.get_height(hash) {
+                        self.block_height_cache.insert(*hash, height);
+                    }
+                }
+                // Verify non-rotating quorums as before
+                if let Some(latest_masternode_list) =
+                    self.masternode_list_engine.latest_masternode_list()
+                {
+                    if let Err(e) = self
+                        .masternode_list_engine
+                        .verify_non_rotating_masternode_list_quorums(
+                            latest_masternode_list.known_height,
+                            &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                        )
+                    {
+                        self.error = Some(e.to_string());
+                    }
+                }
+                self.pending = None;
+            }
+            BackendTaskSuccessResult::MnListChainLockSigs { entries } => {
+                for ((h, bh), sig) in entries {
+                    self.chain_lock_sig_cache.insert((h, bh), sig.clone());
+                    if let Some(sig) = sig {
+                        self.chain_lock_reversed_sig_cache
+                            .entry(sig)
+                            .or_default()
+                            .insert((h, bh));
+                    }
+                }
+                self.pending = None;
+            }
+            _ => {}
         }
     }
 
@@ -3928,7 +4232,12 @@ impl ScreenLike for MasternodeListDiffScreen {
         // Styled central panel consistent with other tool screens; scroll only below tab row
         action |= island_central_panel(ctx, |ui| {
             // Top: input area (base/end block height + Get DMLs button)
-            self.render_input_area(ui);
+            let mut inner = AppAction::None;
+            inner |= self.render_input_area(ui);
+            // If we queued a backend task from a prior result processing, send it now
+            if let Some(task) = self.queued_task.take() {
+                inner |= AppAction::BackendTask(task);
+            }
 
             if let Some(error_msg) = self.error.clone() {
                 let message_color = Color32::from_rgb(255, 100, 100);
@@ -3951,11 +4260,46 @@ impl ScreenLike for MasternodeListDiffScreen {
                 ui.add_space(10.0);
             }
 
+            // Pending spinner (Dash Blue spinner, black text)
+            if let Some(p) = self.pending {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.scope(|ui| {
+                        let style = ui.style_mut();
+                        // Force spinner (fg stroke) to Dash Blue
+                        style.visuals.widgets.inactive.fg_stroke.color =
+                            crate::ui::theme::DashColors::DASH_BLUE;
+                        style.visuals.widgets.active.fg_stroke.color =
+                            crate::ui::theme::DashColors::DASH_BLUE;
+                        style.visuals.widgets.hovered.fg_stroke.color =
+                            crate::ui::theme::DashColors::DASH_BLUE;
+                        ui.add(egui::Spinner::new());
+                    });
+                    let label = match p {
+                        PendingTask::DmlDiffSingle => "Fetching DML diff…",
+                        PendingTask::DmlDiffNoRotation => "Fetching DMLs (no rotation)…",
+                        PendingTask::QrInfo => "Fetching QR info…",
+                        PendingTask::QrInfoWithDmls => "Fetching QR info + DMLs…",
+                        PendingTask::ChainLocks => "Fetching chain locks…",
+                    };
+                    ui.colored_label(Color32::BLACK, label);
+                });
+                ui.add_space(6.0);
+            }
+
             ui.separator();
 
             self.render_selected_tab(ui);
-            AppAction::None
+            inner
         });
         action
     }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingTask {
+    DmlDiffSingle,
+    DmlDiffNoRotation,
+    QrInfo,
+    QrInfoWithDmls,
+    ChainLocks,
 }

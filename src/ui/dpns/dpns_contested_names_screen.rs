@@ -19,7 +19,7 @@ use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -304,7 +304,7 @@ impl DPNSScreen {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(RichText::new("Please check back later or try refreshing the list.").color(DashColors::text_primary(dark_mode)));
                 ui.add_space(20.0);
-                if ui.button("Refresh").clicked() {
+                if StyledButton::primary("Refresh").show(ui).clicked() {
                     if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
                         app_action = AppAction::None;
                     } else {

@@ -43,6 +43,8 @@ cross build --target x86_64-pc-windows-gnu --release
 - **Async Backend Tasks**: Communication via crossbeam channels with result handling
 - **Network Isolation**: Separate app contexts per network with independent databases
 - **Real-time Updates**: ZMQ listeners for core blockchain events on network-specific ports
+- **Custom UI components**: we build a library of reusable widgets in `ui/components` whenever we need similar
+  widget displayed in more than 2 places
 
 ### Critical Dependencies
 - **dash-sdk**: Core Dash Platform SDK (git dependency, specific revision)

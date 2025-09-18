@@ -474,8 +474,13 @@ impl ScreenLike for WithdrawalScreen {
                     .clicked()
                     && self.confirmation_dialog.is_none()
                 {
-                    // Create dialog directly in show_confirmation_popup with correct message
-                    inner_action |= self.show_confirmation_popup(ui);
+                    self.confirmation_dialog = Some(
+                        ConfirmationDialog::new(
+                            "Confirm Withdrawal".to_string(),
+                            "Loading...".to_string(), // Will be updated in show_confirmation_popup
+                        )
+                        .danger_mode(true),
+                    );
                 }
 
                 if self.confirmation_dialog.is_some() {

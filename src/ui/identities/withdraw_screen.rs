@@ -474,6 +474,7 @@ impl ScreenLike for WithdrawalScreen {
                     .clicked()
                     && self.confirmation_dialog.is_none()
                 {
+                    // Validation will be done in show_confirmation_popup
                     self.confirmation_dialog = Some(
                         ConfirmationDialog::new(
                             "Confirm Withdrawal".to_string(),

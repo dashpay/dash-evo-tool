@@ -9,8 +9,6 @@ use std::str::FromStr;
 // Import our DIP-14 compliant derivation functions
 use super::dip14_derivation::derive_dashpay_incoming_xpub_dip14;
 
-/// DashPay feature index as defined in DIP-0009
-const DASHPAY_INCOMING_FUNDS_FEATURE: u32 = 15;
 /// DashPay auto-accept proof feature index
 const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
 

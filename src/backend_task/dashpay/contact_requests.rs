@@ -3,6 +3,7 @@ use super::encryption::{
 };
 use super::hd_derivation::generate_contact_xpub_data;
 use super::validation::validate_contact_request_before_send;
+use crate::backend_task::dashpay::auto_accept_proof::{AutoAcceptProofData, create_auto_accept_proof_bytes_with_key};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -43,7 +44,7 @@ pub async fn load_contact_requests(
         operator: WhereOperator::Equal,
         value: query_value.clone(),
     });
-    // WORKAROUND for Platform bug: Add orderBy to trigger proper index usage
+
     // Without this orderBy, the query returns 0 results even when documents exist
     incoming_query = incoming_query.with_order_by(OrderClause {
         field: "$createdAt".to_string(),
@@ -150,7 +151,7 @@ pub async fn send_contact_request_with_proof(
     signing_key: IdentityPublicKey,
     to_username_or_id: String,
     account_label: Option<String>,
-    auto_accept_proof: Option<Vec<u8>>,
+    qr_auto_accept: Option<AutoAcceptProofData>,
 ) -> Result<BackendTaskSuccessResult, String> {
     // Step 1: Resolve the recipient identity
     let to_identity = if to_username_or_id.ends_with(".dash") {
@@ -324,8 +325,8 @@ pub async fn send_contact_request_with_proof(
         Value::U32(recipient_key.id()),
     );
     // Calculate account reference
-    // For now, use the account index directly
-    // In production, this would use the full calculation from DIP-0015
+    // For now, use the account index directly.
+    // In production, calculate per DIP-0015 (ASK-based shortening)
     properties.insert("accountReference".to_string(), Value::U32(account_index));
     properties.insert(
         "encryptedPublicKey".to_string(),
@@ -344,8 +345,19 @@ pub async fn send_contact_request_with_proof(
         );
     }
 
-    // Add autoAcceptProof if provided (from QR code scanning)
-    if let Some(proof) = auto_accept_proof {
+    // If QR auto-accept data is provided, create the proof bytes now to match the final accountReference
+    if let Some(qr) = qr_auto_accept {
+        // Ensure the QR target matches the resolved recipient
+        if qr.identity_id != to_identity_id {
+            return Err("QR code target identity does not match recipient".to_string());
+        }
+        let proof = create_auto_accept_proof_bytes_with_key(
+            qr.expires_at,
+            &qr.proof_key,
+            &identity.identity.id(),
+            &to_identity_id,
+            account_index,
+        )?;
         eprintln!(
             "DEBUG: Including autoAcceptProof in contact request ({} bytes)",
             proof.len()

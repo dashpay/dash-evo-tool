@@ -1,6 +1,5 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::dashpay::auto_accept_handler::generate_proof_for_request;
 use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -75,18 +74,6 @@ impl QRScannerScreen {
                     }
                 };
 
-                // Generate proof for the request
-                let proof = match generate_proof_for_request(&self.qr_data_input, identity) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.display_message(
-                            &format!("Failed to generate proof: {}", e),
-                            MessageType::Error,
-                        );
-                        return AppAction::None;
-                    }
-                };
-
                 self.sending = true;
 
                 // Create task to send contact request with proof
@@ -99,7 +86,7 @@ impl QRScannerScreen {
                             "QR Contact (Account #{})",
                             qr_data.account_reference
                         )),
-                        auto_accept_proof: proof,
+                        qr_auto_accept: qr_data.clone(),
                     }));
 
                 return AppAction::BackendTask(task);

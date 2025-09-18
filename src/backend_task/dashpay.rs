@@ -58,7 +58,7 @@ pub enum DashPayTask {
         signing_key: IdentityPublicKey,
         to_identity_id: Identifier,
         account_label: Option<String>,
-        auto_accept_proof: Vec<u8>,
+        qr_auto_accept: crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData,
     },
     AcceptContactRequest {
         identity: QualifiedIdentity,
@@ -131,7 +131,7 @@ impl AppContext {
                 signing_key,
                 to_identity_id,
                 account_label,
-                auto_accept_proof,
+                qr_auto_accept,
             } => {
                 contact_requests::send_contact_request_with_proof(
                     self,
@@ -142,7 +142,7 @@ impl AppContext {
                         dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                     ),
                     account_label,
-                    Some(auto_accept_proof),
+                    Some(qr_auto_accept),
                 )
                 .await
             }

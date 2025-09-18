@@ -1,6 +1,5 @@
 use super::hd_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -10,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoAcceptProofData {
     pub identity_id: Identifier,
     pub proof_key: [u8; 32],
@@ -162,9 +161,8 @@ pub fn generate_auto_accept_proof(
         .map(|(_, private_key)| private_key)
         .ok_or("Private key not found")?;
 
-    // Determine network - for now use Testnet as default
-    // TODO: Get actual network from app context or identity
-    let network = Network::Testnet;
+    // Determine network from the identity
+    let network = identity.network;
 
     // Derive the auto-accept key using DIP-0015 path: m/9'/5'/16'/timestamp'
     // Using expiration timestamp as the derivation index
@@ -193,18 +191,15 @@ pub fn generate_auto_accept_proof(
 /// - key index (4 bytes) - the timestamp used for derivation
 /// - signature size (1 byte)
 /// - signature (32-96 bytes)
-pub fn create_auto_accept_proof_bytes(
-    proof_data: &AutoAcceptProofData,
+pub fn create_auto_accept_proof_bytes_with_key(
+    expires_at: u64,
+    signing_key_bytes: &[u8; 32],
     sender_id: &Identifier,
     recipient_id: &Identifier,
     account_reference: u32,
-    wallet_seed: &[u8],
-    network: Network,
 ) -> Result<Vec<u8>, String> {
     // Derive the auto-accept key
-    let auto_accept_xprv =
-        derive_auto_accept_key(wallet_seed, network, proof_data.expires_at as u32)
-            .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
+    // Sign using the provided ephemeral key from the QR
 
     // Create the message to sign: ownerId + toUserId + accountReference
     let mut message_data = Vec::new();
@@ -222,7 +217,7 @@ pub fn create_auto_accept_proof_bytes(
     let message = Message::from_digest_slice(&message_hash)
         .map_err(|e| format!("Failed to create message: {}", e))?;
 
-    let secret_key = SecretKey::from_slice(&auto_accept_xprv.private_key.secret_bytes())
+    let secret_key = SecretKey::from_slice(signing_key_bytes)
         .map_err(|e| format!("Failed to create secret key: {}", e))?;
 
     let signature = secp.sign_ecdsa(&message, &secret_key);
@@ -231,7 +226,7 @@ pub fn create_auto_accept_proof_bytes(
     // Build the proof bytes
     let mut proof_bytes = Vec::new();
     proof_bytes.push(0u8); // Key type 0 for ECDSA_SECP256K1
-    proof_bytes.extend_from_slice(&(proof_data.expires_at as u32).to_be_bytes()); // Key index (timestamp)
+    proof_bytes.extend_from_slice(&(expires_at as u32).to_be_bytes()); // Key index (timestamp)
     proof_bytes.push(sig_bytes.len() as u8); // Signature size
     proof_bytes.extend_from_slice(&sig_bytes); // The signature
 
@@ -245,84 +240,84 @@ pub fn create_auto_accept_proof_bytes(
 pub fn verify_auto_accept_proof(
     proof_data: &[u8],
     sender_identity_id: Identifier,
-    _our_identity: &QualifiedIdentity,
-    stored_proofs: &[StoredProof],
+    recipient_identity_id: Identifier,
+    our_identity: &QualifiedIdentity,
+    account_reference: u32,
 ) -> Result<bool, String> {
-    // The proof data should contain:
-    // 1. The proof key we generated and shared
-    // 2. A signature from the sender proving they received it from us
-
-    if proof_data.len() < 32 {
-        return Ok(false); // Invalid proof format
+    // Parse: key type (1) | key index/timestamp (4) | sig size (1) | signature
+    if proof_data.len() < 6 {
+        return Ok(false);
     }
-
-    // Extract the proof key from the data
-    let mut proof_key = [0u8; 32];
-    proof_key.copy_from_slice(&proof_data[0..32]);
-
-    // Check if this proof key matches any of our stored proofs
-    for stored_proof in stored_proofs {
-        if stored_proof.proof_key == proof_key {
-            // Check if the proof hasn't expired
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| format!("Time error: {}", e))?
-                .as_secs();
-
-            if now > stored_proof.expires_at {
-                continue; // This proof has expired
-            }
-
-            // Verify the sender matches (if we restricted it)
-            if let Some(expected_id) = &stored_proof.expected_identity_id {
-                if expected_id != &sender_identity_id {
-                    continue; // Wrong sender
-                }
-            }
-
-            // Valid proof found!
-            return Ok(true);
-        }
+    let _key_type = proof_data[0];
+    let key_index =
+        u32::from_be_bytes([proof_data[1], proof_data[2], proof_data[3], proof_data[4]]);
+    let sig_len = proof_data[5] as usize;
+    if proof_data.len() < 6 + sig_len {
+        return Ok(false);
     }
+    let signature_bytes = &proof_data[6..6 + sig_len];
 
-    Ok(false)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredProof {
-    pub proof_key: [u8; 32],
-    pub identity_id: Identifier,
-    pub expected_identity_id: Option<Identifier>, // If we want to restrict who can use this
-    pub account_reference: u32,
-    pub expires_at: u64,
-    pub created_at: u64,
-    pub used: bool,
-}
-
-/// Store a proof key that we've shared via QR code
-///
-/// This allows us to recognize incoming contact requests that include our proof
-/// and automatically accept them.
-pub fn store_shared_proof(
-    proof_data: AutoAcceptProofData,
-    identity: &QualifiedIdentity,
-) -> Result<StoredProof, String> {
+    // Expiry check
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("Time error: {}", e))?
         .as_secs();
+    if now > key_index as u64 {
+        return Ok(false);
+    }
 
-    let stored_proof = StoredProof {
-        proof_key: proof_data.proof_key,
-        identity_id: identity.identity.id(),
-        expected_identity_id: None, // Can be set if we want to restrict usage
-        account_reference: proof_data.account_reference,
-        expires_at: proof_data.expires_at,
-        created_at: now,
-        used: false,
-    };
+    // Message: ownerId + toUserId + accountReference
+    let mut message_data = Vec::new();
+    message_data.extend_from_slice(&sender_identity_id.to_buffer());
+    message_data.extend_from_slice(&recipient_identity_id.to_buffer());
+    message_data.extend_from_slice(&account_reference.to_le_bytes());
+    let mut hasher = Sha256::new();
+    hasher.update(&message_data);
+    let message_hash = hasher.finalize();
+    let secp = Secp256k1::new();
+    let message = Message::from_digest_slice(&message_hash)
+        .map_err(|e| format!("Failed to create message: {}", e))?;
 
-    // In production, this would save to a database
-    // For now, we return it for the caller to handle storage
-    Ok(stored_proof)
+    // Derive expected pubkey from our seed and key index (timestamp)
+    let wallets: Vec<_> = our_identity.associated_wallets.values().cloned().collect();
+    let signing_key = our_identity
+        .identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::CRITICAL]),
+            HashSet::from([KeyType::ECDSA_SECP256K1]),
+            false,
+        )
+        .ok_or("No suitable signing key found")?;
+    let wallet_seed = our_identity
+        .private_keys
+        .get_resolve(
+            &(
+                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                signing_key.id(),
+            ),
+            &wallets,
+            our_identity.network,
+        )
+        .map_err(|e| format!("Error resolving private key: {}", e))?
+        .map(|(_, private_key)| private_key)
+        .ok_or("Private key not found")?;
+    let xprv = derive_auto_accept_key(&wallet_seed, our_identity.network, key_index)
+        .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
+    let pubkey = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(
+        &secp,
+        &dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(
+            &xprv.private_key.secret_bytes(),
+        )
+        .map_err(|e| format!("Failed to create secret key: {}", e))?,
+    );
+    let sig = dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature::from_compact(signature_bytes)
+        .map_err(|e| format!("Invalid signature bytes: {}", e))?;
+
+    match secp.verify_ecdsa(&message, &sig, &pubkey) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
+
+// No local persistence required

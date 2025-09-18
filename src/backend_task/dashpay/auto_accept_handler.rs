@@ -1,4 +1,4 @@
-use crate::backend_task::dashpay::auto_accept_proof::{StoredProof, verify_auto_accept_proof};
+use crate::backend_task::dashpay::auto_accept_proof::verify_auto_accept_proof;
 use crate::backend_task::dashpay::contact_requests::accept_contact_request;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -44,8 +44,7 @@ pub async fn process_auto_accept_requests(
         .await
         .map_err(|e| format!("Error fetching incoming contact requests: {}", e))?;
 
-    // Load stored proofs from database (mock for now)
-    let stored_proofs = load_stored_proofs(&identity)?;
+    // Stateless verification; no stored proofs needed
 
     let mut auto_accepted_requests = Vec::new();
 
@@ -61,8 +60,24 @@ pub async fn process_auto_accept_requests(
                     from_id.to_string(Encoding::Base58)
                 );
 
-                // Verify the proof
-                match verify_auto_accept_proof(proof_data, from_id, &identity, &stored_proofs) {
+                // Extract accountReference for message construction (default to 0 if missing)
+                let account_reference = match props.get("accountReference") {
+                    Some(Value::U32(v)) => *v,
+                    Some(Value::U64(v)) => *v as u32,
+                    Some(Value::I64(v)) => *v as u32,
+                    Some(Value::U128(v)) => *v as u32,
+                    Some(Value::I128(v)) => *v as u32,
+                    _ => 0u32,
+                };
+
+                // Verify the proof per DIP-0015
+                match verify_auto_accept_proof(
+                    proof_data,
+                    from_id,
+                    identity.identity.id(),
+                    &identity,
+                    account_reference,
+                ) {
                     Ok(true) => {
                         eprintln!(
                             "DEBUG: Valid autoAcceptProof! Auto-accepting contact request from {}",
@@ -76,8 +91,7 @@ pub async fn process_auto_accept_requests(
                             Ok(_) => {
                                 auto_accepted_requests.push((from_id, true));
 
-                                // Mark the proof as used
-                                mark_proof_as_used(proof_data, &identity)?;
+                                // Stateless: no persistence required
                             }
                             Err(e) => {
                                 eprintln!("ERROR: Failed to auto-accept contact request: {}", e);
@@ -102,35 +116,6 @@ pub async fn process_auto_accept_requests(
     Ok(auto_accepted_requests)
 }
 
-/// Load stored proofs from database
-///
-/// In production, this would load from SQLite database
-fn load_stored_proofs(_identity: &QualifiedIdentity) -> Result<Vec<StoredProof>, String> {
-    // TODO: Implement database loading
-    // For now, return empty list
-    Ok(Vec::new())
-}
+// No DB persistence required
 
-/// Mark a proof as used so it can't be reused
-fn mark_proof_as_used(_proof_data: &[u8], _identity: &QualifiedIdentity) -> Result<(), String> {
-    // TODO: Update database to mark proof as used
-    Ok(())
-}
-
-/// Generate autoAcceptProof data to include in a contact request
-///
-/// This is called when sending a contact request after scanning someone's QR code
-pub fn generate_proof_for_request(
-    scanned_qr_data: &str,
-    _our_identity: &QualifiedIdentity,
-) -> Result<Vec<u8>, String> {
-    // Parse the QR code data
-    let proof_data =
-        crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData::from_qr_string(
-            scanned_qr_data,
-        )?;
-
-    // The proof to include is simply the proof key from the QR code
-    // This proves we received it from them
-    Ok(proof_data.proof_key.to_vec())
-}
+// Proof creation moved to contact_requests::send_contact_request_with_proof

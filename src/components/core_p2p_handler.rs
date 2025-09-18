@@ -166,10 +166,29 @@ impl CoreP2PHandler {
         println!("Sent qr info request message to Dash Core");
 
         let (mut command, mut payload);
+        // QRInfo on mainnet can take noticeably longer to prepare.
+        // Temporarily increase socket read timeout and our overall wait.
+        let (socket_timeout, overall_timeout) = match self.network {
+            Network::Dash => (Duration::from_secs(60), Duration::from_secs(60)),
+            _ => (Duration::from_secs(15), Duration::from_secs(15)),
+        };
+        let previous_socket_timeout = self
+            .stream
+            .read_timeout()
+            .map_err(|e| format!("get_read_timeout failed: {}", e))?;
+        self
+            .stream
+            .set_read_timeout(Some(socket_timeout))
+            .map_err(|e| format!("set_read_timeout failed: {}", e))?;
         let start_time = std::time::Instant::now();
-        let timeout = Duration::from_secs(5);
+        let timeout = overall_timeout;
         loop {
             if start_time.elapsed() > timeout {
+                // Restore previous socket timeout before returning
+                self
+                    .stream
+                    .set_read_timeout(previous_socket_timeout)
+                    .map_err(|e| format!("restore set_read_timeout failed: {}", e))?;
                 return Err("Timeout waiting for qrinfo message".to_string());
             }
             match self.read_message() {
@@ -185,6 +204,11 @@ impl CoreP2PHandler {
             }
             if command == "qrinfo" {
                 println!("Got qrinfo message");
+                // Restore previous socket timeout
+                self
+                    .stream
+                    .set_read_timeout(previous_socket_timeout)
+                    .map_err(|e| format!("restore set_read_timeout failed: {}", e))?;
                 break;
             } else {
                 thread::sleep(Duration::from_millis(10));

@@ -10,7 +10,7 @@ use dash_sdk::dpp::dashcore::network::{Address, message_network, message_qrinfo}
 use rand::prelude::StdRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
@@ -38,6 +38,12 @@ fn double_sha256(data: &[u8]) -> [u8; 32] {
     result
 }
 
+#[derive(Debug)]
+enum ReadMessageError {
+    Transient,
+    Fatal(String),
+}
+
 impl CoreP2PHandler {
     pub fn new(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, String> {
         let port = use_port.unwrap_or(match network {
@@ -54,6 +60,13 @@ impl CoreP2PHandler {
             Duration::from_secs(5),
         )
         .map_err(|e| format!("Failed to connect: {}", e))?;
+        // Set per-socket timeouts so reads/writes don't block forever
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("set_read_timeout failed: {}", e))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("set_write_timeout failed: {}", e))?;
         println!("Connected to Dash Core at 127.0.0.1:{}", port);
         Ok(CoreP2PHandler {
             network,
@@ -89,7 +102,17 @@ impl CoreP2PHandler {
             if start_time.elapsed() > timeout {
                 return Err("Timeout waiting for mnlistdiff message".to_string());
             }
-            (command, payload) = self.read_message()?;
+            match self.read_message() {
+                Ok((c, p)) => {
+                    command = c;
+                    payload = p;
+                }
+                Err(ReadMessageError::Transient) => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(ReadMessageError::Fatal(e)) => return Err(e),
+            }
             if command == "mnlistdiff" {
                 println!("Got mnlistdiff message");
                 break;
@@ -149,7 +172,17 @@ impl CoreP2PHandler {
             if start_time.elapsed() > timeout {
                 return Err("Timeout waiting for qrinfo message".to_string());
             }
-            (command, payload) = self.read_message()?;
+            match self.read_message() {
+                Ok((c, p)) => {
+                    command = c;
+                    payload = p;
+                }
+                Err(ReadMessageError::Transient) => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(ReadMessageError::Fatal(e)) => return Err(e),
+            }
             if command == "qrinfo" {
                 println!("Got qrinfo message");
                 break;
@@ -240,12 +273,15 @@ impl CoreP2PHandler {
         Ok(())
     }
 
-    fn read_message(&mut self) -> Result<(String, Vec<u8>), String> {
+    fn read_message(&mut self) -> Result<(String, Vec<u8>), ReadMessageError> {
         let mut header_buf = [0u8; HEADER_LENGTH];
         // Read the header.
         self.stream
             .read_exact(&mut header_buf)
-            .map_err(|e| format!("Error reading header: {}", e))?;
+            .map_err(|e| match e.kind() {
+                ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
+                _ => ReadMessageError::Fatal(format!("Error reading header: {}", e)),
+            })?;
 
         // If the first 4 bytes don't match our network magic, shift until we do.
         const MAX_SYNC_ATTEMPTS: usize = 1024; // Prevent reading more than 1KB looking for magic
@@ -253,7 +289,9 @@ impl CoreP2PHandler {
         while u32::from_le_bytes(header_buf[0..4].try_into().unwrap()) != self.network.magic() {
             sync_attempts += 1;
             if sync_attempts > MAX_SYNC_ATTEMPTS {
-                return Err("Failed to find network magic in stream".to_string());
+                return Err(ReadMessageError::Fatal(
+                    "Failed to find network magic in stream".to_string(),
+                ));
             }
             // Shift left by one byte.
             for i in 0..HEADER_LENGTH - 1 {
@@ -263,7 +301,13 @@ impl CoreP2PHandler {
             let mut one_byte = [0u8; 1];
             self.stream
                 .read_exact(&mut one_byte)
-                .map_err(|e| format!("Error reading while syncing magic: {}", e))?;
+                .map_err(|e| match e.kind() {
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
+                    _ => ReadMessageError::Fatal(format!(
+                        "Error reading while syncing magic: {}",
+                        e
+                    )),
+                })?;
             header_buf[HEADER_LENGTH - 1] = one_byte[0];
         }
 
@@ -276,10 +320,10 @@ impl CoreP2PHandler {
         // Payload length (little-endian u32)
         let payload_len_u32 = u32::from_le_bytes(header_buf[16..20].try_into().unwrap());
         if payload_len_u32 > MAX_MSG_LENGTH as u32 {
-            return Err(format!(
+            return Err(ReadMessageError::Fatal(format!(
                 "Payload length {} exceeds maximum",
                 payload_len_u32
-            ));
+            )));
         }
         let payload_len = payload_len_u32 as usize;
 
@@ -290,15 +334,18 @@ impl CoreP2PHandler {
         let mut payload_buf = vec![0u8; payload_len];
         self.stream
             .read_exact(&mut payload_buf)
-            .map_err(|e| format!("Error reading payload: {}", e))?;
+            .map_err(|e| match e.kind() {
+                ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
+                _ => ReadMessageError::Fatal(format!("Error reading payload: {}", e)),
+            })?;
 
         // Compute and verify checksum.
         let computed_checksum = &double_sha256(&payload_buf)[0..4];
         if computed_checksum != expected_checksum {
-            return Err(format!(
+            return Err(ReadMessageError::Fatal(format!(
                 "Checksum mismatch for {}: computed {:x?}, expected {:x?}, payload is {:x?}",
                 command, computed_checksum, expected_checksum, payload_buf
-            ));
+            )));
         }
         let mut total_buf = header_buf.to_vec();
         total_buf.append(&mut payload_buf);
@@ -307,8 +354,22 @@ impl CoreP2PHandler {
 
     /// The handshake loop: read messages until we complete the version/verack exchange.
     fn run_handshake_loop(&mut self) -> Result<(), String> {
-        // Expect a version message from the peer.
-        let (command, payload) = self.read_message()?;
+        // Expect a version message from the peer, with a timeout.
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        let (command, payload) = loop {
+            if start_time.elapsed() > timeout {
+                return Err("Timeout waiting for version message".to_string());
+            }
+            match self.read_message() {
+                Ok(res) => break res,
+                Err(ReadMessageError::Transient) => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(ReadMessageError::Fatal(e)) => return Err(e),
+            }
+        };
         if command != "version" {
             return Err(format!("Expected version message, got {}", command));
         }
@@ -330,7 +391,14 @@ impl CoreP2PHandler {
             if start_time.elapsed() > timeout {
                 return Err("Timeout waiting for verack message".to_string());
             }
-            let (command, _) = self.read_message()?;
+            let (command, _) = match self.read_message() {
+                Ok(res) => res,
+                Err(ReadMessageError::Transient) => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(ReadMessageError::Fatal(e)) => return Err(e),
+            };
             if command == "verack" {
                 println!("Got verack message");
                 break;

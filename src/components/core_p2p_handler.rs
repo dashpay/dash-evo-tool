@@ -47,8 +47,13 @@ impl CoreP2PHandler {
             Network::Regtest => 29999, // Dash Regtest default
             _ => panic!("Unsupported network type"),
         });
-        let stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .map_err(|e| format!("Failed to connect: {}", e))?;
+        let stream = TcpStream::connect_timeout(
+            &format!("127.0.0.1:{}", port)
+                .parse()
+                .map_err(|e| format!("Invalid address: {}", e))?,
+            Duration::from_secs(5),
+        )
+        .map_err(|e| format!("Failed to connect: {}", e))?;
         println!("Connected to Dash Core at 127.0.0.1:{}", port);
         Ok(CoreP2PHandler {
             network,
@@ -78,7 +83,12 @@ impl CoreP2PHandler {
         println!("Sent getmnlistdiff message to Dash Core");
 
         let (mut command, mut payload);
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
         loop {
+            if start_time.elapsed() > timeout {
+                return Err("Timeout waiting for mnlistdiff message".to_string());
+            }
             (command, payload) = self.read_message()?;
             if command == "mnlistdiff" {
                 println!("Got mnlistdiff message");
@@ -133,7 +143,12 @@ impl CoreP2PHandler {
         println!("Sent qr info request message to Dash Core");
 
         let (mut command, mut payload);
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
         loop {
+            if start_time.elapsed() > timeout {
+                return Err("Timeout waiting for qrinfo message".to_string());
+            }
             (command, payload) = self.read_message()?;
             if command == "qrinfo" {
                 println!("Got qrinfo message");
@@ -233,7 +248,13 @@ impl CoreP2PHandler {
             .map_err(|e| format!("Error reading header: {}", e))?;
 
         // If the first 4 bytes don't match our network magic, shift until we do.
+        const MAX_SYNC_ATTEMPTS: usize = 1024; // Prevent reading more than 1KB looking for magic
+        let mut sync_attempts = 0;
         while u32::from_le_bytes(header_buf[0..4].try_into().unwrap()) != self.network.magic() {
+            sync_attempts += 1;
+            if sync_attempts > MAX_SYNC_ATTEMPTS {
+                return Err("Failed to find network magic in stream".to_string());
+            }
             // Shift left by one byte.
             for i in 0..HEADER_LENGTH - 1 {
                 header_buf[i] = header_buf[i + 1];
@@ -253,10 +274,14 @@ impl CoreP2PHandler {
             .to_string();
 
         // Payload length (little-endian u32)
-        let payload_len = u32::from_le_bytes(header_buf[16..20].try_into().unwrap()) as usize;
-        if payload_len > MAX_MSG_LENGTH {
-            return Err(format!("Payload length {} exceeds maximum", payload_len));
+        let payload_len_u32 = u32::from_le_bytes(header_buf[16..20].try_into().unwrap());
+        if payload_len_u32 > MAX_MSG_LENGTH as u32 {
+            return Err(format!(
+                "Payload length {} exceeds maximum",
+                payload_len_u32
+            ));
         }
+        let payload_len = payload_len_u32 as usize;
 
         // Expected checksum.
         let expected_checksum = &header_buf[20..24];
@@ -299,7 +324,12 @@ impl CoreP2PHandler {
             }
         }
 
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
         loop {
+            if start_time.elapsed() > timeout {
+                return Err("Timeout waiting for verack message".to_string());
+            }
             let (command, _) = self.read_message()?;
             if command == "verack" {
                 println!("Got verack message");

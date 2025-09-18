@@ -303,10 +303,9 @@ impl CoreP2PHandler {
                 .read_exact(&mut one_byte)
                 .map_err(|e| match e.kind() {
                     ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
-                    _ => ReadMessageError::Fatal(format!(
-                        "Error reading while syncing magic: {}",
-                        e
-                    )),
+                    _ => {
+                        ReadMessageError::Fatal(format!("Error reading while syncing magic: {}", e))
+                    }
                 })?;
             header_buf[HEADER_LENGTH - 1] = one_byte[0];
         }

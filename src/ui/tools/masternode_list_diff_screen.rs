@@ -260,7 +260,7 @@ impl MasternodeListDiffScreen {
 
     /// Build a backend task that fetches the extra diffs needed to validate non-rotating quorums.
     /// Returns None if requirements cannot be computed.
-    fn build_validation_diffs_task(&self) -> Option<BackendTask> {
+    fn build_validation_diffs_task(&mut self) -> Option<BackendTask> {
         // Determine hashes we need to validate
         let hashes = self
             .masternode_list_engine
@@ -275,7 +275,7 @@ impl MasternodeListDiffScreen {
         // Compute target validation heights (h-8)
         let mut heights: BTreeSet<u32> = BTreeSet::new();
         for quorum_hash in &hashes {
-            if let Ok(h) = self.get_height(quorum_hash)
+            if let Ok(h) = self.get_height_and_cache(quorum_hash)
                 && h >= 8
             {
                 heights.insert(h - 8);
@@ -336,11 +336,11 @@ impl MasternodeListDiffScreen {
             .get_height(block_hash)
         else {
             let Some(height) = self.block_height_cache.get(block_hash) else {
-                // println!(
-                //     "Asking core for height no cache {} ({})",
-                //     block_hash,
-                //     block_hash.reverse()
-                // );
+                println!(
+                    "Asking core for height no cache {} ({})",
+                    block_hash,
+                    block_hash.reverse()
+                );
                 return match self
                     .app_context
                     .core_client
@@ -373,11 +373,11 @@ impl MasternodeListDiffScreen {
             .get_height(block_hash)
         else {
             let Some(height) = self.block_height_cache.get(block_hash) else {
-                // println!(
-                //     "Asking core for height {} ({})",
-                //     block_hash,
-                //     block_hash.reverse()
-                // );
+                println!(
+                    "Asking core for height {} ({})",
+                    block_hash,
+                    block_hash.reverse()
+                );
                 return match self
                     .app_context
                     .core_client
@@ -954,7 +954,7 @@ impl MasternodeListDiffScreen {
                 .masternode_list_engine
                 .latest_masternode_list_rotating_quorum_hashes(&[]);
             for hash in &hashes {
-                let height = match self.get_height(hash) {
+                let height = match self.get_height_and_cache(hash) {
                     Ok(height) => height,
                     Err(e) => {
                         self.error = Some(e.to_string());
@@ -1366,7 +1366,7 @@ impl MasternodeListDiffScreen {
             .masternode_list_engine
             .latest_masternode_list_rotating_quorum_hashes(&[]);
         for hash in &hashes {
-            let height = match self.get_height(hash) {
+            let height = match self.get_height_and_cache(hash) {
                 Ok(height) => height,
                 Err(e) => {
                     self.error = Some(e.to_string());
@@ -1421,9 +1421,16 @@ impl MasternodeListDiffScreen {
                         && let Ok(((_, base_hash), (_, hash))) = self.parse_heights()
                     {
                         self.pending = Some(PendingTask::QrInfo);
+                        // Build known_block_hashes from current diffs + base hash (old UI behavior)
+                        let mut known_block_hashes: Vec<_> = self
+                            .mnlist_diffs
+                            .values()
+                            .map(|mn_list_diff| mn_list_diff.block_hash)
+                            .collect();
+                        known_block_hashes.push(base_hash);
                         action = AppAction::BackendTask(BackendTask::MnListTask(
                             MnListTask::FetchEndQrInfo {
-                                base_block_hash: base_hash,
+                                known_block_hashes,
                                 block_hash: hash,
                             },
                         ));
@@ -1446,9 +1453,16 @@ impl MasternodeListDiffScreen {
                         && let Ok(((_, base_hash), (_, hash))) = self.parse_heights()
                     {
                         self.pending = Some(PendingTask::QrInfoWithDmls);
+                        // Build known_block_hashes from current diffs + base hash (old UI behavior)
+                        let mut known_block_hashes: Vec<_> = self
+                            .mnlist_diffs
+                            .values()
+                            .map(|mn_list_diff| mn_list_diff.block_hash)
+                            .collect();
+                        known_block_hashes.push(base_hash);
                         action = AppAction::BackendTask(BackendTask::MnListTask(
                             MnListTask::FetchEndQrInfoWithDmls {
-                                base_block_hash: base_hash,
+                                known_block_hashes,
                                 block_hash: hash,
                             },
                         ));
@@ -1457,9 +1471,16 @@ impl MasternodeListDiffScreen {
                         && let Ok(((_, base_hash), (_, hash))) = self.parse_heights()
                     {
                         self.pending = Some(PendingTask::QrInfoWithDmls);
+                        // Build known_block_hashes from current diffs + base hash (old UI behavior)
+                        let mut known_block_hashes: Vec<_> = self
+                            .mnlist_diffs
+                            .values()
+                            .map(|mn_list_diff| mn_list_diff.block_hash)
+                            .collect();
+                        known_block_hashes.push(base_hash);
                         action = AppAction::BackendTask(BackendTask::MnListTask(
                             MnListTask::FetchEndQrInfoWithDmls {
-                                base_block_hash: base_hash,
+                                known_block_hashes,
                                 block_hash: hash,
                             },
                         ));
@@ -4123,6 +4144,19 @@ impl ScreenLike for MasternodeListDiffScreen {
                 self.selected_quorum_in_diff_index = None;
             }
             BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info } => {
+                // Warm heights and cache diffs before feed_qr_info (replicates old flow)
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_c);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_2c);
+                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_3c);
+                if let Some((_, d)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
+                    self.insert_mn_list_diff(d);
+                }
+                for d in &qr_info.mn_list_diff_list {
+                    self.insert_mn_list_diff(d);
+                }
+
                 // Apply to engine using the same closure as before to resolve heights
                 let block_height_cache = self.block_height_cache.clone();
                 let app_context = self.app_context.clone();
@@ -4153,18 +4187,6 @@ impl ScreenLike for MasternodeListDiffScreen {
                     Some(get_height_fn),
                 ) {
                     self.error = Some(e.to_string());
-                }
-                // Insert the diffs we received for quick access
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_c);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_2c);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_3c);
-                if let Some((_, d)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
-                    self.insert_mn_list_diff(d);
-                }
-                for d in &qr_info.mn_list_diff_list {
-                    self.insert_mn_list_diff(d);
                 }
                 // Store full qr_info for the QR tab
                 let key = qr_info.mn_list_diff_tip.block_hash;
@@ -4209,7 +4231,7 @@ impl ScreenLike for MasternodeListDiffScreen {
                     .masternode_list_engine
                     .latest_masternode_list_rotating_quorum_hashes(&[]);
                 for hash in &hashes {
-                    if let Ok(height) = self.get_height(hash) {
+                    if let Ok(height) = self.get_height_and_cache(hash) {
                         self.block_height_cache.insert(*hash, height);
                     }
                 }

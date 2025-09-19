@@ -16,11 +16,11 @@ pub enum MnListTask {
         validate_quorums: bool,
     },
     FetchEndQrInfo {
-        base_block_hash: BlockHash,
+        known_block_hashes: Vec<BlockHash>,
         block_hash: BlockHash,
     },
     FetchEndQrInfoWithDmls {
-        base_block_hash: BlockHash,
+        known_block_hashes: Vec<BlockHash>,
         block_hash: BlockHash,
     },
     FetchChainLocks {
@@ -56,22 +56,22 @@ pub async fn run_mnlist_task(
             })
         }
         MnListTask::FetchEndQrInfo {
-            base_block_hash,
+            known_block_hashes,
             block_hash,
         } => {
             let network = app.network;
             let mut p2p = CoreP2PHandler::new(network, None)?;
-            let qr_info = p2p.get_qr_info(vec![base_block_hash], block_hash)?;
+            let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
             Ok(BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info })
         }
         MnListTask::FetchEndQrInfoWithDmls {
-            base_block_hash,
+            known_block_hashes,
             block_hash,
         } => {
             // For now, fetch QRInfo; UI can integrate included diffs from QRInfo
             let network = app.network;
             let mut p2p = CoreP2PHandler::new(network, None)?;
-            let qr_info = p2p.get_qr_info(vec![base_block_hash], block_hash)?;
+            let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
             Ok(BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info })
         }
         MnListTask::FetchChainLocks {

@@ -44,14 +44,14 @@ impl AppContext {
         // store the order for deterministic pagination
         let mut contract_ids: Vec<Identifier> = Vec::with_capacity(kw_docs.len());
         for (_doc_id, doc_opt) in kw_docs.iter() {
-            if let Some(doc) = doc_opt {
-                if let Some(cid_val) = doc.get("contractId") {
-                    contract_ids.push(
-                        cid_val
-                            .to_identifier()
-                            .map_err(|e| format!("Bad contractId: {e}"))?,
-                    );
-                }
+            if let Some(doc) = doc_opt
+                && let Some(cid_val) = doc.get("contractId")
+            {
+                contract_ids.push(
+                    cid_val
+                        .to_identifier()
+                        .map_err(|e| format!("Bad contractId: {e}"))?,
+                );
             }
         }
 

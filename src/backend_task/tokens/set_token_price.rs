@@ -31,8 +31,11 @@ impl AppContext {
             data_contract.clone(),
             token_position,
             sending_identity.identity.id(),
-            token_pricing_schedule,
         );
+
+        if let Some(pricing_schedule) = token_pricing_schedule {
+            builder = builder.with_token_pricing_schedule(pricing_schedule);
+        }
 
         if let Some(note) = public_note {
             builder = builder.with_public_note(note);

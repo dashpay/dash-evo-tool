@@ -12,6 +12,7 @@ pub enum ToolsSubscreen {
     ProofViewer,
     ContractViewer,
     PlatformInfo,
+    MasternodeListDiff,
 }
 
 impl ToolsSubscreen {
@@ -23,6 +24,7 @@ impl ToolsSubscreen {
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
             Self::PlatformInfo => "Platform info",
+            Self::MasternodeListDiff => "Masternode list diff inspector",
         }
     }
 }
@@ -38,6 +40,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
         ToolsSubscreen::PlatformInfo,
+        ToolsSubscreen::MasternodeListDiff,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -54,6 +57,9 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::ContractViewer
             }
             ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
+            ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
+                ToolsSubscreen::MasternodeListDiff
+            }
             _ => ToolsSubscreen::ProofLog,
         },
         _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
@@ -118,39 +124,42 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             if ui.add(button).clicked() {
                                 // Handle navigation based on which subscreen is selected
                                 match subscreen {
-                            ToolsSubscreen::ProofLog => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsProofLogScreen,
-                                )
+                                    ToolsSubscreen::ProofLog => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsProofLogScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::TransactionViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::ProofViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsProofVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::DocumentViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::ContractViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsContractVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::PlatformInfo => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsPlatformInfoScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::MasternodeListDiff => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsMasternodeListDiffScreen)
+                                    }
+                                }
                             }
-                            ToolsSubscreen::TransactionViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsTransitionVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::ProofViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsProofVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::DocumentViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsDocumentVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::ContractViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsContractVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::PlatformInfo => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsPlatformInfoScreen,
-                                )
-                            }
-                        }
-                            }
-
                             ui.add_space(Spacing::SM);
                         }
                     });

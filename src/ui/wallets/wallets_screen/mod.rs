@@ -11,7 +11,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
-use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -824,7 +824,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
                     MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::from_rgb(100, 255, 100),
+                    MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
                 // Display message in a prominent frame

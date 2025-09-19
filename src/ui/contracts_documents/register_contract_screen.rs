@@ -205,15 +205,15 @@ impl RegisterDataContractScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
-            if let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                );
-            }
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
+            && let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task
+        {
+            self.broadcast_status = BroadcastStatus::Broadcasting(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
         }
 
         app_action

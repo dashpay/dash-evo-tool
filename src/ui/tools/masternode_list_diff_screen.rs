@@ -1107,11 +1107,24 @@ impl MasternodeListDiffScreen {
     // }
 
     /// Clear all data and reset to initial state
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.masternode_list_engine =
             MasternodeListEngine::default_for_network(self.app_context.network);
 
-        self.mnlist_diffs = Default::default();
+        // Clear cached data structures
+        self.mnlist_diffs.clear();
+        self.qr_infos.clear();
+        self.chain_locked_blocks.clear();
+        self.instant_send_transactions.clear();
+        self.block_height_cache.clear();
+        self.block_hash_cache.clear();
+        self.masternode_list_quorum_hash_cache.clear();
+        self.masternode_lists_with_all_quorum_heights_known.clear();
+        self.dml_diffs_with_cached_quorum_heights.clear();
+        self.chain_lock_sig_cache.clear();
+        self.chain_lock_reversed_sig_cache.clear();
+
+        // Reset selections and UI state
         self.selected_dml_diff_key = None;
         self.selected_dml_height_key = None;
         self.selected_option_index = None;
@@ -1119,12 +1132,13 @@ impl MasternodeListDiffScreen {
         self.selected_masternode_in_diff_index = None;
         self.selected_quorum_hash_in_mnlist_diff = None;
         self.selected_masternode_pro_tx_hash = None;
-        self.qr_infos = Default::default();
+        self.selected_qr_item = None;
+        self.selected_core_item = None;
+        self.pending = None;
+        self.queued_task = None;
+        self.search_term = None;
         self.error = None;
         self.message = None;
-        // Also clear known chain lock signatures caches
-        self.chain_lock_sig_cache.clear();
-        self.chain_lock_reversed_sig_cache.clear();
     }
 
     /// Clear all data except the oldest MNList diff starting from height 0

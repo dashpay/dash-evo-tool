@@ -504,7 +504,16 @@ impl Screen {
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::MasternodeListDiffScreen(screen) => screen.app_context = app_context,
+            Screen::MasternodeListDiffScreen(screen) => {
+                let old_net = screen.app_context.network;
+                if old_net != app_context.network {
+                    // Switch context and clear state to avoid cross-network bleed
+                    screen.app_context = app_context.clone();
+                    screen.clear();
+                } else {
+                    screen.app_context = app_context;
+                }
+            }
             Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::PlatformInfoScreen(screen) => screen.app_context = app_context,
 

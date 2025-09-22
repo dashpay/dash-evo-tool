@@ -11,6 +11,7 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::spv::{CoreBackendMode, SpvManager};
 use crate::ui::RootScreenType;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::utils::tasks::TaskManager;
@@ -38,7 +39,7 @@ use dash_sdk::query_types::IndexMap;
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
@@ -57,7 +58,7 @@ pub struct AppContext {
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
-    pub(crate) config: RwLock<NetworkConfig>,
+    pub(crate) config: Arc<RwLock<NetworkConfig>>,
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
     pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
@@ -81,6 +82,8 @@ pub struct AppContext {
     cached_settings: RwLock<Option<Settings>>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
+    pub(crate) spv_manager: Arc<SpvManager>,
+    core_backend_mode: AtomicU8,
 }
 
 impl AppContext {
@@ -99,6 +102,7 @@ impl AppContext {
         };
 
         let network_config = config.config_for_network(network).clone()?;
+        let config_lock = Arc::new(RwLock::new(network_config.clone()));
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
         // we create provider, but we need to set app context to it later, as we have a circular dependency
@@ -165,13 +169,22 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
+        let spv_manager = match SpvManager::new(network, Arc::clone(&config_lock), subtasks.clone())
+        {
+            Ok(manager) => manager,
+            Err(err) => {
+                tracing::error!(?err, ?network, "Failed to initialize SPV manager");
+                return None;
+            }
+        };
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
             devnet_name: None,
             db,
             sdk: sdk.into(),
-            config: network_config.into(),
+            config: config_lock,
             sx_zmq_status,
             rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
@@ -187,6 +200,8 @@ impl AppContext {
             animate,
             cached_settings: RwLock::new(None),
             subtasks,
+            spv_manager,
+            core_backend_mode: AtomicU8::new(CoreBackendMode::Spv.as_u8()),
         };
 
         let app_context = Arc::new(app_context);
@@ -206,6 +221,27 @@ impl AppContext {
         self.developer_mode.store(enable, Ordering::Relaxed);
         // Animations are reverse of developer mode
         self.enable_animations(!enable);
+    }
+
+    pub fn core_backend_mode(&self) -> CoreBackendMode {
+        self.core_backend_mode.load(Ordering::Relaxed).into()
+    }
+
+    pub fn set_core_backend_mode(&self, mode: CoreBackendMode) {
+        self.core_backend_mode
+            .store(mode.as_u8(), Ordering::Relaxed);
+    }
+
+    pub fn spv_manager(&self) -> &Arc<SpvManager> {
+        &self.spv_manager
+    }
+
+    pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
+        self.spv_manager.start()
+    }
+
+    pub fn stop_spv(&self) {
+        self.spv_manager.stop();
     }
 
     pub fn is_developer_mode(&self) -> bool {

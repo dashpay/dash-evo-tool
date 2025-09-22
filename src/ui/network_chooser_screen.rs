@@ -4,15 +4,18 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
+use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncStage};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -35,6 +38,7 @@ pub struct NetworkChooserScreen {
     developer_mode: bool,
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
+    backend_modes: HashMap<Network, CoreBackendMode>,
 }
 
 impl NetworkChooserScreen {
@@ -74,6 +78,27 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let custom_dash_qt_path = settings.dash_qt_path;
 
+        let mut backend_modes = HashMap::new();
+        backend_modes.insert(Network::Dash, mainnet_app_context.core_backend_mode());
+        backend_modes.insert(
+            Network::Testnet,
+            testnet_app_context
+                .map(|ctx| ctx.core_backend_mode())
+                .unwrap_or_default(),
+        );
+        backend_modes.insert(
+            Network::Devnet,
+            devnet_app_context
+                .map(|ctx| ctx.core_backend_mode())
+                .unwrap_or_default(),
+        );
+        backend_modes.insert(
+            Network::Regtest,
+            local_app_context
+                .map(|ctx| ctx.core_backend_mode())
+                .unwrap_or_default(),
+        );
+
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
             testnet_app_context: testnet_app_context.cloned(),
@@ -92,6 +117,7 @@ impl NetworkChooserScreen {
             developer_mode,
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
+            backend_modes,
         }
     }
 
@@ -144,6 +170,12 @@ impl NetworkChooserScreen {
                 );
                 ui.label(
                     egui::RichText::new("Status")
+                        .strong()
+                        .underline()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.label(
+                    egui::RichText::new("Backend")
                         .strong()
                         .underline()
                         .color(DashColors::text_primary(dark_mode)),
@@ -522,41 +554,57 @@ impl NetworkChooserScreen {
     fn render_network_row(&mut self, ui: &mut Ui, network: Network, name: &str) -> AppAction {
         let mut app_action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+
         ui.label(name);
 
-        // Check network status
-        let is_working = self.check_network_status(network);
-        let status_color = if is_working {
-            DashColors::success_color(dark_mode) // Theme-aware green
-        } else {
-            DashColors::error_color(dark_mode) // Theme-aware red
-        };
+        let current_mode = *self
+            .backend_modes
+            .entry(network)
+            .or_insert(CoreBackendMode::Rpc);
 
-        // Display status indicator
-        ui.colored_label(status_color, if is_working { "Online" } else { "Offline" });
-
-        if network == Network::Testnet && self.testnet_app_context.is_none() {
-            ui.label("(No configs for testnet loaded)");
+        if !self.has_context_for(network) {
+            ui.colored_label(DashColors::error_color(dark_mode), "No config");
+            self.render_backend_selector(ui, network, current_mode, true, None);
+            ui.label("(No configs loaded)");
+            ui.label("");
+            ui.label("");
+            ui.label("");
             ui.end_row();
-            return AppAction::None;
-        }
-        if network == Network::Devnet && self.devnet_app_context.is_none() {
-            ui.label("(No configs for devnet loaded)");
-            ui.end_row();
-            return AppAction::None;
-        }
-        if network == Network::Regtest && self.local_app_context.is_none() {
-            ui.label("(No configs for local loaded)");
-            ui.end_row();
-            return AppAction::None;
+            return app_action;
         }
 
-        // Network selection
+        let context = Arc::clone(self.context_for_network(network));
+
+        let mut spv_snapshot: Option<SpvStatusSnapshot> = None;
+        match current_mode {
+            CoreBackendMode::Rpc => {
+                let is_working = self.check_network_status(network);
+                let status_color = if is_working {
+                    DashColors::success_color(dark_mode)
+                } else {
+                    DashColors::error_color(dark_mode)
+                };
+                let status_label = if is_working { "Online" } else { "Offline" };
+                ui.colored_label(status_color, status_label);
+            }
+            CoreBackendMode::Spv => {
+                let snapshot = context.spv_manager().status();
+                self.render_spv_status(ui, dark_mode, &snapshot, &context);
+                spv_snapshot = Some(snapshot);
+            }
+        }
+
+        let backend_mode =
+            self.render_backend_selector(ui, network, current_mode, false, Some(&context));
+
+        if backend_mode == CoreBackendMode::Rpc && current_mode != CoreBackendMode::Rpc {
+            self.recheck_time = None;
+        }
+
         let mut is_selected = self.current_network == network;
         if StyledCheckbox::new(&mut is_selected, "").show(ui).clicked() && is_selected {
             self.current_network = network;
             app_action = AppAction::SwitchNetwork(network);
-            // Recheck in 1 second
             self.recheck_time = Some(
                 (SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -566,74 +614,106 @@ impl NetworkChooserScreen {
             );
         }
 
-        // Add a button to start the network
-        let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
-            !path.as_os_str().is_empty() && path.is_file()
-        } else {
-            false
-        };
+        match backend_mode {
+            CoreBackendMode::Rpc => {
+                let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
+                    !path.as_os_str().is_empty() && path.is_file()
+                } else {
+                    false
+                };
 
-        if network != Network::Regtest {
-            ui.add_enabled_ui(start_enabled, |ui| {
-                if ui
-                    .button("Start")
-                    .on_disabled_hover_text(
-                        "Please select path to dash-qt binary in Advanced Settings",
-                    )
-                    .clicked()
-                {
-                    app_action =
-                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::StartDashQT(
-                            network,
-                            self.custom_dash_qt_path
-                                .clone()
-                                .expect("Some() checked above"),
-                            self.overwrite_dash_conf,
-                        )));
+                if network != Network::Regtest {
+                    ui.add_enabled_ui(start_enabled, |ui| {
+                        if ui
+                            .button("Start")
+                            .on_disabled_hover_text(
+                                "Please select path to dash-qt binary in Advanced Settings",
+                            )
+                            .clicked()
+                        {
+                            app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::StartDashQT(
+                                    network,
+                                    self.custom_dash_qt_path
+                                        .clone()
+                                        .expect("Some() checked above"),
+                                    self.overwrite_dash_conf,
+                                ),
+                            ));
+                        }
+                    });
+                } else {
+                    ui.label("");
                 }
-            });
+            }
+            CoreBackendMode::Spv => {
+                let snapshot = spv_snapshot.unwrap_or_else(|| context.spv_manager().status());
+                match snapshot.status {
+                    SpvStatus::Idle | SpvStatus::Stopped | SpvStatus::Error => {
+                        if ui.button("Connect").clicked() {
+                            if let Err(err) = context.start_spv() {
+                                app_action =
+                                    AppAction::Custom(format!("Failed to start SPV: {}", err));
+                            }
+                        }
+                    }
+                    SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running => {
+                        if ui.button("Stop").clicked() {
+                            context.stop_spv();
+                        }
+                    }
+                    SpvStatus::Stopping => {
+                        ui.add_enabled_ui(false, |ui| {
+                            let _ = ui.button("Stopping…");
+                        });
+                    }
+                }
+            }
         }
 
-        // Add a text field for the dashmate password
         if network == Network::Regtest {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.add(
-                egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
-                    .desired_width(100.0)
-                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
-            );
-            if ui.button("Save Password").clicked() {
-                // 1) Reload the config
-                if let Ok(mut config) = Config::load()
-                    && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
-                {
-                    let updated_local_config = local_cfg
-                        .update_core_rpc_password(self.local_network_dashmate_password.clone());
-                    config
-                        .update_config_for_network(Network::Regtest, updated_local_config.clone());
-                    if let Err(e) = config.save() {
-                        eprintln!("Failed to save config to .env: {e}");
-                    }
-
-                    // 5) Update our local AppContext in memory
-                    if let Some(local_app_context) = &self.local_app_context {
-                        {
-                            // Overwrite the config field with the new password
-                            let mut cfg_lock = local_app_context.config.write().unwrap();
-                            *cfg_lock = updated_local_config;
+            if backend_mode == CoreBackendMode::Rpc {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                let text_color = DashColors::text_primary(dark_mode);
+                let background = DashColors::input_background(dark_mode);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
+                        .desired_width(100.0)
+                        .text_color(text_color)
+                        .background_color(background),
+                );
+                if ui.button("Save Password").clicked() {
+                    if let Ok(mut config) = Config::load()
+                        && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+                    {
+                        let updated_local_config = local_cfg
+                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
+                        config.update_config_for_network(
+                            Network::Regtest,
+                            updated_local_config.clone(),
+                        );
+                        if let Err(e) = config.save() {
+                            eprintln!("Failed to save config to .env: {e}");
                         }
 
-                        // 6) Re-init the client & sdk from the updated config
-                        if let Err(e) = Arc::clone(local_app_context).reinit_core_client_and_sdk() {
-                            eprintln!("Failed to re-init local RPC client and sdk: {}", e);
-                        } else {
-                            // Trigger SwitchNetworks
-                            app_action = AppAction::SwitchNetwork(Network::Regtest);
+                        if let Some(local_app_context) = &self.local_app_context {
+                            {
+                                let mut cfg_lock = local_app_context.config.write().unwrap();
+                                *cfg_lock = updated_local_config;
+                            }
+
+                            if let Err(e) =
+                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                            {
+                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                            } else {
+                                app_action = AppAction::SwitchNetwork(Network::Regtest);
+                            }
                         }
                     }
                 }
+            } else {
+                ui.label("-");
             }
         } else {
             ui.label("");
@@ -662,6 +742,194 @@ impl NetworkChooserScreen {
             _ => false,
         }
     }
+
+    fn any_rpc_backend(&self) -> bool {
+        self.backend_modes
+            .iter()
+            .any(|(network, mode)| *mode == CoreBackendMode::Rpc && self.has_context_for(*network))
+    }
+
+    fn has_context_for(&self, network: Network) -> bool {
+        match network {
+            Network::Dash => true,
+            Network::Testnet => self.testnet_app_context.is_some(),
+            Network::Devnet => self.devnet_app_context.is_some(),
+            Network::Regtest => self.local_app_context.is_some(),
+            _ => false,
+        }
+    }
+
+    fn backend_mode_label(mode: CoreBackendMode) -> &'static str {
+        match mode {
+            CoreBackendMode::Rpc => "Dash Core RPC",
+            CoreBackendMode::Spv => "Dash SPV",
+        }
+    }
+
+    fn render_backend_selector(
+        &mut self,
+        ui: &mut Ui,
+        network: Network,
+        current_mode: CoreBackendMode,
+        disabled: bool,
+        context: Option<&Arc<AppContext>>,
+    ) -> CoreBackendMode {
+        let mut mode = current_mode;
+
+        if disabled {
+            ui.add_enabled_ui(false, |ui| {
+                egui::ComboBox::from_id_salt(format!("backend_{:?}", network))
+                    .selected_text(Self::backend_mode_label(mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut mode,
+                            CoreBackendMode::Rpc,
+                            Self::backend_mode_label(CoreBackendMode::Rpc),
+                        );
+                        ui.selectable_value(
+                            &mut mode,
+                            CoreBackendMode::Spv,
+                            Self::backend_mode_label(CoreBackendMode::Spv),
+                        );
+                    });
+            });
+            return current_mode;
+        }
+
+        let mut changed = false;
+        egui::ComboBox::from_id_salt(format!("backend_{:?}", network))
+            .selected_text(Self::backend_mode_label(mode))
+            .show_ui(ui, |ui| {
+                changed |= ui
+                    .selectable_value(
+                        &mut mode,
+                        CoreBackendMode::Rpc,
+                        Self::backend_mode_label(CoreBackendMode::Rpc),
+                    )
+                    .changed();
+                changed |= ui
+                    .selectable_value(
+                        &mut mode,
+                        CoreBackendMode::Spv,
+                        Self::backend_mode_label(CoreBackendMode::Spv),
+                    )
+                    .changed();
+            });
+
+        if changed {
+            self.backend_modes.insert(network, mode);
+            if let Some(ctx) = context {
+                ctx.set_core_backend_mode(mode);
+                if mode == CoreBackendMode::Rpc {
+                    ctx.stop_spv();
+                }
+            }
+            mode
+        } else {
+            current_mode
+        }
+    }
+
+    fn render_spv_status(
+        &self,
+        ui: &mut Ui,
+        dark_mode: bool,
+        snapshot: &SpvStatusSnapshot,
+        context: &Arc<AppContext>,
+    ) {
+        let (label, color) = self.spv_status_label(snapshot, dark_mode);
+        ui.vertical(|ui| {
+            ui.colored_label(color, label);
+            if let Some(detail) = self.spv_status_detail(snapshot) {
+                ui.label(egui::RichText::new(detail).color(DashColors::text_secondary(dark_mode)));
+            }
+        });
+
+        if snapshot.status.is_active() {
+            context.repaint_animation(ui.ctx());
+        }
+    }
+
+    fn spv_status_label(
+        &self,
+        snapshot: &SpvStatusSnapshot,
+        dark_mode: bool,
+    ) -> (String, egui::Color32) {
+        match snapshot.status {
+            SpvStatus::Idle => ("Idle".to_string(), DashColors::muted_color(dark_mode)),
+            SpvStatus::Starting => (
+                "Starting...".to_string(),
+                DashColors::warning_color(dark_mode),
+            ),
+            SpvStatus::Syncing => (
+                "Syncing...".to_string(),
+                DashColors::warning_color(dark_mode),
+            ),
+            SpvStatus::Running => ("Synced".to_string(), DashColors::success_color(dark_mode)),
+            SpvStatus::Stopping => (
+                "Stopping...".to_string(),
+                DashColors::warning_color(dark_mode),
+            ),
+            SpvStatus::Stopped => ("Stopped".to_string(), DashColors::muted_color(dark_mode)),
+            SpvStatus::Error => ("Error".to_string(), DashColors::error_color(dark_mode)),
+        }
+    }
+
+    fn spv_status_detail(&self, snapshot: &SpvStatusSnapshot) -> Option<String> {
+        if let SpvStatus::Error = snapshot.status {
+            if let Some(err) = &snapshot.last_error {
+                return Some(err.clone());
+            }
+        }
+
+        if let Some(progress) = snapshot.detailed_progress.as_ref() {
+            return Some(Self::format_detailed_progress(progress));
+        }
+
+        if let Some(progress) = snapshot.sync_progress.as_ref() {
+            return Some(format!(
+                "Headers: {} | Filters: {} | Peers: {}",
+                progress.header_height, progress.filter_header_height, progress.peer_count
+            ));
+        }
+
+        snapshot.last_error.clone()
+    }
+
+    fn format_detailed_progress(progress: &DetailedSyncProgress) -> String {
+        let mut message = match &progress.sync_stage {
+            SyncStage::Connecting => "Connecting to peers".to_string(),
+            SyncStage::QueryingPeerHeight => "Querying peer heights".to_string(),
+            SyncStage::DownloadingHeaders { start, end } => {
+                format!("Headers {start} -> {end}")
+            }
+            SyncStage::ValidatingHeaders { batch_size } => {
+                format!("Validating headers (batch {batch_size})")
+            }
+            SyncStage::StoringHeaders { batch_size } => {
+                format!("Storing headers (batch {batch_size})")
+            }
+            SyncStage::Complete => "Sync complete".to_string(),
+            SyncStage::Failed(reason) => format!("Failed: {reason}"),
+        };
+
+        let percent = progress.calculate_percentage();
+        if percent.is_finite() && percent > 0.0 {
+            message = format!("{message} ({percent:.1}%)");
+        }
+
+        if progress.connected_peers > 0 {
+            message = format!("{message} | peers: {}", progress.connected_peers);
+        }
+
+        if let Some(eta) = progress.calculate_eta() {
+            if eta.as_secs() > 0 {
+                message = format!("{message} | ETA: {}s", eta.as_secs());
+            }
+        }
+
+        message
+    }
 }
 
 impl ScreenLike for NetworkChooserScreen {
@@ -675,6 +943,21 @@ impl ScreenLike for NetworkChooserScreen {
             self.custom_dash_qt_path = settings.dash_qt_path;
             self.overwrite_dash_conf = settings.overwrite_dash_conf;
             self.theme_preference = settings.theme_mode;
+        }
+
+        self.backend_modes
+            .insert(Network::Dash, self.mainnet_app_context.core_backend_mode());
+        if let Some(ctx) = &self.testnet_app_context {
+            self.backend_modes
+                .insert(Network::Testnet, ctx.core_backend_mode());
+        }
+        if let Some(ctx) = &self.devnet_app_context {
+            self.backend_modes
+                .insert(Network::Devnet, ctx.core_backend_mode());
+        }
+        if let Some(ctx) = &self.local_app_context {
+            self.backend_modes
+                .insert(Network::Regtest, ctx.core_backend_mode());
         }
     }
 
@@ -739,17 +1022,22 @@ impl ScreenLike for NetworkChooserScreen {
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);
         if action == AppAction::None {
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards");
-            if let Some(time) = self.recheck_time {
-                if current_time.as_millis() as u64 >= time {
-                    action =
-                        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLocks));
+            if self.any_rpc_backend() {
+                let current_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+                if let Some(time) = self.recheck_time {
+                    if current_time.as_millis() as u64 >= time {
+                        action = AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::GetBestChainLocks,
+                        ));
+                        self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
+                    }
+                } else {
                     self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
                 }
             } else {
-                self.recheck_time = Some((current_time + recheck_time).as_millis() as u64);
+                self.recheck_time = None;
             }
         }
 

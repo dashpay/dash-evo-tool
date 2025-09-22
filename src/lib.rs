@@ -11,6 +11,7 @@ pub mod database;
 pub mod logging;
 pub mod model;
 pub mod sdk_wrapper;
+pub mod spv;
 pub mod ui;
 pub mod utils;
 

@@ -3,7 +3,7 @@ use crate::config::NetworkConfig;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dash_spv::network::MultiPeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode, SpvEvent};
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SpvEvent, SyncProgress, ValidationMode};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -334,7 +334,9 @@ impl SpvManager {
                 }
             });
         } else {
-            tracing::debug!("SPV events channel not available; UI will not receive event-driven progress");
+            tracing::debug!(
+                "SPV events channel not available; UI will not receive event-driven progress"
+            );
         }
 
         enum MonitorOutcome {

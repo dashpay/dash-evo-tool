@@ -3,7 +3,7 @@ use crate::config::NetworkConfig;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dash_spv::network::MultiPeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode, SpvEvent};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -72,12 +72,22 @@ impl Default for SpvStatus {
     }
 }
 
+/// Progress update emitted over events. This is a lightweight view used to
+/// avoid borrowing the client while monitoring the network.
+#[derive(Debug, Clone, Copy)]
+pub struct EventSyncProgress {
+    pub current_height: u32,
+    pub target_height: u32,
+    pub percentage: f32,
+}
+
 /// Snapshot of the SPV runtime state for UI consumption.
 #[derive(Debug, Clone, Default)]
 pub struct SpvStatusSnapshot {
     pub status: SpvStatus,
     pub sync_progress: Option<SyncProgress>,
     pub detailed_progress: Option<DetailedSyncProgress>,
+    pub event_progress: Option<EventSyncProgress>,
     pub last_error: Option<String>,
     pub started_at: Option<SystemTime>,
     pub last_updated: Option<SystemTime>,
@@ -88,6 +98,7 @@ struct InternalState {
     status: SpvStatus,
     sync_progress: Option<SyncProgress>,
     detailed_progress: Option<DetailedSyncProgress>,
+    event_progress: Option<EventSyncProgress>,
     last_error: Option<String>,
     started_at: Option<SystemTime>,
     last_updated: Option<SystemTime>,
@@ -99,6 +110,7 @@ impl Default for InternalState {
             status: SpvStatus::Idle,
             sync_progress: None,
             detailed_progress: None,
+            event_progress: None,
             last_error: None,
             started_at: None,
             last_updated: None,
@@ -151,6 +163,7 @@ impl SpvManager {
             status: state.status,
             sync_progress: state.sync_progress.clone(),
             detailed_progress: state.detailed_progress.clone(),
+            event_progress: state.event_progress,
             last_error: state.last_error.clone(),
             started_at: state.started_at,
             last_updated: state.last_updated,
@@ -239,6 +252,7 @@ impl SpvManager {
 
         match client.sync_to_tip().await {
             Ok(progress) => {
+                println!("Sync progress: {:?}", progress);
                 self.update_state(|state| {
                     state.sync_progress = Some(progress.clone());
                     state.last_updated = Some(SystemTime::now());
@@ -256,6 +270,71 @@ impl SpvManager {
                 });
                 return Err(format!("Initial sync failed: {err}"));
             }
+        }
+
+        // Subscribe to SPV detailed progress for live header sync updates
+        if let Some(mut progress_rx) = client.take_progress_receiver() {
+            let manager = Arc::clone(&self);
+            let stop = stop_token.clone();
+            let cancel = global_cancel.clone();
+            self.subtasks.spawn_sync(async move {
+                let mut seen_progress = false;
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = cancel.cancelled() => break,
+                        msg = progress_rx.recv() => {
+                            match msg {
+                                Some(detailed) => {
+                                    if !seen_progress { seen_progress = true; tracing::debug!("SPV progress: first DetailedSyncProgress received"); }
+                                    manager.update_state(|state| {
+                                        state.detailed_progress = Some(detailed.clone());
+                                        state.last_updated = Some(SystemTime::now());
+                                        // Status based on stage
+                                        // Consider Running when complete; otherwise Syncing
+                                        // If peer_best_height == 0, keep Syncing
+                                        if detailed.percentage >= 100.0 || detailed.current_height >= detailed.peer_best_height {
+                                            state.status = SpvStatus::Running;
+                                        } else if matches!(state.status, SpvStatus::Starting | SpvStatus::Idle | SpvStatus::Stopped) {
+                                            state.status = SpvStatus::Syncing;
+                                        }
+                                    });
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::debug!("SPV progress channel not available; headers progress will not stream");
+        }
+
+        // Subscribe to SPV events for filters and other signals
+        if let Some(mut events) = client.take_event_receiver() {
+            let manager = Arc::clone(&self);
+            let stop = stop_token.clone();
+            let cancel = global_cancel.clone();
+            self.subtasks.spawn_sync(async move {
+                let mut seen_any = false;
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = cancel.cancelled() => break,
+                        evt = events.recv() => {
+                            match evt {
+                                Some(other) => {
+                                    // Log any other events at debug level to help diagnose
+                                    tracing::debug!(?other, "SPV event observed");
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::debug!("SPV events channel not available; UI will not receive event-driven progress");
         }
 
         enum MonitorOutcome {
@@ -388,6 +467,7 @@ impl From<&InternalState> for SpvStatusSnapshot {
             status: value.status,
             sync_progress: value.sync_progress.clone(),
             detailed_progress: value.detailed_progress.clone(),
+            event_progress: value.event_progress,
             last_error: value.last_error.clone(),
             started_at: value.started_at,
             last_updated: value.last_updated,

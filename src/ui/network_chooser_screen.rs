@@ -197,7 +197,8 @@ impl NetworkChooserScreen {
                                 )
                                 .changed()
                             {
-                                self.backend_modes.insert(self.current_network, CoreBackendMode::Spv);
+                                self.backend_modes
+                                    .insert(self.current_network, CoreBackendMode::Spv);
                                 let ctx = self.current_app_context();
                                 ctx.set_core_backend_mode(CoreBackendMode::Spv);
                             }
@@ -209,7 +210,8 @@ impl NetworkChooserScreen {
                                 )
                                 .changed()
                             {
-                                self.backend_modes.insert(self.current_network, CoreBackendMode::Rpc);
+                                self.backend_modes
+                                    .insert(self.current_network, CoreBackendMode::Rpc);
                                 let ctx = self.current_app_context();
                                 ctx.set_core_backend_mode(CoreBackendMode::Rpc);
                                 ctx.stop_spv();
@@ -256,33 +258,36 @@ impl NetworkChooserScreen {
                             {
                                 app_action = AppAction::SwitchNetwork(Network::Dash);
                             }
-                            if self.testnet_app_context.is_some() && ui
-                                .selectable_value(
-                                    &mut self.current_network,
-                                    Network::Testnet,
-                                    "Testnet",
-                                )
-                                .clicked()
+                            if self.testnet_app_context.is_some()
+                                && ui
+                                    .selectable_value(
+                                        &mut self.current_network,
+                                        Network::Testnet,
+                                        "Testnet",
+                                    )
+                                    .clicked()
                             {
                                 app_action = AppAction::SwitchNetwork(Network::Testnet);
                             }
-                            if self.devnet_app_context.is_some() && ui
-                                .selectable_value(
-                                    &mut self.current_network,
-                                    Network::Devnet,
-                                    "Devnet",
-                                )
-                                .clicked()
+                            if self.devnet_app_context.is_some()
+                                && ui
+                                    .selectable_value(
+                                        &mut self.current_network,
+                                        Network::Devnet,
+                                        "Devnet",
+                                    )
+                                    .clicked()
                             {
                                 app_action = AppAction::SwitchNetwork(Network::Devnet);
                             }
-                            if self.local_app_context.is_some() && ui
-                                .selectable_value(
-                                    &mut self.current_network,
-                                    Network::Regtest,
-                                    "Local",
-                                )
-                                .clicked()
+                            if self.local_app_context.is_some()
+                                && ui
+                                    .selectable_value(
+                                        &mut self.current_network,
+                                        Network::Regtest,
+                                        "Local",
+                                    )
+                                    .clicked()
                             {
                                 app_action = AppAction::SwitchNetwork(Network::Regtest);
                             }
@@ -785,7 +790,108 @@ impl NetworkChooserScreen {
                             ui.end_row();
                         }
 
-                        if let Some(progress) = &snapshot.sync_progress {
+                        // Prefer detailed header progress when available
+                        if let Some(detailed) = &snapshot.detailed_progress {
+                            // Add separator between status and progress bars
+                            ui.separator();
+                            ui.separator();
+                            ui.end_row();
+
+                            // Use detailed percentage for headers bar
+                            ui.label(
+                                egui::RichText::new("Headers:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            let overall_progress = (detailed.calculate_percentage() / 100.0) as f32;
+                            ui.add(egui::ProgressBar::new(overall_progress).show_percentage());
+                            ui.end_row();
+
+                            // Masternode Lists progress bar (estimate based on sync stage)
+                            ui.label(
+                                egui::RichText::new("Masternode Lists:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            let mn_progress = self.calculate_mn_progress(snapshot);
+                            ui.add(egui::ProgressBar::new(mn_progress).show_percentage());
+                            ui.end_row();
+
+                            // Blocks/Filters progress bar
+                            ui.label(
+                                egui::RichText::new("Blocks:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            let blocks_progress = self.calculate_blocks_progress(snapshot);
+                            ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
+                            ui.end_row();
+
+                            // Peers (if we have a snapshot with counts)
+                            if let Some(progress) = &snapshot.sync_progress {
+                                if progress.peer_count > 0 {
+                                    ui.label(
+                                        egui::RichText::new("Peers:")
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.label(format!("{}", progress.peer_count));
+                                    ui.end_row();
+                                }
+                            }
+                        } else if let Some(ev) = &snapshot.event_progress {
+                            // Event-driven progress (updates most frequently)
+                            ui.label(
+                                egui::RichText::new("Synced:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(format!(
+                                "Headers: {} / {}",
+                                ev.current_height, ev.target_height
+                            ));
+                            ui.end_row();
+
+                            // Add separator between stats and progress bars
+                            ui.separator();
+                            ui.separator();
+                            ui.end_row();
+
+                            // Progress bars for different components
+                            // Headers progress bar (from events)
+                            ui.label(
+                                egui::RichText::new("Headers:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            let headers_progress = self.calculate_headers_progress(snapshot);
+                            ui.add(egui::ProgressBar::new(headers_progress).show_percentage());
+                            ui.end_row();
+
+                            // Masternode Lists progress bar (estimate based on sync stage)
+                            ui.label(
+                                egui::RichText::new("Masternode Lists:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            let mn_progress = self.calculate_mn_progress(snapshot);
+                            ui.add(egui::ProgressBar::new(mn_progress).show_percentage());
+                            ui.end_row();
+
+                            // Blocks/Filters progress bar
+                            ui.label(
+                                egui::RichText::new("Blocks:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            let blocks_progress = self.calculate_blocks_progress(snapshot);
+                            ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
+                            ui.end_row();
+
+                            // Peers (if we also have a snapshot with counts)
+                            if let Some(progress) = &snapshot.sync_progress {
+                                if progress.peer_count > 0 {
+                                    ui.label(
+                                        egui::RichText::new("Peers:")
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.label(format!("{}", progress.peer_count));
+                                    ui.end_row();
+                                }
+                            }
+                        } else if let Some(progress) = &snapshot.sync_progress {
                             // Current sync heights
                             ui.label(
                                 egui::RichText::new("Synced:")
@@ -793,8 +899,7 @@ impl NetworkChooserScreen {
                             );
                             ui.label(format!(
                                 "Headers: {} | Filters: {}",
-                                progress.header_height,
-                                progress.filter_header_height
+                                progress.header_height, progress.filter_header_height
                             ));
                             ui.end_row();
 
@@ -840,15 +945,39 @@ impl NetworkChooserScreen {
                             let blocks_progress = self.calculate_blocks_progress(snapshot);
                             ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
                             ui.end_row();
-                        } else if let Some(detailed) = &snapshot.detailed_progress {
-                            // Use detailed progress if available
-                            let overall_progress = detailed.calculate_percentage() / 100.0;
+
+                            // Additionally show event-driven overall progress if available
+                            if let Some(ev) = &snapshot.event_progress {
+                                ui.label(
+                                    egui::RichText::new("Overall Progress:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                let overall = (ev.percentage / 100.0).clamp(0.0, 1.0);
+                                ui.add(egui::ProgressBar::new(overall).show_percentage());
+                                ui.end_row();
+
+                                ui.label(
+                                    egui::RichText::new("Synced:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.label(format!("{} / {}", ev.current_height, ev.target_height));
+                                ui.end_row();
+                            }
+                        } else if let Some(ev) = &snapshot.event_progress {
+                            let overall = (ev.percentage / 100.0).clamp(0.0, 1.0);
 
                             ui.label(
                                 egui::RichText::new("Overall Progress:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
-                            ui.add(egui::ProgressBar::new(overall_progress as f32).show_percentage());
+                            ui.add(egui::ProgressBar::new(overall as f32).show_percentage());
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("Synced:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(format!("{} / {}", ev.current_height, ev.target_height));
                             ui.end_row();
                         }
                     });
@@ -870,12 +999,19 @@ impl NetworkChooserScreen {
                 SyncStage::Complete => 1.0,
                 _ => 0.0,
             }
+        } else if let Some(ev) = &snapshot.event_progress {
+            if ev.target_height > 0 {
+                (ev.current_height as f32 / ev.target_height as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
         } else if let Some(progress) = &snapshot.sync_progress {
             // Estimate based on sync progress
             if progress.filter_header_height > 0 {
                 1.0 // Headers done if we have filters
             } else if progress.header_height > 0 {
-                0.5 // Headers in progress
+                // Keep legacy placeholder at 50% if we only know header height
+                0.5
             } else {
                 0.0
             }
@@ -1216,7 +1352,10 @@ impl NetworkChooserScreen {
         });
 
         if snapshot.status.is_active() {
+            // Always request repaint while SPV is active so progress updates render,
+            // even when animations are disabled in developer mode.
             context.repaint_animation(ui.ctx());
+            ui.ctx().request_repaint();
         }
     }
 
@@ -1256,6 +1395,13 @@ impl NetworkChooserScreen {
             return Some(Self::format_detailed_progress(progress));
         }
 
+        if let Some(ev) = snapshot.event_progress.as_ref() {
+            return Some(format!(
+                "Sync: {} / {} ({:.1}%)",
+                ev.current_height, ev.target_height, ev.percentage
+            ));
+        }
+
         if let Some(progress) = snapshot.sync_progress.as_ref() {
             return Some(format!(
                 "Headers: {} | Filters: {} | Peers: {}",
@@ -1271,7 +1417,7 @@ impl NetworkChooserScreen {
             SyncStage::Connecting => "Connecting to peers".to_string(),
             SyncStage::QueryingPeerHeight => "Querying peer heights".to_string(),
             SyncStage::DownloadingHeaders { start, end } => {
-                format!("Headers {start} -> {end}")
+                format!("Headers: {start} / {end}")
             }
             SyncStage::ValidatingHeaders { batch_size } => {
                 format!("Validating headers (batch {batch_size})")
@@ -1283,13 +1429,8 @@ impl NetworkChooserScreen {
             SyncStage::Failed(reason) => format!("Failed: {reason}"),
         };
 
-        let percent = progress.calculate_percentage();
-        if percent.is_finite() && percent > 0.0 {
-            message = format!("{message} ({percent:.1}%)");
-        }
-
         if progress.connected_peers > 0 {
-            message = format!("{message} | peers: {}", progress.connected_peers);
+            message = format!("{message} | Peers: {}", progress.connected_peers);
         }
 
         if let Some(eta) = progress.calculate_eta() {

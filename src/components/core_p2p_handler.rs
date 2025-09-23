@@ -176,8 +176,7 @@ impl CoreP2PHandler {
             .stream
             .read_timeout()
             .map_err(|e| format!("get_read_timeout failed: {}", e))?;
-        self
-            .stream
+        self.stream
             .set_read_timeout(Some(socket_timeout))
             .map_err(|e| format!("set_read_timeout failed: {}", e))?;
         let start_time = std::time::Instant::now();
@@ -185,8 +184,7 @@ impl CoreP2PHandler {
         loop {
             if start_time.elapsed() > timeout {
                 // Restore previous socket timeout before returning
-                self
-                    .stream
+                self.stream
                     .set_read_timeout(previous_socket_timeout)
                     .map_err(|e| format!("restore set_read_timeout failed: {}", e))?;
                 return Err("Timeout waiting for qrinfo message".to_string());
@@ -205,8 +203,7 @@ impl CoreP2PHandler {
             if command == "qrinfo" {
                 println!("Got qrinfo message");
                 // Restore previous socket timeout
-                self
-                    .stream
+                self.stream
                     .set_read_timeout(previous_socket_timeout)
                     .map_err(|e| format!("restore set_read_timeout failed: {}", e))?;
                 break;

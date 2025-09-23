@@ -227,8 +227,7 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
-        let mut contracts_dashpay_screen =
-            DashPayComingSoonScreen::new(&mainnet_app_context);
+        let mut contracts_dashpay_screen = DashPayComingSoonScreen::new(&mainnet_app_context);
 
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,

@@ -869,7 +869,9 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
             Screen::DPNSScreen(screen) => screen.display_message(message, message_type),
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
-            Screen::DashPayComingSoonScreen(screen) => screen.display_message(message, message_type),
+            Screen::DashPayComingSoonScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),

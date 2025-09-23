@@ -30,6 +30,7 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
+use contracts_documents::dashpay_coming_soon_screen::DashPayComingSoonScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
@@ -91,6 +92,7 @@ pub enum RootScreenType {
     RootScreenToolsMasternodeListDiffScreen,
     RootScreenToolsContractVisualizerScreen,
     RootScreenToolsPlatformInfoScreen,
+    RootScreenContractsDashPay,
 }
 
 impl RootScreenType {
@@ -116,6 +118,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsContractVisualizerScreen => 16,
             RootScreenType::RootScreenToolsPlatformInfoScreen => 17,
             RootScreenType::RootScreenToolsMasternodeListDiffScreen => 18,
+            RootScreenType::RootScreenContractsDashPay => 19,
         }
     }
 
@@ -141,6 +144,7 @@ impl RootScreenType {
             16 => Some(RootScreenType::RootScreenToolsContractVisualizerScreen),
             17 => Some(RootScreenType::RootScreenToolsPlatformInfoScreen),
             18 => Some(RootScreenType::RootScreenToolsMasternodeListDiffScreen),
+            19 => Some(RootScreenType::RootScreenContractsDashPay),
             _ => None,
         }
     }
@@ -175,6 +179,7 @@ impl From<RootScreenType> for ScreenType {
                 ScreenType::ContractsVisualizer
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
+            RootScreenType::RootScreenContractsDashPay => ScreenType::ContractsDashPayComingSoon,
         }
     }
 }
@@ -215,6 +220,7 @@ pub enum ScreenType {
     DocumentsVisualizer,
     ContractsVisualizer,
     PlatformInfo,
+    ContractsDashPayComingSoon,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -331,6 +337,9 @@ impl ScreenType {
             ScreenType::PlatformInfo => {
                 Screen::PlatformInfoScreen(PlatformInfoScreen::new(app_context))
             }
+            ScreenType::ContractsDashPayComingSoon => {
+                Screen::DashPayComingSoonScreen(DashPayComingSoonScreen::new(app_context))
+            }
             ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
                 app_context.clone(),
                 None,
@@ -432,6 +441,7 @@ pub enum Screen {
     IdentitiesScreen(IdentitiesScreen),
     DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
+    DashPayComingSoonScreen(DashPayComingSoonScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     ImportWalletScreen(ImportWalletScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
@@ -481,6 +491,7 @@ impl Screen {
         match self {
             Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
             Screen::DPNSScreen(screen) => screen.app_context = app_context,
+            Screen::DashPayComingSoonScreen(screen) => screen.app_context = app_context,
             Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
             Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
             Screen::KeysScreen(screen) => screen.app_context = app_context,
@@ -599,6 +610,7 @@ impl Screen {
                 dpns_subscreen: DPNSSubscreen::ScheduledVotes,
                 ..
             }) => ScreenType::ScheduledVotes,
+            Screen::DashPayComingSoonScreen(_) => ScreenType::ContractsDashPayComingSoon,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizer,
             Screen::ContractVisualizerScreen(_) => ScreenType::ContractsVisualizer,
             Screen::WithdrawalScreen(screen) => {
@@ -704,6 +716,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => screen.refresh(),
             Screen::DPNSScreen(screen) => screen.refresh(),
             Screen::DocumentQueryScreen(screen) => screen.refresh(),
+            Screen::DashPayComingSoonScreen(screen) => screen.refresh(),
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
             Screen::ImportWalletScreen(screen) => screen.refresh(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh(),
@@ -754,6 +767,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => screen.refresh_on_arrival(),
             Screen::DPNSScreen(screen) => screen.refresh_on_arrival(),
             Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
+            Screen::DashPayComingSoonScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh_on_arrival(),
@@ -804,6 +818,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => screen.ui(ctx),
             Screen::DPNSScreen(screen) => screen.ui(ctx),
             Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
+            Screen::DashPayComingSoonScreen(screen) => screen.ui(ctx),
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
             Screen::ImportWalletScreen(screen) => screen.ui(ctx),
             Screen::AddNewIdentityScreen(screen) => screen.ui(ctx),
@@ -854,6 +869,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => screen.display_message(message, message_type),
             Screen::DPNSScreen(screen) => screen.display_message(message, message_type),
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
+            Screen::DashPayComingSoonScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),
@@ -924,6 +940,9 @@ impl ScreenLike for Screen {
             }
             Screen::DPNSScreen(screen) => screen.display_task_result(backend_task_success_result),
             Screen::DocumentQueryScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::DashPayComingSoonScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::AddNewWalletScreen(screen) => {
@@ -1048,6 +1067,7 @@ impl ScreenLike for Screen {
             Screen::IdentitiesScreen(screen) => screen.pop_on_success(),
             Screen::DPNSScreen(screen) => screen.pop_on_success(),
             Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
+            Screen::DashPayComingSoonScreen(screen) => screen.pop_on_success(),
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
             Screen::ImportWalletScreen(screen) => screen.pop_on_success(),
             Screen::AddNewIdentityScreen(screen) => screen.pop_on_success(),

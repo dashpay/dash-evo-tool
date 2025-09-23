@@ -364,6 +364,12 @@ impl ScreenLike for UpdateDataContractScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
+        );
+
         action |= island_central_panel(ctx, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
                 return self.show_success(ui);

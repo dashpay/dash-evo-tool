@@ -11,6 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
+use crate::ui::contracts_documents::dashpay_coming_soon_screen::DashPayComingSoonScreen;
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
@@ -226,6 +227,8 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
+        let mut contracts_dashpay_screen =
+            DashPayComingSoonScreen::new(&mainnet_app_context);
 
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
@@ -263,6 +266,7 @@ impl AppState {
             proof_log_screen = ProofLogScreen::new(testnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(testnet_app_context);
+            contracts_dashpay_screen = DashPayComingSoonScreen::new(testnet_app_context);
             tokens_balances_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
@@ -312,6 +316,7 @@ impl AppState {
             masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
             proof_log_screen = ProofLogScreen::new(local_app_context);
             platform_info_screen = PlatformInfoScreen::new(local_app_context);
+            contracts_dashpay_screen = DashPayComingSoonScreen::new(local_app_context);
             tokens_balances_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
@@ -444,6 +449,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
+                ),
+                (
+                    RootScreenType::RootScreenContractsDashPay,
+                    Screen::DashPayComingSoonScreen(contracts_dashpay_screen),
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,

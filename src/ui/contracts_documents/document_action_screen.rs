@@ -1470,6 +1470,12 @@ impl ScreenLike for DocumentActionScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
+        );
+
         action |= island_central_panel(ctx, |ui| match &self.broadcast_status {
             BroadcastStatus::Broadcasted => {
                 let success_message = format!("{} successful!", self.action_type.display_name());

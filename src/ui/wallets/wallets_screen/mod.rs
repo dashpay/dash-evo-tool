@@ -848,7 +848,7 @@ impl ScreenLike for WalletsBalancesScreen {
             }
 
             egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
+                .auto_shrink([true; 2])
                 .show(ui, |ui| {
                     if self.app_context.wallets.read().unwrap().is_empty() {
                         self.render_no_wallets_view(ui);

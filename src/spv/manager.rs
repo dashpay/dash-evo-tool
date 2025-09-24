@@ -418,6 +418,79 @@ impl SpvManager {
             }
         }
 
+        // Reintroduce progress updates with throttling; spawn on app runtime
+        if let Some(mut progress_rx) = client.take_progress_receiver() {
+            let manager = Arc::clone(&self);
+            let stop = stop_token.clone();
+            let cancel = global_cancel.clone();
+            self.subtasks.spawn_sync(async move {
+                let mut last_update = std::time::Instant::now();
+                let min_interval = std::time::Duration::from_millis(500);
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = cancel.cancelled() => break,
+                        msg = progress_rx.recv() => {
+                            match msg {
+                                Some(detailed) => {
+                                    if last_update.elapsed() >= min_interval {
+                                        manager.update_state(|state| {
+                                            state.detailed_progress = Some(detailed.clone());
+                                            state.last_updated = Some(SystemTime::now());
+                                            if detailed.percentage >= 100.0 || detailed.current_height >= detailed.peer_best_height {
+                                                state.status = SpvStatus::Running;
+                                            } else if matches!(state.status, SpvStatus::Starting | SpvStatus::Idle | SpvStatus::Stopped) {
+                                                state.status = SpvStatus::Syncing;
+                                            }
+                                        });
+                                        last_update = std::time::Instant::now();
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::debug!("SPV progress channel not available; headers progress will not stream");
+        }
+
+        // Reintroduce event subscription; push reconcile signals; spawn on app runtime
+        if let Some(mut events) = client.take_event_receiver() {
+            let manager = Arc::clone(&self);
+            let stop = stop_token.clone();
+            let cancel = global_cancel.clone();
+            self.subtasks.spawn_sync(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = cancel.cancelled() => break,
+                        evt = events.recv() => {
+                            match evt {
+                                Some(other) => {
+                                    // Push reconcile signal for wallet-related updates
+                                    let should_signal = matches!(other,
+                                        SpvEvent::TransactionDetected { .. } |
+                                        SpvEvent::BalanceUpdate { .. } |
+                                        SpvEvent::BlockProcessed { .. }
+                                    );
+                                    if should_signal {
+                                        if let Ok(tx_guard) = manager.reconcile_tx.lock() {
+                                            if let Some(tx) = tx_guard.as_ref() { let _ = tx.try_send(()); }
+                                        }
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::debug!("SPV events channel not available; UI will not receive event-driven progress");
+        }
+
         // NOTE: To minimize contention during catch-up, we defer wiring progress/event consumers
         // until after monitor_network completes or the client reports Running status via state.
         // This mirrors the CLI's prioritization of the monitor loop.

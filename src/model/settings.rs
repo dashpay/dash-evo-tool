@@ -14,6 +14,7 @@ pub struct Settings {
     /// Empty value (`""`) means path deliberately not set, autodetect will not be performed.
     pub dash_qt_path: Option<PathBuf>,
     pub overwrite_dash_conf: bool,
+    pub disable_zmq: bool,
     pub theme_mode: ThemeMode,
 }
 
@@ -23,6 +24,7 @@ impl
         RootScreenType,
         Option<PasswordInfo>,
         Option<PathBuf>,
+        bool,
         bool,
         ThemeMode,
     )> for Settings
@@ -37,10 +39,11 @@ impl
             Option<PasswordInfo>,
             Option<PathBuf>,
             bool,
+            bool,
             ThemeMode,
         ),
     ) -> Self {
-        Self::new(tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5)
+        Self::new(tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6)
     }
 }
 
@@ -53,6 +56,7 @@ impl Default for Settings {
             None,
             None, // autodetect
             true,
+            false,
             ThemeMode::System,
         )
     }
@@ -66,6 +70,7 @@ impl Settings {
         password_info: Option<PasswordInfo>,
         dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
+        disable_zmq: bool,
         theme_mode: ThemeMode,
     ) -> Self {
         Self {
@@ -74,6 +79,7 @@ impl Settings {
             password_info,
             dash_qt_path: dash_qt_path.or_else(detect_dash_qt_path),
             overwrite_dash_conf,
+            disable_zmq,
             theme_mode,
         }
     }

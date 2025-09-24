@@ -7,7 +7,12 @@ use dash_sdk::dash_spv::types::{DetailedSyncProgress, SpvEvent, SyncProgress, Va
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::WalletManager;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::managed_account_operations::ManagedAccountOperations;
+use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+// use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey; // not needed directly here
+use crate::spv::wallet_bridge::{WatchOnlyAccount, WatchOnlyWalletAttachment};
+use dash_sdk::dpp::key_wallet;
+use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;
@@ -15,6 +20,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 use tokio::sync::RwLock as AsyncRwLock;
+use tokio::runtime::Runtime as TokioRuntime;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Preferred backend for Core-level operations.
@@ -131,6 +138,12 @@ pub struct SpvManager {
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
     state: Arc<RwLock<InternalState>>,
     runtime: Mutex<Option<RuntimeHandle>>,
+    // mapping DET wallet seed_hash -> SPV wallet identifier (if created)
+    det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
+    // signal channel to trigger external reconcile on wallet-related events
+    reconcile_tx: Mutex<Option<mpsc::Sender<()>>>,
+    // Dedicated Tokio runtime for SPV network loop (isolated from UI/runtime contention)
+    spv_runtime: Mutex<Option<TokioRuntime>>,
 }
 
 impl SpvManager {
@@ -152,6 +165,9 @@ impl SpvManager {
             wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new())),
             state: Arc::new(RwLock::new(InternalState::default())),
             runtime: Mutex::new(None),
+            det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
+            reconcile_tx: Mutex::new(None),
+            spv_runtime: Mutex::new(None),
         });
 
         Ok(manager)
@@ -184,27 +200,38 @@ impl SpvManager {
         });
 
         let stop_token = CancellationToken::new();
-        *runtime = Some(RuntimeHandle {
-            stop: stop_token.clone(),
-        });
+        *runtime = Some(RuntimeHandle { stop: stop_token.clone() });
 
         let manager = Arc::clone(self);
         let runtime_manager = Arc::clone(&manager);
         let global_cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            if let Err(err) = runtime_manager.run_loop(stop_token, global_cancel).await {
-                tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
-                manager.update_state(|state| {
-                    state.status = SpvStatus::Error;
-                    state.last_error = Some(err.clone());
-                    state.last_updated = Some(SystemTime::now());
-                });
-            }
+        // Spawn a dedicated OS thread with a multi-thread Tokio runtime
+        std::thread::Builder::new()
+            .name("spv".to_string())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(4)
+                    .enable_all()
+                    .thread_name("spv-rt")
+                    .build()
+                    .expect("Failed to create SPV runtime");
 
-            let mut runtime = manager.runtime.lock().expect("SPV runtime lock poisoned");
-            *runtime = None;
-        });
+                rt.block_on(async move {
+                    if let Err(err) = runtime_manager.run_loop(stop_token, global_cancel).await {
+                        tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
+                        manager.update_state(|state| {
+                            state.status = SpvStatus::Error;
+                            state.last_error = Some(err.clone());
+                            state.last_updated = Some(SystemTime::now());
+                        });
+                    }
+
+                    let mut runtime = manager.runtime.lock().expect("SPV runtime lock poisoned");
+                    *runtime = None;
+                });
+            })
+            .map_err(|e| format!("Failed to spawn SPV thread: {e}"))?;
 
         Ok(())
     }
@@ -222,6 +249,104 @@ impl SpvManager {
 
     pub fn wallet(&self) -> Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>> {
         Arc::clone(&self.wallet)
+    }
+
+    pub fn det_wallets_snapshot(&self) -> std::collections::BTreeMap<[u8; 32], WalletId> {
+        self.det_wallets
+            .read()
+            .map(|m| m.clone())
+            .unwrap_or_default()
+    }
+
+    /// Create a reconciliation signal channel for external listeners.
+    /// Returns a receiver that will get a signal when SPV wallet state likely changed.
+    pub fn register_reconcile_channel(&self) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel(64);
+        let mut guard = self.reconcile_tx.lock().expect("reconcile_tx poisoned");
+        *guard = Some(tx);
+        rx
+    }
+
+    /// Attach watch-only accounts (e.g., BIP44 account 0 xpubs) from DET into the SPV wallet manager.
+    /// This stores a mapping locally and attempts to prepare the SPV wallet manager state when possible.
+    pub async fn attach_watch_only_accounts(
+        &self,
+        attachment: WatchOnlyWalletAttachment,
+    ) -> Result<(), String> {
+        // Map dashcore::Network to key_wallet::Network (they are identical variants).
+        fn to_wallet_network(n: Network) -> key_wallet::Network {
+            match n {
+                Network::Dash => key_wallet::Network::Dash,
+                Network::Testnet => key_wallet::Network::Testnet,
+                Network::Devnet => key_wallet::Network::Devnet,
+                Network::Regtest => key_wallet::Network::Regtest,
+                other => {
+                    // Fallback: treat unknown as Dash (shouldn't happen for standard nets)
+                    tracing::warn!(
+                        ?other,
+                        "Unknown dashcore::Network; defaulting to Dash for wallet network mapping"
+                    );
+                    key_wallet::Network::Dash
+                }
+            }
+        }
+
+        let net_wallet = to_wallet_network(attachment.network);
+
+        let mut wm = self.wallet.write().await;
+        let mut map = self.det_wallets.write().map_err(|e| e.to_string())?;
+
+        for WatchOnlyAccount {
+            seed_hash,
+            xpub,
+            account_index,
+        } in attachment.accounts
+        {
+            let xpub_str = xpub.to_string();
+
+            // 1) Ensure a watch-only wallet exists for this xpub
+            let wallet_id = match wm.import_wallet_from_xpub(&xpub_str, net_wallet, false) {
+                Ok(id) => id,
+                Err(WalletError::WalletExists(id)) => id,
+                Err(e) => {
+                    tracing::error!(?e, seed = %hex::encode(seed_hash), "import_wallet_from_xpub failed");
+                    return Err(format!("import_wallet_from_xpub failed: {e}"));
+                }
+            };
+
+            // 2) Ensure BIP44 account exists on the Wallet (backed by xpub)
+            let acct_type = AccountType::Standard {
+                index: account_index,
+                standard_account_type: StandardAccountType::BIP44Account,
+            };
+            if let Err(e) = wm.create_account(&wallet_id, acct_type, net_wallet, Some(xpub)) {
+                match e {
+                    WalletError::AccountCreation(msg) if msg.contains("already exists") => {
+                        // Ignore duplicates
+                    }
+                    other => {
+                        tracing::error!(?other, seed = %hex::encode(seed_hash), "create_account failed");
+                        return Err(format!("create_account failed: {other}"));
+                    }
+                }
+            }
+
+            // 3) Add ManagedAccount so filters have monitored addresses (idempotent)
+            if let Some(info) = wm.get_wallet_info_mut(&wallet_id) {
+                let _ = info.add_managed_account_from_xpub(acct_type, net_wallet, xpub);
+            } else {
+                return Err(format!("wallet_info not found for wallet_id {wallet_id:?}"));
+            }
+
+            // Store mapping of DET seed_hash to WalletId
+            map.insert(seed_hash, wallet_id);
+        }
+
+        // Optional: log monitored addresses count for debugging
+        let addr_count = wm.monitored_addresses(attachment.network).len();
+        tracing::info!(addresses = addr_count, network = ?attachment.network, "SPV now watching addresses");
+
+        Ok(())
     }
 
     fn update_state<F>(&self, mut f: F)
@@ -250,6 +375,27 @@ impl SpvManager {
             .await
             .map_err(|e| format!("SPV start failed: {e}"))?;
 
+        // Wait for at least one peer to connect before attempting sync
+        // This mirrors the CLI flow and reduces startup churn
+        {
+            let mut waited_ms: u64 = 0;
+            loop {
+                // Respect stop/cancel while waiting for peers
+                if stop_token.is_cancelled() || global_cancel.is_cancelled() {
+                    return Ok(());
+                }
+                let peers = client.get_peer_count().await;
+                if peers > 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                waited_ms = waited_ms.saturating_add(200);
+                if waited_ms % 5000 == 0 {
+                    tracing::info!("SPV waiting for peers... {}s elapsed", waited_ms / 1000);
+                }
+            }
+        }
+
         match client.sync_to_tip().await {
             Ok(progress) => {
                 println!("Sync progress: {:?}", progress);
@@ -272,72 +418,9 @@ impl SpvManager {
             }
         }
 
-        // Subscribe to SPV detailed progress for live header sync updates
-        if let Some(mut progress_rx) = client.take_progress_receiver() {
-            let manager = Arc::clone(&self);
-            let stop = stop_token.clone();
-            let cancel = global_cancel.clone();
-            self.subtasks.spawn_sync(async move {
-                let mut seen_progress = false;
-                loop {
-                    tokio::select! {
-                        _ = stop.cancelled() => break,
-                        _ = cancel.cancelled() => break,
-                        msg = progress_rx.recv() => {
-                            match msg {
-                                Some(detailed) => {
-                                    if !seen_progress { seen_progress = true; tracing::debug!("SPV progress: first DetailedSyncProgress received"); }
-                                    manager.update_state(|state| {
-                                        state.detailed_progress = Some(detailed.clone());
-                                        state.last_updated = Some(SystemTime::now());
-                                        // Status based on stage
-                                        // Consider Running when complete; otherwise Syncing
-                                        // If peer_best_height == 0, keep Syncing
-                                        if detailed.percentage >= 100.0 || detailed.current_height >= detailed.peer_best_height {
-                                            state.status = SpvStatus::Running;
-                                        } else if matches!(state.status, SpvStatus::Starting | SpvStatus::Idle | SpvStatus::Stopped) {
-                                            state.status = SpvStatus::Syncing;
-                                        }
-                                    });
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-            });
-        } else {
-            tracing::debug!("SPV progress channel not available; headers progress will not stream");
-        }
-
-        // Subscribe to SPV events for filters and other signals
-        if let Some(mut events) = client.take_event_receiver() {
-            let manager = Arc::clone(&self);
-            let stop = stop_token.clone();
-            let cancel = global_cancel.clone();
-            self.subtasks.spawn_sync(async move {
-                let mut seen_any = false;
-                loop {
-                    tokio::select! {
-                        _ = stop.cancelled() => break,
-                        _ = cancel.cancelled() => break,
-                        evt = events.recv() => {
-                            match evt {
-                                Some(other) => {
-                                    // Log any other events at debug level to help diagnose
-                                    tracing::debug!(?other, "SPV event observed");
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-            });
-        } else {
-            tracing::debug!(
-                "SPV events channel not available; UI will not receive event-driven progress"
-            );
-        }
+        // NOTE: To minimize contention during catch-up, we defer wiring progress/event consumers
+        // until after monitor_network completes or the client reports Running status via state.
+        // This mirrors the CLI's prioritization of the monitor loop.
 
         enum MonitorOutcome {
             Completed(Result<(), dash_sdk::dash_spv::SpvError>),
@@ -399,13 +482,22 @@ impl SpvManager {
     > {
         let mut config = ClientConfig::new(self.network)
             .with_storage_path(self.data_dir.clone())
-            .with_validation_mode(ValidationMode::Basic)
-            .with_log_level("info");
+            .with_validation_mode(ValidationMode::Full)
+            // Start from the latest built-in checkpoint instead of genesis
+            // (effective only when storage is empty / first initialization)
+            .with_start_height(u32::MAX);
 
+        // Pin peers when running against local nodes to avoid random peers.
         if self.network == Network::Devnet || self.network == Network::Regtest {
             if let Some(peer) = self.primary_peer_socket() {
                 config.add_peer(peer);
-                config = config.with_restrict_to_configured_peers(true);
+            }
+        } else if self.network == Network::Testnet {
+            // For testnet testing, connect only to local Dash Core at 127.0.0.1:19999
+            if let Ok(mut it) = "127.0.0.1:19999".to_socket_addrs() {
+                if let Some(peer) = it.next() {
+                    config.add_peer(peer);
+                }
             }
         }
 

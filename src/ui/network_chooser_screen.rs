@@ -35,6 +35,7 @@ pub struct NetworkChooserScreen {
     custom_dash_qt_path: Option<PathBuf>,
     custom_dash_qt_error_message: Option<String>,
     overwrite_dash_conf: bool,
+    disable_zmq: bool,
     developer_mode: bool,
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
@@ -76,6 +77,7 @@ impl NetworkChooserScreen {
             .flatten()
             .unwrap_or_default();
         let theme_preference = settings.theme_mode;
+        let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
 
         let mut backend_modes = HashMap::new();
@@ -114,6 +116,7 @@ impl NetworkChooserScreen {
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,
             overwrite_dash_conf,
+            disable_zmq,
             developer_mode,
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
@@ -426,6 +429,16 @@ impl NetworkChooserScreen {
                                     ui.spinner();
                                     ui.label(egui::RichText::new("Syncing..."));
                                 }
+                                SpvStatus::Stopping => {
+                                    ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
+                                        DashColors::DASH_BLUE;
+                                    ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
+                                        DashColors::DASH_BLUE;
+                                    ui.style_mut().visuals.widgets.active.fg_stroke.color =
+                                        DashColors::DASH_BLUE;
+                                    ui.spinner();
+                                    ui.label(egui::RichText::new("Disconnecting..."));
+                                }
                                 _ => {}
                             }
                         }
@@ -717,6 +730,20 @@ impl NetworkChooserScreen {
                             .color(DashColors::TEXT_SECONDARY)
                             .italics(),
                     );
+                });
+
+                // Disable ZMQ toggle (requires restart)
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if StyledCheckbox::new(&mut self.disable_zmq, "Disable ZMQ (requires restart)")
+                        .show(ui)
+                        .clicked()
+                    {
+                        // Persist immediately via context
+                        let _ = self
+                            .current_app_context()
+                            .update_disable_zmq(self.disable_zmq);
+                    }
                 });
 
                 ui.add_space(8.0);
@@ -1376,7 +1403,7 @@ impl NetworkChooserScreen {
             ),
             SpvStatus::Running => ("Synced".to_string(), DashColors::success_color(dark_mode)),
             SpvStatus::Stopping => (
-                "Stopping...".to_string(),
+                "Disconnecting...".to_string(),
                 DashColors::warning_color(dark_mode),
             ),
             SpvStatus::Stopped => ("Stopped".to_string(), DashColors::muted_color(dark_mode)),

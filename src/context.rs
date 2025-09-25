@@ -814,6 +814,33 @@ impl AppContext {
         .map_err(|e| format!("Database error: {}", e).into())
     }
 
+    /// Async version of insert_identity_token_balance that uses spawn_blocking
+    pub async fn insert_identity_token_balance_async(
+        &self,
+        token_identifier: &Identifier,
+        identity_id: &Identifier,
+        balance: u64,
+    ) -> Result<()> {
+        let token_id_bytes = token_identifier.to_vec();
+        let identity_id_bytes = identity_id.to_vec();
+        let db = self.db.clone();
+        let network = self.network;
+        
+        tokio::task::spawn_blocking(move || {
+            let network_str = network.to_string();
+            
+            db.execute(
+                "INSERT INTO identity_token_balances
+                  (token_id, identity_id, balance, network)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
+                  balance = excluded.balance",
+                rusqlite::params![token_id_bytes, identity_id_bytes, balance, network_str],
+            )
+        }).await.map_err(|e| format!("Database task failed: {}", e).into())?
+        .map_err(|e| format!("Database error: {}", e).into())
+    }
+
     /// Updates a local qualified identity in the database
     pub fn update_local_qualified_identity(
         &self,

@@ -62,12 +62,11 @@ impl AppContext {
                             Some(b) => *b,
                             None => 0,
                         };
-                        if let Err(e) = self.db.insert_identity_token_balance(
-                            token_id,
+                        if let Err(e) = self.insert_identity_token_balance_async(
+                            &token_id,
                             &identity_id,
                             balance,
-                            self,
-                        ) {
+                        ).await {
                             return Err(format!(
                                 "Failed to insert token balance into local database: {}",
                                 e
@@ -116,8 +115,7 @@ impl AppContext {
                         None => 0,
                     };
                     if let Err(e) =
-                        self.db
-                            .insert_identity_token_balance(token_id, &identity_id, balance, self)
+                        self.insert_identity_token_balance_async(&token_id, &identity_id, balance).await
                     {
                         return Err(format!(
                             "Failed to insert token balance into local database: {}",

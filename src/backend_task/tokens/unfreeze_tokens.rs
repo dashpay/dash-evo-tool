@@ -51,13 +51,14 @@ impl AppContext {
             .map_err(|e| format!("Error signing Unfreeze Tokens transition: {}", e))?;
 
         // Broadcast
-        let _proof_result = state_transition
+        let _proof_result = match state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| match e {
+        {
+            Ok(result) => result,
+            Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
+                    self.insert_proof_log_item_async(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,
                             request_bytes: vec![],
                             verification_path_query_bytes: vec![],
@@ -66,14 +67,16 @@ impl AppContext {
                             proof_bytes,
                             error: Some(proof_error.to_string()),
                         })
+                        .await
                         .ok();
-                    format!(
+                    return Err(format!(
                         "Error broadcasting Unfreeze Tokens transition: {}, proof error logged",
                         proof_error
-                    )
+                    ));
                 }
-                e => format!("Error broadcasting Unfreeze Tokens transition: {}", e),
-            })?;
+                e => return Err(format!("Error broadcasting Unfreeze Tokens transition: {}", e)),
+            }
+        };
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(

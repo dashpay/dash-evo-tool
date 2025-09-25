@@ -83,8 +83,7 @@ impl AppContext {
                             };
 
                         if let Err(e) = self
-                            .db
-                            .insert_proof_log_item(ProofLogItem {
+                            .insert_proof_log_item_async(ProofLogItem {
                                 request_type: RequestType::GetContestedResources,
                                 request_bytes: encoded_query,
                                 verification_path_query_bytes,
@@ -93,6 +92,7 @@ impl AppContext {
                                 proof_bytes: proof_bytes.clone(),
                                 error: Some(error.clone()),
                             })
+                            .await
                             .map_err(|e| e.to_string())
                         {
                             return Err(format!("Contested resource query failed: {}", e));
@@ -140,8 +140,8 @@ impl AppContext {
             let last_found_name = contested_resources_as_strings.last().unwrap().clone();
 
             let new_names_to_be_updated = self
-                .db
-                .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)
+                .insert_name_contests_as_normalized_names_async(contested_resources_as_strings)
+                .await
                 .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e))?;
 
             names_to_be_updated.extend(new_names_to_be_updated);

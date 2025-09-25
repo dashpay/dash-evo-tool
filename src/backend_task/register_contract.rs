@@ -38,13 +38,12 @@ impl AppContext {
                     true => None,
                     false => Some(alias),
                 };
-                self.db
-                    .insert_contract_if_not_exists(
+                self.insert_contract_if_not_exists_async(
                         &returned_contract,
                         optional_alias.as_deref(),
                         AllTokensShouldBeAdded,
-                        self,
                     )
+                    .await
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
                 Ok(BackendTaskSuccessResult::Message(
                     "DataContract successfully registered".to_string(),
@@ -94,19 +93,17 @@ impl AppContext {
                                 format!("Failed to get contract by ID from database: {}", e)
                             })?;
 
-                        self.db
-                            .insert_contract_if_not_exists(
+                        self.insert_contract_if_not_exists_async(
                                 &contract,
                                 optional_alias.as_deref(),
                                 AllTokensShouldBeAdded,
-                                self,
                             )
+                            .await
                             .map_err(|e| {
                                 format!("Error inserting contract into the database: {}", e)
                             })?;
                     }
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
+                    self.insert_proof_log_item_async(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,
                             request_bytes: vec![],
                             verification_path_query_bytes: vec![],
@@ -115,6 +112,7 @@ impl AppContext {
                             proof_bytes,
                             error: Some(proof_error.to_string()),
                         })
+                        .await
                         .ok();
                     Err(format!(
                         "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",

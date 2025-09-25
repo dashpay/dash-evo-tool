@@ -3,9 +3,11 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider;
+use crate::database;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
+use crate::model::proof_log_item::ProofLogItem;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
@@ -17,6 +19,7 @@ use crate::ui::RootScreenType;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::utils::tasks::TaskManager;
 use bincode::config;
+use chrono;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
@@ -632,6 +635,181 @@ impl AppContext {
                     rusqlite::params![id, data, alias, identity_type, network_str, status],
                 )
             }
+        }).await.map_err(|e| format!("Database task failed: {}", e).into())?
+        .map_err(|e| format!("Database error: {}", e).into())
+    }
+
+    /// Async version of insert_contract_if_not_exists that uses spawn_blocking
+    pub async fn insert_contract_if_not_exists_async(
+        &self,
+        data_contract: &DataContract,
+        alias: Option<&str>,
+        should_add_tokens: database::contracts::InsertTokensToo,
+    ) -> Result<()> {
+        let data_contract_clone = data_contract.clone();
+        let alias_clone = alias.map(|s| s.to_string());
+        let db = self.db.clone();
+        let network = self.network;
+        
+        tokio::task::spawn_blocking(move || {
+            // Inline the contract insertion logic to avoid AppContext dependency
+            use dash_sdk::dpp::serialization::PlatformSerializable;
+            use database::contracts::InsertTokensToo;
+            
+            // Serialize the contract
+            let contract_bytes = data_contract_clone
+                .serialize_to_bytes_with_platform_version(default_platform_version(&network))
+                .expect("expected to serialize contract");
+            let contract_id = data_contract_clone.id().to_vec();
+            let network_str = network.to_string();
+
+            // Insert the contract if it does not exist
+            db.execute(
+                "INSERT OR IGNORE INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, ?)",
+                rusqlite::params![contract_id, contract_bytes, alias_clone, network_str],
+            )?;
+
+            // Next, if the contract has tokens, add the tokens
+            if !data_contract_clone.tokens().is_empty() {
+                let positions = match should_add_tokens {
+                    InsertTokensToo::AllTokensShouldBeAdded => {
+                        data_contract_clone.tokens().keys().cloned().collect()
+                    }
+                    InsertTokensToo::NoTokensShouldBeAdded => {
+                        return Ok(());
+                    }
+                    InsertTokensToo::SomeTokensShouldBeAdded(positions) => positions,
+                };
+
+                for position in positions {
+                    if let Some(token) = data_contract_clone.tokens().get(&position) {
+                        let token_id = data_contract_clone.id().to_vec();
+                        let token_name = token.name();
+                        let token_ticker = token.ticker();
+
+                        db.execute(
+                            "INSERT OR IGNORE INTO token (token_id, name, ticker, contract_id, network) VALUES (?, ?, ?, ?, ?)",
+                            rusqlite::params![token_id, token_name, token_ticker, contract_id, network_str],
+                        )?;
+                    }
+                }
+            }
+            
+            Ok(())
+        }).await.map_err(|e| format!("Database task failed: {}", e).into())?
+        .map_err(|e| format!("Database error: {}", e).into())
+    }
+
+    /// Async version of insert_proof_log_item that uses spawn_blocking
+    pub async fn insert_proof_log_item_async(
+        &self,
+        proof_log_item: ProofLogItem,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        
+        tokio::task::spawn_blocking(move || {
+            db.insert_proof_log_item(proof_log_item)
+        }).await.map_err(|e| format!("Database task failed: {}", e).into())?
+        .map_err(|e| format!("Database error: {}", e).into())
+    }
+
+    /// Async version of insert_name_contests_as_normalized_names that uses spawn_blocking
+    pub async fn insert_name_contests_as_normalized_names_async(
+        &self,
+        name_contests: Vec<String>,
+    ) -> Result<Vec<String>> {
+        let db = self.db.clone();
+        let network = self.network;
+        
+        tokio::task::spawn_blocking(move || {
+            // Inline the logic to avoid AppContext dependency
+            let network_str = network.to_string();
+            let conn = db.conn.lock().unwrap();
+            let mut names_to_be_updated: Vec<(String, Option<i64>)> = Vec::new();
+            let mut new_names: Vec<String> = Vec::new();
+
+            // Define the time limit (one hour ago in Unix timestamp format)
+            let half_a_minute_ago = chrono::Utc::now().timestamp() - 30;
+
+            // Chunk the name_contests into smaller groups due to SQL parameter limits
+            let chunk_size = 900; // Use a safe limit to stay below SQLite's limit
+
+            for chunk in name_contests.chunks(chunk_size) {
+                // Prepare placeholders for the SQL IN clause
+                let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                let query = format!(
+                    "SELECT normalized_contested_name, last_updated, awarded_to
+                     FROM contested_names 
+                     WHERE normalized_contested_name IN ({}) AND network = ?",
+                    placeholders
+                );
+
+                let mut stmt = conn.prepare(&query)?;
+
+                // Bind parameters: first the names in the chunk, then the network
+                let mut params: Vec<rusqlite::types::Value> = chunk
+                    .iter()
+                    .map(|name| rusqlite::types::Value::Text(name.clone()))
+                    .collect();
+                params.push(rusqlite::types::Value::Text(network_str.clone()));
+
+                let rows = stmt.query_map(&params[..], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?;
+
+                for row_result in rows {
+                    let (name, last_updated, awarded_to) = row_result?;
+                    if awarded_to.is_some() {
+                        // Skip names that have already been awarded
+                        continue;
+                    }
+                    if let Some(timestamp) = last_updated {
+                        if timestamp < half_a_minute_ago {
+                            names_to_be_updated.push((name, last_updated));
+                        }
+                    } else {
+                        names_to_be_updated.push((name, last_updated));
+                    }
+                }
+            }
+
+            // Insert new names that were not found in the database
+            for name_contest in name_contests {
+                let found = names_to_be_updated
+                    .iter()
+                    .any(|(existing_name, _)| *existing_name == name_contest);
+                if !found {
+                    let current_timestamp = chrono::Utc::now().timestamp();
+                    conn.execute(
+                        "INSERT OR IGNORE INTO contested_names 
+                         (normalized_contested_name, last_updated, network) 
+                         VALUES (?, ?, ?)",
+                        rusqlite::params![name_contest, current_timestamp, network_str],
+                    )?;
+                    new_names.push(name_contest);
+                } else {
+                    // Update the timestamp of existing names
+                    let current_timestamp = chrono::Utc::now().timestamp();
+                    conn.execute(
+                        "UPDATE contested_names 
+                         SET last_updated = ? 
+                         WHERE normalized_contested_name = ? AND network = ?",
+                        rusqlite::params![current_timestamp, name_contest, network_str],
+                    )?;
+                }
+            }
+
+            names_to_be_updated.extend(
+                new_names
+                    .iter()
+                    .map(|name| (name.clone(), Some(chrono::Utc::now().timestamp()))),
+            );
+
+            Ok(names_to_be_updated.into_iter().map(|(name, _)| name).collect())
         }).await.map_err(|e| format!("Database task failed: {}", e).into())?
         .map_err(|e| format!("Database error: {}", e).into())
     }

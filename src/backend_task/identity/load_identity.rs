@@ -313,8 +313,8 @@ impl AppContext {
         };
         let wallet_info = qualified_identity.determine_wallet_info()?;
 
-        // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
+        // Insert qualified identity into the database using spawn_blocking
+        self.insert_local_qualified_identity_async(&qualified_identity, &wallet_info).await
             .map_err(|e| format!("Database error: {}", e))?;
 
         Ok(BackendTaskSuccessResult::Message(

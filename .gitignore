@@ -30,3 +30,4 @@ test_db
 **/.DS_Store
 explorer.log
 .gitaipconfig
+protoc-*.zip

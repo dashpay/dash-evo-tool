@@ -319,13 +319,19 @@ impl AppContext {
                 continue;
             };
 
-            // Clear existing UTXOs for these addresses in this network
-            for addr in &known_addresses {
-                let _ = self.db.execute(
-                    "DELETE FROM utxos WHERE address = ? AND network = ?",
-                    rusqlite::params![addr.to_string(), self.network.to_string()],
-                );
-            }
+            // Clear existing UTXOs for these addresses in this network (using spawn_blocking for DB operations)
+            let db = self.db.clone(); // Clone the Arc<Database> for the blocking task
+            let network = self.network;
+            let addresses_to_clear: Vec<_> = known_addresses.iter().map(|addr| addr.to_string()).collect();
+            
+            tokio::task::spawn_blocking(move || {
+                for addr_str in &addresses_to_clear {
+                    let _ = db.execute(
+                        "DELETE FROM utxos WHERE address = ? AND network = ?",
+                        rusqlite::params![addr_str, network.to_string()],
+                    );
+                }
+            }).await.map_err(|e| format!("Failed to clear UTXOs: {}", e))?;
 
             // Read current UTXOs from SPV and re-insert, registering unknown addresses if derivation metadata is available
             let utxos = wm
@@ -333,9 +339,12 @@ impl AppContext {
                 .map_err(|e| format!("wallet_utxos failed: {e}"))?;
 
             use dash_sdk::dpp::dashcore::Address as CoreAddress;
-            // no-op
 
             let mut per_address_sum: std::collections::BTreeMap<CoreAddress, u64> = Default::default();
+            
+            // Collect database operations to batch them in spawn_blocking
+            let mut new_addresses_to_add = Vec::new();
+            let mut utxos_to_insert = Vec::new();
 
             for u in utxos {
                 // Best-effort accessors for outpoint/txout; adjust if API differs
@@ -366,32 +375,16 @@ impl AppContext {
                                 if let Some(ai) = acc.get_address_info(&address) {
                                     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
                                     use crate::model::wallet::{DerivationPathReference, DerivationPathType};
-                                    // Determine branch: look at the second-to-last child in the path
-                                    let comps = ai.path.as_ref();
-                                    let branch_is_external = comps
-                                        .len()
-                                        .saturating_sub(2)
-                                        .checked_sub(0)
-                                        .and_then(|idx| comps.get(idx))
-                                        .map(|c| matches!(c, ChildNumber::Normal { index: 0 }))
-                                        .unwrap_or(true);
-
+                                    
                                     let path_reference = DerivationPathReference::BIP44;
                                     let path_type = DerivationPathType::CLEAR_FUNDS; // minimal classification
 
-                                    // Insert into DB (idempotent) and update in-memory wallet model
+                                    // Collect address to add to database later
+                                    new_addresses_to_add.push((*seed_hash, address.clone(), ai.path.clone(), path_reference, path_type));
+                                    
+                                    // Update in-memory wallet model
                                     if let Some(wref) = wallets_guard.get(seed_hash) {
                                         if let Ok(mut w) = wref.write() {
-                                            let _ = self.db.add_address_if_not_exists(
-                                                seed_hash,
-                                                &address,
-                                                &self.network,
-                                                &ai.path,
-                                                path_reference,
-                                                path_type,
-                                                None,
-                                            );
-                                            // Update in-memory maps
                                             use crate::model::wallet::AddressInfo as WalletAddressInfo;
                                             w.known_addresses.insert(address.clone(), ai.path.clone());
                                             w.watched_addresses.insert(
@@ -419,30 +412,82 @@ impl AppContext {
                     }
                 }
 
-                // Insert UTXO row
-                self.db
-                    .insert_utxo(
-                        outpoint.txid.as_ref(),
-                        outpoint.vout,
-                        &address,
-                        tx_out.value,
-                        &tx_out.script_pubkey.to_bytes(),
-                        self.network,
-                    )
-                    .map_err(|e| e.to_string())?;
+                // Collect UTXO to insert later
+                utxos_to_insert.push((
+                    outpoint.txid.to_byte_array(),
+                    outpoint.vout,
+                    address.clone(),
+                    tx_out.value,
+                    tx_out.script_pubkey.to_bytes(),
+                ));
 
                 // Sum per address for balance update
                 *per_address_sum.entry(address).or_default() += tx_out.value;
             }
 
-            // Write per-address balances into DB and wallet model
+            // Perform database operations in spawn_blocking
+            let db = self.db.clone();
+            let network = self.network;
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                // Add new addresses
+                for (seed_hash, address, path, path_reference, path_type) in new_addresses_to_add {
+                    db.add_address_if_not_exists(
+                        &seed_hash,
+                        &address,
+                        &network,
+                        &path,
+                        path_reference,
+                        path_type,
+                        None,
+                    ).map_err(|e| format!("Failed to add address: {}", e))?;
+                }
+
+                // Insert UTXOs
+                for (txid, vout, address, value, script) in utxos_to_insert {
+                    db.insert_utxo(
+                        &txid,
+                        vout,
+                        &address,
+                        value,
+                        &script,
+                        network,
+                    ).map_err(|e| format!("Failed to insert UTXO: {}", e))?;
+                }
+                Ok(())
+            }).await.map_err(|e| format!("Database operations failed: {}", e))??;
+
+            // Update per-address balances in wallet model and collect database updates
+            let mut balance_updates = Vec::new();
             if let Some(wref) = wallets_guard.get(seed_hash) {
                 if let Ok(mut w) = wref.write() {
                     for (addr, sum) in per_address_sum.into_iter() {
-                        // Update wallet and DB through model helper
-                        let _ = w.update_address_balance(&addr, sum, self);
+                        // Check if the new balance differs from the current one.
+                        let should_update = if let Some(current_balance) = w.address_balances.get(&addr) {
+                            *current_balance != sum
+                        } else {
+                            true
+                        };
+                        
+                        if should_update {
+                            // Update in-memory balance
+                            w.address_balances.insert(addr.clone(), sum);
+                            // Collect database update for later
+                            balance_updates.push((*seed_hash, addr, sum));
+                        }
                     }
                 }
+            }
+            
+            // Perform balance updates in spawn_blocking
+            if !balance_updates.is_empty() {
+                let db = self.db.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    for (seed_hash, address, balance) in balance_updates {
+                        db.update_address_balance(&seed_hash, &address, balance)
+                            .map_err(|e| format!("Failed to update address balance: {}", e))?;
+                    }
+                    Ok(())
+                }).await.map_err(|e| format!("Balance update failed: {}", e))??;
             }
         }
 
@@ -541,6 +586,54 @@ impl AppContext {
             wallet_and_identity_id_info,
             self,
         )
+    }
+
+    /// Async version of insert_local_qualified_identity that uses spawn_blocking
+    pub async fn insert_local_qualified_identity_async(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+    ) -> Result<()> {
+        let qualified_identity_clone = qualified_identity.clone();
+        let wallet_and_identity_id_info_clone = wallet_and_identity_id_info.clone();
+        let db = self.db.clone();
+        let network = self.network;
+        
+        tokio::task::spawn_blocking(move || {
+            // Call the database method directly since it only uses network from context
+            let id = qualified_identity_clone.identity.id().to_vec();
+            let data = qualified_identity_clone.to_bytes();
+            let alias = qualified_identity_clone.alias.clone();
+            let identity_type = format!("{:?}", qualified_identity_clone.identity_type);
+            let network_str = network.to_string();
+            let status = qualified_identity_clone.status.as_u8();
+
+            if let Some((wallet, wallet_index)) = wallet_and_identity_id_info_clone {
+                db.execute(
+                    "INSERT OR REPLACE INTO identity
+                     (id, data, is_local, alias, identity_type, network, wallet, wallet_index, status)
+                     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                    rusqlite::params![
+                        id,
+                        data,
+                        alias,
+                        identity_type,
+                        network_str,
+                        wallet,
+                        wallet_index,
+                        status,
+                    ],
+                )
+            } else {
+                db.execute(
+                    "INSERT OR REPLACE INTO identity
+                     (id, data, is_local, alias, identity_type, network, status)
+                     VALUES (?, ?, 1, ?, ?, ?, ?)",
+                    rusqlite::params![id, data, alias, identity_type, network_str, status],
+                )
+            }
+        }).await.map_err(|e| format!("Database task failed: {}", e).into())?
+        .map_err(|e| format!("Database error: {}", e).into())
     }
 
     /// Updates a local qualified identity in the database

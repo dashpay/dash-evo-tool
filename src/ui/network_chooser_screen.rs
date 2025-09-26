@@ -11,7 +11,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncStage};
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, SyncStage};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
@@ -862,7 +862,7 @@ impl NetworkChooserScreen {
                                     ui.end_row();
                                 }
                             }
-                        } else if let Some(ev) = &snapshot.event_progress {
+                        } else if let Some(ev) = &snapshot.sync_progress {
                             // Event-driven progress (updates most frequently)
                             ui.label(
                                 egui::RichText::new("Synced:")
@@ -870,7 +870,7 @@ impl NetworkChooserScreen {
                             );
                             ui.label(format!(
                                 "Headers: {} / {}",
-                                ev.current_height, ev.target_height
+                                ev.header_height, ev.filter_header_height
                             ));
                             ui.end_row();
 
@@ -974,12 +974,12 @@ impl NetworkChooserScreen {
                             ui.end_row();
 
                             // Additionally show event-driven overall progress if available
-                            if let Some(ev) = &snapshot.event_progress {
+                            if let Some(ev) = &snapshot.sync_progress {
                                 ui.label(
                                     egui::RichText::new("Overall Progress:")
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
-                                let overall = (ev.percentage / 100.0).clamp(0.0, 1.0);
+                                let overall = ((ev.filter_header_height as f32 / ev.header_height.max(1) as f32)).clamp(0.0, 1.0);
                                 ui.add(egui::ProgressBar::new(overall).show_percentage());
                                 ui.end_row();
 
@@ -987,11 +987,11 @@ impl NetworkChooserScreen {
                                     egui::RichText::new("Synced:")
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
-                                ui.label(format!("{} / {}", ev.current_height, ev.target_height));
+                                ui.label(format!("{} / {}", ev.header_height, ev.filter_header_height));
                                 ui.end_row();
                             }
-                        } else if let Some(ev) = &snapshot.event_progress {
-                            let overall = (ev.percentage / 100.0).clamp(0.0, 1.0);
+                        } else if let Some(ev) = &snapshot.sync_progress {
+                            let overall = ((ev.filter_header_height as f32 / ev.header_height.max(1) as f32)).clamp(0.0, 1.0);
 
                             ui.label(
                                 egui::RichText::new("Overall Progress:")
@@ -1004,7 +1004,7 @@ impl NetworkChooserScreen {
                                 egui::RichText::new("Synced:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
-                            ui.label(format!("{} / {}", ev.current_height, ev.target_height));
+                            ui.label(format!("{} / {}", ev.header_height, ev.filter_header_height));
                             ui.end_row();
                         }
                     });
@@ -1026,9 +1026,10 @@ impl NetworkChooserScreen {
                 SyncStage::Complete => 1.0,
                 _ => 0.0,
             }
-        } else if let Some(ev) = &snapshot.event_progress {
-            if ev.target_height > 0 {
-                (ev.current_height as f32 / ev.target_height as f32).clamp(0.0, 1.0)
+        } else if let Some(ev) = &snapshot.sync_progress {
+            // Estimate based on filter progress
+            if ev.filter_header_height > 0 && ev.header_height > 0 {
+                (ev.filter_header_height as f32 / ev.header_height as f32).clamp(0.0, 1.0)
             } else {
                 0.0
             }
@@ -1422,10 +1423,10 @@ impl NetworkChooserScreen {
             return Some(Self::format_detailed_progress(progress));
         }
 
-        if let Some(ev) = snapshot.event_progress.as_ref() {
+        if let Some(ev) = snapshot.sync_progress.as_ref() {
             return Some(format!(
                 "Sync: {} / {} ({:.1}%)",
-                ev.current_height, ev.target_height, ev.percentage
+                ev.header_height, ev.filter_header_height, (ev.filter_header_height as f32 / ev.header_height.max(1) as f32 * 100.0)
             ));
         }
 

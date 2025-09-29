@@ -259,6 +259,51 @@ impl SpvManager {
         rx
     }
 
+    /// Attempt to resolve a quorum public key via the SPV client's masternode/quorum state.
+    ///
+    /// Note: This is a blocking, best-effort lookup. If SPV state is unavailable,
+    /// or the key is not known yet, an error is returned for the caller to handle.
+    pub fn get_quorum_public_key(
+        &self,
+        quorum_type: u32,
+        quorum_hash: [u8; 32],
+        core_chain_locked_height: u32,
+    ) -> Result<[u8; 48], String> {
+        // Try repeatedly to grab a non-blocking read guard.
+        // We avoid blocking_read to prevent panicking inside Tokio runtime threads.
+        let mut attempts = 0u32;
+        loop {
+            if let Ok(guard) = self.client.try_read() {
+                if let Some(client) = guard.as_ref() {
+                    if let Some(q) = client.get_quorum_at_height(
+                        core_chain_locked_height,
+                        quorum_type as u8,
+                        &quorum_hash,
+                    ) {
+                        let pk48: [u8; 48] = *q.quorum_entry.quorum_public_key.as_ref();
+                        return Ok(pk48);
+                    } else {
+                        return Err(format!(
+                            "Quorum not found at height {} for llmq_type={} hash=0x{}",
+                            core_chain_locked_height,
+                            quorum_type,
+                            hex::encode(quorum_hash)
+                        ));
+                    }
+                } else {
+                    return Err("SPV client not initialized".to_string());
+                }
+            }
+
+            attempts = attempts.saturating_add(1);
+            if attempts > 500 {
+                return Err("SPV client busy; try again".to_string());
+            }
+            // Short backoff to yield to the writer; keep small to avoid stalling proof verification.
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+    }
+
     /// Attach watch-only accounts (e.g., BIP44 account 0 xpubs) from DET into the SPV wallet manager.
     /// This stores a mapping locally and attempts to prepare the SPV wallet manager state when possible.
     pub async fn attach_watch_only_accounts(

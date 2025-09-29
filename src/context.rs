@@ -2,7 +2,8 @@ use crate::app_dir::core_cookie_path;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
-use crate::context_provider::Provider;
+use crate::context_provider::Provider as RpcProvider;
+use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
@@ -60,6 +61,9 @@ pub struct AppContext {
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
+    // Context providers for SDK, so we can switch when backend mode changes
+    spv_context_provider: RwLock<SpvProvider>,
+    rpc_context_provider: RwLock<RpcProvider>,
     pub(crate) config: Arc<RwLock<NetworkConfig>>,
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
@@ -107,11 +111,14 @@ impl AppContext {
         let config_lock = Arc::new(RwLock::new(network_config.clone()));
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
-        // we create provider, but we need to set app context to it later, as we have a circular dependency
-        let provider =
-            Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
+        // Create both providers; bind to app context later (post construction) due to circularity
+        let spv_provider =
+            SpvProvider::new(db.clone(), network).expect("Failed to initialize SPV provider");
+        let rpc_provider =
+            RpcProvider::new(db.clone(), network, &network_config).expect("Failed to initialize RPC provider");
 
-        let sdk = initialize_sdk(&network_config, network, provider.clone());
+        // Default to SPV provider initially; UI can switch backend after
+        let sdk = initialize_sdk(&network_config, network, spv_provider.clone());
         let platform_version = sdk.version();
 
         let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
@@ -186,6 +193,8 @@ impl AppContext {
             devnet_name: None,
             db,
             sdk: sdk.into(),
+            spv_context_provider: spv_provider.into(),
+            rpc_context_provider: rpc_provider.into(),
             config: config_lock,
             sx_zmq_status,
             rx_zmq_status,
@@ -207,7 +216,27 @@ impl AppContext {
         };
 
         let app_context = Arc::new(app_context);
-        provider.bind_app_context(app_context.clone());
+        // Bind providers to the newly created app_context.
+        // Only the active provider is registered with the SDK here (SPV by default).
+        app_context
+            .spv_context_provider
+            .read()
+            .unwrap()
+            .bind_app_context(app_context.clone());
+
+        // If defaulting to RPC is desired, swap provider after binding.
+        if app_context.core_backend_mode() == CoreBackendMode::Rpc {
+            app_context
+                .rpc_context_provider
+                .read()
+                .unwrap()
+                .bind_app_context(app_context.clone());
+        } else {
+            // Ensure SDK uses the SPV provider
+            let mut sdk_lock = app_context.sdk.write().expect("SDK lock poisoned");
+            let provider = app_context.spv_context_provider.read().unwrap().clone();
+            sdk_lock.set_context_provider(provider);
+        }
 
         Some(app_context)
     }
@@ -229,9 +258,29 @@ impl AppContext {
         self.core_backend_mode.load(Ordering::Relaxed).into()
     }
 
-    pub fn set_core_backend_mode(&self, mode: CoreBackendMode) {
-        self.core_backend_mode
-            .store(mode.as_u8(), Ordering::Relaxed);
+    pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.core_backend_mode.store(mode.as_u8(), Ordering::Relaxed);
+
+        // Switch SDK context provider to match the selected backend
+        match mode {
+            CoreBackendMode::Spv => {
+                // Make sure SPV provider knows about the app context
+                self.spv_context_provider
+                    .read()
+                    .unwrap()
+                    .bind_app_context(Arc::clone(self));
+                let mut sdk = self.sdk.write().expect("SDK lock poisoned");
+                let provider = self.spv_context_provider.read().unwrap().clone();
+                sdk.set_context_provider(provider);
+            }
+            CoreBackendMode::Rpc => {
+                // RPC provider binding also sets itself on the SDK
+                self.rpc_context_provider
+                    .read()
+                    .unwrap()
+                    .bind_app_context(Arc::clone(self));
+            }
+        }
     }
 
     pub fn spv_manager(&self) -> &Arc<SpvManager> {
@@ -506,10 +555,25 @@ impl AppContext {
         )
         .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
 
-        // 3. Rebuild the Sdk with the updated config
-        let provider = Provider::new(self.db.clone(), self.network, &cfg)
-            .map_err(|e| format!("Failed to init provider: {e}"))?;
-        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
+        // 3. Rebuild the Sdk with the updated config and current backend mode
+        let new_sdk = match self.core_backend_mode() {
+            CoreBackendMode::Spv => {
+                // Reuse existing SPV provider (rebinding below to ensure context is set)
+                let provider = self.spv_context_provider.read().unwrap().clone();
+                initialize_sdk(&cfg, self.network, provider)
+            }
+            CoreBackendMode::Rpc => {
+                // Create a fresh RPC provider with the new config
+                let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
+                    .map_err(|e| format!("Failed to init RPC provider: {e}"))?;
+                // Swap in the updated RPC provider for future switches
+                {
+                    let mut guard = self.rpc_context_provider.write().unwrap();
+                    *guard = rpc_provider.clone();
+                }
+                initialize_sdk(&cfg, self.network, rpc_provider)
+            }
+        };
 
         // 4. Swap them in
         {
@@ -524,8 +588,21 @@ impl AppContext {
             *sdk_lock = new_sdk;
         }
 
-        // Rebind the provider to the new app context
-        provider.bind_app_context(self.clone());
+        // Rebind providers to ensure they hold the new AppContext reference
+        self.spv_context_provider
+            .read()
+            .unwrap()
+            .bind_app_context(self.clone());
+        if self.core_backend_mode() == CoreBackendMode::Rpc {
+            self.rpc_context_provider
+                .read()
+                .unwrap()
+                .bind_app_context(self.clone());
+        } else {
+            let mut sdk_lock = self.sdk.write().expect("SDK lock poisoned");
+            let provider = self.spv_context_provider.read().unwrap().clone();
+            sdk_lock.set_context_provider(provider);
+        }
 
         Ok(())
     }

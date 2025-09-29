@@ -6,6 +6,7 @@ pub mod components;
 pub mod config;
 pub mod context;
 pub mod context_provider;
+pub mod context_provider_spv;
 pub mod cpu_compatibility;
 pub mod database;
 pub mod logging;

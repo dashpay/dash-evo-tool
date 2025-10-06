@@ -19,7 +19,7 @@ nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
 dash-sdk = { path = "../Dash/platform/packages/rs-sdk" }
-grovestark = { path = "../Dash/grovestark" }
+grovestark = { git = "https://www.github.com/pauldelucia/grovestark" }
 rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"

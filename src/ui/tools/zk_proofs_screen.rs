@@ -20,45 +20,6 @@ use egui::{Button, ComboBox, Context, Frame, Grid, Margin, RichText, ScrollArea,
 use std::sync::Arc;
 use std::time::Duration;
 
-// Helper function to render a custom collapsing header with +/- button
-fn render_collapsing_header(ui: &mut egui::Ui, text: impl Into<String>, is_expanded: bool) -> bool {
-    let text = text.into();
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
-
-    let mut clicked = false;
-
-    ui.horizontal(|ui| {
-        // +/- button
-        let button_text = if is_expanded { "−" } else { "+" };
-        let button_response = ui.add(
-            egui::Button::new(
-                RichText::new(button_text)
-                    .size(20.0)
-                    .color(DashColors::DASH_BLUE),
-            )
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE),
-        );
-
-        if button_response.clicked() {
-            clicked = true;
-        }
-
-        // Label text
-        let label_text = RichText::new(text)
-            .size(14.0)
-            .heading()
-            .color(DashColors::text_primary(dark_mode));
-
-        let label_response = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
-        if label_response.clicked() {
-            clicked = true;
-        }
-    });
-
-    clicked
-}
-
 #[derive(Clone, PartialEq)]
 pub enum ProofMode {
     Generate,
@@ -215,14 +176,6 @@ impl ZKProofsScreen {
             .iter()
             .map(|qualified_identity| qualified_identity.identity.clone())
             .collect();
-
-        tracing::info!(
-            "Refreshed identities: found {} identities with EdDSA keys (filtered for ZK proof compatibility)",
-            self.qualified_identities.len()
-        );
-
-        // Reset selected key if identity changed
-        self.selected_key = None;
     }
 
     fn get_qualified_identity(&self, identity_id_str: &str) -> Option<&QualifiedIdentity> {
@@ -426,7 +379,8 @@ impl ZKProofsScreen {
                 ) {
                     Ok(Some((_, private_key_bytes))) => private_key_bytes,
                     Ok(None) => {
-                        self.gen_error_message = Some("Private key not found in storage".to_string());
+                        self.gen_error_message =
+                            Some("Private key not found in storage".to_string());
                         self.is_generating = false;
                         return AppAction::None;
                     }
@@ -552,43 +506,7 @@ impl ZKProofsScreen {
                 .size(Typography::SCALE_SM)
                 .color(DashColors::text_primary(dark_mode))
         );
-        ui.add_space(5.0);
-
-        // Add informational description
-        Frame::new()
-            .inner_margin(Margin::same(Spacing::SM_I8))
-            .fill(DashColors::glass_white(dark_mode))
-            .stroke(egui::Stroke::new(1.0, DashColors::DASH_BLUE.gamma_multiply(0.3)))
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Notes:")
-                                .size(Typography::SCALE_XS)
-                                .strong()
-                                .color(DashColors::text_secondary(dark_mode))
-                        );
-                        ui.label(
-                            RichText::new(" - Only EdDSA keys are supported for ZK proof generation.")
-                                .size(Typography::SCALE_XS)
-                                .color(DashColors::text_secondary(dark_mode))
-                        );
-                        ui.label(
-                            RichText::new(" - This feature uses Facebook's Winterfell STARK prover which is marked as not for production usage.")
-                                .size(Typography::SCALE_XS)
-                                .color(DashColors::text_secondary(dark_mode))
-                        );
-                        ui.label(
-                            RichText::new("   However, it is used in multiple production implementations including Polygon's Miden proof system.")
-                                .size(Typography::SCALE_XS)
-                                .color(DashColors::text_secondary(dark_mode))
-                        );
-                    });
-                });
-            });
-
-        ui.add_space(Spacing::MD);
+        ui.add_space(Spacing::SM);
         ui.separator();
 
         // Step 1: Select Identity
@@ -814,7 +732,7 @@ impl ZKProofsScreen {
 
         ui.add_space(Spacing::MD);
 
-        // Step 4: Select Document
+        // Step 3: Select Document
         Frame::new()
             .inner_margin(Margin::same(Spacing::MD_I8))
             .fill(DashColors::surface(dark_mode))
@@ -822,7 +740,7 @@ impl ZKProofsScreen {
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .show(ui, |ui| {
                 ui.label(
-                    RichText::new("Step 4: Select Document")
+                    RichText::new("Step 3: Select Document")
                         .size(Typography::SCALE_LG)
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
@@ -918,6 +836,7 @@ impl ZKProofsScreen {
                 .strong()
                 .color(DashColors::text_primary(dark_mode)),
         );
+        ui.add_space(Spacing::SM);
         ui.separator();
 
         // Proof Input
@@ -1039,12 +958,6 @@ impl ScreenLike for ZKProofsScreen {
         let app_context = self.app_context.clone();
         self.refresh_identities(&app_context);
         self.refresh_contracts(&app_context);
-
-        tracing::info!(
-            "ZK Proofs refresh_on_arrival complete: {} identities, {} contracts",
-            self.qualified_identities.len(),
-            self.available_contracts.len()
-        );
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
@@ -1144,6 +1057,15 @@ impl ScreenLike for ZKProofsScreen {
                     .strong()
                     .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
             );
+            ui.add_space(5.0);
+
+            // Add research warning
+            ui.label(
+                RichText::new("WARNING: GroveSTARK is a research project. It has not been audited and may contain bugs and security flaws. This feature is NOT ready for production usage.")
+                    .size(Typography::SCALE_XS)
+                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode))
+            );
+            ui.add_space(Spacing::SM);
             ui.separator();
 
             let mut content_action = AppAction::None;
@@ -1221,7 +1143,7 @@ impl ScreenLike for ZKProofsScreen {
             });
 
             ui.separator();
-            ui.add_space(Spacing::MD);
+            ui.add_space(Spacing::SM);
 
             // Main content area with scrolling
             ScrollArea::vertical()

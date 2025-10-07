@@ -127,7 +127,7 @@ pub fn add_left_panel(
                             // Top cell: scrollable list of buttons
                             strip.cell(|ui| {
                                 egui::ScrollArea::vertical()
-                                    .id_source("left_panel_buttons_scroll")
+                                    .id_salt("left_panel_buttons_scroll")
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         ui.vertical_centered(|ui| {

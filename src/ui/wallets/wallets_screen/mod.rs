@@ -624,7 +624,7 @@ impl WalletsBalancesScreen {
                     self.pending_wallet_removal_alias = Some(alias.clone());
 
                     let message = format!(
-                        "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but will no longer be connected to this wallet. Continue?",
+                        "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
                         alias
                     );
 

@@ -17,7 +17,7 @@ use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::types::identity::PublicKeyHash;
+use dash_sdk::platform::types::identity::{NonUniquePublicKeyHashQuery, PublicKeyHash};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 use std::collections::BTreeMap;
 
@@ -28,17 +28,43 @@ impl AppContext {
         wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, String> {
+        tracing::info!(
+            "Loading user identity at index {} from wallet {}",
+            identity_index,
+            wallet_arc_ref.wallet.read().unwrap().alias.clone().unwrap()
+        );
         let public_key = {
             let wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
         };
 
-        let Some(identity) =
-            Identity::fetch(sdk, PublicKeyHash(public_key.pubkey_hash().to_byte_array()))
-                .await
-                .map_err(|e| e.to_string())?
-        else {
-            return Ok(BackendTaskSuccessResult::None);
+        tracing::info!(
+            "Fetched public key at index 0 for identity index {}: {:?}",
+            identity_index,
+            public_key
+        );
+
+        let key_hash = public_key.pubkey_hash();
+        let query = NonUniquePublicKeyHashQuery {
+            key_hash: key_hash.into(),
+            after: None,
+        };
+
+        tracing::info!(
+            "Derived public key hash for identity index {}: {}",
+            identity_index,
+            hex::encode(key_hash)
+        );
+
+        let identity = match Identity::fetch(sdk, query).await {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                return Err(format!(
+                    "No identity found for public key at index {}",
+                    identity_index
+                ));
+            }
+            Err(e) => return Err(e.to_string()),
         };
 
         let identity_id = identity.id();
@@ -126,24 +152,32 @@ impl AppContext {
             Some(((PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()), (QualifiedIdentityPublicKey { identity_public_key: public_key.clone(), in_wallet_at_derivation_path: Some(wallet_derivation_path.clone()) }, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))))
         }).collect::<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>().into();
 
-        let qualified_identity = QualifiedIdentity {
-            identity,
+        let wallet_seed_hash = wallet_arc_ref.wallet.read().unwrap().seed_hash();
+
+        let mut qualified_identity = QualifiedIdentity {
+            identity: identity.clone(),
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys,
-            dpns_names: maybe_owned_dpns_names,
-            associated_wallets: BTreeMap::from([(
-                wallet_arc_ref.wallet.read().unwrap().seed_hash(),
-                wallet_arc_ref.wallet.clone(),
-            )]),
-            wallet_index: Some(identity_index),
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: BTreeMap::new(),
+            wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Active,
             network: self.network,
         };
+
+        qualified_identity.identity = identity;
+        qualified_identity.private_keys = private_keys;
+        qualified_identity.dpns_names = maybe_owned_dpns_names;
+        qualified_identity.associated_wallets =
+            BTreeMap::from([(wallet_seed_hash, wallet_arc_ref.wallet.clone())]);
+        qualified_identity.wallet_index = Some(identity_index);
+        qualified_identity.status = IdentityStatus::Active;
+        qualified_identity.network = self.network;
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(
@@ -151,6 +185,13 @@ impl AppContext {
             &Some((wallet_seed_hash, identity_index)),
         )
         .map_err(|e| format!("Database error: {}", e))?;
+
+        {
+            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            wallet
+                .identities
+                .insert(identity_index, qualified_identity.identity.clone());
+        }
 
         Ok(BackendTaskSuccessResult::Message(
             "Successfully loaded identity".to_string(),

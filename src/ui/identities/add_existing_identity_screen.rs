@@ -54,6 +54,12 @@ fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
     serde_yaml::from_str(&file_content).expect("expected proper yaml")
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadIdentityMode {
+    ByIdentityId,
+    ByWallet,
+}
+
 #[derive(PartialEq)]
 pub enum AddIdentityStatus {
     NotStarted,
@@ -79,6 +85,7 @@ pub struct AddExistingIdentityScreen {
     pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
     show_pop_up_info: Option<String>,
+    mode: LoadIdentityMode,
 }
 
 impl AddExistingIdentityScreen {
@@ -106,6 +113,7 @@ impl AddExistingIdentityScreen {
             identity_index_input: String::new(),
             app_context: app_context.clone(),
             show_pop_up_info: None,
+            mode: LoadIdentityMode::ByIdentityId,
         }
     }
 
@@ -254,7 +262,7 @@ impl AddExistingIdentityScreen {
         action
     }
 
-    fn _render_wallet_selection(&mut self, ui: &mut Ui) {
+    fn render_wallet_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
                 let wallets = &self.app_context.wallets.read().unwrap();
@@ -305,15 +313,24 @@ impl AddExistingIdentityScreen {
         });
     }
 
-    fn _render_from_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
+    fn render_by_wallet(&mut self, ui: &mut egui::Ui, wallets_len: usize) -> AppAction {
         let mut action = AppAction::None;
+
+        if wallets_len == 0 {
+            ui.colored_label(
+                Color32::GRAY,
+                "No wallets available. Import or create a wallet to search by derivation path.",
+            );
+            return action;
+        }
 
         // Wallet selection
         if wallets_len > 1 {
-            self._render_wallet_selection(ui);
+            self.render_wallet_selection(ui);
         }
 
         if self.selected_wallet.is_none() {
+            ui.label("Select a wallet to search for linked identities.");
             return action;
         };
 
@@ -328,6 +345,7 @@ impl AddExistingIdentityScreen {
             ui.label("Identity Index:");
             ui.text_edit_singleline(&mut self.identity_index_input);
         });
+        ui.label("This is the derivation index used when the identity was created (often 0).");
 
         if ui.button("Search For Identity").clicked() {
             let now = SystemTime::now()
@@ -520,7 +538,42 @@ impl ScreenLike for AddExistingIdentityScreen {
                         return;
                     }
 
-                    inner_action |= self.render_by_identity(ui);
+                    let mut mode_changed = false;
+                    ui.horizontal(|ui| {
+                        mode_changed |= ui
+                            .selectable_value(
+                                &mut self.mode,
+                                LoadIdentityMode::ByIdentityId,
+                                "By Identity",
+                            )
+                            .changed();
+                        mode_changed |= ui
+                            .selectable_value(
+                                &mut self.mode,
+                                LoadIdentityMode::ByWallet,
+                                "By Wallet",
+                            )
+                            .changed();
+                    });
+                    ui.add_space(10.0);
+
+                    if mode_changed {
+                        self.add_identity_status = AddIdentityStatus::NotStarted;
+                        self.error_message = None;
+                    }
+
+                    match self.mode {
+                        LoadIdentityMode::ByIdentityId => {
+                            inner_action |= self.render_by_identity(ui);
+                        }
+                        LoadIdentityMode::ByWallet => {
+                            let wallets_len = {
+                                let wallets = self.app_context.wallets.read().unwrap();
+                                wallets.len()
+                            };
+                            inner_action |= self.render_by_wallet(ui, wallets_len);
+                        }
+                    }
 
                     ui.add_space(10.0);
 

@@ -345,7 +345,7 @@ impl AddExistingIdentityScreen {
             ui.label("Identity Index:");
             ui.text_edit_singleline(&mut self.identity_index_input);
         });
-        ui.label("This is the derivation index used when the identity was created (often 0).");
+        ui.label("This is the derivation index used when the identity was created.");
 
         if ui.button("Search For Identity").clicked() {
             let now = SystemTime::now()

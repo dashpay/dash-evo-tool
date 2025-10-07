@@ -610,8 +610,8 @@ impl WalletsBalancesScreen {
             .stroke(egui::Stroke::NONE)
             .corner_radius(4.0);
 
-            if ui.add(remove_button).clicked() {
-                if let Some(selected_wallet) = &self.selected_wallet {
+            if ui.add(remove_button).clicked()
+                && let Some(selected_wallet) = &self.selected_wallet {
                     let wallet = selected_wallet.read().unwrap();
                     let alias = wallet
                         .alias
@@ -635,7 +635,6 @@ impl WalletsBalancesScreen {
                             .danger_mode(true),
                     );
                 }
-            }
 
             if let Some(dialog) = self.remove_wallet_dialog.as_mut() {
                 let response = dialog.show(ui);

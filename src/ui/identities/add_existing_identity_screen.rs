@@ -86,6 +86,7 @@ pub struct AddExistingIdentityScreen {
     pub app_context: Arc<AppContext>,
     show_pop_up_info: Option<String>,
     mode: LoadIdentityMode,
+    backend_message: Option<String>,
 }
 
 impl AddExistingIdentityScreen {
@@ -114,6 +115,7 @@ impl AddExistingIdentityScreen {
             app_context: app_context.clone(),
             show_pop_up_info: None,
             mode: LoadIdentityMode::ByIdentityId,
+            backend_message: None,
         }
     }
 
@@ -493,6 +495,8 @@ impl ScreenLike for AddExistingIdentityScreen {
             MessageType::Success => {
                 if message == "Successfully loaded identity" {
                     self.add_identity_status = AddIdentityStatus::Complete;
+                } else {
+                    self.backend_message = Some(message.to_string());
                 }
             }
             MessageType::Info => {}
@@ -607,6 +611,10 @@ impl ScreenLike for AddExistingIdentityScreen {
                             };
 
                             ui.label(format!("Loading... Time taken so far: {}", display_time));
+
+                            if self.backend_message.is_some() {
+                                ui.label(self.backend_message.clone().unwrap().to_string());
+                            }
                         }
                         AddIdentityStatus::ErrorMessage(msg) => {
                             ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));

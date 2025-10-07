@@ -1,4 +1,5 @@
 use super::{BackendTaskSuccessResult, IdentityIndex};
+use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
@@ -10,9 +11,10 @@ use crate::model::qualified_identity::{
 use crate::model::wallet::WalletArcRef;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
@@ -26,28 +28,83 @@ impl AppContext {
         sdk: &Sdk,
         wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let public_key = {
-            let wallet = wallet_arc_ref.wallet.write().unwrap();
-            wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
-        };
+        const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
-        let key_hash = public_key.pubkey_hash();
-        let query = NonUniquePublicKeyHashQuery {
-            key_hash: key_hash.into(),
-            after: None,
-        };
+        let mut fetched_identity: Option<Identity> = None;
+        let mut queried_public_key = None;
+        let mut queried_wallet_key_index = None;
 
-        let identity = match Identity::fetch(sdk, query).await {
-            Ok(Some(identity)) => identity,
-            Ok(None) => {
+        for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
+            let public_key = {
+                let wallet = wallet_arc_ref.wallet.write().unwrap();
+                wallet.identity_authentication_ecdsa_public_key(
+                    self.network,
+                    identity_index,
+                    key_index,
+                )?
+            };
+
+            let key_hash = public_key.pubkey_hash().into();
+            let query = NonUniquePublicKeyHashQuery {
+                key_hash,
+                after: None,
+            };
+
+            sender
+                .send(TaskResult::Success(Box::new(
+                    BackendTaskSuccessResult::Message(format!(
+                        "Searching for identity using key at index {}...",
+                        key_index
+                    )),
+                )))
+                .await
+                .map_err(|e| e.to_string())?;
+            match Identity::fetch(sdk, query).await {
+                Ok(Some(identity)) => {
+                    fetched_identity = Some(identity);
+                    queried_public_key = Some(public_key);
+                    queried_wallet_key_index = Some(key_index);
+                    break;
+                }
+                Ok(None) => continue,
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+
+        let identity = match fetched_identity {
+            Some(identity) => identity,
+            None => {
                 return Err(format!(
-                    "No identity found for public key at index {}",
-                    identity_index
+                    "No identity found for wallet identity index {} within the first {} derived authentication keys",
+                    identity_index, AUTH_KEY_LOOKUP_WINDOW
                 ));
             }
-            Err(e) => return Err(e.to_string()),
         };
+
+        let queried_public_key =
+            queried_public_key.expect("queried public key should exist when identity is fetched");
+        let queried_wallet_key_index = queried_wallet_key_index
+            .expect("wallet key index should exist when identity is fetched");
+
+        let queried_key_hash: [u8; 20] = queried_public_key.pubkey_hash().into();
+        let matching_identity_key = identity.public_keys().values().find(|key| {
+            key.public_key_hash()
+                .ok()
+                .map(|hash| hash == queried_key_hash)
+                .unwrap_or(false)
+        });
+
+        let matching_identity_key = match matching_identity_key {
+            Some(key) => key,
+            None => {
+                return Err(
+                    "Fetched identity does not contain the queried authentication key".to_string(),
+                );
+            }
+        };
+        let matching_identity_key_id = matching_identity_key.id();
 
         let identity_id = identity.id();
 
@@ -99,7 +156,16 @@ impl AppContext {
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
-        let top_bound = identity.public_keys().len() as u32 + 5;
+        let highest_identity_key_id = identity
+            .public_keys()
+            .keys()
+            .copied()
+            .max()
+            .unwrap_or(matching_identity_key_id);
+
+        let mut top_bound = highest_identity_key_id.saturating_add(1);
+        top_bound = top_bound.max(queried_wallet_key_index.saturating_add(1));
+        top_bound = top_bound.saturating_add(5);
 
         let wallet_seed_hash;
         let (public_key_result_map, public_key_hash_result_map) = {
@@ -113,26 +179,57 @@ impl AppContext {
             )?
         };
 
-        let private_keys = identity.public_keys().values().filter_map(|public_key| {
-            let index: u32 = match public_key.key_type() {
-                KeyType::ECDSA_SECP256K1 => {
-                    public_key_result_map.get(public_key.data().as_slice()).cloned()
-                }
-                KeyType::ECDSA_HASH160 => {
-                    let hash: [u8;20] = public_key.data().as_slice().try_into().ok()?;
-                    public_key_hash_result_map.get(&hash).cloned()
-                }
-                _ => None,
-            }?;
-            let derivation_path = DerivationPath::identity_authentication_path(
-                self.network,
-                KeyDerivationType::ECDSA,
-                identity_index,
-                index,
+        let private_keys_map = identity
+            .public_keys()
+            .values()
+            .filter_map(|public_key| {
+                let index: u32 = match public_key.key_type() {
+                    KeyType::ECDSA_SECP256K1 => public_key_result_map
+                        .get(public_key.data().as_slice())
+                        .cloned(),
+                    KeyType::ECDSA_HASH160 => {
+                        let hash: [u8; 20] = public_key.data().as_slice().try_into().ok()?;
+                        public_key_hash_result_map.get(&hash).cloned()
+                    }
+                    _ => None,
+                }?;
+                let derivation_path = DerivationPath::identity_authentication_path(
+                    self.network,
+                    KeyDerivationType::ECDSA,
+                    identity_index,
+                    index,
+                );
+                let wallet_derivation_path = WalletDerivationPath {
+                    wallet_seed_hash,
+                    derivation_path,
+                };
+                Some((
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()),
+                    (
+                        QualifiedIdentityPublicKey {
+                            identity_public_key: public_key.clone(),
+                            in_wallet_at_derivation_path: Some(wallet_derivation_path.clone()),
+                        },
+                        PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
+                    ),
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        if private_keys_map.is_empty() {
+            return Err("Could not match any identity keys to wallet derivation paths".to_string());
+        }
+
+        if !private_keys_map.contains_key(&(
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            matching_identity_key_id,
+        )) {
+            return Err(
+                "Unable to locate wallet derivation path for the queried identity key".to_string(),
             );
-            let wallet_derivation_path = WalletDerivationPath { wallet_seed_hash, derivation_path};
-            Some(((PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()), (QualifiedIdentityPublicKey { identity_public_key: public_key.clone(), in_wallet_at_derivation_path: Some(wallet_derivation_path.clone()) }, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))))
-        }).collect::<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>().into();
+        }
+
+        let private_keys = private_keys_map.into();
 
         let wallet_seed_hash = wallet_arc_ref.wallet.read().unwrap().seed_hash();
 

@@ -464,7 +464,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
                     .await
             }
             IdentityTask::TopUpIdentity(top_up_info) => {

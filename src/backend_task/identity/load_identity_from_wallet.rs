@@ -27,33 +27,16 @@ impl AppContext {
         wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, String> {
-        tracing::info!(
-            "Loading user identity at index {} from wallet {}",
-            identity_index,
-            wallet_arc_ref.wallet.read().unwrap().alias.clone().unwrap()
-        );
         let public_key = {
             let wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet.identity_authentication_ecdsa_public_key(self.network, identity_index, 0)?
         };
-
-        tracing::info!(
-            "Fetched public key at index 0 for identity index {}: {:?}",
-            identity_index,
-            public_key
-        );
 
         let key_hash = public_key.pubkey_hash();
         let query = NonUniquePublicKeyHashQuery {
             key_hash: key_hash.into(),
             after: None,
         };
-
-        tracing::info!(
-            "Derived public key hash for identity index {}: {}",
-            identity_index,
-            hex::encode(key_hash)
-        );
 
         let identity = match Identity::fetch(sdk, query).await {
             Ok(Some(identity)) => identity,

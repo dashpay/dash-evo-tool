@@ -119,6 +119,9 @@ impl AddNewIdentityScreen {
     }
 
     pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
+        // Update state when funds land on the QR funding address
+        self.capture_qr_funding_utxo_if_available();
+
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
 
@@ -135,6 +138,11 @@ impl AddNewIdentityScreen {
         ui.add_space(8.0);
 
         self.render_funding_amount_input(ui);
+
+        if step == WalletFundedScreenStep::WaitingOnFunds {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(1));
+        }
 
         let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
             return AppAction::None;

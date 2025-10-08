@@ -2894,13 +2894,12 @@ impl ScreenLike for TokensScreen {
                 }
             }
             TokensSubscreen::SearchTokens => {
-                if msg.contains("Error fetching tokens") {
+                if msg_type == MessageType::Error {
                     self.contract_search_status =
                         ContractSearchStatus::ErrorMessage(msg.to_string());
                     // Clear adding status on error
                     self.adding_token_start_time = None;
                     self.adding_token_name = None;
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                 } else if msg.contains("Added token")
                     | msg.contains("Token already added")
                     | msg.contains("Saved token to db")

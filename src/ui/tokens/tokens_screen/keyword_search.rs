@@ -125,7 +125,7 @@ impl TokensScreen {
                 });
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                ui.colored_label(Color32::RED, format!("Error: {}", e));
+                ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
             }
         }
 

@@ -138,7 +138,7 @@ pub fn add_left_panel(
                                 let color = if is_selected {
                                     DashColors::DASH_BLUE
                                 } else {
-                                    DashColors::DEEP_BLUE
+                                    DashColors::text_primary(dark_mode)
                                 };
                                 let label_text = RichText::new(*label).color(color).size(13.0);
                                 ui.label(label_text);

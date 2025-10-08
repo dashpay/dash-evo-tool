@@ -43,6 +43,8 @@ pub struct IdentityInputToLoad {
     pub owner_private_key_input: String,
     pub payout_address_private_key_input: String,
     pub keys_input: Vec<String>,
+    pub derive_keys_from_wallets: bool,
+    pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -73,6 +73,7 @@ pub struct AddExistingIdentityScreen {
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    identity_associated_with_wallet: bool,
     show_password: bool,
     wallet_password: String,
     error_message: Option<String>,
@@ -100,6 +101,7 @@ impl AddExistingIdentityScreen {
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
             selected_wallet,
+            identity_associated_with_wallet: false,
             show_password: false,
             wallet_password: "".to_string(),
             error_message: None,
@@ -121,6 +123,23 @@ impl AddExistingIdentityScreen {
             }
             ui.add_space(10.0);
         }
+
+        let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
+            let wallets_guard = self.app_context.wallets.read().unwrap();
+            wallets_guard
+                .values()
+                .map(|wallet| {
+                    let alias = wallet
+                        .read()
+                        .unwrap()
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                    (alias, wallet.clone())
+                })
+                .collect()
+        };
+        let has_wallets = !wallets_snapshot.is_empty();
 
         egui::Grid::new("add_existing_identity_grid")
             .num_columns(2)
@@ -226,6 +245,124 @@ impl AddExistingIdentityScreen {
                     }
                 }
             });
+        ui.add_space(10.0);
+
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                let checkbox_response = ui.checkbox(
+                    &mut self.identity_associated_with_wallet,
+                    "Identity may be associated with a loaded wallet",
+                );
+                let response = crate::ui::helpers::info_icon_button(
+                    ui,
+                    "When enabled, Dash Evo Tool scans the selected unlocked wallet (or all unlocked wallets) right now to find matching keys.",
+                );
+                if response.clicked() {
+                    self.show_pop_up_info = Some(
+                        "When enabled, Dash Evo Tool scans the selected unlocked wallet (or all unlocked wallets) right now to find matching keys."
+                            .to_string(),
+                    );
+                }
+
+                if checkbox_response.changed() && !self.identity_associated_with_wallet {
+                    self.selected_wallet = None;
+                }
+            });
+
+            if self.identity_associated_with_wallet {
+                if has_wallets {
+                    let selected_label = self
+                        .selected_wallet
+                        .as_ref()
+                        .and_then(|selected| {
+                            wallets_snapshot.iter().find_map(|(alias, wallet)| {
+                                if Arc::ptr_eq(selected, wallet) {
+                                    Some(alias.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .unwrap_or_else(|| "All unlocked wallets".to_string());
+
+                    ComboBox::from_id_salt("identity_wallet_selector")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    self.selected_wallet.is_none(),
+                                    "All unlocked wallets",
+                                )
+                                .clicked()
+                            {
+                                self.selected_wallet = None;
+                            }
+
+                            for (alias, wallet) in &wallets_snapshot {
+                                let is_selected = self
+                                    .selected_wallet
+                                    .as_ref()
+                                    .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
+
+                                if ui.selectable_label(is_selected, alias).clicked() {
+                                    self.selected_wallet = Some(wallet.clone());
+                                }
+                            }
+                        });
+
+                    if let Some(selected_wallet) = &self.selected_wallet {
+                        let wallet_still_loaded = wallets_snapshot
+                            .iter()
+                            .any(|(_, wallet)| Arc::ptr_eq(wallet, selected_wallet));
+
+                        if wallet_still_loaded {
+                            let (needed_unlock, just_unlocked) =
+                                self.render_wallet_unlock_if_needed(ui);
+                            if needed_unlock && !just_unlocked {
+                                ui.colored_label(
+                                    Color32::YELLOW,
+                                    "Unlock this wallet to allow Dash Evo Tool to derive the keys.",
+                                );
+                            } else if just_unlocked {
+                                ui.colored_label(
+                                    Color32::GREEN,
+                                    "Wallet unlocked. We'll pull any matching keys automatically.",
+                                );
+                            }
+                        } else {
+                            self.selected_wallet = None;
+                            ui.colored_label(
+                                Color32::RED,
+                                "Selected wallet is no longer loaded. We'll search unlocked wallets instead.",
+                            );
+                        }
+                    } else {
+                        ui.colored_label(
+                            Color32::GRAY,
+                            "We'll scan every unlocked wallet for matching keys during this load.",
+                        );
+                    }
+                } else {
+                    ui.colored_label(
+                        Color32::GRAY,
+                        "No wallets are currently loaded. Unlock or import one to scan for keys.",
+                    );
+                }
+            }
+
+            if self.identity_associated_with_wallet {
+                ui.colored_label(
+                    Color32::GRAY,
+                    "Only unlocked wallets are scanned. Leave the key fields empty unless you need to add a manual key.",
+                );
+            } else {
+                ui.colored_label(
+                    Color32::GRAY,
+                    "Wallet scanning is skipped for this load. Add keys manually or enable the option above to search wallets.",
+                );
+            }
+        });
+
         ui.add_space(10.0);
 
         // Add button to add more keys
@@ -354,6 +491,14 @@ impl AddExistingIdentityScreen {
     }
 
     fn load_identity_clicked(&mut self) -> AppAction {
+        let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
+            self.selected_wallet
+                .as_ref()
+                .map(|wallet| wallet.read().unwrap().seed_hash())
+        } else {
+            None
+        };
+
         let identity_input = IdentityInputToLoad {
             identity_id_input: self.identity_id_input.trim().to_string(),
             identity_type: self.identity_type,
@@ -362,6 +507,8 @@ impl AddExistingIdentityScreen {
             owner_private_key_input: self.owner_private_key_input.clone(),
             payout_address_private_key_input: self.payout_address_private_key_input.clone(),
             keys_input: self.keys_input.clone(),
+            derive_keys_from_wallets: self.identity_associated_with_wallet,
+            selected_wallet_seed_hash,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(

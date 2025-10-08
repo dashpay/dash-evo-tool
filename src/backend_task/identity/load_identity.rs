@@ -34,6 +34,9 @@ use std::sync::{Arc, RwLock};
 
 const MAX_IDENTITY_INDEX_SEARCH: u32 = 200;
 
+type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
+type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
+
 impl AppContext {
     pub(super) async fn load_identity(
         &self,
@@ -80,14 +83,15 @@ impl AppContext {
 
         let wallets = self.wallets.read().unwrap().clone();
 
-        if identity_type == IdentityType::User && derive_keys_from_wallets {
-            if let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
+        if identity_type == IdentityType::User
+            && derive_keys_from_wallets
+            && let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
                 &identity,
                 &wallets,
                 selected_wallet_seed_hash,
-            )? {
-                encrypted_private_keys.extend(wallet_private_keys);
-            }
+            )?
+        {
+            encrypted_private_keys.extend(wallet_private_keys);
         }
 
         if identity_type != IdentityType::User
@@ -344,13 +348,13 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
             .map_err(|e| format!("Database error: {}", e))?;
 
-        if let Some((wallet_seed_hash, identity_index)) = wallet_info {
-            if let Some(wallet_arc) = wallets.get(&wallet_seed_hash) {
-                let mut wallet = wallet_arc.write().unwrap();
-                wallet
-                    .identities
-                    .insert(identity_index, qualified_identity.identity.clone());
-            }
+        if let Some((wallet_seed_hash, identity_index)) = wallet_info
+            && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
+        {
+            let mut wallet = wallet_arc.write().unwrap();
+            wallet
+                .identities
+                .insert(identity_index, qualified_identity.identity.clone());
         }
 
         Ok(BackendTaskSuccessResult::Message(
@@ -363,14 +367,7 @@ impl AppContext {
         identity: &Identity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
         wallet_filter: Option<WalletSeedHash>,
-    ) -> Result<
-        Option<(
-            WalletSeedHash,
-            u32,
-            BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>,
-        )>,
-        String,
-    > {
+    ) -> Result<WalletMatchResult, String> {
         let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
         let top_bound = highest_identity_key_id.saturating_add(6).max(1);
 
@@ -409,13 +406,7 @@ impl AppContext {
         wallet: &mut Wallet,
         wallet_seed_hash: WalletSeedHash,
         top_bound: u32,
-    ) -> Result<
-        Option<(
-            u32,
-            BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>,
-        )>,
-        String,
-    > {
+    ) -> Result<Option<(u32, WalletKeyMap)>, String> {
         let identity_id = identity.id();
 
         if let Some((&identity_index, _)) = wallet
@@ -522,7 +513,7 @@ impl AppContext {
         identity_index: u32,
         public_key_map: &BTreeMap<Vec<u8>, u32>,
         public_key_hash_map: &BTreeMap<[u8; 20], u32>,
-    ) -> BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)> {
+    ) -> WalletKeyMap {
         identity
             .public_keys()
             .values()

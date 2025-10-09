@@ -331,13 +331,6 @@ impl AppContext {
                 .map_err(|e| e.to_string())?;
         }
 
-        sender
-            .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::None,
-            )))
-            .await
-            .map_err(|e| e.to_string())?;
-
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,
         ))

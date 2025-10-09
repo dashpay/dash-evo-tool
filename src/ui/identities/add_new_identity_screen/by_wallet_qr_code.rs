@@ -162,65 +162,65 @@ impl AddNewIdentityScreen {
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                self.error_message = Some(e);
-            }
-
-            ui.add_space(20.0);
-
-            if let Some(error_message) = self.error_message.as_ref() {
-                ui.colored_label(Color32::DARK_RED, error_message);
-                ui.add_space(20.0);
-            }
-
-            match step {
-                WalletFundedScreenStep::ChooseFundingMethod => {}
-                WalletFundedScreenStep::WaitingOnFunds => {
-                    ui.heading("=> Waiting for funds. <=");
+                    self.error_message = Some(e);
                 }
-                WalletFundedScreenStep::FundsReceived => {
-                    let Some(selected_wallet) = &self.selected_wallet else {
-                        return AppAction::None;
-                    };
-                    if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
-                        let identity_input = IdentityRegistrationInfo {
-                            alias_input: self.alias_input.clone(),
-                            keys: self.identity_keys.clone(),
-                            wallet: Arc::clone(selected_wallet), // Clone the Arc reference
-                            wallet_identity_index: self.identity_id_number,
-                            identity_funding_method: RegisterIdentityFundingMethod::FundWithUtxo(
-                                utxo,
-                                tx_out,
-                                address,
-                                self.identity_id_number,
-                            ),
+
+                ui.add_space(20.0);
+
+                if let Some(error_message) = self.error_message.as_ref() {
+                    ui.colored_label(Color32::DARK_RED, error_message);
+                    ui.add_space(20.0);
+                }
+
+                match step {
+                    WalletFundedScreenStep::ChooseFundingMethod => {}
+                    WalletFundedScreenStep::WaitingOnFunds => {
+                        ui.heading("=> Waiting for funds. <=");
+                    }
+                    WalletFundedScreenStep::FundsReceived => {
+                        let Some(selected_wallet) = &self.selected_wallet else {
+                            return AppAction::None;
                         };
+                        if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
+                            let identity_input = IdentityRegistrationInfo {
+                                alias_input: self.alias_input.clone(),
+                                keys: self.identity_keys.clone(),
+                                wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                                wallet_identity_index: self.identity_id_number,
+                                identity_funding_method:
+                                    RegisterIdentityFundingMethod::FundWithUtxo(
+                                        utxo,
+                                        tx_out,
+                                        address,
+                                        self.identity_id_number,
+                                    ),
+                            };
 
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::WaitingForAssetLock;
+                            let mut step = self.step.write().unwrap();
+                            *step = WalletFundedScreenStep::WaitingForAssetLock;
 
-                        // Create the backend task to register the identity
-                        return AppAction::BackendTask(BackendTask::IdentityTask(
-                            IdentityTask::RegisterIdentity(identity_input),
-                        ))
+                            // Create the backend task to register the identity
+                            return AppAction::BackendTask(BackendTask::IdentityTask(
+                                IdentityTask::RegisterIdentity(identity_input),
+                            ));
+                        }
+                    }
+                    WalletFundedScreenStep::ReadyToCreate => {}
+                    WalletFundedScreenStep::WaitingForAssetLock => {
+                        ui.heading(
+                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                        );
+                    }
+                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                        ui.heading("=> Waiting for Platform acknowledgement. <=");
+                    }
+                    WalletFundedScreenStep::Success => {
+                        ui.heading("...Success...");
                     }
                 }
-                WalletFundedScreenStep::ReadyToCreate => {}
-                WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
-                }
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("=> Waiting for Platform acknowledgement. <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
-                }
-                WalletFundedScreenStep::Success => {
-                    ui.heading("...Success...");
-                }
-            }
-            AppAction::None
-        });
+                AppAction::None
+            },
+        );
 
         ui.add_space(40.0);
 

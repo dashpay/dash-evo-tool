@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
 };
@@ -9,7 +10,7 @@ use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
-use egui::Ui;
+use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
 impl TokensScreen {
@@ -105,24 +106,25 @@ impl TokensScreen {
                     ui.label("No tokens match your keyword.");
                 } else {
                     action |= self.render_search_results_table(ui, &results);
+                    // Pagination controls
+                    if self.search_has_next_page || self.search_current_page > 1 {
+                        ui.horizontal(|ui| {
+                            if self.search_current_page > 1 && ui.button("Previous").clicked() {
+                                // Go to previous page
+                                action |= self.goto_previous_search_page();
+                            }
+
+                            if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
+                                ui.label(format!("Page {}", self.search_current_page));
+                            }
+
+                            if self.search_has_next_page && ui.button("Next").clicked() {
+                                // Go to next page
+                                action |= self.goto_next_search_page();
+                            }
+                        });
+                    }
                 }
-
-                // Pagination controls
-                ui.horizontal(|ui| {
-                    if self.search_current_page > 1 && ui.button("Previous").clicked() {
-                        // Go to previous page
-                        action = self.goto_previous_search_page();
-                    }
-
-                    if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
-                        ui.label(format!("Page {}", self.search_current_page));
-                    }
-
-                    if self.search_has_next_page && ui.button("Next").clicked() {
-                        // Go to next page
-                        action = self.goto_next_search_page();
-                    }
-                });
             }
             ContractSearchStatus::ErrorMessage(e) => {
                 ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
@@ -139,6 +141,8 @@ impl TokensScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
+        let dark_mode = ui.visuals().dark_mode;
+
         egui::ScrollArea::both().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.set_max_width(ui.available_width());
@@ -152,13 +156,28 @@ impl TokensScreen {
                 .column(Column::initial(80.0).resizable(true)) // Action
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        ui.label("Contract ID");
+                        ui.label(
+                            RichText::new("Contract ID")
+                                .strong()
+                                .size(14.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
-                        ui.label("Contract Description");
+                        ui.label(
+                            RichText::new("Contract Description")
+                                .strong()
+                                .size(14.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
-                        ui.label("Action");
+                        ui.label(
+                            RichText::new("Action")
+                                .strong()
+                                .size(14.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                 })
                 .body(|mut body| {
@@ -168,7 +187,13 @@ impl TokensScreen {
                                 ui.label(contract.data_contract_id.to_string(Encoding::Base58));
                             });
                             row.col(|ui| {
-                                ui.label(contract.description.clone());
+                                let description = if contract.description.trim().is_empty() {
+                                    "None".to_string()
+                                } else {
+                                    contract.description.clone()
+                                };
+
+                                ui.label(description);
                             });
                             row.col(|ui| {
                                 // Example "Add" button

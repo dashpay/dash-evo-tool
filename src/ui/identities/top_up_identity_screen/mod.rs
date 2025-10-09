@@ -241,44 +241,6 @@ impl TopUpIdentityScreen {
             });
     }
 
-    /// Detect incoming funds for the QR funding address and transition to the next step.
-    fn capture_qr_funding_utxo_if_available(&mut self) -> bool {
-        if !matches!(
-            *self.step.read().unwrap(),
-            WalletFundedScreenStep::WaitingOnFunds
-        ) {
-            return false;
-        }
-
-        let Some(address) = self.funding_address.clone() else {
-            return false;
-        };
-
-        let Some(wallet_arc) = &self.wallet else {
-            return false;
-        };
-
-        let candidate_utxo = {
-            let wallet = wallet_arc.read().unwrap();
-            wallet.utxos.get(&address).and_then(|utxos| {
-                utxos
-                    .iter()
-                    .filter(|(_, tx_out)| tx_out.value > 0)
-                    .max_by_key(|(_, tx_out)| tx_out.value)
-                    .map(|(outpoint, tx_out)| (*outpoint, tx_out.clone()))
-            })
-        };
-
-        if let Some((outpoint, tx_out)) = candidate_utxo {
-            self.funding_utxo = Some((outpoint, tx_out, address));
-            let mut step = self.step.write().unwrap();
-            *step = WalletFundedScreenStep::FundsReceived;
-            true
-        } else {
-            false
-        }
-    }
-
     fn top_up_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
         let Some(selected_wallet) = &self.wallet else {
             return AppAction::None;

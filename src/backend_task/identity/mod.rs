@@ -467,9 +467,7 @@ impl AppContext {
                 self.load_user_identity_from_wallet(sdk, wallet, identity_index)
                     .await
             }
-            IdentityTask::TopUpIdentity(top_up_info) => {
-                self.top_up_identity(top_up_info, sender).await
-            }
+            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 self.refresh_loaded_identities_dpns_names(sender).await
             }

@@ -6,7 +6,7 @@ use crate::backend_task::identity::{
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };
-use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
+use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
 use egui::{Color32, Ui};
@@ -120,7 +120,13 @@ impl AddNewIdentityScreen {
 
     pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         // Update state when funds land on the QR funding address
-        self.capture_qr_funding_utxo_if_available();
+        if let Some(utxo) = funding_common::capture_qr_funding_utxo_if_available(
+            &self.step,
+            self.selected_wallet.as_ref(),
+            self.funding_address.as_ref(),
+        ) {
+            self.funding_utxo = Some(utxo);
+        }
 
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();

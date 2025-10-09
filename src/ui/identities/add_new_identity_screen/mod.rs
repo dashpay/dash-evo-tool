@@ -516,46 +516,6 @@ impl AddNewIdentityScreen {
             });
     }
 
-    /// Check whether the QR funding address already received a spendable UTXO.
-    ///
-    /// Returns `true` when the step transitions to `FundsReceived`.
-    fn capture_qr_funding_utxo_if_available(&mut self) -> bool {
-        if !matches!(
-            *self.step.read().unwrap(),
-            WalletFundedScreenStep::WaitingOnFunds
-        ) {
-            return false;
-        }
-
-        let Some(address) = self.funding_address.clone() else {
-            return false;
-        };
-
-        let Some(wallet_arc) = &self.selected_wallet else {
-            return false;
-        };
-
-        let candidate_utxo = {
-            let wallet = wallet_arc.read().unwrap();
-            wallet.utxos.get(&address).and_then(|utxos| {
-                utxos
-                    .iter()
-                    .filter(|(_, tx_out)| tx_out.value > 0)
-                    .max_by_key(|(_, tx_out)| tx_out.value)
-                    .map(|(outpoint, tx_out)| (*outpoint, tx_out.clone()))
-            })
-        };
-
-        if let Some((outpoint, tx_out)) = candidate_utxo {
-            self.funding_utxo = Some((outpoint, tx_out, address));
-            let mut step = self.step.write().unwrap();
-            *step = WalletFundedScreenStep::FundsReceived;
-            true
-        } else {
-            false
-        }
-    }
-
     // Function to render the key selection mode (Default or Advanced)
     fn render_key_selection(&mut self, ui: &mut egui::Ui) {
         // Provide the selection toggle for Default or Advanced mode

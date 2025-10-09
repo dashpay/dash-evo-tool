@@ -1,4 +1,3 @@
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::context::AppContext;
@@ -20,93 +19,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 impl AppContext {
-    // pub(crate) async fn broadcast_and_retrieve_asset_lock(
-    //     &self,
-    //     asset_lock_transaction: &Transaction,
-    //     address: &Address,
-    // ) -> Result<AssetLockProof, dash_sdk::Error> {
-    //     // Use the span only for synchronous logging before the first await.
-    //     // tracing::debug_span!(
-    //     //     "broadcast_and_retrieve_asset_lock",
-    //     //     transaction_id = asset_lock_transaction.txid().to_string(),
-    //     // )
-    //     // .in_scope(|| {
-    //     //     tracing::debug!("Starting asset lock broadcast.");
-    //     // });
-    //
-    //     let sdk = &self.sdk;
-    //
-    //     let block_hash = sdk
-    //         .execute(GetBlockchainStatusRequest {}, RequestSettings::default())
-    //         .await?
-    //         .chain
-    //         .map(|chain| chain.best_block_hash)
-    //         .ok_or_else(|| dash_sdk::Error::DapiClientError("Missing `chain` field".to_owned()))?;
-    //
-    //     // tracing::debug!(
-    //     //     "Starting the stream from the tip block hash {}",
-    //     //     hex::encode(&block_hash)
-    //     // );
-    //
-    //     let mut asset_lock_stream = sdk
-    //         .start_instant_send_lock_stream(block_hash, address)
-    //         .await?;
-    //
-    //     // tracing::debug!("Stream is started.");
-    //
-    //     let request = BroadcastTransactionRequest {
-    //         transaction: asset_lock_transaction.serialize(),
-    //         allow_high_fees: false,
-    //         bypass_limits: false,
-    //     };
-    //
-    //     // tracing::debug!("Broadcasting the transaction.");
-    //
-    //     match sdk.execute(request, RequestSettings::default()).await {
-    //         Ok(_) => {}
-    //         Err(error) if error.to_string().contains("AlreadyExists") => {
-    //             // tracing::warn!("Transaction already broadcasted.");
-    //
-    //             let GetTransactionResponse { block_hash, .. } = sdk
-    //                 .execute(
-    //                     GetTransactionRequest {
-    //                         id: asset_lock_transaction.txid().to_string(),
-    //                     },
-    //                     RequestSettings::default(),
-    //                 )
-    //                 .await?;
-    //
-    //             // tracing::debug!(
-    //             //     "Restarting the stream from the transaction mined block hash {}",
-    //             //     hex::encode(&block_hash)
-    //             // );
-    //
-    //             asset_lock_stream = sdk
-    //                 .start_instant_send_lock_stream(block_hash, address)
-    //                 .await?;
-    //
-    //             // tracing::debug!("Stream restarted.");
-    //         }
-    //         Err(error) => {
-    //             // tracing::error!("Transaction broadcast failed: {error}");
-    //             return Err(error.into());
-    //         }
-    //     }
-    //
-    //     // tracing::debug!("Waiting for asset lock proof.");
-    //
-    //     sdk.wait_for_asset_lock_proof_for_transaction(
-    //         asset_lock_stream,
-    //         asset_lock_transaction,
-    //         Some(Duration::from_secs(4 * 60)),
-    //     )
-    //     .await
-    // }
-
     pub(super) async fn register_identity(
         &self,
         input: IdentityRegistrationInfo,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityRegistrationInfo {
             alias_input,
@@ -203,12 +118,6 @@ impl AppContext {
                 };
 
                 let tx_id = asset_lock_transaction.txid();
-                // todo: maybe one day we will want to use platform again, but for right now we use
-                //  the local core as it is more stable
-                // let asset_lock_proof = self
-                //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                //     .await
-                //     .map_err(|e| e.to_string())?;
 
                 {
                     let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
@@ -270,12 +179,6 @@ impl AppContext {
                 };
 
                 let tx_id = asset_lock_transaction.txid();
-                // todo: maybe one day we will want to use platform again, but for right now we use
-                //  the local core as it is more stable
-                // let asset_lock_proof = self
-                //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                //     .await
-                //     .map_err(|e| e.to_string())?;
 
                 {
                     let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
@@ -412,13 +315,6 @@ impl AppContext {
 
         self.db
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
-            .map_err(|e| e.to_string())?;
-
-        sender
-            .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::None,
-            )))
-            .await
             .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::RegisteredIdentity(

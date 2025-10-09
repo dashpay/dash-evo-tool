@@ -72,10 +72,15 @@ impl TopUpIdentityScreen {
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
-        if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = self.app_context.wallets.read().unwrap();
+        let mut selected_wallet_update: Option<Arc<RwLock<Wallet>>> = None;
+        let mut step_update_method: Option<FundingMethod> = None;
+
+        let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
+            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets = &*wallets_guard;
+
             if wallets.len() > 1 {
-                // Get the current funding method
+                // Cache current funding method to avoid holding the lock across UI callbacks
                 let funding_method = *self.funding_method.read().unwrap();
 
                 // Retrieve the alias of the currently selected wallet, if any
@@ -115,19 +120,8 @@ impl TopUpIdentityScreen {
 
                             ui.add_enabled_ui(has_required_resources, |ui| {
                                 if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                    // Update the selected wallet from app_context
-                                    self.wallet = Some(wallet.clone());
-                                    // Reset the funding address
-                                    self.funding_address = None;
-                                    // Reset the funding asset lock
-                                    self.funding_asset_lock = None;
-                                    // Reset the funding UTXO
-                                    self.funding_utxo = None;
-                                    // Reset the copied to clipboard state
-                                    self.copied_to_clipboard = None;
-                                    // Reset the step to choose funding method
-                                    let mut step = self.step.write().unwrap();
-                                    *step = WalletFundedScreenStep::ChooseFundingMethod;
+                                    selected_wallet_update = Some(wallet.clone());
+                                    step_update_method = Some(funding_method);
                                 }
                             });
                         }
@@ -135,7 +129,7 @@ impl TopUpIdentityScreen {
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
-                    // Get the current funding method
+                    // Cache current funding method to avoid holding the lock across updates
                     let funding_method = *self.funding_method.read().unwrap();
 
                     // Check if the wallet has the required resources
@@ -152,7 +146,8 @@ impl TopUpIdentityScreen {
 
                     if has_required_resources {
                         // Automatically select the only available wallet from app_context
-                        self.wallet = Some(wallet.clone());
+                        selected_wallet_update = Some(wallet.clone());
+                        step_update_method = Some(funding_method);
                     }
                 }
                 false
@@ -161,7 +156,36 @@ impl TopUpIdentityScreen {
             }
         } else {
             false
+        };
+
+        if let Some(wallet) = selected_wallet_update {
+            self.wallet = Some(wallet);
+            self.funding_address = None;
+            self.funding_asset_lock = None;
+            self.funding_utxo = None;
+            self.copied_to_clipboard = None;
+
+            if let Some(method) = step_update_method {
+                self.update_step_after_wallet_change(method);
+            } else {
+                let mut step = self.step.write().unwrap();
+                *step = WalletFundedScreenStep::ChooseFundingMethod;
+            }
         }
+
+        rendered
+    }
+
+    /// Adjust the current step to match the funding method after a wallet switch.
+    fn update_step_after_wallet_change(&mut self, funding_method: FundingMethod) {
+        let mut step = self.step.write().unwrap();
+        *step = match funding_method {
+            FundingMethod::AddressWithQRCode => WalletFundedScreenStep::WaitingOnFunds,
+            FundingMethod::UseUnusedAssetLock | FundingMethod::UseWalletBalance => {
+                WalletFundedScreenStep::ReadyToCreate
+            }
+            FundingMethod::NoSelection => WalletFundedScreenStep::ChooseFundingMethod,
+        };
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
@@ -371,10 +395,17 @@ impl ScreenLike for TopUpIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if matches!(
-            &backend_task_success_result,
-            BackendTaskSuccessResult::ToppedUpIdentity(_)
-        ) {
+        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity) =
+            &backend_task_success_result
+        {
+            self.identity = qualified_identity.clone();
+            self.funding_address = None;
+            self.funding_utxo = None;
+            self.funding_amount.clear();
+            self.funding_amount_exact = None;
+            self.copied_to_clipboard = None;
+            self.error_message = None;
+
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::Success;
             return;

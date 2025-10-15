@@ -64,13 +64,11 @@ pub struct ZKProofsScreen {
     proof_size: Option<String>,
     generation_time: Option<Duration>,
     security_level: u32,
-    grinding_bits: u32,
 
     // Verification fields
     proof_text: String,
     is_verifying: bool,
     verification_result: Option<VerificationResult>,
-    advanced_expanded: bool,
 
     // Error handling
     gen_error_message: Option<String>,
@@ -150,11 +148,9 @@ impl ZKProofsScreen {
             proof_size: None,
             generation_time: None,
             security_level: 128,
-            grinding_bits: 16,
             proof_text: String::new(),
             is_verifying: false,
             verification_result: None,
-            advanced_expanded: false,
             gen_error_message: None,
             verify_error_message: None,
         }
@@ -273,16 +269,6 @@ impl ZKProofsScreen {
     }
 
     fn generate_proof(&mut self, app_context: &AppContext) -> AppAction {
-        // Check if running in release mode
-        #[cfg(debug_assertions)]
-        {
-            self.gen_error_message = Some(
-                "ZK proof generation requires release mode. Please run with: cargo run --release"
-                    .to_string(),
-            );
-            return AppAction::None;
-        }
-
         // Reset any prior messages/results before starting a new generation
         self.is_generating = true;
         self.gen_error_message = None;

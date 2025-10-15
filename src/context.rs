@@ -517,7 +517,7 @@ impl AppContext {
     /// The cache is invalidated immediately and the guard prevents concurrent access
     /// until the database operation is complete. This ensures atomicity and prevents
     /// race conditions regardless of whether the database operation succeeds or fails.
-    pub fn invalidate_settings_cache(&self) -> SettingsCacheGuard {
+    pub fn invalidate_settings_cache(&'_ self) -> SettingsCacheGuard<'_> {
         let mut guard = self.cached_settings.write().unwrap();
         *guard = None;
         guard

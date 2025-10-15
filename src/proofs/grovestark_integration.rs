@@ -10,7 +10,6 @@ use dash_sdk::platform::{
 use ed25519_dalek::{Signer, SigningKey};
 use grovestark::{
     GroveSTARK, PublicInputs, STARKConfig, STARKProof, create_witness_from_platform_proofs,
-    ed25519_helpers::create_witness_from_platform_proofs_no_validation,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -53,8 +52,8 @@ impl GroveStarkIntegration {
 
         // Ensure critical values match requested parameters
         config.num_trace_columns = 132; // MAIN_TRACE_WIDTH in grovestark
-        config.expansion_factor = 16;   // blowup/expansion factor
-        config.num_queries = 48;        // query count
+        config.expansion_factor = 16; // blowup/expansion factor
+        config.num_queries = 48; // query count
         // Prefer 4-ary folding in FRI when available
         #[allow(unused_assignments)]
         {
@@ -377,7 +376,7 @@ impl GroveStarkIntegration {
         // Step 8: Use GroveSTARK's new platform proofs V2 API
         tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
 
-        let witness = create_witness_from_platform_proofs_no_validation(
+        let witness = create_witness_from_platform_proofs(
             &document_proof_data.grovedb_proof, // Raw document proof from SDK
             &key_proof_data.grovedb_proof,      // Raw key proof from SDK
             document_cbor.clone(),              // Use the proper CBOR we created above
@@ -477,14 +476,17 @@ impl ProofDataOutput {
 
     /// Serialize the proof to base64-encoded JSON
     pub fn to_base64(&self) -> Result<String, ProofError> {
+        use base64::{Engine as _, engine::general_purpose};
         let json_bytes =
             serde_json::to_vec(self).map_err(|e| ProofError::SerializationError(e.to_string()))?;
-        Ok(base64::encode(json_bytes))
+        Ok(general_purpose::STANDARD.encode(json_bytes))
     }
 
     /// Deserialize from base64-encoded JSON
     pub fn from_base64(base64_str: &str) -> Result<Self, ProofError> {
-        let bytes = base64::decode(base64_str)
+        use base64::{Engine as _, engine::general_purpose};
+        let bytes = general_purpose::STANDARD
+            .decode(base64_str)
             .map_err(|e| ProofError::DeserializationError(format!("Base64 decode error: {}", e)))?;
         serde_json::from_slice(&bytes).map_err(|e| ProofError::DeserializationError(e.to_string()))
     }

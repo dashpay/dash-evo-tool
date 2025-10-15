@@ -263,11 +263,10 @@ impl ScreenLike for ImportWalletScreen {
                             Ok(mnemonic) => {
                                 self.seed_phrase = Some(mnemonic);
                                 // Clear any existing seed phrase error
-                                if let Some(ref mut error) = self.error {
-                                    if error.contains("Invalid seed phrase") {
+                                if let Some(ref mut error) = self.error
+                                    && error.contains("Invalid seed phrase") {
                                         self.error = None;
                                     }
-                                }
                             }
                             Err(_) => {
                                 self.seed_phrase = None;
@@ -277,20 +276,18 @@ impl ScreenLike for ImportWalletScreen {
                     } else {
                         // Clear seed phrase and error if not all words are filled
                         self.seed_phrase = None;
-                        if let Some(ref mut error) = self.error {
-                            if error.contains("Invalid seed phrase") {
+                        if let Some(ref mut error) = self.error
+                            && error.contains("Invalid seed phrase") {
                                 self.error = None;
                             }
-                        }
                     }
 
                     // Display error message if seed phrase is invalid
-                    if let Some(ref error_msg) = self.error {
-                        if error_msg.contains("Invalid seed phrase") {
+                    if let Some(ref error_msg) = self.error
+                        && error_msg.contains("Invalid seed phrase") {
                             ui.add_space(10.0);
                             ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
                         }
-                    }
 
                     if self.seed_phrase.is_none() {
                         return;

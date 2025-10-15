@@ -56,8 +56,8 @@ impl Database {
                 InsertTokensToo::SomeTokensShouldBeAdded(positions) => positions,
             };
             for token_contract_position in positions {
-                if let Some(token_id) = data_contract.token_id(token_contract_position) {
-                    if let Ok(token_configuration) =
+                if let Some(token_id) = data_contract.token_id(token_contract_position)
+                    && let Ok(token_configuration) =
                         data_contract.expected_token_configuration(token_contract_position)
                     {
                         let config = config::standard();
@@ -79,7 +79,6 @@ impl Database {
                             app_context,
                         )?;
                     }
-                }
             }
         }
 

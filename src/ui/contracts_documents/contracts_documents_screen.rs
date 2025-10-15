@@ -698,14 +698,13 @@ impl ScreenLike for DocumentQueryScreen {
             &mut self.contract_chooser_state,
         );
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action {
-            if let ContractTask::RemoveContract(contract_id) = **contract_task {
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &action
+            && let ContractTask::RemoveContract(contract_id) = **contract_task {
                 action = AppAction::None;
                 self.contract_to_remove = Some(contract_id);
                 // Clear any existing dialog to create a new one with updated content
                 self.confirmation_dialog = None;
             }
-        }
 
         // Custom central panel with adjusted margins for Document Query screen
         let dark_mode = ctx.style().visuals.dark_mode;
@@ -774,11 +773,10 @@ fn doc_to_filtered_string(
     let mut filtered_map = serde_json::Map::new();
 
     for (field_name, &is_checked) in selected_fields {
-        if is_checked {
-            if let Some(field_value) = obj.get(field_name) {
+        if is_checked
+            && let Some(field_value) = obj.get(field_name) {
                 filtered_map.insert(field_name.clone(), field_value.clone());
             }
-        }
     }
 
     let filtered_value = serde_json::Value::Object(filtered_map);

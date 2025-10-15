@@ -128,8 +128,8 @@ impl AddTokenByIdScreen {
     }
 
     fn render_add_button(&mut self, ui: &mut Ui) -> AppAction {
-        if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token) {
-            if ui
+        if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token)
+            && ui
                 .add(
                     egui::Button::new(RichText::new("Add Token").color(Color32::WHITE))
                         .fill(Color32::from_rgb(0, 120, 0)),
@@ -155,7 +155,6 @@ impl AddTokenByIdScreen {
                     crate::app::BackendTasksExecutionMode::Sequential,
                 );
             }
-        }
         AppAction::None
     }
 

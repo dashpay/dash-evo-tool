@@ -663,11 +663,10 @@ impl ZKProofsScreen {
                         });
 
                     // If contract changed, refresh document types
-                    if contract_changed {
-                        if let Some(contract_id) = self.selected_contract.clone() {
+                    if contract_changed
+                        && let Some(contract_id) = self.selected_contract.clone() {
                             self.refresh_document_types(app_context, &contract_id);
                         }
-                    }
                 });
 
                 if let Some(_contract_id) = &self.selected_contract {

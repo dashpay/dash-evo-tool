@@ -601,8 +601,8 @@ impl ScreenLike for GroupActionsScreen {
                 _ => {}
             }
 
-            if fetch_clicked {
-                if let (Some(contract), Some(identity)) = (
+            if fetch_clicked
+                && let (Some(contract), Some(identity)) = (
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
                 ) {
@@ -610,7 +610,6 @@ impl ScreenLike for GroupActionsScreen {
                         ContractTask::FetchActiveGroupActions(contract, identity),
                     )));
                 }
-            }
 
             if let FetchGroupActionsStatus::Complete(group_actions) =
                 &self.fetch_group_actions_status

@@ -616,11 +616,10 @@ impl App for AppState {
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
-        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
-            if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
+        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv()
+            && let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
                 *status = event;
             }
-        }
 
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {

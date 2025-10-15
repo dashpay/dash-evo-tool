@@ -337,7 +337,7 @@ impl GroveStarkIntegration {
             "Document ID (hex): {}",
             hex::encode(document_id_identifier.to_buffer())
         );
-        tracing::info!("State root (hex): {}", hex::encode(&state_root));
+        tracing::info!("State root (hex): {}", hex::encode(state_root));
         tracing::info!("State root (raw bytes): {:?}", state_root);
 
         // Document CBOR details
@@ -363,13 +363,13 @@ impl GroveStarkIntegration {
         signature_r.copy_from_slice(&sig_bytes[0..32]);
         signature_s.copy_from_slice(&sig_bytes[32..64]);
 
-        tracing::info!("Signature R (hex): {}", hex::encode(&signature_r));
+        tracing::info!("Signature R (hex): {}", hex::encode(signature_r));
         tracing::info!("Signature R (raw bytes): {:?}", signature_r);
-        tracing::info!("Signature S (hex): {}", hex::encode(&signature_s));
+        tracing::info!("Signature S (hex): {}", hex::encode(signature_s));
         tracing::info!("Signature S (raw bytes): {:?}", signature_s);
-        tracing::info!("Public key (hex): {}", hex::encode(&public_key_bytes));
+        tracing::info!("Public key (hex): {}", hex::encode(public_key_bytes));
         tracing::info!("Public key (raw bytes): {:?}", public_key_bytes);
-        tracing::info!("Message/Challenge (hex): {}", hex::encode(&challenge));
+        tracing::info!("Message/Challenge (hex): {}", hex::encode(challenge));
         tracing::info!("Message/Challenge (raw bytes): {:?}", challenge);
         tracing::info!("Private key (hex): {}", hex::encode(private_key));
 

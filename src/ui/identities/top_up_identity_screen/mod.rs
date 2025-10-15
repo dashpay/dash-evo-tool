@@ -375,8 +375,8 @@ impl ScreenLike for TopUpIdentityScreen {
         match *step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
             WalletFundedScreenStep::WaitingOnFunds => {
-                if let Some(funding_address) = self.funding_address.as_ref() {
-                    if let BackendTaskSuccessResult::CoreItem(
+                if let Some(funding_address) = self.funding_address.as_ref()
+                    && let BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
                     ) = backend_task_success_result
                     {
@@ -387,7 +387,6 @@ impl ScreenLike for TopUpIdentityScreen {
                             }
                         }
                     }
-                }
             }
             WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::ReadyToCreate => {}
@@ -395,11 +394,9 @@ impl ScreenLike for TopUpIdentityScreen {
                 if let BackendTaskSuccessResult::CoreItem(
                     CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
                 ) = backend_task_success_result
-                {
-                    if let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
+                    && let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
                         tx.special_transaction_payload
-                    {
-                        if asset_lock_payload.credit_outputs.iter().any(|tx_out| {
+                        && asset_lock_payload.credit_outputs.iter().any(|tx_out| {
                             let Ok(address) = Address::from_script(
                                 &tx_out.script_pubkey,
                                 self.app_context.network,
@@ -415,8 +412,6 @@ impl ScreenLike for TopUpIdentityScreen {
                         }) {
                             *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
                         }
-                    }
-                }
             }
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 if let BackendTaskSuccessResult::ToppedUpIdentity(_qualified_identity) =

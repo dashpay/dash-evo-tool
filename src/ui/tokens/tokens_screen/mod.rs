@@ -462,8 +462,8 @@ impl ChangeControlRulesUI {
                     );
                     ui.end_row();
 
-                    if let Some(special_case_option) = special_case_option {
-                        if action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+                    if let Some(special_case_option) = special_case_option
+                        && action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
                             ui.horizontal(|ui| {
                                 ui.checkbox(
                                     special_case_option,
@@ -479,7 +479,6 @@ impl ChangeControlRulesUI {
                             });
                             ui.end_row();
                         }
-                    }
                 });
             });
         }
@@ -793,8 +792,8 @@ impl ChangeControlRulesUI {
         action_name: &str,
     ) -> Result<ChangeControlRules, String> {
         // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change {
-            if let Some(ref id_str) = self.authorized_identity {
+        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change
+            && let Some(ref id_str) = self.authorized_identity {
                 let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
                     format!(
                         "Invalid base58 identifier for {} authorized identity",
@@ -803,11 +802,10 @@ impl ChangeControlRulesUI {
                 })?;
                 self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
             }
-        }
 
         // 2) Update self.rules.admin_action_takers if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers {
-            if let Some(ref id_str) = self.admin_identity {
+        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers
+            && let Some(ref id_str) = self.admin_identity {
                 let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
                     format!(
                         "Invalid base58 identifier for {} admin identity",
@@ -816,7 +814,6 @@ impl ChangeControlRulesUI {
                 })?;
                 self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
             }
-        }
 
         // 3) Construct the ChangeControlRules
         let rules = ChangeControlRules::V0(self.rules.clone());
@@ -1722,8 +1719,8 @@ impl TokensScreen {
             let response = tri_state(ui, &mut parent_state, "Keep history");
 
             // propagate changes from parent to all children
-            if response.clicked() {
-                if let Some(val) = parent_state {
+            if response.clicked()
+                && let Some(val) = parent_state {
                     self.token_advanced_keeps_history.keeps_transfer_history = val;
                     self.token_advanced_keeps_history.keeps_freezing_history = val;
                     self.token_advanced_keeps_history.keeps_minting_history = val;
@@ -1733,7 +1730,6 @@ impl TokensScreen {
                     self.token_advanced_keeps_history
                         .keeps_direct_purchase_history = val;
                 }
-            }
 
             ui.add_space(8.0);
             let arrow = if self.show_advanced_keeps_history {
@@ -2846,11 +2842,10 @@ impl ScreenLike for TokensScreen {
             }
         }
 
-        if action == AppAction::None {
-            if let Some(bt) = self.pending_backend_task.take() {
+        if action == AppAction::None
+            && let Some(bt) = self.pending_backend_task.take() {
                 action = AppAction::BackendTask(bt);
             }
-        }
         action
     }
 
@@ -2870,7 +2865,6 @@ impl ScreenLike for TokensScreen {
                     self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
                     self.token_creator_error_message = Some(msg.to_string());
                 } else {
-                    return;
                 }
             }
             TokensSubscreen::MyTokens => {
@@ -2917,7 +2911,6 @@ impl ScreenLike for TokensScreen {
                         Utc::now(),
                     ));
                 } else {
-                    return;
                 }
             }
         }

@@ -56,21 +56,36 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
-        ("I", RootScreenType::RootScreenIdentities, "identity.png"),
-        ("Q", RootScreenType::RootScreenDocumentQuery, "doc.png"),
-        ("O", RootScreenType::RootScreenMyTokenBalances, "tokens.png"),
         (
-            "C",
-            RootScreenType::RootScreenDPNSActiveContests,
-            "voting.png",
+            "Identities",
+            RootScreenType::RootScreenIdentities,
+            "identity.png",
         ),
-        ("W", RootScreenType::RootScreenWalletsBalances, "wallet.png"),
         (
-            "T",
-            RootScreenType::RootScreenToolsProofLogScreen,
+            "Contracts",
+            RootScreenType::RootScreenDocumentQuery,
+            "doc.png",
+        ),
+        (
+            "Tokens",
+            RootScreenType::RootScreenMyTokenBalances,
+            "tokens.png",
+        ),
+        (
+            "Wallets",
+            RootScreenType::RootScreenWalletsBalances,
+            "wallet.png",
+        ),
+        (
+            "Tools",
+            RootScreenType::RootScreenToolsPlatformInfoScreen,
             "tools.png",
         ),
-        ("N", RootScreenType::RootScreenNetworkChooser, "config.png"),
+        (
+            "Settings",
+            RootScreenType::RootScreenNetworkChooser,
+            "config.png",
+        ),
     ];
 
     let panel_width = 60.0 + (Spacing::MD * 2.0); // Button width + margins
@@ -79,6 +94,7 @@ pub fn add_left_panel(
 
     SidePanel::left("left_panel")
         .default_width(panel_width + 20.0) // Add extra width for margins
+        .resizable(false)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
@@ -118,6 +134,14 @@ pub fn add_left_panel(
                                 } else if added.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
+                                // Put the label beneath the icon
+                                let color = if is_selected {
+                                    DashColors::DASH_BLUE
+                                } else {
+                                    DashColors::text_primary(dark_mode)
+                                };
+                                let label_text = RichText::new(*label).color(color).size(13.0);
+                                ui.label(label_text);
                             } else {
                                 // Fallback to a modern gradient button if texture loading fails
                                 if is_selected {

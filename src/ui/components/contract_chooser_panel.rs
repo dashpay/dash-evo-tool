@@ -181,7 +181,7 @@ pub fn add_contract_chooser_panel(
 
     SidePanel::left("contract_chooser_panel")
         // Let the user resize this panel horizontally
-        .resizable(true)
+        .resizable(false)
         .default_width(270.0) // Increased to account for margins
         .frame(
             Frame::new()

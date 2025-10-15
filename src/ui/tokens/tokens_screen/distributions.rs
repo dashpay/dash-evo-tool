@@ -382,14 +382,7 @@ Emits tokens in fixed amounts for specific intervals.
                                 && let Ok((perpetual_dist_interval_input, step_count_input)) = self
                                     .perpetual_dist_interval_input
                                     .parse::<u64>()
-                                    .and_then(|perpetual_dist_interval_input| {
-                                        self.step_count_input.parse::<u64>().map(
-                                            |step_count_input| {
-                                                (perpetual_dist_interval_input, step_count_input)
-                                            },
-                                        )
-                                    })
-                                {
+                                    .and_then(|perpetual_dist_interval_input| self.step_count_input.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input))) {
                                     let text = match self.perpetual_dist_type {
                                         PerpetualDistributionIntervalTypeUI::None => "".to_string(),
                                         PerpetualDistributionIntervalTypeUI::BlockBased => {

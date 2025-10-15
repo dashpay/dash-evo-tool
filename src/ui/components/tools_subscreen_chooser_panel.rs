@@ -6,6 +6,7 @@ use egui::{Context, Frame, Margin, RichText, SidePanel};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {
+    PlatformInfo,
     ProofLog,
     TransactionViewer,
     DocumentViewer,
@@ -13,18 +14,24 @@ pub enum ToolsSubscreen {
     ContractViewer,
     PlatformInfo,
     ZKProofs,
+    MasternodeListDiff,
 }
 
 impl ToolsSubscreen {
     pub fn display_name(&self) -> &'static str {
         match self {
+            Self::PlatformInfo => "Platform info",
             Self::ProofLog => "Proof logs",
             Self::TransactionViewer => "Transaction deserializer",
             Self::ProofViewer => "Proof deserializer",
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
+<<<<<<< HEAD
             Self::PlatformInfo => "Platform info",
             Self::ZKProofs => "ZK Proofs",
+=======
+            Self::MasternodeListDiff => "Masternode list diff inspector",
+>>>>>>> v1.0-dev
         }
     }
 }
@@ -34,17 +41,23 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
     let dark_mode = ctx.style().visuals.dark_mode;
 
     let subscreens = vec![
+        ToolsSubscreen::PlatformInfo,
         ToolsSubscreen::ProofLog,
         ToolsSubscreen::ProofViewer,
         ToolsSubscreen::TransactionViewer,
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
+<<<<<<< HEAD
         ToolsSubscreen::PlatformInfo,
         ToolsSubscreen::ZKProofs,
+=======
+        ToolsSubscreen::MasternodeListDiff,
+>>>>>>> v1.0-dev
     ];
 
     let active_screen = match app_context.get_settings() {
         Ok(Some(settings)) => match settings.root_screen_type {
+            ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
             ui::RootScreenType::RootScreenToolsProofLogScreen => ToolsSubscreen::ProofLog,
             ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
                 ToolsSubscreen::TransactionViewer
@@ -56,35 +69,38 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
                 ToolsSubscreen::ContractViewer
             }
+<<<<<<< HEAD
             ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
             ui::RootScreenType::RootScreenToolsZKProofsScreen => ToolsSubscreen::ZKProofs,
             _ => ToolsSubscreen::ProofLog,
+=======
+            ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
+                ToolsSubscreen::MasternodeListDiff
+            }
+            _ => ToolsSubscreen::PlatformInfo,
+>>>>>>> v1.0-dev
         },
-        _ => ToolsSubscreen::ProofLog, // Fallback to Active screen if settings unavailable
+        _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
     };
 
     SidePanel::left("tools_subscreen_chooser_panel")
-        .default_width(270.0) // Increased to account for margins
+        .resizable(false)
+        .default_width(270.0)
         .frame(
             Frame::new()
-                .fill(DashColors::background(dark_mode)) // Light background instead of transparent
-                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
+                .fill(DashColors::background(dark_mode))
+                .inner_margin(Margin::symmetric(10, 10)),
         )
         .show(ctx, |ui| {
-            // Fill the entire available height
             let available_height = ui.available_height();
-
-            // Create an island panel with rounded edges that fills the height
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .inner_margin(Margin::same(Spacing::MD_I8))
+                .inner_margin(Margin::same(Spacing::XL as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
-                    // Account for both outer margin (10px * 2) and inner margin
-                    ui.set_min_height(available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0));
-                    // Display subscreen names
+                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new("Tools")
@@ -122,11 +138,43 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                             if ui.add(button).clicked() {
                                 // Handle navigation based on which subscreen is selected
                                 match subscreen {
-                            ToolsSubscreen::ProofLog => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsProofLogScreen,
-                                )
+                                    ToolsSubscreen::PlatformInfo => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsPlatformInfoScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::ProofLog => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsProofLogScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::TransactionViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::ProofViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsProofVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::DocumentViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::ContractViewer => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsContractVisualizerScreen,
+                                        )
+                                    }
+                                    ToolsSubscreen::MasternodeListDiff => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsMasternodeListDiffScreen)
+                                    }
+                                }
                             }
+<<<<<<< HEAD
                             ToolsSubscreen::TransactionViewer => {
                                 action = AppAction::SetMainScreen(
                                     RootScreenType::RootScreenToolsTransitionVisualizerScreen,
@@ -160,6 +208,8 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                         }
                             }
 
+=======
+>>>>>>> v1.0-dev
                             ui.add_space(Spacing::SM);
                         }
                     });

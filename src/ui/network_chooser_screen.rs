@@ -731,7 +731,7 @@ impl ScreenLike for NetworkChooserScreen {
 
         action |= island_central_panel(ctx, |ui| {
             egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
+                .auto_shrink([true; 2])
                 .show(ui, |ui| self.render_network_table(ui))
                 .inner
         });

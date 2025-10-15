@@ -59,26 +59,26 @@ impl Database {
                 if let Some(token_id) = data_contract.token_id(token_contract_position)
                     && let Ok(token_configuration) =
                         data_contract.expected_token_configuration(token_contract_position)
-                    {
-                        let config = config::standard();
-                        let Some(serialized_token_configuration) =
-                            bincode::encode_to_vec(token_configuration, config).ok()
-                        else {
-                            // We should always be able to serialize
-                            return Ok(());
-                        };
-                        let token_name = token_configuration
-                            .conventions()
-                            .singular_form_by_language_code_or_default("en");
-                        self.insert_token(
-                            &token_id,
-                            token_name,
-                            serialized_token_configuration.as_slice(),
-                            &data_contract.id(),
-                            token_contract_position,
-                            app_context,
-                        )?;
-                    }
+                {
+                    let config = config::standard();
+                    let Some(serialized_token_configuration) =
+                        bincode::encode_to_vec(token_configuration, config).ok()
+                    else {
+                        // We should always be able to serialize
+                        return Ok(());
+                    };
+                    let token_name = token_configuration
+                        .conventions()
+                        .singular_form_by_language_code_or_default("en");
+                    self.insert_token(
+                        &token_id,
+                        token_name,
+                        serialized_token_configuration.as_slice(),
+                        &data_contract.id(),
+                        token_contract_position,
+                        app_context,
+                    )?;
+                }
             }
         }
 

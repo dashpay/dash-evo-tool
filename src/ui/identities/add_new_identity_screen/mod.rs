@@ -896,14 +896,14 @@ impl ScreenLike for AddNewIdentityScreen {
                     && let BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
                     ) = backend_task_success_result
-                    {
-                        for (outpoint, tx_out, address) in outpoints_with_addresses {
-                            if funding_address == &address {
-                                *step = WalletFundedScreenStep::FundsReceived;
-                                self.funding_utxo = Some((outpoint, tx_out, address))
-                            }
+                {
+                    for (outpoint, tx_out, address) in outpoints_with_addresses {
+                        if funding_address == &address {
+                            *step = WalletFundedScreenStep::FundsReceived;
+                            self.funding_utxo = Some((outpoint, tx_out, address))
                         }
                     }
+                }
             }
             WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::ReadyToCreate => {}
@@ -913,22 +913,22 @@ impl ScreenLike for AddNewIdentityScreen {
                 ) = backend_task_success_result
                     && let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
                         tx.special_transaction_payload
-                        && asset_lock_payload.credit_outputs.iter().any(|tx_out| {
-                            let Ok(address) = Address::from_script(
-                                &tx_out.script_pubkey,
-                                self.app_context.network,
-                            ) else {
-                                return false;
-                            };
-                            if let Some(wallet) = &self.selected_wallet {
-                                let wallet = wallet.read().unwrap();
-                                wallet.known_addresses.contains_key(&address)
-                            } else {
-                                false
-                            }
-                        }) {
-                            *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
+                    && asset_lock_payload.credit_outputs.iter().any(|tx_out| {
+                        let Ok(address) =
+                            Address::from_script(&tx_out.script_pubkey, self.app_context.network)
+                        else {
+                            return false;
+                        };
+                        if let Some(wallet) = &self.selected_wallet {
+                            let wallet = wallet.read().unwrap();
+                            wallet.known_addresses.contains_key(&address)
+                        } else {
+                            false
                         }
+                    })
+                {
+                    *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
+                }
             }
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                 if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity) =

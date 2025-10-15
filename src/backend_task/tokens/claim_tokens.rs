@@ -75,17 +75,12 @@ impl AppContext {
                         (document.get("claimerId"), document.get("amount"))
                         && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
                             (claimer_value, amount_value)
-                            && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
-                                && let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &claimer_id,
-                                    *amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update token balance from claim document: {}",
-                                        e
-                                    );
-                                }
+                        && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
+                    {
+                        eprintln!("Failed to update token balance from claim document: {}", e);
+                    }
                 }
 
                 // Group action with document - assume completed if document exists
@@ -94,17 +89,15 @@ impl AppContext {
                         (document.get("claimerId"), document.get("amount"))
                         && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
                             (claimer_value, amount_value)
-                            && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
-                                && let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &claimer_id,
-                                    *amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update token balance from group action document: {}",
-                                        e
-                                    );
-                                }
+                        && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from group action document: {}",
+                            e
+                        );
+                    }
                 }
             }
         }

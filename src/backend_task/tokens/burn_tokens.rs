@@ -91,15 +91,15 @@ impl AppContext {
                         (document.get("ownerId"), document.get("amount"))
                         && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
                             (owner_value, amount_value)
-                            && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
-                                && let Err(e) = self
-                                    .insert_token_identity_balance(&token_id, &owner_id, *amount)
-                                {
-                                    eprintln!(
-                                        "Failed to update token balance from historical document: {}",
-                                        e
-                                    );
-                                }
+                        && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &owner_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from historical document: {}",
+                            e
+                        );
+                    }
                 }
 
                 // Group action with document - assume completed if document exists
@@ -108,15 +108,15 @@ impl AppContext {
                         (document.get("ownerId"), document.get("amount"))
                         && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
                             (owner_value, amount_value)
-                            && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
-                                && let Err(e) = self
-                                    .insert_token_identity_balance(&token_id, &owner_id, *amount)
-                                {
-                                    eprintln!(
-                                        "Failed to update token balance from group action document: {}",
-                                        e
-                                    );
-                                }
+                        && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &owner_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from group action document: {}",
+                            e
+                        );
+                    }
                 }
 
                 // Group action with balance - only update if action is closed

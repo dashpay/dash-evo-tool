@@ -58,12 +58,14 @@ impl TransitionVisualizerScreen {
         match value {
             Value::Object(map) => {
                 // Check if this is a contractBounds object with an id
-                if map.contains_key("type") && map.contains_key("id")
+                if map.contains_key("type")
+                    && map.contains_key("id")
                     && let (Some(Value::String(type_str)), Some(Value::String(id))) =
                         (map.get("type"), map.get("id"))
-                        && type_str == "singleContract" {
-                            ids.push(id.clone());
-                        }
+                    && type_str == "singleContract"
+                {
+                    ids.push(id.clone());
+                }
                 // Recursively check all values
                 for val in map.values() {
                     Self::extract_contract_ids(val, ids);
@@ -239,11 +241,12 @@ impl TransitionVisualizerScreen {
                         self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
 
                         if let Some(json) = &self.parsed_json
-                            && let Ok(state_transition) = serde_json::from_str(json) {
-                                app_action = AppAction::BackendTask(
-                                    BackendTask::BroadcastStateTransition(state_transition),
-                                );
-                            }
+                            && let Ok(state_transition) = serde_json::from_str(json)
+                        {
+                            app_action = AppAction::BackendTask(
+                                BackendTask::BroadcastStateTransition(state_transition),
+                            );
+                        }
                     }
                 }
             } else {

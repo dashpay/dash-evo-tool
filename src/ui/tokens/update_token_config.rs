@@ -208,9 +208,10 @@ impl UpdateTokenConfigScreen {
                 .get(&self.identity_token_info.identity.identity.id());
 
             if let Some(your_power) = your_power
-                && your_power >= &group.required_power() {
-                    self.is_unilateral_group_member = true;
-                }
+                && your_power >= &group.required_power()
+            {
+                self.is_unilateral_group_member = true;
+            }
         }
     }
 

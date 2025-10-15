@@ -1121,9 +1121,10 @@ impl DPNSScreen {
                                         && let Some(t) = sched_guard.iter_mut().find(|(sv, _)| {
                                             sv.voter_id == vote.0.voter_id
                                                 && sv.contested_name == vote.0.contested_name
-                                        }) {
-                                            t.1 = ScheduledVoteCastingStatus::InProgress;
-                                        }
+                                        })
+                                    {
+                                        t.1 = ScheduledVoteCastingStatus::InProgress;
+                                    }
                                     // dispatch the actual cast
                                     let local_ids =
                                         match self.app_context.load_local_voting_identities() {
@@ -1878,9 +1879,10 @@ impl ScreenLike for DPNSScreen {
                 if let Ok(mut guard) = self.scheduled_votes.lock()
                     && let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
                         v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
-                    }) {
-                        *status = ScheduledVoteCastingStatus::Completed;
-                    }
+                    })
+                {
+                    *status = ScheduledVoteCastingStatus::Completed;
+                }
             }
             _ => {}
         }
@@ -2143,9 +2145,10 @@ impl ScreenLike for DPNSScreen {
 
         // If we have a pending backend task from scheduling (e.g. after immediate votes)
         if action == AppAction::None
-            && let Some(bt) = self.pending_backend_task.take() {
-                action = AppAction::BackendTask(bt);
-            }
+            && let Some(bt) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(bt);
+        }
         action
     }
 }

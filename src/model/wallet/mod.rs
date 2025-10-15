@@ -777,10 +777,11 @@ impl Wallet {
     ) -> Result<(), String> {
         // Check if the new balance differs from the current one.
         if let Some(current_balance) = self.address_balances.get(address)
-            && *current_balance == new_balance {
-                // If the balance hasn't changed, skip the update.
-                return Ok(());
-            }
+            && *current_balance == new_balance
+        {
+            // If the balance hasn't changed, skip the update.
+            return Ok(());
+        }
 
         // If there's no current balance or it has changed, update it.
         self.address_balances.insert(address.clone(), new_balance);

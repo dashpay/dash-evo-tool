@@ -187,16 +187,17 @@ impl<'a> Widget for IdentitySelector<'a> {
             }
 
             // If the "Other" option is disabled, we automatically select first identity
-            if !self.other_option && self.identity_str.is_empty()
+            if !self.other_option
+                && self.identity_str.is_empty()
                 && let Some(first_identity) = self
                     .identities
                     .keys()
                     .find(|id| !self.exclude_identities.contains(id))
-                {
-                    *self.identity_str = first_identity.to_string(Encoding::Base58);
-                    // trigger change handling to update the selected identity
-                    self.on_change();
-                }
+            {
+                *self.identity_str = first_identity.to_string(Encoding::Base58);
+                // trigger change handling to update the selected identity
+                self.on_change();
+            }
 
             // Check if current identity_str matches any existing identity; current_identity = None means
             // no identity is selected or the input is empty.

@@ -2868,7 +2868,6 @@ impl ScreenLike for TokensScreen {
                 {
                     self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
                     self.token_creator_error_message = Some(msg.to_string());
-                } else {
                 }
             }
             TokensSubscreen::MyTokens => {
@@ -2914,7 +2913,6 @@ impl ScreenLike for TokensScreen {
                         MessageType::Success,
                         Utc::now(),
                     ));
-                } else {
                 }
             }
         }

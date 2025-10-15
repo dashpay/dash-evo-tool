@@ -12,7 +12,6 @@ pub enum ToolsSubscreen {
     DocumentViewer,
     ProofViewer,
     ContractViewer,
-    PlatformInfo,
     ZKProofs,
     MasternodeListDiff,
 }
@@ -26,12 +25,8 @@ impl ToolsSubscreen {
             Self::ProofViewer => "Proof deserializer",
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
-<<<<<<< HEAD
-            Self::PlatformInfo => "Platform info",
             Self::ZKProofs => "ZK Proofs",
-=======
             Self::MasternodeListDiff => "Masternode list diff inspector",
->>>>>>> v1.0-dev
         }
     }
 }
@@ -47,12 +42,8 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::TransactionViewer,
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
-<<<<<<< HEAD
-        ToolsSubscreen::PlatformInfo,
         ToolsSubscreen::ZKProofs,
-=======
         ToolsSubscreen::MasternodeListDiff,
->>>>>>> v1.0-dev
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -69,16 +60,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
                 ToolsSubscreen::ContractViewer
             }
-<<<<<<< HEAD
-            ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
-            ui::RootScreenType::RootScreenToolsZKProofsScreen => ToolsSubscreen::ZKProofs,
-            _ => ToolsSubscreen::ProofLog,
-=======
             ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
                 ToolsSubscreen::MasternodeListDiff
             }
+            ui::RootScreenType::RootScreenToolsZKProofsScreen => ToolsSubscreen::ZKProofs,
             _ => ToolsSubscreen::PlatformInfo,
->>>>>>> v1.0-dev
         },
         _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
     };
@@ -172,48 +158,16 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsMasternodeListDiffScreen)
                                     }
+                                    ToolsSubscreen::ZKProofs => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsZKProofsScreen)
+                                    }
                                 }
                             }
-<<<<<<< HEAD
-                            ToolsSubscreen::TransactionViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsTransitionVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::ProofViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsProofVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::DocumentViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsDocumentVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::ContractViewer => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsContractVisualizerScreen,
-                                )
-                            }
-                            ToolsSubscreen::PlatformInfo => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsPlatformInfoScreen,
-                                )
-                            }
-                            ToolsSubscreen::ZKProofs => {
-                                action = AppAction::SetMainScreen(
-                                    RootScreenType::RootScreenToolsZKProofsScreen,
-                                )
-                            }
-                        }
-                            }
-
-=======
->>>>>>> v1.0-dev
                             ui.add_space(Spacing::SM);
                         }
                     });
-                }); // Close the island frame
+                });
         });
 
     action

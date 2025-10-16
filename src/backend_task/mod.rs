@@ -27,13 +27,14 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
-use zk_proofs::ZKProofTask;
+use grovestark::ZKProofTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
 pub mod document;
+pub mod grovestark;
 pub mod identity;
 pub mod mnlist;
 pub mod platform_info;
@@ -41,7 +42,6 @@ pub mod register_contract;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
-pub mod zk_proofs;
 
 // TODO: Refactor how we handle errors and messages, and remove it from here
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
@@ -58,7 +58,7 @@ pub enum BackendTask {
     SystemTask(SystemTask),
     MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
-    ZKProofTask(ZKProofTask),
+    GroveSTARKTask(ZKProofTask),
     None,
 }
 
@@ -205,13 +205,8 @@ impl AppContext {
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
             }
-            BackendTask::ZKProofTask(zk_proof_task) => {
-                zk_proofs::process_zk_proof_task(
-                    BackendTask::ZKProofTask(zk_proof_task),
-                    &sdk,
-                    sender,
-                )
-                .await
+            BackendTask::GroveSTARKTask(grovestark_task) => {
+                grovestark::run_grovestark_task(grovestark_task, &sdk).await
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

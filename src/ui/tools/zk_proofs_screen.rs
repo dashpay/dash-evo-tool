@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
-use crate::backend_task::zk_proofs::ZKProofTask;
+use crate::backend_task::grovestark::ZKProofTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::RootScreenType;
@@ -394,7 +394,7 @@ impl ZKProofsScreen {
         };
 
         // Use fixed parameters for simplicity and consistency
-        let task = BackendTask::ZKProofTask(ZKProofTask::GenerateProof {
+        let task = BackendTask::GroveSTARKTask(ZKProofTask::GenerateProof {
             identity_id,
             contract_id,
             document_type,
@@ -402,8 +402,6 @@ impl ZKProofsScreen {
             key_id: selected_key.id(),
             private_key,
             public_key,
-            security_level: 128,
-            grinding_bits: 16,
         });
 
         AppAction::BackendTask(task)
@@ -428,10 +426,7 @@ impl ZKProofsScreen {
 
         match proof_result {
             Ok(proof_data) => {
-                let task = BackendTask::ZKProofTask(ZKProofTask::VerifyProof {
-                    proof_data,
-                    security_level: self.security_level,
-                });
+                let task = BackendTask::GroveSTARKTask(ZKProofTask::VerifyProof { proof_data });
                 AppAction::BackendTask(task)
             }
             Err(e) => {

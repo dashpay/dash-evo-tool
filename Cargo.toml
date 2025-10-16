@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://www.github.com/dashpay/platform", rev = "2628258c0beb7291973cb81d16bccd602c23b854", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"] }
+dash-sdk = { git = "https://www.github.com/dashpay/platform", rev = "aca8af0555b4f1e8527df0b22751e43b7bd13d67", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"] }
 grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "95c2555cea622250b75e1e1f06644a80afffa594" }
 rayon = "1.8"
 thiserror = "2.0.12"
@@ -86,3 +86,6 @@ codegen-units = 1
 # This ensures grovestark is also optimized
 [profile.release.build-override]
 opt-level = 3
+
+[patch.crates-io]
+elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }

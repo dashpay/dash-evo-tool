@@ -209,7 +209,7 @@ impl AppContext {
                 zk_proofs::process_zk_proof_task(
                     BackendTask::ZKProofTask(zk_proof_task),
                     &sdk,
-                    self,
+                    sender,
                 )
                 .await
             }

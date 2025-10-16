@@ -1,13 +1,13 @@
+use crate::app::TaskResult;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::context::AppContext;
 use crate::proofs::grovestark_integration::{GroveStarkIntegration, ProofDataOutput};
+use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::Sdk;
-use std::sync::Arc;
 
 pub async fn process_zk_proof_task(
     task: BackendTask,
     sdk: &Sdk,
-    _app_context: &Arc<AppContext>,
+    sender: SenderAsync<TaskResult>,
 ) -> Result<BackendTaskSuccessResult, String> {
     match task {
         BackendTask::ZKProofTask(zk_task) => match zk_task {
@@ -70,7 +70,7 @@ pub enum ZKProofTask {
         document_id: String,
         key_id: u32,
         private_key: [u8; 32],
-        public_key: [u8; 32], // Add public key from storage
+        public_key: [u8; 32],
         security_level: u32,
         grinding_bits: u32,
     },

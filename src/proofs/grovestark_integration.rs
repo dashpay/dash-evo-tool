@@ -5,7 +5,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::{
-    Fetch, FetchMany, FetchWithProof, IdentityKeysQuery, IdentityPublicKey, ProofData,
+    Document, DriveDocumentQuery, Fetch, FetchMany, IdentityKeysQuery, IdentityPublicKey, ProofData,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use grovestark::{
@@ -206,8 +206,8 @@ impl GroveStarkIntegration {
             .with_document_id(&document_id_identifier);
 
         tracing::info!("Fetching document with proof...");
-        let (document_opt, document_proof_data) =
-            dash_sdk::dpp::document::Document::fetch_with_proof(sdk, query)
+        let (document_opt, _metadata, proof) =
+            Document::fetch_with_metadata_and_proof(sdk, query.clone(), None)
                 .await
                 .map_err(|e| {
                     tracing::error!("Failed to fetch document with proof: {}", e);
@@ -291,25 +291,25 @@ impl GroveStarkIntegration {
 
         // 2. DOCUMENT PROOF (Raw bytes)
         tracing::info!("=== 2. DOCUMENT PROOF (Raw bytes) ===");
-        tracing::info!(
-            "Document proof size: {} bytes",
-            document_proof_data.grovedb_proof.len()
-        );
-        tracing::info!(
-            "Document proof hex: {}",
-            hex::encode(&document_proof_data.grovedb_proof)
-        );
+        tracing::info!("Document proof size: {} bytes", proof.grovedb_proof.len());
+        tracing::info!("Document proof hex: {}", hex::encode(&proof.grovedb_proof));
+
+        // Step 4: Get current state root by verifying document proof
+        let drive_document_query: DriveDocumentQuery = (&query)
+            .try_into()
+            .map_err(|e: dash_sdk::error::Error| ProofError::Platform(e.to_string()))?;
+        let (state_root, _documents) = drive_document_query
+            .verify_proof(&proof.grovedb_proof, sdk.version())
+            .map_err(|e| {
+                tracing::error!("Failed to verify document proof: {}", e);
+                ProofError::InvalidProof(e.to_string())
+            })?;
+
         tracing::info!(
             "Document proof root hash (hex): {}",
-            hex::encode(document_proof_data.root_hash)
+            hex::encode(state_root)
         );
-        tracing::info!(
-            "Document proof root hash (raw bytes): {:?}",
-            document_proof_data.root_hash
-        );
-
-        // Step 4: Get current state root from proof data
-        let state_root = document_proof_data.root_hash;
+        tracing::info!("Document proof root hash (raw bytes): {:?}", state_root);
 
         // Step 5: Create signing challenge
         let challenge = create_challenge(&state_root, contract_id, document_id);
@@ -321,7 +321,7 @@ impl GroveStarkIntegration {
         tracing::info!(
             "Using separate proofs - key: {} bytes, document: {} bytes",
             key_proof_data.grovedb_proof.len(),
-            document_proof_data.grovedb_proof.len()
+            proof.grovedb_proof.len()
         );
 
         // 6. OPTIONAL BUT HELPFUL
@@ -377,14 +377,14 @@ impl GroveStarkIntegration {
         tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
 
         let witness = create_witness_from_platform_proofs(
-            &document_proof_data.grovedb_proof, // Raw document proof from SDK
-            &key_proof_data.grovedb_proof,      // Raw key proof from SDK
-            document_cbor.clone(),              // Use the proper CBOR we created above
-            &public_key_bytes,                  // Public key bytes
-            &signature_r,                       // Signature R component
-            &signature_s,                       // Signature s component
-            &challenge,                         // Message to sign
-            private_key,                        // Private key
+            &proof.grovedb_proof,          // Raw document proof from SDK
+            &key_proof_data.grovedb_proof, // Raw key proof from SDK
+            document_cbor.clone(),         // Use the proper CBOR we created above
+            &public_key_bytes,             // Public key bytes
+            &signature_r,                  // Signature R component
+            &signature_s,                  // Signature s component
+            &challenge,                    // Message to sign
+            private_key,                   // Private key
         )
         .map_err(|e| {
             tracing::error!("GroveSTARK witness creation failed: {:?}", e);

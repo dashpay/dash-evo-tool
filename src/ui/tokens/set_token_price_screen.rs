@@ -390,15 +390,15 @@ impl SetTokenPriceScreen {
                 }
 
                 // Show validation preview
-                if let Some(amount) = &self.single_price_amount {
-                    if amount.value() > 0 {
-                        ui.add_space(5.0);
-                        let credits = amount.value();
-                        ui.colored_label(
-                            Color32::DARK_GREEN,
-                            format!("Price: {} per token ({} credits)", amount, credits),
-                        );
-                    }
+                if let Some(amount) = &self.single_price_amount
+                    && amount.value() > 0
+                {
+                    ui.add_space(5.0);
+                    let credits = amount.value();
+                    ui.colored_label(
+                        Color32::DARK_GREEN,
+                        format!("Price: {} per token ({} credits)", amount, credits),
+                    );
                 }
             }
             PricingType::TieredPricing => {

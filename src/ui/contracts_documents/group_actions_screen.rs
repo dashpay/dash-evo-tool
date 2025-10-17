@@ -491,6 +491,12 @@ impl ScreenLike for GroupActionsScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
+        );
+
         let central_panel_action = island_central_panel(ctx, |ui| {
             ui.heading("Active Group Actions");
 
@@ -603,15 +609,15 @@ impl ScreenLike for GroupActionsScreen {
                 _ => {}
             }
 
-            if fetch_clicked {
-                if let (Some(contract), Some(identity)) = (
+            if fetch_clicked
+                && let (Some(contract), Some(identity)) = (
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
-                ) {
-                    action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::FetchActiveGroupActions(contract, identity),
-                    )));
-                }
+                )
+            {
+                action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchActiveGroupActions(contract, identity),
+                )));
             }
 
             if let FetchGroupActionsStatus::Complete(group_actions) =

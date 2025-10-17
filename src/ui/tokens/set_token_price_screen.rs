@@ -116,6 +116,44 @@ pub struct SetTokenPriceScreen {
 pub const CREDITS_PER_DASH: Credits = 100_000_000_000;
 
 impl SetTokenPriceScreen {
+    fn token_decimal_divisor(&self) -> u64 {
+        10u64.pow(
+            self.identity_token_info
+                .token_config
+                .conventions()
+                .decimals() as u32,
+        )
+    }
+
+    fn minimum_price_amount(&self) -> Amount {
+        Amount::new(self.token_decimal_divisor(), DASH_DECIMAL_PLACES).with_unit_name("DASH")
+    }
+
+    fn validate_price_for_token(&self, price: &Amount) -> Result<u64, String> {
+        let credits_price_per_token = price.value();
+        if credits_price_per_token == 0 {
+            return Err("Price must be greater than 0".to_string());
+        }
+
+        let decimal_divisor = self.token_decimal_divisor();
+
+        if credits_price_per_token < decimal_divisor {
+            return Err(format!(
+                "Price too low for this token's precision. Minimum price is {}.",
+                self.minimum_price_amount()
+            ));
+        }
+
+        if credits_price_per_token % decimal_divisor != 0 {
+            return Err(format!(
+                "Price must be in multiples of {} to match the token decimals.",
+                self.minimum_price_amount()
+            ));
+        }
+
+        Ok(credits_price_per_token / decimal_divisor)
+    }
+
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
@@ -198,17 +236,17 @@ impl SetTokenPriceScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        if group.is_some()
+            && let Some((_, group)) = group.clone()
+        {
+            let your_power = group
+                .members()
+                .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                is_unilateral_group_member = true;
             }
         };
 
@@ -320,6 +358,16 @@ impl SetTokenPriceScreen {
         match self.pricing_type {
             PricingType::SinglePrice => {
                 ui.label("Set a fixed price per token:");
+
+                if self.token_decimal_divisor() > 1 {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        format!(
+                            "Prices must be multiples of {} to match this token's precision.",
+                            self.minimum_price_amount()
+                        ),
+                    );
+                }
 
                 // Lazy initialization of AmountInput following the design pattern
                 let single_price_input = self.single_price_input.get_or_insert_with(|| {
@@ -510,6 +558,14 @@ impl SetTokenPriceScreen {
                             amount, price, credits
                         ));
                     }
+
+                    if self.token_decimal_divisor() > 1 {
+                        ui.add_space(5.0);
+                        ui.label(format!(
+                            "Each tier price must be a multiple of {}.",
+                            self.minimum_price_amount()
+                        ));
+                    }
                 }
             });
         }
@@ -520,34 +576,13 @@ impl SetTokenPriceScreen {
         match self.pricing_type {
             PricingType::RemovePricing => Ok(None),
             PricingType::SinglePrice => match &self.single_price_amount {
-                Some(amount) if amount.value() > 0 => {
-                    // User enters price per whole token, but Platform expects price per smallest unit
-                    let credits_price_per_token = amount.value();
-                    let token_decimals = self
-                        .identity_token_info
-                        .token_config
-                        .conventions()
-                        .decimals();
-
-                    // Convert price per token to price per smallest unit
-                    let decimal_divisor = 10u64.pow(token_decimals as u32);
-                    let price_per_smallest_unit = credits_price_per_token / decimal_divisor;
-
-                    Ok(Some(TokenPricingSchedule::SinglePrice(
-                        price_per_smallest_unit,
-                    )))
-                }
-                Some(_) => Err("Price must be greater than 0".to_string()),
+                Some(amount) => self
+                    .validate_price_for_token(amount)
+                    .map(|price| Some(TokenPricingSchedule::SinglePrice(price))),
                 None => Err("Please enter a price".to_string()),
             },
             PricingType::TieredPricing => {
                 let mut map = std::collections::BTreeMap::new();
-                let token_decimals = self
-                    .identity_token_info
-                    .token_config
-                    .conventions()
-                    .decimals();
-                let decimal_divisor = 10u64.pow(token_decimals as u32);
 
                 for (amount_input, price_input) in &self.tiered_prices {
                     let Some(price) = price_input.as_ref().and_then(|input| input.current_value())
@@ -563,8 +598,12 @@ impl SetTokenPriceScreen {
                     };
 
                     let amount = amount_value.value();
-                    // Convert price per token to price per smallest unit
-                    let price_per_smallest_unit = price.value() / decimal_divisor;
+                    if amount == 0 {
+                        continue;
+                    }
+
+                    let price_per_smallest_unit = self.validate_price_for_token(&price)?;
+
                     map.insert(amount, price_per_smallest_unit);
                 }
 
@@ -582,8 +621,7 @@ impl SetTokenPriceScreen {
         match self.pricing_type {
             PricingType::RemovePricing => Ok(()),
             PricingType::SinglePrice => match &self.single_price_amount {
-                Some(amount) if amount.value() > 0 => Ok(()),
-                Some(_) => Err("Price must be greater than 0".to_string()),
+                Some(amount) => self.validate_price_for_token(amount).map(|_| ()),
                 None => Err("Please enter a price".to_string()),
             },
             PricingType::TieredPricing => {
@@ -602,9 +640,12 @@ impl SetTokenPriceScreen {
                         continue;
                     };
 
-                    if amount_value.value() > 0 && price.value() > 0 {
-                        valid_tiers += 1;
+                    if amount_value.value() == 0 {
+                        continue;
                     }
+
+                    self.validate_price_for_token(&price)?;
+                    valid_tiers += 1;
                 }
 
                 if valid_tiers == 0 {
@@ -822,13 +863,12 @@ impl ScreenLike for SetTokenPriceScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
-            {
-                self.identity_token_info.identity = updated_identity;
-            }
+        {
+            self.identity_token_info.identity = updated_identity;
         }
     }
 

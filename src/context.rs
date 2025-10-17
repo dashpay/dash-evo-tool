@@ -517,7 +517,7 @@ impl AppContext {
     /// The cache is invalidated immediately and the guard prevents concurrent access
     /// until the database operation is complete. This ensures atomicity and prevents
     /// race conditions regardless of whether the database operation succeeds or fails.
-    pub fn invalidate_settings_cache(&self) -> SettingsCacheGuard {
+    pub fn invalidate_settings_cache(&'_ self) -> SettingsCacheGuard<'_> {
         let mut guard = self.cached_settings.write().unwrap();
         *guard = None;
         guard
@@ -823,6 +823,35 @@ impl AppContext {
 
     pub fn remove_token(&self, token_id: &Identifier) -> Result<()> {
         self.db.remove_token(token_id, self)
+    }
+
+    pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), String> {
+        {
+            let wallets = self
+                .wallets
+                .read()
+                .map_err(|_| "Failed to access wallets".to_string())?;
+            if !wallets.contains_key(seed_hash) {
+                return Err("Wallet not found".to_string());
+            }
+        }
+
+        self.db
+            .remove_wallet(seed_hash, &self.network)
+            .map_err(|e| e.to_string())?;
+
+        let mut wallets = self
+            .wallets
+            .write()
+            .map_err(|_| "Failed to update wallets".to_string())?;
+
+        wallets.remove(seed_hash);
+        let has_wallet = !wallets.is_empty();
+        drop(wallets);
+
+        self.has_wallet.store(has_wallet, Ordering::Relaxed);
+
+        Ok(())
     }
 
     #[allow(dead_code)] // May be used for storing token balances

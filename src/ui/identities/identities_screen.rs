@@ -123,10 +123,10 @@ impl IdentitiesScreen {
             if desired_idx >= lock.len() {
                 break;
             }
-            if let Some(current_idx) = lock.get_index_of(&id) {
-                if current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
+            if let Some(current_idx) = lock.get_index_of(&id)
+                && current_idx != desired_idx
+            {
+                lock.swap_indices(current_idx, desired_idx);
             }
         }
     }
@@ -197,17 +197,14 @@ impl IdentitiesScreen {
     }
 
     fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {
-        if let Some(master_identity_public_key) = qi.private_keys.find_master_key() {
-            if let Some(wallet_derivation_path) =
+        if let Some(master_identity_public_key) = qi.private_keys.find_master_key()
+            && let Some(wallet_derivation_path) =
                 &master_identity_public_key.in_wallet_at_derivation_path
-            {
-                if let Some(alias) = self
-                    .wallet_seed_hash_cache
-                    .get(&wallet_derivation_path.wallet_seed_hash)
-                {
-                    return alias.clone();
-                }
-            }
+            && let Some(alias) = self
+                .wallet_seed_hash_cache
+                .get(&wallet_derivation_path.wallet_seed_hash)
+        {
+            return alias.clone();
         }
         "".to_owned()
     }
@@ -272,10 +269,10 @@ impl IdentitiesScreen {
     // Up/down reorder methods
     fn move_identity_up(&mut self, identity_id: &Identifier) {
         let mut lock = self.identities.lock().unwrap();
-        if let Some(idx) = lock.get_index_of(identity_id) {
-            if idx > 0 {
-                lock.swap_indices(idx, idx - 1);
-            }
+        if let Some(idx) = lock.get_index_of(identity_id)
+            && idx > 0
+        {
+            lock.swap_indices(idx, idx - 1);
         }
         drop(lock);
         self.save_current_order();
@@ -284,10 +281,10 @@ impl IdentitiesScreen {
     // arrow down
     fn move_identity_down(&mut self, identity_id: &Identifier) {
         let mut lock = self.identities.lock().unwrap();
-        if let Some(idx) = lock.get_index_of(identity_id) {
-            if idx + 1 < lock.len() {
-                lock.swap_indices(idx, idx + 1);
-            }
+        if let Some(idx) = lock.get_index_of(identity_id)
+            && idx + 1 < lock.len()
+        {
+            lock.swap_indices(idx, idx + 1);
         }
         drop(lock);
         self.save_current_order();
@@ -308,10 +305,10 @@ impl IdentitiesScreen {
         // basically reorder the underlying IndexMap to match ephemeral_list
         for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
             let id = qi.identity.id();
-            if let Some(current_idx) = lock.get_index_of(&id) {
-                if current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
+            if let Some(current_idx) = lock.get_index_of(&id)
+                && current_idx != desired_idx
+            {
+                lock.swap_indices(current_idx, desired_idx);
             }
         }
     }
@@ -836,8 +833,9 @@ impl IdentitiesScreen {
         action
     }
 
-    fn show_identity_to_remove(&mut self, ctx: &Context) {
+    fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
         if let Some(identity_to_remove) = self.identity_to_remove.clone() {
+            let action = AppAction::None;
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
@@ -884,6 +882,9 @@ impl IdentitiesScreen {
                         }
                     });
                 });
+            action
+        } else {
+            AppAction::None
         }
     }
 
@@ -1004,6 +1005,11 @@ impl ScreenLike for IdentitiesScreen {
                 inner_action |= self.render_identities_view(ui, &identities_vec);
             }
 
+            // Handle identity removal confirmation dialog
+            if self.identity_to_remove.is_some() {
+                inner_action |= self.show_identity_to_remove(ctx);
+            }
+
             // Show either refreshing indicator or message, but not both
             if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
                 ui.add_space(25.0); // Space above
@@ -1039,10 +1045,6 @@ impl ScreenLike for IdentitiesScreen {
             }
             inner_action
         });
-
-        if self.identity_to_remove.is_some() {
-            self.show_identity_to_remove(ctx);
-        }
 
         match action {
             AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {

@@ -2,7 +2,9 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -11,7 +13,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
-use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -49,6 +51,9 @@ pub struct WalletsBalancesScreen {
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,
+    remove_wallet_dialog: Option<ConfirmationDialog>,
+    pending_wallet_removal: Option<WalletSeedHash>,
+    pending_wallet_removal_alias: Option<String>,
 }
 
 pub trait DerivationPathHelpers {
@@ -141,6 +146,9 @@ impl WalletsBalancesScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message: None,
+            remove_wallet_dialog: None,
+            pending_wallet_removal: None,
+            pending_wallet_removal_alias: None,
         }
     }
 
@@ -565,15 +573,13 @@ impl WalletsBalancesScreen {
     }
 
     fn render_bottom_options(&mut self, ui: &mut Ui) {
+        let wallet_is_open = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
+
         if self.selected_filters.contains("Funds") {
             ui.add_space(10.0);
-
-            // Check if wallet is unlocked
-            let wallet_is_open = if let Some(wallet_guard) = &self.selected_wallet {
-                wallet_guard.read().unwrap().is_open()
-            } else {
-                false
-            };
 
             if wallet_is_open {
                 ui.horizontal(|ui| {
@@ -585,8 +591,113 @@ impl WalletsBalancesScreen {
                     }
                 });
             } else {
-                // Show wallet unlock UI
+                // Show wallet unlock UI for locked wallets when Funds filter is active
                 self.render_wallet_unlock_if_needed(ui);
+            }
+        }
+
+        if self.selected_wallet.is_some() {
+            ui.add_space(16.0);
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            let remove_button = egui::Button::new(
+                RichText::new("🗑 Remove Wallet")
+                    .color(Color32::WHITE)
+                    .size(14.0),
+            )
+            .min_size(egui::vec2(0.0, 28.0))
+            .fill(DashColors::error_color(!dark_mode))
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(4.0);
+
+            if ui.add(remove_button).clicked()
+                && let Some(selected_wallet) = &self.selected_wallet
+            {
+                let wallet = selected_wallet.read().unwrap();
+                let alias = wallet
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                let seed_hash = wallet.seed_hash();
+                drop(wallet);
+
+                self.pending_wallet_removal = Some(seed_hash);
+                self.pending_wallet_removal_alias = Some(alias.clone());
+
+                let message = format!(
+                    "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
+                    alias
+                );
+
+                self.remove_wallet_dialog = Some(
+                    ConfirmationDialog::new("Remove Wallet", message)
+                        .confirm_text(Some("Remove"))
+                        .cancel_text(Some("Cancel"))
+                        .danger_mode(true),
+                );
+            }
+
+            if let Some(dialog) = self.remove_wallet_dialog.as_mut() {
+                let response = dialog.show(ui);
+                if let Some(status) = response.inner.dialog_response {
+                    match status {
+                        ConfirmationStatus::Confirmed => {
+                            self.remove_wallet_dialog = None;
+                            if let Some(seed_hash) = self.pending_wallet_removal.take() {
+                                let alias = self
+                                    .pending_wallet_removal_alias
+                                    .take()
+                                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                                self.handle_wallet_removal(seed_hash, alias);
+                            } else {
+                                self.pending_wallet_removal_alias = None;
+                            }
+                        }
+                        ConfirmationStatus::Canceled => {
+                            self.remove_wallet_dialog = None;
+                            self.pending_wallet_removal = None;
+                            self.pending_wallet_removal_alias = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_wallet_removal(&mut self, seed_hash: WalletSeedHash, alias: String) {
+        match self.app_context.remove_wallet(&seed_hash) {
+            Ok(()) => {
+                let next_wallet = self
+                    .app_context
+                    .wallets
+                    .read()
+                    .ok()
+                    .and_then(|wallets| wallets.values().next().cloned());
+
+                self.selected_wallet = next_wallet;
+
+                if self.selected_wallet.is_none() {
+                    self.selected_filters.clear();
+                    self.selected_filters.insert("Funds".to_string());
+                }
+
+                self.show_rename_dialog = false;
+                self.rename_input.clear();
+                self.wallet_password.clear();
+                self.show_password = false;
+                self.error_message = None;
+                self.refreshing = false;
+
+                self.display_message(
+                    &format!("Removed wallet \"{}\" successfully", alias),
+                    MessageType::Success,
+                );
+            }
+            Err(err) => {
+                self.display_message(
+                    &format!("Failed to remove wallet: {}", err),
+                    MessageType::Error,
+                );
             }
         }
     }
@@ -824,7 +935,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
                     MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::from_rgb(100, 255, 100),
+                    MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
                 // Display message in a prominent frame
@@ -848,7 +959,7 @@ impl ScreenLike for WalletsBalancesScreen {
             }
 
             egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
+                .auto_shrink([true; 2])
                 .show(ui, |ui| {
                     if self.app_context.wallets.read().unwrap().is_empty() {
                         self.render_no_wallets_view(ui);
@@ -874,10 +985,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     });
 
                     ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
 
                     if self.selected_wallet.is_some() {
+                        ui.separator();
+                        ui.add_space(10.0);
+
                         // Always show the filter selector
                         ui.vertical(|ui| {
                             ui.heading(
@@ -913,15 +1025,6 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
                         self.render_bottom_options(ui);
-                    } else {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(50.0);
-                            ui.label(
-                                RichText::new("Please select a wallet to view its details")
-                                    .size(16.0)
-                                    .color(Color32::GRAY),
-                            );
-                        });
                     }
                 });
 

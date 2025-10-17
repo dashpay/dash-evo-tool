@@ -34,6 +34,7 @@ pub mod contract;
 pub mod core;
 pub mod document;
 pub mod identity;
+pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
 pub mod system_task;
@@ -53,6 +54,7 @@ pub enum BackendTask {
     BroadcastStateTransition(StateTransition),
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
+    MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
     None,
 }
@@ -99,6 +101,27 @@ pub enum BackendTaskSuccessResult {
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
+    // MNList-specific results
+    MnListFetchedDiff {
+        base_height: u32,
+        height: u32,
+        diff: dash_sdk::dpp::dashcore::network::message_sml::MnListDiff,
+    },
+    MnListFetchedQrInfo {
+        qr_info: dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo,
+    },
+    MnListChainLockSigs {
+        entries: Vec<(
+            (u32, dash_sdk::dpp::dashcore::BlockHash),
+            Option<dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature>,
+        )>,
+    },
+    MnListFetchedDiffs {
+        items: Vec<(
+            (u32, u32),
+            dash_sdk::dpp::dashcore::network::message_sml::MnListDiff,
+        )>,
+    },
 }
 
 impl BackendTaskSuccessResult {}
@@ -171,6 +194,9 @@ impl AppContext {
                 self.run_token_task(*token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
+            BackendTask::MnListTask(mnlist_task) => {
+                mnlist::run_mnlist_task(self, mnlist_task).await
+            }
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
             }

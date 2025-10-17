@@ -8,7 +8,6 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
-use dash_sdk::dpp::dashcore::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::dashcore::consensus::deserialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
@@ -17,6 +16,7 @@ use dash_sdk::dpp::dashcore::{
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use rusqlite::params;
@@ -66,6 +66,45 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    /// Remove a wallet and all associated records from the database.
+    ///
+    /// This clears dependent records (addresses, utxos, asset locks, identity links)
+    /// to keep the database consistent before deleting the wallet itself.
+    pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
+        let network_str = network.to_string();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut address_stmt =
+            tx.prepare("SELECT address FROM wallet_addresses WHERE seed_hash = ?")?;
+        let address_rows =
+            address_stmt.query_map(params![seed_hash], |row| row.get::<_, String>(0))?;
+        let mut addresses = Vec::new();
+        for address in address_rows {
+            addresses.push(address?);
+        }
+        drop(address_stmt);
+
+        for address in addresses {
+            tx.execute(
+                "DELETE FROM utxos WHERE address = ? AND network = ?",
+                params![address, &network_str],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE identity SET wallet = NULL, wallet_index = NULL WHERE wallet = ? AND network = ?",
+            params![seed_hash, &network_str],
+        )?;
+
+        tx.execute(
+            "DELETE FROM wallet WHERE seed_hash = ? AND network = ?",
+            params![seed_hash, &network_str],
+        )?;
+
+        tx.commit()
     }
 
     /// Update only the alias and is_main fields of a wallet

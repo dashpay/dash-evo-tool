@@ -1,4 +1,4 @@
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
@@ -6,13 +6,14 @@ use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -20,7 +21,6 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
@@ -53,7 +53,7 @@ pub struct TransferTokensScreen {
     transfer_tokens_status: TransferTokensStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
-    confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
@@ -99,7 +99,7 @@ impl TransferTokensScreen {
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,
             app_context: app_context.clone(),
-            confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -159,91 +159,79 @@ impl TransferTokensScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut app_action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Transfer")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                let identifier = if self.receiver_identity_id.is_empty() {
-                    self.transfer_tokens_status =
-                        TransferTokensStatus::ErrorMessage("Invalid identifier".to_string());
-                    self.confirmation_popup = false;
-                    return;
-                } else {
-                    match Identifier::from_string_try_encodings(
-                        &self.receiver_identity_id,
-                        &[Encoding::Base58, Encoding::Hex],
-                    ) {
-                        Ok(identifier) => identifier,
-                        Err(_) => {
-                            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                                "Invalid identifier".to_string(),
-                            );
-                            self.confirmation_popup = false;
-                            return;
-                        }
-                    }
-                };
+        let msg = format!(
+            "Are you sure you want to transfer {} tokens to {}?",
+            self.amount.clone().unwrap_or(Amount::new(0, 0)),
+            self.receiver_identity_id
+        );
 
-                if self.selected_key.is_none() {
-                    self.transfer_tokens_status =
-                        TransferTokensStatus::ErrorMessage("No selected key".to_string());
-                    self.confirmation_popup = false;
-                    return;
-                };
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Transfer", msg)
+                .confirm_text(Some("Transfer"))
+                .cancel_text(Some("Cancel"))
+        });
 
-                ui.label(format!(
-                    "Are you sure you want to transfer {} {} to {}?",
-                    self.amount.as_ref().expect("Amount should be set"),
-                    self.identity_token_balance.token_alias,
-                    self.receiver_identity_id
-                ));
-
-                if ui.button("Confirm").clicked() {
-                    self.confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
-                    let data_contract = Arc::new(
-                        self.app_context
-                            .get_unqualified_contract_by_id(
-                                &self.identity_token_balance.data_contract_id,
-                            )
-                            .expect("Contracts not loaded")
-                            .expect("Data contract not found"),
-                    );
-                    app_action |= AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
-                                sending_identity: self.identity.clone(),
-                                recipient_id: identifier,
-                                amount: {
-                                    // Use the amount value directly
-                                    self.amount.as_ref().expect("Amount should be set").value()
-                                },
-                                data_contract,
-                                token_position: self.identity_token_balance.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: self.public_note.clone(),
-                            })),
-                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
-                }
-                if ui.button("Cancel").clicked() {
-                    self.confirmation_popup = false;
-                }
-            });
-        if !is_open {
-            self.confirmation_popup = false;
+        let response = confirmation_dialog.show(ui);
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                self.confirmation_ok()
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        app_action
     }
 
+    fn confirmation_ok(&mut self) -> AppAction {
+        if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
+            self.transfer_tokens_status =
+                TransferTokensStatus::ErrorMessage("Invalid amount".into());
+            return AppAction::None;
+        }
+
+        let parsed_receiver_id = Identifier::from_string_try_encodings(
+            &self.receiver_identity_id,
+            &[
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+            ],
+        );
+
+        if parsed_receiver_id.is_err() {
+            self.transfer_tokens_status =
+                TransferTokensStatus::ErrorMessage("Invalid receiver".into());
+            return AppAction::None;
+        }
+
+        let receiver_id = parsed_receiver_id.unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
+
+        let data_contract = Arc::new(
+            self.app_context
+                .get_unqualified_contract_by_id(&self.identity_token_balance.data_contract_id)
+                .expect("Failed to get data contract")
+                .expect("Data contract not found"),
+        );
+
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::TransferTokens {
+                sending_identity: self.identity.clone(),
+                recipient_id: receiver_id,
+                amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
+                data_contract,
+                token_position: self.identity_token_balance.token_position,
+                signing_key: self.selected_key.clone().expect("No key selected"),
+                public_note: self.public_note.clone(),
+            },
+        )))
+    }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -481,11 +469,20 @@ impl ScreenLike for TransferTokensScreen {
                             "Amount must be greater than zero".to_string(),
                         );
                     } else {
-                        self.confirmation_popup = true;
+                        let msg = format!(
+                            "Are you sure you want to transfer {} tokens to {}?",
+                            self.amount.clone().unwrap_or(Amount::new(0, 0)),
+                            self.receiver_identity_id
+                        );
+                        self.confirmation_dialog = Some(
+                            ConfirmationDialog::new("Confirm Transfer", msg)
+                                .confirm_text(Some("Transfer"))
+                                .cancel_text(Some("Cancel")),
+                        );
                     }
                 }
 
-                if self.confirmation_popup {
+                if self.confirmation_dialog.is_some() {
                     return self.show_confirmation_popup(ui);
                 }
 

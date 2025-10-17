@@ -60,6 +60,7 @@ use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -247,12 +248,32 @@ impl ChangeControlRulesUI {
         current_groups: &[GroupConfigUI],
         action_name: &str,
         special_case_option: Option<&mut bool>,
+        is_expanded: &mut bool,
     ) {
-        ui.collapsing(action_name, |ui| {
-            egui::Grid::new("basic_token_info_grid")
-                .num_columns(2)
-                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if *is_expanded { "−" } else { "+" };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                *is_expanded = !*is_expanded;
+            }
+            ui.label(action_name);
+        });
+
+        if *is_expanded {
+            ui.indent(format!("{}_content", action_name), |ui| {
+                egui::Grid::new(format!("{}_grid", action_name))
+                    .num_columns(2)
+                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                    .show(ui, |ui| {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
@@ -441,8 +462,8 @@ impl ChangeControlRulesUI {
                     );
                     ui.end_row();
 
-                    if let Some(special_case_option) = special_case_option {
-                        if action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+                    if let Some(special_case_option) = special_case_option
+                        && action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
                             ui.horizontal(|ui| {
                                 ui.checkbox(
                                     special_case_option,
@@ -458,9 +479,9 @@ impl ChangeControlRulesUI {
                             });
                             ui.end_row();
                         }
-                    }
                 });
-        });
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -474,12 +495,34 @@ impl ChangeControlRulesUI {
         new_tokens_destination_identity_rules: &mut ChangeControlRulesUI,
         new_tokens_destination_identity: &mut String,
         minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
+        is_expanded: &mut bool,
+        new_tokens_destination_expanded: &mut bool,
+        minting_allow_choosing_expanded: &mut bool,
     ) {
-        ui.collapsing("Manual Mint", |ui| {
-            egui::Grid::new("basic_token_info_grid")
-                .num_columns(2)
-                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if *is_expanded { "−" } else { "+" };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                *is_expanded = !*is_expanded;
+            }
+            ui.label("Manual Mint");
+        });
+
+        if *is_expanded {
+            ui.indent("manual_mint_content", |ui| {
+                egui::Grid::new("manual_mint_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                    .show(ui, |ui| {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
@@ -709,7 +752,7 @@ impl ChangeControlRulesUI {
                             ui.text_edit_singleline(new_tokens_destination_identity);
                             ui.end_row();
 
-                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None);
+                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None, new_tokens_destination_expanded);
                         }
 
                         ui.end_row();
@@ -723,7 +766,7 @@ impl ChangeControlRulesUI {
 
                         if *minting_allow_choosing_destination {
                             ui.end_row();
-                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None);
+                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None, minting_allow_choosing_expanded);
                         }
                         ui.end_row();
 
@@ -740,7 +783,8 @@ impl ChangeControlRulesUI {
                         }
                     }
                 });
-        });
+            });
+        }
     }
 
     pub fn extract_change_control_rules(
@@ -748,29 +792,29 @@ impl ChangeControlRulesUI {
         action_name: &str,
     ) -> Result<ChangeControlRules, String> {
         // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change {
-            if let Some(ref id_str) = self.authorized_identity {
-                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                    format!(
-                        "Invalid base58 identifier for {} authorized identity",
-                        action_name
-                    )
-                })?;
-                self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
-            }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change
+            && let Some(ref id_str) = self.authorized_identity
+        {
+            let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                format!(
+                    "Invalid base58 identifier for {} authorized identity",
+                    action_name
+                )
+            })?;
+            self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
         }
 
         // 2) Update self.rules.admin_action_takers if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers {
-            if let Some(ref id_str) = self.admin_identity {
-                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                    format!(
-                        "Invalid base58 identifier for {} admin identity",
-                        action_name
-                    )
-                })?;
-                self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
-            }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers
+            && let Some(ref id_str) = self.admin_identity
+        {
+            let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                format!(
+                    "Invalid base58 identifier for {} admin identity",
+                    action_name
+                )
+            })?;
+            self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
         }
 
         // 3) Construct the ChangeControlRules
@@ -957,6 +1001,29 @@ pub struct TokensScreen {
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
     should_reset_collapsing_states: bool,
+    // Token Creator expanded sections
+    token_creator_advanced_expanded: bool,
+    token_creator_action_rules_expanded: bool,
+    token_creator_main_control_expanded: bool,
+    token_creator_distribution_expanded: bool,
+    token_creator_groups_expanded: bool,
+    token_creator_groups_items_expanded: std::collections::HashSet<String>,
+    token_creator_document_schemas_expanded: bool,
+    // Individual action rules expanded states
+    token_creator_manual_mint_expanded: bool,
+    token_creator_manual_burn_expanded: bool,
+    token_creator_freeze_expanded: bool,
+    token_creator_unfreeze_expanded: bool,
+    token_creator_destroy_frozen_expanded: bool,
+    token_creator_emergency_action_expanded: bool,
+    token_creator_max_supply_change_expanded: bool,
+    token_creator_conventions_change_expanded: bool,
+    token_creator_marketplace_expanded: bool,
+    token_creator_direct_purchase_pricing_expanded: bool,
+    // Nested rules expanded states
+    token_creator_new_tokens_destination_expanded: bool,
+    token_creator_minting_allow_choosing_expanded: bool,
+    token_creator_perpetual_distribution_rules_expanded: bool,
 
     // Contract Search
     pub selected_contract_id: Option<Identifier>,
@@ -981,8 +1048,10 @@ pub struct TokensScreen {
     // Remove token
     confirm_remove_identity_token_balance_popup: bool,
     identity_token_balance_to_remove: Option<IdentityTokenBasicInfo>,
+    remove_identity_token_balance_confirmation_dialog: Option<ConfirmationDialog>,
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
+    remove_token_confirmation_dialog: Option<ConfirmationDialog>,
 
     // Reward explanations
     reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
@@ -1013,6 +1082,7 @@ pub struct TokensScreen {
     start_as_paused_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
+    token_creator_confirmation_dialog: Option<ConfirmationDialog>,
     token_creator_status: TokenCreatorStatus,
     token_creator_error_message: Option<String>,
     show_advanced_keeps_history: bool,
@@ -1334,8 +1404,10 @@ impl TokensScreen {
             // Remove token
             confirm_remove_identity_token_balance_popup: false,
             identity_token_balance_to_remove: None,
+            remove_identity_token_balance_confirmation_dialog: None,
             confirm_remove_token_popup: false,
             token_to_remove: None,
+            remove_token_confirmation_dialog: None,
 
             // Reward explanations
             reward_explanations: IndexMap::new(),
@@ -1351,6 +1423,7 @@ impl TokensScreen {
             wallet_password: String::new(),
             show_password: false,
             show_token_creator_confirmation_popup: false,
+            token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
             token_names_input: vec![(
@@ -1489,6 +1562,29 @@ impl TokensScreen {
             function_images,
             function_textures: BTreeMap::default(),
             should_reset_collapsing_states: false,
+            // Token Creator expanded sections
+            token_creator_advanced_expanded: false,
+            token_creator_action_rules_expanded: false,
+            token_creator_main_control_expanded: false,
+            token_creator_distribution_expanded: false,
+            token_creator_groups_expanded: false,
+            token_creator_groups_items_expanded: std::collections::HashSet::new(),
+            token_creator_document_schemas_expanded: false,
+            // Individual action rules expanded states
+            token_creator_manual_mint_expanded: false,
+            token_creator_manual_burn_expanded: false,
+            token_creator_freeze_expanded: false,
+            token_creator_unfreeze_expanded: false,
+            token_creator_destroy_frozen_expanded: false,
+            token_creator_emergency_action_expanded: false,
+            token_creator_max_supply_change_expanded: false,
+            token_creator_conventions_change_expanded: false,
+            token_creator_marketplace_expanded: false,
+            token_creator_direct_purchase_pricing_expanded: false,
+            // Nested rules expanded states
+            token_creator_new_tokens_destination_expanded: false,
+            token_creator_minting_allow_choosing_expanded: false,
+            token_creator_perpetual_distribution_rules_expanded: false,
 
             // Token adding status
             adding_token_start_time: None,
@@ -1625,17 +1721,17 @@ impl TokensScreen {
             let response = tri_state(ui, &mut parent_state, "Keep history");
 
             // propagate changes from parent to all children
-            if response.clicked() {
-                if let Some(val) = parent_state {
-                    self.token_advanced_keeps_history.keeps_transfer_history = val;
-                    self.token_advanced_keeps_history.keeps_freezing_history = val;
-                    self.token_advanced_keeps_history.keeps_minting_history = val;
-                    self.token_advanced_keeps_history.keeps_burning_history = val;
-                    self.token_advanced_keeps_history
-                        .keeps_direct_pricing_history = val;
-                    self.token_advanced_keeps_history
-                        .keeps_direct_purchase_history = val;
-                }
+            if response.clicked()
+                && let Some(val) = parent_state
+            {
+                self.token_advanced_keeps_history.keeps_transfer_history = val;
+                self.token_advanced_keeps_history.keeps_freezing_history = val;
+                self.token_advanced_keeps_history.keeps_minting_history = val;
+                self.token_advanced_keeps_history.keeps_burning_history = val;
+                self.token_advanced_keeps_history
+                    .keeps_direct_pricing_history = val;
+                self.token_advanced_keeps_history
+                    .keeps_direct_purchase_history = val;
             }
 
             ui.add_space(8.0);
@@ -2299,20 +2395,28 @@ impl TokensScreen {
             }
         };
 
-        let mut is_open = true;
-
-        egui::Window::new("Confirm Stop Tracking Balance")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self
+            .remove_identity_token_balance_confirmation_dialog
+            .get_or_insert_with(|| {
+                ConfirmationDialog::new(
+                "Confirm Stop Tracking Balance",
+                format!(
                     "Are you sure you want to stop tracking the token \"{}\" for identity \"{}\"?",
                     token_to_remove.token_alias,
                     token_to_remove.identity_id.to_string(Encoding::Base58)
-                ));
+                ),
+            )
+            .confirm_text(Some("Confirm"))
+            .cancel_text(Some("Cancel"))
+            });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
+
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
                     if let Err(e) = self
                         .app_context
                         .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
@@ -2322,26 +2426,19 @@ impl TokensScreen {
                             MessageType::Error,
                             Utc::now(),
                         ));
-                        self.confirm_remove_identity_token_balance_popup = false;
-                        self.identity_token_balance_to_remove = None;
                     } else {
-                        self.confirm_remove_identity_token_balance_popup = false;
-                        self.identity_token_balance_to_remove = None;
                         self.refresh();
-                    };
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
+                    }
                     self.confirm_remove_identity_token_balance_popup = false;
                     self.identity_token_balance_to_remove = None;
+                    self.remove_identity_token_balance_confirmation_dialog = None;
                 }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_identity_token_balance_popup = false;
-            self.identity_token_balance_to_remove = None;
+                ConfirmationStatus::Canceled => {
+                    self.confirm_remove_identity_token_balance_popup = false;
+                    self.identity_token_balance_to_remove = None;
+                    self.remove_identity_token_balance_confirmation_dialog = None;
+                }
+            }
         }
     }
 
@@ -2362,48 +2459,48 @@ impl TokensScreen {
             .map(|t| t.token_name.clone())
             .unwrap_or_else(|| token_to_remove.to_string(Encoding::Base58));
 
-        let mut is_open = true;
-
-        egui::Window::new("Confirm Remove Token")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.remove_token_confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Remove Token",
+                format!(
                     "Are you sure you want to stop tracking the token \"{}\"? You can re-add it later. Your actual token balance will not change with this action.",
                     token_name,
-                ));
+                ),
+            )
+            .confirm_text(Some("Confirm"))
+            .cancel_text(Some("Cancel"))
+        });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    if let Err(e) = self.app_context.db.remove_token(
-                        &token_to_remove,
-                        &self.app_context,
-                    ) {
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
+
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
+                    if let Err(e) = self
+                        .app_context
+                        .db
+                        .remove_token(&token_to_remove, &self.app_context)
+                    {
                         self.backend_message = Some((
                             format!("Error removing token balance: {}", e),
                             MessageType::Error,
                             Utc::now(),
                         ));
-                        self.confirm_remove_token_popup = false;
-                        self.token_to_remove = None;
                     } else {
-                        self.confirm_remove_token_popup = false;
-                        self.token_to_remove = None;
                         self.refresh();
                     }
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
                     self.confirm_remove_token_popup = false;
                     self.token_to_remove = None;
+                    self.remove_token_confirmation_dialog = None;
                 }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_token_popup = false;
-            self.token_to_remove = None;
+                ConfirmationStatus::Canceled => {
+                    self.confirm_remove_token_popup = false;
+                    self.token_to_remove = None;
+                    self.remove_token_confirmation_dialog = None;
+                }
+            }
         }
     }
 
@@ -2748,10 +2845,10 @@ impl ScreenLike for TokensScreen {
             }
         }
 
-        if action == AppAction::None {
-            if let Some(bt) = self.pending_backend_task.take() {
-                action = AppAction::BackendTask(bt);
-            }
+        if action == AppAction::None
+            && let Some(bt) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(bt);
         }
         action
     }
@@ -2771,8 +2868,6 @@ impl ScreenLike for TokensScreen {
                 {
                     self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
                     self.token_creator_error_message = Some(msg.to_string());
-                } else {
-                    return;
                 }
             }
             TokensSubscreen::MyTokens => {
@@ -2799,13 +2894,12 @@ impl ScreenLike for TokensScreen {
                 }
             }
             TokensSubscreen::SearchTokens => {
-                if msg.contains("Error fetching tokens") {
+                if msg_type == MessageType::Error {
                     self.contract_search_status =
                         ContractSearchStatus::ErrorMessage(msg.to_string());
                     // Clear adding status on error
                     self.adding_token_start_time = None;
                     self.adding_token_name = None;
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                 } else if msg.contains("Added token")
                     | msg.contains("Token already added")
                     | msg.contains("Saved token to db")
@@ -2818,8 +2912,6 @@ impl ScreenLike for TokensScreen {
                         MessageType::Success,
                         Utc::now(),
                     ));
-                } else {
-                    return;
                 }
             }
         }

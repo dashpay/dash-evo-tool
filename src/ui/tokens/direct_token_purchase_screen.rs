@@ -18,6 +18,7 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -58,7 +59,7 @@ pub struct PurchaseTokenScreen {
     pricing_fetch_attempted: bool,
 
     /// Screen stuff
-    show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     status: PurchaseTokensStatus,
     error_message: Option<String>,
 
@@ -102,7 +103,7 @@ impl PurchaseTokenScreen {
             status: PurchaseTokensStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -137,6 +138,7 @@ impl PurchaseTokenScreen {
             // When amount changes, update domain data and recalculate the price
             if response.inner.has_changed() {
                 self.recalculate_price();
+                self.confirmation_dialog = None;
             }
 
             // Fetch pricing button
@@ -164,30 +166,46 @@ impl PurchaseTokenScreen {
         if let Some(pricing_schedule) = &self.fetched_pricing_schedule {
             ui.add_space(5.0);
             ui.label("Current pricing:");
-            let token_decimals = self
-                .identity_token_info
-                .token_config
-                .conventions()
-                .decimals();
-            let decimal_multiplier = 10u64.pow(token_decimals as u32);
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
 
             match pricing_schedule {
-                TokenPricingSchedule::SinglePrice(price_per_smallest_unit) => {
-                    // Convert price per smallest unit to price per token for display
-                    let price_per_token = price_per_smallest_unit * decimal_multiplier;
-                    let price =
-                        Amount::new(price_per_token, DASH_DECIMAL_PLACES).with_unit_name("DASH");
-                    ui.label(format!("  Fixed price: {} per token", price));
+                TokenPricingSchedule::SinglePrice(price_per_unit) => {
+                    // Convert price per smallest unit to price per whole token for display, guarding for the minimal
+                    // representable value (using Amount ref display which pads decimals properly)
+                    if *price_per_unit == 0 {
+                        ui.colored_label(
+                            DashColors::error_color(dark_mode),
+                            "  Fixed price: FREE (pricing schedule stores 0 credits per unit)",
+                        );
+                    } else {
+                        let price_per_token = (*price_per_unit as u128)
+                            .saturating_mul(self.token_decimal_multiplier() as u128)
+                            .min(u64::MAX as u128)
+                            as u64;
+                        let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
+                        ui.label(format!("  Fixed price: {} per token", price));
+                    }
                 }
                 TokenPricingSchedule::SetPrices(tiers) => {
                     ui.label("  Tiered pricing:");
-                    for (amount_value, price_per_smallest_unit) in tiers {
+                    for (amount_value, price_per_unit) in tiers {
                         let amount = Amount::from_token(&self.identity_token_info, *amount_value);
                         // Convert price per smallest unit to price per token for display
-                        let price_per_token = price_per_smallest_unit * decimal_multiplier;
-                        let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
-                            .with_unit_name("DASH");
-                        ui.label(format!("    {} tokens: {} each", amount, price));
+                        if *price_per_unit == 0 {
+                            ui.colored_label(
+                                DashColors::error_color(dark_mode),
+                                format!("    {} tokens: FREE (tier stores 0 credits)", amount),
+                            );
+                        } else {
+                            let price_per_token = (*price_per_unit as u128)
+                                .saturating_mul(self.token_decimal_multiplier() as u128)
+                                .min(u64::MAX as u128)
+                                as u64;
+                            let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
+                                .with_unit_name("DASH");
+                            ui.label(format!("    {} tokens: {} each", amount, price));
+                        }
                     }
                 }
             }
@@ -203,7 +221,7 @@ impl PurchaseTokenScreen {
             &self.amount_to_purchase_value,
         ) {
             let amount = amount_value.value();
-            let price_per_token = match pricing_schedule {
+            let price_per_unit = match pricing_schedule {
                 TokenPricingSchedule::SinglePrice(price) => *price,
                 TokenPricingSchedule::SetPrices(tiers) => {
                     // Find the appropriate tier for this amount
@@ -218,99 +236,78 @@ impl PurchaseTokenScreen {
             };
 
             // The price from Platform is per smallest unit, and amount is in smallest units
-            // So we just multiply them directly
-            let total_price = amount.saturating_mul(price_per_token);
+            // So we multiply them directly using wider arithmetic to avoid overflow
+            let total_price = (amount as u128)
+                .saturating_mul(price_per_unit as u128)
+                .min(u64::MAX as u128) as u64;
             self.calculated_price_credits = Some(total_price);
         } else {
             self.calculated_price_credits = None;
         }
     }
 
+    fn token_decimal_multiplier(&self) -> u64 {
+        10u64.pow(
+            self.identity_token_info
+                .token_config
+                .conventions()
+                .decimals() as u32,
+        )
+    }
+
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Purchase")
-            .collapsible(false)
-            .open(&mut is_open)
-            .frame(
-                egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(245, 245, 245))
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgb(200, 200, 200),
-                    ))
-                    .shadow(egui::epaint::Shadow::default())
-                    .inner_margin(egui::Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(8)),
-            )
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let amount_value = self.amount_to_purchase_value.as_ref();
-                let Some(amount) = amount_value else {
-                    self.error_message = Some("Please enter a valid amount.".into());
-                    self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                };
+        let Some(amount) = self.amount_to_purchase_value.as_ref() else {
+            self.error_message = Some("Please enter a valid amount.".into());
+            self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
+            self.confirmation_dialog = None;
+            return AppAction::None;
+        };
 
-                let Some(total_price_credits) = self.calculated_price_credits else {
-                    self.error_message = Some(
-                        "Cannot calculate total price. Please fetch token pricing first.".into(),
-                    );
-                    self.status = PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                };
+        let Some(total_price_credits) = self.calculated_price_credits else {
+            self.error_message =
+                Some("Cannot calculate total price. Please fetch token pricing first.".into());
+            self.status = PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
+            self.confirmation_dialog = None;
+            return AppAction::None;
+        };
 
-                let total_price_dash =
-                    Amount::new(total_price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+        let Some(dialog) = self.confirmation_dialog.as_mut() else {
+            return AppAction::None;
+        };
 
-                ui.label(format!(
-                    "Are you sure you want to purchase {} token(s) for {} ({} Credits)?",
-                    amount, total_price_dash, total_price_credits
-                ));
+        match dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                self.status = PurchaseTokensStatus::WaitingForResult(now);
 
-                ui.add_space(10.0);
-
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = PurchaseTokensStatus::WaitingForResult(now);
-
-                    // Dispatch the actual backend purchase action
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
-                                identity: self.identity_token_info.identity.clone(),
-                                data_contract: Arc::new(
-                                    self.identity_token_info.data_contract.contract.clone(),
-                                ),
-                                token_position: self.identity_token_info.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                amount: amount.value(),
-                                total_agreed_price: total_price_credits,
-                            })),
-                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+                AppAction::BackendTasks(
+                    vec![
+                        BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
+                            identity: self.identity_token_info.identity.clone(),
+                            data_contract: Arc::new(
+                                self.identity_token_info.data_contract.contract.clone(),
+                            ),
+                            token_position: self.identity_token_info.token_position,
+                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            amount: amount.value(),
+                            total_agreed_price: total_price_credits,
+                        })),
+                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                    ],
+                    BackendTasksExecutionMode::Sequential,
+                )
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
     /// Renders a simple "Success!" screen after completion
@@ -379,13 +376,12 @@ impl ScreenLike for PurchaseTokenScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
-            {
-                self.identity_token_info.identity = updated_identity;
-            }
+        {
+            self.identity_token_info.identity = updated_identity;
         }
     }
 
@@ -557,8 +553,30 @@ impl ScreenLike for PurchaseTokenScreen {
                             .fill(Color32::from_rgb(0, 128, 255))
                             .corner_radius(3.0);
 
-                    if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                    if ui.add(button).clicked() && self.confirmation_dialog.is_none() {
+                        if let (Some(amount), Some(total_price_credits)) = (
+                            self.amount_to_purchase_value.as_ref(),
+                            self.calculated_price_credits,
+                        ) {
+                            let total_price_dash =
+                                Amount::new(total_price_credits, DASH_DECIMAL_PLACES)
+                                    .with_unit_name("DASH");
+
+                            self.confirmation_dialog = Some(ConfirmationDialog::new(
+                                "Confirm Purchase".to_string(),
+                                format!(
+                                    "Are you sure you want to purchase {} for {} ({} Credits)?",
+                                    amount, total_price_dash, total_price_credits
+                                ),
+                            ));
+                        } else {
+                            self.error_message = Some(
+                                "Cannot calculate total price. Please fetch token pricing first."
+                                    .into(),
+                            );
+                            self.status =
+                                PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
+                        }
                     }
                 } else {
                     let button = egui::Button::new(
@@ -576,8 +594,8 @@ impl ScreenLike for PurchaseTokenScreen {
                     );
                 }
 
-                // If the user pressed "Purchase," show a popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

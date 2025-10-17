@@ -984,10 +984,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     });
 
                     ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
 
                     if self.selected_wallet.is_some() {
+                        ui.separator();
+                        ui.add_space(10.0);
+
                         // Always show the filter selector
                         ui.vertical(|ui| {
                             ui.heading(
@@ -1023,15 +1024,6 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
                         self.render_bottom_options(ui);
-                    } else {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(50.0);
-                            ui.label(
-                                RichText::new("Please select a wallet to view its details")
-                                    .size(16.0)
-                                    .color(Color32::GRAY),
-                            );
-                        });
                     }
                 });
 

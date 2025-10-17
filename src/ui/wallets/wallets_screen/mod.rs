@@ -611,30 +611,31 @@ impl WalletsBalancesScreen {
             .corner_radius(4.0);
 
             if ui.add(remove_button).clicked()
-                && let Some(selected_wallet) = &self.selected_wallet {
-                    let wallet = selected_wallet.read().unwrap();
-                    let alias = wallet
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                    let seed_hash = wallet.seed_hash();
-                    drop(wallet);
+                && let Some(selected_wallet) = &self.selected_wallet
+            {
+                let wallet = selected_wallet.read().unwrap();
+                let alias = wallet
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                let seed_hash = wallet.seed_hash();
+                drop(wallet);
 
-                    self.pending_wallet_removal = Some(seed_hash);
-                    self.pending_wallet_removal_alias = Some(alias.clone());
+                self.pending_wallet_removal = Some(seed_hash);
+                self.pending_wallet_removal_alias = Some(alias.clone());
 
-                    let message = format!(
-                        "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
-                        alias
-                    );
+                let message = format!(
+                    "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
+                    alias
+                );
 
-                    self.remove_wallet_dialog = Some(
-                        ConfirmationDialog::new("Remove Wallet", message)
-                            .confirm_text(Some("Remove"))
-                            .cancel_text(Some("Cancel"))
-                            .danger_mode(true),
-                    );
-                }
+                self.remove_wallet_dialog = Some(
+                    ConfirmationDialog::new("Remove Wallet", message)
+                        .confirm_text(Some("Remove"))
+                        .cancel_text(Some("Cancel"))
+                        .danger_mode(true),
+                );
+            }
 
             if let Some(dialog) = self.remove_wallet_dialog.as_mut() {
                 let response = dialog.show(ui);

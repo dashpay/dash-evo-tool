@@ -565,13 +565,10 @@ impl ScreenLike for AddExistingIdentityScreen {
                     self.success_message = Some("Successfully loaded identity.".to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
                     self.backend_message = None;
-                } else if message.starts_with("Successfully loaded ")
-                    && message.contains(" up to index ")
+                } else if (message.starts_with("Successfully loaded ")
+                    && message.contains(" up to index "))
+                    || message.starts_with("Finished loading identities up to index ")
                 {
-                    self.success_message = Some(message.to_string());
-                    self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
-                } else if message.starts_with("Finished loading identities up to index ") {
                     self.success_message = Some(message.to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
                     self.backend_message = None;

@@ -355,10 +355,14 @@ impl AppContext {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "Finished loading identities up to index {}. Loaded {} identity{}; no identity found at index(es): {}.",
+                "Finished loading identities up to index {}. Loaded {} identit{}; no identity found at index(es): {}.",
                 max_identity_index,
                 loaded_indices.len(),
-                if loaded_indices.len() == 1 { "" } else { "ies" },
+                if loaded_indices.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
                 missing_display
             )
         };

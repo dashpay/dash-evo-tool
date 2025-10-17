@@ -60,6 +60,12 @@ enum LoadIdentityMode {
     ByWallet,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WalletIdentitySearchMode {
+    SpecificIndex,
+    UpToIndex,
+}
+
 #[derive(PartialEq)]
 pub enum AddIdentityStatus {
     NotStarted,
@@ -87,6 +93,8 @@ pub struct AddExistingIdentityScreen {
     show_pop_up_info: Option<String>,
     mode: LoadIdentityMode,
     backend_message: Option<String>,
+    wallet_search_mode: WalletIdentitySearchMode,
+    success_message: Option<String>,
 }
 
 impl AddExistingIdentityScreen {
@@ -116,6 +124,8 @@ impl AddExistingIdentityScreen {
             show_pop_up_info: None,
             mode: LoadIdentityMode::ByIdentityId,
             backend_message: None,
+            wallet_search_mode: WalletIdentitySearchMode::SpecificIndex,
+            success_message: None,
         }
     }
 
@@ -342,27 +352,79 @@ impl AddExistingIdentityScreen {
             return action;
         }
 
-        // Identity index input
+        let mut wallet_mode_changed = false;
         ui.horizontal(|ui| {
-            ui.label("Identity Index:");
+            ui.label("Search type:");
+            wallet_mode_changed |= ui
+                .selectable_value(
+                    &mut self.wallet_search_mode,
+                    WalletIdentitySearchMode::SpecificIndex,
+                    "Specific index",
+                )
+                .changed();
+            wallet_mode_changed |= ui
+                .selectable_value(
+                    &mut self.wallet_search_mode,
+                    WalletIdentitySearchMode::UpToIndex,
+                    "All up to index",
+                )
+                .changed();
+        });
+        if wallet_mode_changed {
+            self.add_identity_status = AddIdentityStatus::NotStarted;
+            self.error_message = None;
+            self.backend_message = None;
+            self.success_message = None;
+        }
+        ui.add_space(6.0);
+
+        let identity_index_label = match self.wallet_search_mode {
+            WalletIdentitySearchMode::SpecificIndex => "Identity index:",
+            WalletIdentitySearchMode::UpToIndex => "Highest identity index to search (inclusive):",
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(identity_index_label);
             ui.text_edit_singleline(&mut self.identity_index_input);
         });
-        ui.label("This is the derivation index used when the identity was created.");
 
-        if ui.button("Search For Identity").clicked() {
+        match self.wallet_search_mode {
+            WalletIdentitySearchMode::SpecificIndex => {
+                ui.label("This is the derivation index used when the identity was created.");
+            }
+            WalletIdentitySearchMode::UpToIndex => {
+                ui.label(
+                    "Searches each derivation index starting at 0 up to the provided index (inclusive).",
+                );
+            }
+        }
+
+        let button_label = match self.wallet_search_mode {
+            WalletIdentitySearchMode::SpecificIndex => "Search For Identity",
+            WalletIdentitySearchMode::UpToIndex => "Load Identities",
+        };
+
+        if ui.button(button_label).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            self.backend_message = None;
+            self.success_message = None;
 
             // Parse identity index input
             if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
+                let wallet_ref = self.selected_wallet.as_ref().unwrap().clone().into();
                 action = AppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::SearchIdentityFromWallet(
-                        self.selected_wallet.as_ref().unwrap().clone().into(),
-                        identity_index,
-                    ),
+                    match self.wallet_search_mode {
+                        WalletIdentitySearchMode::SpecificIndex => {
+                            IdentityTask::SearchIdentityFromWallet(wallet_ref, identity_index)
+                        }
+                        WalletIdentitySearchMode::UpToIndex => {
+                            IdentityTask::SearchIdentitiesUpToIndex(wallet_ref, identity_index)
+                        }
+                    },
                 ));
             } else {
                 // Handle invalid index input (optional)
@@ -431,7 +493,11 @@ impl AddExistingIdentityScreen {
             ui.add_space(50.0);
 
             ui.heading("🎉");
-            ui.heading("Successfully loaded identity.");
+            let success_text = self
+                .success_message
+                .clone()
+                .unwrap_or_else(|| "Successfully loaded identity.".to_string());
+            ui.label(RichText::new(success_text));
 
             ui.add_space(20.0);
 
@@ -446,6 +512,8 @@ impl AddExistingIdentityScreen {
                 self.error_message = None;
                 self.show_pop_up_info = None;
                 self.add_identity_status = AddIdentityStatus::NotStarted;
+                self.backend_message = None;
+                self.success_message = None;
             }
             ui.add_space(5.0);
 
@@ -494,7 +562,19 @@ impl ScreenLike for AddExistingIdentityScreen {
         match message_type {
             MessageType::Success => {
                 if message == "Successfully loaded identity" {
+                    self.success_message = Some("Successfully loaded identity.".to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
+                    self.backend_message = None;
+                } else if message.starts_with("Successfully loaded ")
+                    && message.contains(" up to index ")
+                {
+                    self.success_message = Some(message.to_string());
+                    self.add_identity_status = AddIdentityStatus::Complete;
+                    self.backend_message = None;
+                } else if message.starts_with("Finished loading identities up to index ") {
+                    self.success_message = Some(message.to_string());
+                    self.add_identity_status = AddIdentityStatus::Complete;
+                    self.backend_message = None;
                 } else {
                     self.backend_message = Some(message.to_string());
                 }
@@ -564,6 +644,8 @@ impl ScreenLike for AddExistingIdentityScreen {
                     if mode_changed {
                         self.add_identity_status = AddIdentityStatus::NotStarted;
                         self.error_message = None;
+                        self.backend_message = None;
+                        self.success_message = None;
                     }
 
                     match self.mode {

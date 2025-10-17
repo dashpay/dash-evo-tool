@@ -276,4 +276,93 @@ impl AppContext {
             "Successfully loaded identity".to_string(),
         ))
     }
+
+    pub(super) async fn load_user_identities_up_to_index(
+        &self,
+        sdk: &Sdk,
+        wallet_arc_ref: WalletArcRef,
+        max_identity_index: IdentityIndex,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let wallet_ref = wallet_arc_ref;
+
+        let mut loaded_indices = Vec::new();
+        let mut missing_indices = Vec::new();
+
+        for identity_index in 0..=max_identity_index {
+            match self
+                .load_user_identity_from_wallet(
+                    sdk,
+                    wallet_ref.clone(),
+                    identity_index,
+                    sender.clone(),
+                )
+                .await
+            {
+                Ok(_) => {
+                    loaded_indices.push(identity_index);
+                    sender
+                        .send(TaskResult::Success(Box::new(
+                            BackendTaskSuccessResult::Message(format!(
+                                "Loaded identity at index {}.",
+                                identity_index
+                            )),
+                        )))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Err(error) => {
+                    if error.starts_with("No identity found for wallet identity index") {
+                        missing_indices.push(identity_index);
+                        sender
+                            .send(TaskResult::Success(Box::new(
+                                BackendTaskSuccessResult::Message(format!(
+                                    "No identity found at index {}.",
+                                    identity_index
+                                )),
+                            )))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        if loaded_indices.is_empty() {
+            return Err(format!(
+                "No identities found up to index {}.",
+                max_identity_index
+            ));
+        }
+
+        let summary = if missing_indices.is_empty() {
+            format!(
+                "Successfully loaded {} identit{} up to index {}.",
+                loaded_indices.len(),
+                if loaded_indices.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                max_identity_index
+            )
+        } else {
+            let missing_display = missing_indices
+                .iter()
+                .map(|idx| idx.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Finished loading identities up to index {}. Loaded {} identity{}; no identity found at index(es): {}.",
+                max_identity_index,
+                loaded_indices.len(),
+                if loaded_indices.len() == 1 { "" } else { "ies" },
+                missing_display
+            )
+        };
+
+        Ok(BackendTaskSuccessResult::Message(summary))
+    }
 }

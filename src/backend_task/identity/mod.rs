@@ -249,6 +249,7 @@ pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
+    SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
@@ -464,7 +465,11 @@ impl AppContext {
                     .await
             }
             IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
+                    .await
+            }
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
+                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
                     .await
             }
             IdentityTask::TopUpIdentity(top_up_info) => {

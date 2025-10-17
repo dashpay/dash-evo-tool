@@ -1002,12 +1002,12 @@ impl ScreenLike for AddNewIdentityScreen {
                     let wallet = wallet_guard.read().unwrap();
                     if wallet.identities.is_empty() {
                         ui.heading(format!(
-                            "{}. Choose an identity index. Leave this 0 if this is your first identity for this wallet.",
+                            "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
                             step_number
                         ));
                     } else {
                         ui.heading(format!(
-                            "{}. Choose an identity index. Leaving this {} is recommended.",
+                            "{}. Choose an identity index for the wallet. Leaving this {} is recommended.",
                             step_number,
                             self.next_identity_id(),
                         ));

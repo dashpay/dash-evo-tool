@@ -68,14 +68,12 @@ impl TopUpIdentityScreen {
         ui.vertical_centered(|ui| {
             match step {
                 WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+                    ui.heading(
+                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                    );
                 }
                 WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                     ui.heading("=> Waiting for Platform acknowledgement <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
                 }
                 WalletFundedScreenStep::Success => {
                     ui.heading("...Success...");

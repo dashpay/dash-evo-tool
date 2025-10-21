@@ -152,6 +152,30 @@ impl WalletsBalancesScreen {
         }
     }
 
+    pub(crate) fn update_selected_wallet_for_network(&mut self) {
+        let selected_seed = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
+
+        let wallets = match self.app_context.wallets.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.selected_wallet = None;
+                return;
+            }
+        };
+
+        if let Some(seed_hash) = selected_seed {
+            if let Some(wallet) = wallets.get(&seed_hash) {
+                self.selected_wallet = Some(wallet.clone());
+                return;
+            }
+        }
+
+        self.selected_wallet = wallets.values().next().cloned();
+    }
+
     fn add_receiving_address(&mut self) {
         if let Some(wallet) = &self.selected_wallet {
             let result = {

@@ -166,12 +166,11 @@ impl WalletsBalancesScreen {
             }
         };
 
-        if let Some(seed_hash) = selected_seed {
-            if let Some(wallet) = wallets.get(&seed_hash) {
+        if let Some(seed_hash) = selected_seed
+            && let Some(wallet) = wallets.get(&seed_hash) {
                 self.selected_wallet = Some(wallet.clone());
                 return;
             }
-        }
 
         self.selected_wallet = wallets.values().next().cloned();
     }

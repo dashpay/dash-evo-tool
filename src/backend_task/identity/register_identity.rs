@@ -283,13 +283,6 @@ impl AppContext {
                 .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
                 .map_err(|e| e.to_string())?;
 
-            sender
-                .send(TaskResult::Success(Box::new(
-                    BackendTaskSuccessResult::None,
-                )))
-                .await
-                .map_err(|e| e.to_string())?;
-
             return Ok(BackendTaskSuccessResult::RegisteredIdentity(
                 qualified_identity,
             ));

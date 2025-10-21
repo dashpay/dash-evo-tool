@@ -225,14 +225,15 @@ impl AppContext {
 
         let public_keys = keys.to_public_keys_map();
 
-        match Identity::fetch_by_identifier(&sdk, identity_id).await {
-            Ok(Some(_)) => return Err("Identity already exists".to_string()),
-            Ok(None) => {}
+        let existing_identity = match Identity::fetch_by_identifier(&sdk, identity_id).await {
+            Ok(result) => result,
             Err(e) => return Err(format!("Error fetching identity: {}", e)),
         };
 
-        let identity = Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
-            .expect("expected to make identity");
+        let identity = existing_identity.clone().unwrap_or_else(|| {
+            Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
+                .expect("expected to make identity")
+        });
 
         let wallet_seed_hash = { wallet.read().unwrap().seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
@@ -256,6 +257,42 @@ impl AppContext {
 
         if !alias_input.is_empty() {
             qualified_identity.alias = Some(alias_input);
+        }
+
+        if let Some(existing_identity) = existing_identity {
+            qualified_identity.identity = existing_identity;
+            qualified_identity.status = IdentityStatus::Unknown;
+
+            self.insert_local_qualified_identity(
+                &qualified_identity,
+                &Some((wallet_id, wallet_identity_index)),
+            )
+            .map_err(|e| e.to_string())?;
+
+            {
+                let mut wallet = wallet.write().unwrap();
+                wallet
+                    .unused_asset_locks
+                    .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
+                wallet
+                    .identities
+                    .insert(wallet_identity_index, qualified_identity.identity.clone());
+            }
+
+            self.db
+                .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
+                .map_err(|e| e.to_string())?;
+
+            sender
+                .send(TaskResult::Success(Box::new(
+                    BackendTaskSuccessResult::None,
+                )))
+                .await
+                .map_err(|e| e.to_string())?;
+
+            return Ok(BackendTaskSuccessResult::RegisteredIdentity(
+                qualified_identity,
+            ));
         }
 
         self.insert_local_qualified_identity(

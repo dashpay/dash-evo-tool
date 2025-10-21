@@ -378,18 +378,8 @@ Emits tokens in fixed amounts for specific intervals.
                             if response.changed() {
                                 sanitize_u64(&mut self.step_count_input);
                             }
-                            if !self.step_count_input.is_empty() {
-                                if let Ok((perpetual_dist_interval_input, step_count_input)) = self
-                                    .perpetual_dist_interval_input
-                                    .parse::<u64>()
-                                    .and_then(|perpetual_dist_interval_input| {
-                                        self.step_count_input.parse::<u64>().map(
-                                            |step_count_input| {
-                                                (perpetual_dist_interval_input, step_count_input)
-                                            },
-                                        )
-                                    })
-                                {
+                            if !self.step_count_input.is_empty()
+                                && let Ok((perpetual_dist_interval_input, step_count_input)) = self.perpetual_dist_interval_input.parse::<u64>().and_then(|perpetual_dist_interval_input| self.step_count_input.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input))) {
                                     let text = match self.perpetual_dist_type {
                                         PerpetualDistributionIntervalTypeUI::None => "".to_string(),
                                         PerpetualDistributionIntervalTypeUI::BlockBased => {
@@ -424,7 +414,6 @@ Emits tokens in fixed amounts for specific intervals.
 
                                     ui.label(RichText::new(text).color(Color32::GRAY));
                                 }
-                            }
                         });
 
                         ui.horizontal(|ui| {
@@ -529,8 +518,8 @@ Emits tokens in fixed amounts for specific intervals.
                                     sanitize_u64(&mut amount_str);
                                 }
 
-                                if let Ok((perpetual_dist_interval_input, step_position)) = self.perpetual_dist_interval_input.parse::<u64>().and_then(|perpetual_dist_interval_input| steps_str.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input))) {
-                                    if let Ok(amount) = amount_str.parse::<u64>() {
+                                if let Ok((perpetual_dist_interval_input, step_position)) = self.perpetual_dist_interval_input.parse::<u64>().and_then(|perpetual_dist_interval_input| steps_str.parse::<u64>().map(|step_count_input| (perpetual_dist_interval_input, step_count_input)))
+                                    && let Ok(amount) = amount_str.parse::<u64>() {
                                         let every_text = match self.perpetual_dist_type {
                                             PerpetualDistributionIntervalTypeUI::None => "".to_string(),
                                             PerpetualDistributionIntervalTypeUI::BlockBased => {
@@ -600,9 +589,6 @@ Emits tokens in fixed amounts for specific intervals.
 
                                         ui.label(RichText::new(text).color(Color32::GRAY));
                                     }
-
-
-                                }
 
                                 // If remove is clicked, remove the step at index i
                                 // and *do not* increment i, because the next element

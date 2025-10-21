@@ -17,6 +17,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
@@ -383,15 +384,15 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(200.0).resizable(true)) // Contested Name
-                .column(Column::initial(100.0).resizable(true)) // Locked
-                .column(Column::initial(100.0).resizable(true)) // Abstain
-                .column(Column::initial(200.0).resizable(true)) // Ending Time
-                .column(Column::initial(200.0).resizable(true)) // Last Updated
-                .column(Column::remainder()) // Contestants
+                .column(Column::auto().resizable(true)) // Contested Name
+                .column(Column::auto().resizable(true)) // Locked
+                .column(Column::auto().resizable(true)) // Abstain
+                .column(Column::auto().resizable(true)) // Ending Time
+                .column(Column::auto().resizable(true)) // Last Updated
+                .column(Column::auto().resizable(true)) // Contestants
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Contested Name").clicked() {
+                        if ui.button("Name").clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
@@ -491,10 +492,13 @@ impl DPNSScreen {
                             // LOCK button
                             row.col(|ui| {
                                 let label_text = format!("{}", locked_votes);
+                                let dark_green = Color32::from_rgb(0, 100, 0);
+                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let normal_color = DashColors::text_primary(dark_mode);
                                 let text_widget = if is_locked_votes_bold {
-                                    RichText::new(label_text).strong()
+                                    RichText::new(label_text).strong().color(dark_green)
                                 } else {
-                                    RichText::new(label_text)
+                                    RichText::new(label_text).color(normal_color)
                                 };
 
                                 // See if this (LOCK) is selected
@@ -708,13 +712,13 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(200.0).resizable(true)) // Name
-                .column(Column::initial(200.0).resizable(true)) // Ended Time
-                .column(Column::initial(200.0).resizable(true)) // Last Updated
-                .column(Column::initial(200.0).resizable(true)) // Awarded To
+                .column(Column::auto().resizable(true)) // Name
+                .column(Column::auto().resizable(true)) // Ended Time
+                .column(Column::auto().resizable(true)) // Last Updated
+                .column(Column::auto().resizable(true)) // Awarded To
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Contested Name").clicked() {
+                        if ui.button("Name").clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
@@ -895,9 +899,9 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(200.0).resizable(true)) // DPNS Name
-                .column(Column::initial(400.0).resizable(true)) // Owner ID
-                .column(Column::initial(300.0).resizable(true)) // Acquired At
+                .column(Column::auto().resizable(true)) // DPNS Name
+                .column(Column::auto().resizable(true)) // Owner ID
+                .column(Column::auto().resizable(true)) // Acquired At
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -972,15 +976,15 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(100.0).resizable(true)) // ContestedName
-                .column(Column::initial(200.0).resizable(true)) // Voter
-                .column(Column::initial(200.0).resizable(true)) // Choice
-                .column(Column::initial(200.0).resizable(true)) // Time
-                .column(Column::initial(100.0).resizable(true)) // Status
-                .column(Column::initial(100.0).resizable(true)) // Actions
+                .column(Column::auto().resizable(true)) // ContestedName
+                .column(Column::auto().resizable(true)) // Voter
+                .column(Column::auto().resizable(true)) // Choice
+                .column(Column::auto().resizable(true)) // Time
+                .column(Column::auto().resizable(true)) // Status
+                .column(Column::auto().resizable(true)) // Actions
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Contested Name").clicked() {
+                        if ui.button("Name").clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
@@ -1117,13 +1121,13 @@ impl DPNSScreen {
                                     vote.1 = ScheduledVoteCastingStatus::InProgress;
 
                                     // Mark in our Arc as well
-                                    if let Ok(mut sched_guard) = self.scheduled_votes.lock() {
-                                        if let Some(t) = sched_guard.iter_mut().find(|(sv, _)| {
+                                    if let Ok(mut sched_guard) = self.scheduled_votes.lock()
+                                        && let Some(t) = sched_guard.iter_mut().find(|(sv, _)| {
                                             sv.voter_id == vote.0.voter_id
                                                 && sv.contested_name == vote.0.contested_name
-                                        }) {
-                                            t.1 = ScheduledVoteCastingStatus::InProgress;
-                                        }
+                                        })
+                                    {
+                                        t.1 = ScheduledVoteCastingStatus::InProgress;
                                     }
                                     // dispatch the actual cast
                                     let local_ids =
@@ -1876,12 +1880,12 @@ impl ScreenLike for DPNSScreen {
                 }
             }
             BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                if let Ok(mut guard) = self.scheduled_votes.lock() {
-                    if let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
+                if let Ok(mut guard) = self.scheduled_votes.lock()
+                    && let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
                         v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
-                    }) {
-                        *status = ScheduledVoteCastingStatus::Completed;
-                    }
+                    })
+                {
+                    *status = ScheduledVoteCastingStatus::Completed;
                 }
             }
             _ => {}
@@ -2014,7 +2018,10 @@ impl ScreenLike for DPNSScreen {
             }
         }
 
-        // Subscreen chooser
+        // Contracts area chooser (DPNS / DashPay / Contracts)
+        action |= add_contracts_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+
+        // DPNS subscreen chooser
         action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // Main panel
@@ -2144,10 +2151,10 @@ impl ScreenLike for DPNSScreen {
         }
 
         // If we have a pending backend task from scheduling (e.g. after immediate votes)
-        if action == AppAction::None {
-            if let Some(bt) = self.pending_backend_task.take() {
-                action = AppAction::BackendTask(bt);
-            }
+        if action == AppAction::None
+            && let Some(bt) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(bt);
         }
         action
     }

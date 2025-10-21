@@ -263,13 +263,12 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_qualified_identities() {
-            if let Some(updated) = all
+        if let Ok(all) = self.app_context.load_local_qualified_identities()
+            && let Some(updated) = all
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
-            {
-                self.identity = updated;
-            }
+        {
+            self.identity = updated;
         }
     }
 

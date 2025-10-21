@@ -149,17 +149,17 @@ impl ResumeTokensScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        if group.is_some()
+            && let Some((_, group)) = group.clone()
+        {
+            let your_power = group
+                .members()
+                .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                is_unilateral_group_member = true;
             }
         };
 
@@ -312,13 +312,12 @@ impl ScreenLike for ResumeTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_user_identities() {
-            if let Some(updated) = all
+        if let Ok(all) = self.app_context.load_local_user_identities()
+            && let Some(updated) = all
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
-            {
-                self.identity = updated;
-            }
+        {
+            self.identity = updated;
         }
     }
 

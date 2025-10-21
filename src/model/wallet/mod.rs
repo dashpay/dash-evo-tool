@@ -2,12 +2,12 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
-use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
 
-use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
@@ -776,11 +776,11 @@ impl Wallet {
         context: &AppContext,
     ) -> Result<(), String> {
         // Check if the new balance differs from the current one.
-        if let Some(current_balance) = self.address_balances.get(address) {
-            if *current_balance == new_balance {
-                // If the balance hasn't changed, skip the update.
-                return Ok(());
-            }
+        if let Some(current_balance) = self.address_balances.get(address)
+            && *current_balance == new_balance
+        {
+            // If the balance hasn't changed, skip the update.
+            return Ok(());
         }
 
         // If there's no current balance or it has changed, update it.

@@ -328,6 +328,11 @@ jobs:
           # Copy app to mounted volume
           cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
           ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+
+          # Remove macOS metadata directories that get created automatically
+          rm -rf /Volumes/"Dash Evo Tool"/.fseventsd
+          rm -rf /Volumes/"Dash Evo Tool"/.Spotlight-V100
+          rm -f /Volumes/"Dash Evo Tool"/.DS_Store
           
           # Unmount
           hdiutil detach /Volumes/"Dash Evo Tool"

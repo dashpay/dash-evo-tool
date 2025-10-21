@@ -251,6 +251,7 @@ pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
+    SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
@@ -454,7 +455,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info, sender).await
+                self.register_identity(registration_info).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
             IdentityTask::RefreshIdentity(qualified_identity) => self
@@ -466,12 +467,14 @@ impl AppContext {
                     .await
             }
             IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
                     .await
             }
-            IdentityTask::TopUpIdentity(top_up_info) => {
-                self.top_up_identity(top_up_info, sender).await
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
+                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                    .await
             }
+            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 self.refresh_loaded_identities_dpns_names(sender).await
             }

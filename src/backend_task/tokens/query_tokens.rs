@@ -1,5 +1,9 @@
 //! Execute token query by keyword on Platform
 
+use crate::{
+    backend_task::BackendTaskSuccessResult, context::AppContext,
+    ui::tokens::tokens_screen::ContractDescriptionInfo,
+};
 use dash_sdk::{
     Sdk,
     dpp::{document::DocumentV0Getters, platform_value::Value},
@@ -8,11 +12,6 @@ use dash_sdk::{
         Document, DocumentQuery, FetchMany, Identifier,
         proto::get_documents_request::get_documents_request_v0::Start,
     },
-};
-
-use crate::{
-    backend_task::BackendTaskSuccessResult, context::AppContext,
-    ui::tokens::tokens_screen::ContractDescriptionInfo,
 };
 
 impl AppContext {
@@ -39,7 +38,7 @@ impl AppContext {
 
         let kw_docs = Document::fetch_many(sdk, kw_query.clone())
             .await
-            .map_err(|e| format!("Error fetching keyword docs: {e}"))?;
+            .map_err(|e| e.to_string())?;
 
         // store the order for deterministic pagination
         let mut contract_ids: Vec<Identifier> = Vec::with_capacity(kw_docs.len());
@@ -47,11 +46,7 @@ impl AppContext {
             if let Some(doc) = doc_opt
                 && let Some(cid_val) = doc.get("contractId")
             {
-                contract_ids.push(
-                    cid_val
-                        .to_identifier()
-                        .map_err(|e| format!("Bad contractId: {e}"))?,
-                );
+                contract_ids.push(cid_val.to_identifier().map_err(|e| e.to_string())?);
             }
         }
 
@@ -85,7 +80,7 @@ impl AppContext {
             let description = if let Some((_, Some(desc_doc))) =
                 Document::fetch_many(sdk, desc_query)
                     .await
-                    .map_err(|e| format!("Error fetching description doc: {e}"))?
+                    .map_err(|e| e.to_string())?
                     .into_iter()
                     .next()
             {

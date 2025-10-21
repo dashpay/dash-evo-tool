@@ -68,6 +68,45 @@ impl Database {
         Ok(())
     }
 
+    /// Remove a wallet and all associated records from the database.
+    ///
+    /// This clears dependent records (addresses, utxos, asset locks, identity links)
+    /// to keep the database consistent before deleting the wallet itself.
+    pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
+        let network_str = network.to_string();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut address_stmt =
+            tx.prepare("SELECT address FROM wallet_addresses WHERE seed_hash = ?")?;
+        let address_rows =
+            address_stmt.query_map(params![seed_hash], |row| row.get::<_, String>(0))?;
+        let mut addresses = Vec::new();
+        for address in address_rows {
+            addresses.push(address?);
+        }
+        drop(address_stmt);
+
+        for address in addresses {
+            tx.execute(
+                "DELETE FROM utxos WHERE address = ? AND network = ?",
+                params![address, &network_str],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE identity SET wallet = NULL, wallet_index = NULL WHERE wallet = ? AND network = ?",
+            params![seed_hash, &network_str],
+        )?;
+
+        tx.execute(
+            "DELETE FROM wallet WHERE seed_hash = ? AND network = ?",
+            params![seed_hash, &network_str],
+        )?;
+
+        tx.commit()
+    }
+
     /// Update only the alias and is_main fields of a wallet
     #[allow(dead_code)] // May be used for batch wallet metadata updates
     pub fn update_wallet_alias_and_main(

@@ -31,8 +31,7 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v8::PLATFORM_V8;
-use dash_sdk::dpp::version::v9::PLATFORM_V9;
+use dash_sdk::dpp::version::v10::PLATFORM_V10;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use egui::Context;
@@ -825,6 +824,35 @@ impl AppContext {
         self.db.remove_token(token_id, self)
     }
 
+    pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), String> {
+        {
+            let wallets = self
+                .wallets
+                .read()
+                .map_err(|_| "Failed to access wallets".to_string())?;
+            if !wallets.contains_key(seed_hash) {
+                return Err("Wallet not found".to_string());
+            }
+        }
+
+        self.db
+            .remove_wallet(seed_hash, &self.network)
+            .map_err(|e| e.to_string())?;
+
+        let mut wallets = self
+            .wallets
+            .write()
+            .map_err(|_| "Failed to update wallets".to_string())?;
+
+        wallets.remove(seed_hash);
+        let has_wallet = !wallets.is_empty();
+        drop(wallets);
+
+        self.has_wallet.store(has_wallet, Ordering::Relaxed);
+
+        Ok(())
+    }
+
     #[allow(dead_code)] // May be used for storing token balances
     pub fn insert_token_identity_balance(
         &self,
@@ -854,10 +882,10 @@ impl AppContext {
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
-        Network::Dash => &PLATFORM_V8,
-        Network::Testnet => &PLATFORM_V9,
-        Network::Devnet => &PLATFORM_V9,
-        Network::Regtest => &PLATFORM_V9,
+        Network::Dash => &PLATFORM_V10,
+        Network::Testnet => &PLATFORM_V10,
+        Network::Devnet => &PLATFORM_V10,
+        Network::Regtest => &PLATFORM_V10,
         _ => panic!("unsupported network"),
     }
 }

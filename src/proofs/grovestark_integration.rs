@@ -5,7 +5,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::{
-    Document, DriveDocumentQuery, Fetch, FetchMany, IdentityKeysQuery, IdentityPublicKey, ProofData,
+    Document, DriveDocumentQuery, Fetch, FetchMany, IdentityKeysQuery, IdentityPublicKey,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use grovestark::{
@@ -102,15 +102,13 @@ impl GroveStarkIntegration {
         let keys_query = IdentityKeysQuery::new(identity_identifier, specific_key_ids);
 
         // Fetch only the specified key with proof
-        let (specific_keys, metadata, key_proof) =
+        let (specific_keys, _metadata, key_proof) =
             IdentityPublicKey::fetch_many_with_metadata_and_proof(sdk, keys_query, None)
                 .await
                 .map_err(|e| {
                     tracing::error!("Failed to fetch key with proof: {}", e);
                     ProofError::Platform(e.to_string())
                 })?;
-
-        let key_proof_data = ProofData::new(key_proof, metadata);
 
         // Verify the key exists in the identity
         let identity_key = specific_keys
@@ -133,22 +131,8 @@ impl GroveStarkIntegration {
 
         // 3. KEY PROOF (Raw bytes)
         tracing::info!("=== 3. KEY PROOF (Raw bytes) ===");
-        tracing::info!(
-            "Key proof size: {} bytes",
-            key_proof_data.grovedb_proof.len()
-        );
-        tracing::info!(
-            "Key proof hex: {}",
-            hex::encode(&key_proof_data.grovedb_proof)
-        );
-        tracing::info!(
-            "Key proof root hash (hex): {}",
-            hex::encode(key_proof_data.root_hash)
-        );
-        tracing::info!(
-            "Key proof root hash (raw bytes): {:?}",
-            key_proof_data.root_hash
-        );
+        tracing::info!("Key proof size: {} bytes", key_proof.grovedb_proof.len());
+        tracing::info!("Key proof hex: {}", hex::encode(&key_proof.grovedb_proof));
 
         // Additional key details
         tracing::info!("Key ID: {}", key_id);
@@ -298,7 +282,7 @@ impl GroveStarkIntegration {
         // Step 7: Log proof information
         tracing::info!(
             "Using separate proofs - key: {} bytes, document: {} bytes",
-            key_proof_data.grovedb_proof.len(),
+            key_proof.grovedb_proof.len(),
             proof.grovedb_proof.len()
         );
 
@@ -355,14 +339,14 @@ impl GroveStarkIntegration {
         tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
 
         let witness = create_witness_from_platform_proofs(
-            &proof.grovedb_proof,          // Raw document proof from SDK
-            &key_proof_data.grovedb_proof, // Raw key proof from SDK
-            document_cbor.clone(),         // Use the proper CBOR we created above
-            &public_key_bytes,             // Public key bytes
-            &signature_r,                  // Signature R component
-            &signature_s,                  // Signature s component
-            &challenge,                    // Message to sign
-            private_key,                   // Private key
+            &proof.grovedb_proof,     // Raw document proof from SDK
+            &key_proof.grovedb_proof, // Raw key proof from SDK
+            document_cbor.clone(),    // Use the proper CBOR we created above
+            &public_key_bytes,        // Public key bytes
+            &signature_r,             // Signature R component
+            &signature_s,             // Signature s component
+            &challenge,               // Message to sign
+            private_key,              // Private key
         )
         .map_err(|e| {
             tracing::error!("GroveSTARK witness creation failed: {:?}", e);

@@ -361,7 +361,7 @@ impl CoreZMQListener {
                                                         }
                                                         Err(e) => {
                                                             eprintln!(
-                                                                "Error deserializing InstantLock: {}",
+                                                                "Error deserializing ChainLock: {}",
                                                                 e
                                                             );
                                                         }

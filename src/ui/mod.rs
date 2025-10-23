@@ -183,7 +183,7 @@ impl From<RootScreenType> for ScreenType {
                 ScreenType::ContractsVisualizer
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
-            RootScreenType::RootScreenToolsGroveSTARKScreen => ScreenType::ZKProofs,
+            RootScreenType::RootScreenToolsGroveSTARKScreen => ScreenType::GroveSTARK,
             RootScreenType::RootScreenContractsDashPay => ScreenType::ContractsDashPayComingSoon,
         }
     }
@@ -225,7 +225,7 @@ pub enum ScreenType {
     DocumentsVisualizer,
     ContractsVisualizer,
     PlatformInfo,
-    ZKProofs,
+    GroveSTARK,
     ContractsDashPayComingSoon,
     CreateDocument,
     DeleteDocument,
@@ -343,7 +343,7 @@ impl ScreenType {
             ScreenType::PlatformInfo => {
                 Screen::PlatformInfoScreen(PlatformInfoScreen::new(app_context))
             }
-            ScreenType::ZKProofs => Screen::GroveSTARKScreen(GroveSTARKScreen::new(app_context)),
+            ScreenType::GroveSTARK => Screen::GroveSTARKScreen(GroveSTARKScreen::new(app_context)),
             ScreenType::ContractsDashPayComingSoon => {
                 Screen::DashPayComingSoonScreen(DashPayComingSoonScreen::new(app_context))
             }
@@ -653,7 +653,7 @@ impl Screen {
             Screen::MasternodeListDiffScreen(_) => ScreenType::MasternodeListDiff,
             Screen::DocumentVisualizerScreen(_) => ScreenType::DocumentsVisualizer,
             Screen::PlatformInfoScreen(_) => ScreenType::PlatformInfo,
-            Screen::GroveSTARKScreen(_) => ScreenType::ZKProofs,
+            Screen::GroveSTARKScreen(_) => ScreenType::GroveSTARK,
 
             // Token Screens
             Screen::TokensScreen(screen)

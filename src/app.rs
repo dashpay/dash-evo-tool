@@ -459,7 +459,7 @@ impl AppState {
                     Screen::DocumentQueryScreen(document_query_screen),
                 ),
                 (
-                    RootScreenType::RootScreenContractsDashPay,
+                    RootScreenType::RootScreenDashpay,
                     Screen::DashPayComingSoonScreen(contracts_dashpay_screen),
                 ),
                 (

@@ -94,7 +94,7 @@ pub enum RootScreenType {
     RootScreenToolsContractVisualizerScreen,
     RootScreenToolsPlatformInfoScreen,
     RootScreenToolsGroveSTARKScreen,
-    RootScreenContractsDashPay,
+    RootScreenDashpay,
 }
 
 impl RootScreenType {
@@ -120,7 +120,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsContractVisualizerScreen => 16,
             RootScreenType::RootScreenToolsPlatformInfoScreen => 17,
             RootScreenType::RootScreenToolsMasternodeListDiffScreen => 18,
-            RootScreenType::RootScreenContractsDashPay => 19,
+            RootScreenType::RootScreenDashpay => 19,
             RootScreenType::RootScreenToolsGroveSTARKScreen => 20,
         }
     }
@@ -147,7 +147,7 @@ impl RootScreenType {
             16 => Some(RootScreenType::RootScreenToolsContractVisualizerScreen),
             17 => Some(RootScreenType::RootScreenToolsPlatformInfoScreen),
             18 => Some(RootScreenType::RootScreenToolsMasternodeListDiffScreen),
-            19 => Some(RootScreenType::RootScreenContractsDashPay),
+            19 => Some(RootScreenType::RootScreenDashpay),
             20 => Some(RootScreenType::RootScreenToolsGroveSTARKScreen),
             _ => None,
         }
@@ -184,7 +184,7 @@ impl From<RootScreenType> for ScreenType {
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
             RootScreenType::RootScreenToolsGroveSTARKScreen => ScreenType::GroveSTARK,
-            RootScreenType::RootScreenContractsDashPay => ScreenType::ContractsDashpay,
+            RootScreenType::RootScreenDashpay => ScreenType::ContractsDashpay,
         }
     }
 }

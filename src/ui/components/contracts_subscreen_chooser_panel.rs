@@ -38,7 +38,7 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
             | ui::RootScreenType::RootScreenDPNSPastContests
             | ui::RootScreenType::RootScreenDPNSOwnedNames
             | ui::RootScreenType::RootScreenDPNSScheduledVotes => ContractsSubscreen::DPNS,
-            ui::RootScreenType::RootScreenContractsDashPay => ContractsSubscreen::DashPay,
+            ui::RootScreenType::RootScreenDashpay => ContractsSubscreen::DashPay,
             _ => ContractsSubscreen::Contracts,
         },
         _ => ContractsSubscreen::Contracts,
@@ -112,7 +112,7 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
                                     }
                                     ContractsSubscreen::DashPay => {
                                         AppAction::SetMainScreenThenGoToMainScreen(
-                                            RootScreenType::RootScreenContractsDashPay,
+                                            RootScreenType::RootScreenDashpay,
                                         )
                                     }
                                 };

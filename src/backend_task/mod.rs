@@ -11,7 +11,7 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::proofs::grovestark_integration::ProofDataOutput;
+use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };

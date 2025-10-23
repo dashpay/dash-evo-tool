@@ -1,5 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::proofs::grovestark_integration::{GroveSTARKProver, ProofDataOutput};
+use crate::model::grovestark_prover::{GroveSTARKProver, ProofDataOutput};
 use dash_sdk::Sdk;
 
 pub async fn run_grovestark_task(

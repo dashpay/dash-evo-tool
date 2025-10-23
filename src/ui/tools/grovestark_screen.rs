@@ -38,7 +38,7 @@ pub struct VerificationResult {
 
 #[derive(Clone)]
 pub struct ProofData {
-    pub full_proof: crate::proofs::grovestark_integration::ProofDataOutput,
+    pub full_proof: crate::model::grovestark_prover::ProofDataOutput,
     pub hash: String,
     pub size: usize,
     pub generation_time: Duration,
@@ -433,11 +433,11 @@ impl GroveSTARKScreen {
         // Parse the proof from pasted text
         let proof_result =
             // Try to parse from base64-encoded JSON first, then raw JSON
-            crate::proofs::grovestark_integration::ProofDataOutput::from_base64(
+            crate::model::grovestark_prover::ProofDataOutput::from_base64(
                 &self.proof_text,
             )
             .or_else(|_| {
-                crate::proofs::grovestark_integration::ProofDataOutput::from_json_string(
+                crate::model::grovestark_prover::ProofDataOutput::from_json_string(
                     &self.proof_text,
                 )
             });

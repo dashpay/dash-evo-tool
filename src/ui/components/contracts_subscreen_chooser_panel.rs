@@ -8,7 +8,7 @@ use egui::{Context, Frame, Margin, RichText, SidePanel};
 pub enum ContractsSubscreen {
     Contracts,
     DPNS,
-    DashPay,
+    Dashpay,
 }
 
 impl ContractsSubscreen {
@@ -16,7 +16,7 @@ impl ContractsSubscreen {
         match self {
             ContractsSubscreen::Contracts => "All Contracts",
             ContractsSubscreen::DPNS => "DPNS",
-            ContractsSubscreen::DashPay => "DashPay",
+            ContractsSubscreen::Dashpay => "Dashpay",
         }
     }
 }
@@ -27,7 +27,7 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
     let subscreens = vec![
         ContractsSubscreen::Contracts,
         ContractsSubscreen::DPNS,
-        ContractsSubscreen::DashPay,
+        ContractsSubscreen::Dashpay,
     ];
 
     // Determine active selection from settings; default to Contracts
@@ -38,7 +38,7 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
             | ui::RootScreenType::RootScreenDPNSPastContests
             | ui::RootScreenType::RootScreenDPNSOwnedNames
             | ui::RootScreenType::RootScreenDPNSScheduledVotes => ContractsSubscreen::DPNS,
-            ui::RootScreenType::RootScreenDashpay => ContractsSubscreen::DashPay,
+            ui::RootScreenType::RootScreenDashpay => ContractsSubscreen::Dashpay,
             _ => ContractsSubscreen::Contracts,
         },
         _ => ContractsSubscreen::Contracts,
@@ -110,7 +110,7 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
                                             RootScreenType::RootScreenDPNSActiveContests,
                                         )
                                     }
-                                    ContractsSubscreen::DashPay => {
+                                    ContractsSubscreen::Dashpay => {
                                         AppAction::SetMainScreenThenGoToMainScreen(
                                             RootScreenType::RootScreenDashpay,
                                         )

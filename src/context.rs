@@ -232,7 +232,7 @@ impl AppContext {
                 .bind_app_context(app_context.clone());
         } else {
             // Ensure SDK uses the SPV provider
-            let mut sdk_lock = app_context.sdk.write().expect("SDK lock poisoned");
+            let sdk_lock = app_context.sdk.write().expect("SDK lock poisoned");
             let provider = app_context.spv_context_provider.read().unwrap().clone();
             sdk_lock.set_context_provider(provider);
         }
@@ -269,7 +269,7 @@ impl AppContext {
                     .read()
                     .unwrap()
                     .bind_app_context(Arc::clone(self));
-                let mut sdk = self.sdk.write().expect("SDK lock poisoned");
+                let sdk = self.sdk.write().expect("SDK lock poisoned");
                 let provider = self.spv_context_provider.read().unwrap().clone();
                 sdk.set_context_provider(provider);
             }
@@ -319,24 +319,18 @@ impl AppContext {
         self.subtasks.spawn_sync(async move {
             tokio::pin!(rx);
             let mut last = Instant::now();
-            let mut pending = false;
             loop {
                 tokio::select! {
                     maybe = rx.recv() => {
                         if maybe.is_none() { break; }
-                        pending = true;
                         // simple debounce window
                         if last.elapsed() > Duration::from_millis(300) {
                             if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
-                            pending = false;
                             last = Instant::now();
                         } else {
                             sleep(Duration::from_millis(300)).await;
-                            if pending {
-                                if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
-                                pending = false;
-                                last = Instant::now();
-                            }
+                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            last = Instant::now();
                         }
                     }
                 }
@@ -391,7 +385,7 @@ impl AppContext {
             for u in utxos {
                 // Best-effort accessors for outpoint/txout; adjust if API differs
                 // Try field access (common struct layout): `outpoint` + `txout`
-                let outpoint = u.outpoint.clone();
+                let outpoint = u.outpoint;
                 let tx_out = u.txout.clone();
 
                 // Derive address from script
@@ -426,47 +420,36 @@ impl AppContext {
                                     use crate::model::wallet::{
                                         DerivationPathReference, DerivationPathType,
                                     };
-                                    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
-                                    // Determine branch: look at the second-to-last child in the path
-                                    let comps = ai.path.as_ref();
-                                    let branch_is_external = comps
-                                        .len()
-                                        .saturating_sub(2)
-                                        .checked_sub(0)
-                                        .and_then(|idx| comps.get(idx))
-                                        .map(|c| matches!(c, ChildNumber::Normal { index: 0 }))
-                                        .unwrap_or(true);
 
                                     let path_reference = DerivationPathReference::BIP44;
                                     let path_type = DerivationPathType::CLEAR_FUNDS; // minimal classification
 
                                     // Insert into DB (idempotent) and update in-memory wallet model
-                                    if let Some(wref) = wallets_guard.get(seed_hash) {
-                                        if let Ok(mut w) = wref.write() {
-                                            let _ = self.db.add_address_if_not_exists(
-                                                seed_hash,
-                                                &address,
-                                                &self.network,
-                                                &ai.path,
-                                                path_reference,
+                                    if let Some(wref) = wallets_guard.get(seed_hash)
+                                        && let Ok(mut w) = wref.write()
+                                    {
+                                        let _ = self.db.add_address_if_not_exists(
+                                            seed_hash,
+                                            &address,
+                                            &self.network,
+                                            &ai.path,
+                                            path_reference,
+                                            path_type,
+                                            None,
+                                        );
+                                        // Update in-memory maps
+                                        use crate::model::wallet::AddressInfo as WalletAddressInfo;
+                                        w.known_addresses.insert(address.clone(), ai.path.clone());
+                                        w.watched_addresses.insert(
+                                            ai.path.clone(),
+                                            WalletAddressInfo {
+                                                address: address.clone(),
                                                 path_type,
-                                                None,
-                                            );
-                                            // Update in-memory maps
-                                            use crate::model::wallet::AddressInfo as WalletAddressInfo;
-                                            w.known_addresses
-                                                .insert(address.clone(), ai.path.clone());
-                                            w.watched_addresses.insert(
-                                                ai.path.clone(),
-                                                WalletAddressInfo {
-                                                    address: address.clone(),
-                                                    path_type,
-                                                    path_reference,
-                                                },
-                                            );
-                                            known_addresses.insert(address.clone());
-                                            registered = true;
-                                        }
+                                                path_reference,
+                                            },
+                                        );
+                                        known_addresses.insert(address.clone());
+                                        registered = true;
                                     }
                                     if registered {
                                         break;
@@ -504,12 +487,12 @@ impl AppContext {
             }
 
             // Write per-address balances into DB and wallet model
-            if let Some(wref) = wallets_guard.get(seed_hash) {
-                if let Ok(mut w) = wref.write() {
-                    for (addr, sum) in per_address_sum.into_iter() {
-                        // Update wallet and DB through model helper
-                        let _ = w.update_address_balance(&addr, sum, self);
-                    }
+            if let Some(wref) = wallets_guard.get(seed_hash)
+                && let Ok(mut w) = wref.write()
+            {
+                for (addr, sum) in per_address_sum.into_iter() {
+                    // Update wallet and DB through model helper
+                    let _ = w.update_address_balance(&addr, sum, self);
                 }
             }
         }
@@ -618,7 +601,7 @@ impl AppContext {
                 .unwrap()
                 .bind_app_context(self.clone());
         } else {
-            let mut sdk_lock = self.sdk.write().expect("SDK lock poisoned");
+            let sdk_lock = self.sdk.write().expect("SDK lock poisoned");
             let provider = self.spv_context_provider.read().unwrap().clone();
             sdk_lock.set_context_provider(provider);
         }

@@ -326,45 +326,36 @@ impl NetworkChooserScreen {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.local_network_dashmate_password);
 
-                    if ui.button("Save").clicked() {
-                        // Save the password to config
-                        if let Ok(mut config) = Config::load() {
-                            if let Some(local_cfg) =
-                                config.config_for_network(Network::Regtest).clone()
+                    if ui.button("Save").clicked()
+                        && let Ok(mut config) = Config::load()
+                        && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+                    {
+                        let updated_local_config = local_cfg
+                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
+                        config.update_config_for_network(
+                            Network::Regtest,
+                            updated_local_config.clone(),
+                        );
+                        if let Err(e) = config.save() {
+                            eprintln!("Failed to save config to .env: {e}");
+                        }
+
+                        // Update our local AppContext in memory
+                        if let Some(local_app_context) = &self.local_app_context {
                             {
-                                let updated_local_config = local_cfg.update_core_rpc_password(
-                                    self.local_network_dashmate_password.clone(),
-                                );
-                                config.update_config_for_network(
-                                    Network::Regtest,
-                                    updated_local_config.clone(),
-                                );
-                                if let Err(e) = config.save() {
-                                    eprintln!("Failed to save config to .env: {e}");
-                                }
+                                // Overwrite the config field with the new password
+                                let mut cfg_lock = local_app_context.config.write().unwrap();
+                                *cfg_lock = updated_local_config;
+                            }
 
-                                // Update our local AppContext in memory
-                                if let Some(local_app_context) = &self.local_app_context {
-                                    {
-                                        // Overwrite the config field with the new password
-                                        let mut cfg_lock =
-                                            local_app_context.config.write().unwrap();
-                                        *cfg_lock = updated_local_config;
-                                    }
-
-                                    // Re-init the client & sdk from the updated config
-                                    if let Err(e) =
-                                        Arc::clone(local_app_context).reinit_core_client_and_sdk()
-                                    {
-                                        eprintln!(
-                                            "Failed to re-init local RPC client and sdk: {}",
-                                            e
-                                        );
-                                    } else {
-                                        // Trigger SwitchNetworks
-                                        app_action = AppAction::SwitchNetwork(Network::Regtest);
-                                    }
-                                }
+                            // Re-init the client & sdk from the updated config
+                            if let Err(e) =
+                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                            {
+                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                            } else {
+                                // Trigger SwitchNetworks
+                                app_action = AppAction::SwitchNetwork(Network::Regtest);
                             }
                         }
                     }
@@ -482,16 +473,14 @@ impl NetworkChooserScreen {
             });
 
             // SPV sync progress (only show when SPV is selected and syncing)
-            if current_backend_mode == CoreBackendMode::Spv {
-                if let Some(snap) = snapshot {
-                    if snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting {
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
+            if current_backend_mode == CoreBackendMode::Spv
+                && let Some(snap) = snapshot
+                && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting) {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-                        self.render_spv_sync_progress(ui, &snap);
-                    }
-                }
+                self.render_spv_sync_progress(ui, &snap);
             }
         });
 
@@ -637,50 +626,50 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Select File").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            let file_name = path.file_name().and_then(|f| f.to_str());
-                            if let Some(file_name) = file_name {
-                                self.custom_dash_qt_path = None;
+                    if ui.button("Select File").clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_file()
+                    {
+                        let file_name = path.file_name().and_then(|f| f.to_str());
+                        if let Some(file_name) = file_name {
+                            self.custom_dash_qt_path = None;
+                            self.custom_dash_qt_error_message = None;
+
+                            // Handle macOS .app bundles
+                            let resolved_path = if cfg!(target_os = "macos")
+                                && path.extension().and_then(|s| s.to_str()) == Some("app")
+                            {
+                                path.join("Contents").join("MacOS").join("Dash-Qt")
+                            } else {
+                                path.clone()
+                            };
+
+                            // Check if the resolved path exists and is valid
+                            let is_valid = if cfg!(target_os = "windows") {
+                                file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
+                            } else if cfg!(target_os = "macos") {
+                                file_name.eq_ignore_ascii_case("dash-qt")
+                                    || (file_name.to_ascii_lowercase().ends_with(".app")
+                                        && resolved_path.exists())
+                            } else {
+                                file_name.eq_ignore_ascii_case("dash-qt")
+                            };
+
+                            if is_valid {
+                                self.custom_dash_qt_path = Some(resolved_path);
                                 self.custom_dash_qt_error_message = None;
-
-                                // Handle macOS .app bundles
-                                let resolved_path = if cfg!(target_os = "macos")
-                                    && path.extension().and_then(|s| s.to_str()) == Some("app")
-                                {
-                                    path.join("Contents").join("MacOS").join("Dash-Qt")
-                                } else {
-                                    path.clone()
-                                };
-
-                                // Check if the resolved path exists and is valid
-                                let is_valid = if cfg!(target_os = "windows") {
-                                    file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
+                                self.save().expect("Expected to save db settings");
+                            } else {
+                                let required_file_name = if cfg!(target_os = "windows") {
+                                    "dash-qt.exe"
                                 } else if cfg!(target_os = "macos") {
-                                    file_name.eq_ignore_ascii_case("dash-qt")
-                                        || (file_name.to_ascii_lowercase().ends_with(".app")
-                                            && resolved_path.exists())
+                                    "Dash-Qt or Dash-Qt.app"
                                 } else {
-                                    file_name.eq_ignore_ascii_case("dash-qt")
+                                    "dash-qt"
                                 };
-
-                                if is_valid {
-                                    self.custom_dash_qt_path = Some(resolved_path);
-                                    self.custom_dash_qt_error_message = None;
-                                    self.save().expect("Expected to save db settings");
-                                } else {
-                                    let required_file_name = if cfg!(target_os = "windows") {
-                                        "dash-qt.exe"
-                                    } else if cfg!(target_os = "macos") {
-                                        "Dash-Qt or Dash-Qt.app"
-                                    } else {
-                                        "dash-qt"
-                                    };
-                                    self.custom_dash_qt_error_message = Some(format!(
-                                        "Invalid file: Please select a valid '{}'.",
-                                        required_file_name
-                                    ));
-                                }
+                                self.custom_dash_qt_error_message = Some(format!(
+                                    "Invalid file: Please select a valid '{}'.",
+                                    required_file_name
+                                ));
                             }
                         }
                     }
@@ -752,25 +741,24 @@ impl NetworkChooserScreen {
                     if StyledCheckbox::new(&mut self.developer_mode, "Developer mode")
                         .show(ui)
                         .clicked()
+                        && let Ok(mut config) = Config::load()
                     {
-                        if let Ok(mut config) = Config::load() {
-                            config.developer_mode = Some(self.developer_mode);
-                            if let Err(e) = config.save() {
-                                eprintln!("Failed to save config: {e}");
-                            }
+                        config.developer_mode = Some(self.developer_mode);
+                        if let Err(e) = config.save() {
+                            eprintln!("Failed to save config: {e}");
+                        }
 
-                            // Update all contexts
-                            self.mainnet_app_context
-                                .enable_developer_mode(self.developer_mode);
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx.enable_developer_mode(self.developer_mode);
-                            }
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx.enable_developer_mode(self.developer_mode);
-                            }
-                            if let Some(ref ctx) = self.local_app_context {
-                                ctx.enable_developer_mode(self.developer_mode);
-                            }
+                        // Update all contexts
+                        self.mainnet_app_context
+                            .enable_developer_mode(self.developer_mode);
+                        if let Some(ref ctx) = self.testnet_app_context {
+                            ctx.enable_developer_mode(self.developer_mode);
+                        }
+                        if let Some(ref ctx) = self.devnet_app_context {
+                            ctx.enable_developer_mode(self.developer_mode);
+                        }
+                        if let Some(ref ctx) = self.local_app_context {
+                            ctx.enable_developer_mode(self.developer_mode);
                         }
                     }
                     ui.label(
@@ -852,15 +840,15 @@ impl NetworkChooserScreen {
                             ui.end_row();
 
                             // Peers (if we have a snapshot with counts)
-                            if let Some(progress) = &snapshot.sync_progress {
-                                if progress.peer_count > 0 {
-                                    ui.label(
-                                        egui::RichText::new("Peers:")
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                    ui.label(format!("{}", progress.peer_count));
-                                    ui.end_row();
-                                }
+                            if let Some(progress) = &snapshot.sync_progress
+                                && progress.peer_count > 0
+                            {
+                                ui.label(
+                                    egui::RichText::new("Peers:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.label(format!("{}", progress.peer_count));
+                                ui.end_row();
                             }
                         } else if let Some(ev) = &snapshot.sync_progress {
                             // Event-driven progress (updates most frequently)
@@ -908,15 +896,15 @@ impl NetworkChooserScreen {
                             ui.end_row();
 
                             // Peers (if we also have a snapshot with counts)
-                            if let Some(progress) = &snapshot.sync_progress {
-                                if progress.peer_count > 0 {
-                                    ui.label(
-                                        egui::RichText::new("Peers:")
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                    ui.label(format!("{}", progress.peer_count));
-                                    ui.end_row();
-                                }
+                            if let Some(progress) = &snapshot.sync_progress
+                                && progress.peer_count > 0
+                            {
+                                ui.label(
+                                    egui::RichText::new("Peers:")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.label(format!("{}", progress.peer_count));
+                                ui.end_row();
                             }
                         }
                     });
@@ -988,188 +976,6 @@ impl NetworkChooserScreen {
         }
     }
 
-    /// Render a single row for the network table
-    fn render_network_row(&mut self, ui: &mut Ui, network: Network, name: &str) -> AppAction {
-        let mut app_action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-
-        ui.label(name);
-
-        let current_mode = *self
-            .backend_modes
-            .entry(network)
-            .or_insert(CoreBackendMode::Rpc);
-
-        if !self.has_context_for(network) {
-            ui.colored_label(DashColors::error_color(dark_mode), "No config");
-            self.render_backend_selector(ui, network, current_mode, true, None);
-            ui.label("(No configs loaded)");
-            ui.label("");
-            ui.label("");
-            ui.label("");
-            ui.end_row();
-            return app_action;
-        }
-
-        let context = Arc::clone(self.context_for_network(network));
-
-        let mut spv_snapshot: Option<SpvStatusSnapshot> = None;
-        match current_mode {
-            CoreBackendMode::Rpc => {
-                let is_working = self.check_network_status(network);
-                let status_color = if is_working {
-                    DashColors::success_color(dark_mode)
-                } else {
-                    DashColors::error_color(dark_mode)
-                };
-                let status_label = if is_working { "Online" } else { "Offline" };
-                ui.colored_label(status_color, status_label);
-            }
-            CoreBackendMode::Spv => {
-                let snapshot = context.spv_manager().status();
-                self.render_spv_status(ui, dark_mode, &snapshot, &context);
-                spv_snapshot = Some(snapshot);
-            }
-        }
-
-        let backend_mode =
-            self.render_backend_selector(ui, network, current_mode, false, Some(&context));
-
-        if backend_mode == CoreBackendMode::Rpc && current_mode != CoreBackendMode::Rpc {
-            self.recheck_time = None;
-        }
-
-        let mut is_selected = self.current_network == network;
-        if StyledCheckbox::new(&mut is_selected, "").show(ui).clicked() && is_selected {
-            self.current_network = network;
-            app_action = AppAction::SwitchNetwork(network);
-            self.recheck_time = Some(
-                (SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    + Duration::from_secs(1))
-                .as_millis() as u64,
-            );
-        }
-
-        match backend_mode {
-            CoreBackendMode::Rpc => {
-                let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
-                    !path.as_os_str().is_empty() && path.is_file()
-                } else {
-                    false
-                };
-
-                if network != Network::Regtest {
-                    ui.add_enabled_ui(start_enabled, |ui| {
-                        if ui
-                            .button("Start")
-                            .on_disabled_hover_text(
-                                "Please select path to dash-qt binary in Advanced Settings",
-                            )
-                            .clicked()
-                        {
-                            app_action = AppAction::BackendTask(BackendTask::CoreTask(
-                                CoreTask::StartDashQT(
-                                    network,
-                                    self.custom_dash_qt_path
-                                        .clone()
-                                        .expect("Some() checked above"),
-                                    self.overwrite_dash_conf,
-                                ),
-                            ));
-                        }
-                    });
-                } else {
-                    ui.label("");
-                }
-            }
-            CoreBackendMode::Spv => {
-                let snapshot = spv_snapshot.unwrap_or_else(|| context.spv_manager().status());
-                match snapshot.status {
-                    SpvStatus::Idle | SpvStatus::Stopped | SpvStatus::Error => {
-                        if ui.button("Connect").clicked() {
-                            if let Err(err) = context.start_spv() {
-                                app_action =
-                                    AppAction::Custom(format!("Failed to start SPV: {}", err));
-                            }
-                        }
-                    }
-                    SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running => {
-                        if ui.button("Stop").clicked() {
-                            context.stop_spv();
-                        }
-                    }
-                    SpvStatus::Stopping => {
-                        ui.add_enabled_ui(false, |ui| {
-                            let _ = ui.button("Stopping…");
-                        });
-                    }
-                }
-            }
-        }
-
-        if network == Network::Regtest {
-            if backend_mode == CoreBackendMode::Rpc {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                let text_color = DashColors::text_primary(dark_mode);
-                let background = DashColors::input_background(dark_mode);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.local_network_dashmate_password)
-                        .desired_width(100.0)
-                        .text_color(text_color)
-                        .background_color(background),
-                );
-                if ui.button("Save Password").clicked() {
-                    if let Ok(mut config) = Config::load()
-                        && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
-                    {
-                        let updated_local_config = local_cfg
-                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
-                        config.update_config_for_network(
-                            Network::Regtest,
-                            updated_local_config.clone(),
-                        );
-                        if let Err(e) = config.save() {
-                            eprintln!("Failed to save config to .env: {e}");
-                        }
-
-                        if let Some(local_app_context) = &self.local_app_context {
-                            {
-                                let mut cfg_lock = local_app_context.config.write().unwrap();
-                                *cfg_lock = updated_local_config;
-                            }
-
-                            if let Err(e) =
-                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
-                            {
-                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
-                            } else {
-                                app_action = AppAction::SwitchNetwork(Network::Regtest);
-                            }
-                        }
-                    }
-                }
-            } else {
-                ui.label("-");
-            }
-        } else {
-            ui.label("");
-        }
-
-        if network == Network::Devnet {
-            if ui.button("Clear local Platform data").clicked() {
-                app_action =
-                    AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData));
-            }
-        } else {
-            ui.label("");
-        }
-
-        ui.end_row();
-        app_action
-    }
-
     /// Check if the network is working
     fn check_network_status(&self, network: Network) -> bool {
         match network {
@@ -1197,130 +1003,11 @@ impl NetworkChooserScreen {
         }
     }
 
-    fn backend_mode_label(mode: CoreBackendMode) -> &'static str {
-        match mode {
-            CoreBackendMode::Rpc => "Dash Core RPC",
-            CoreBackendMode::Spv => "Dash SPV",
-        }
-    }
-
-    fn render_backend_selector(
-        &mut self,
-        ui: &mut Ui,
-        network: Network,
-        current_mode: CoreBackendMode,
-        disabled: bool,
-        context: Option<&Arc<AppContext>>,
-    ) -> CoreBackendMode {
-        let mut mode = current_mode;
-
-        if disabled {
-            ui.add_enabled_ui(false, |ui| {
-                egui::ComboBox::from_id_salt(format!("backend_{:?}", network))
-                    .selected_text(Self::backend_mode_label(mode))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut mode,
-                            CoreBackendMode::Rpc,
-                            Self::backend_mode_label(CoreBackendMode::Rpc),
-                        );
-                        ui.selectable_value(
-                            &mut mode,
-                            CoreBackendMode::Spv,
-                            Self::backend_mode_label(CoreBackendMode::Spv),
-                        );
-                    });
-            });
-            return current_mode;
-        }
-
-        let mut changed = false;
-        egui::ComboBox::from_id_salt(format!("backend_{:?}", network))
-            .selected_text(Self::backend_mode_label(mode))
-            .show_ui(ui, |ui| {
-                changed |= ui
-                    .selectable_value(
-                        &mut mode,
-                        CoreBackendMode::Rpc,
-                        Self::backend_mode_label(CoreBackendMode::Rpc),
-                    )
-                    .changed();
-                changed |= ui
-                    .selectable_value(
-                        &mut mode,
-                        CoreBackendMode::Spv,
-                        Self::backend_mode_label(CoreBackendMode::Spv),
-                    )
-                    .changed();
-            });
-
-        if changed {
-            self.backend_modes.insert(network, mode);
-            if let Some(ctx) = context {
-                ctx.set_core_backend_mode(mode);
-                if mode == CoreBackendMode::Rpc {
-                    ctx.stop_spv();
-                }
-            }
-            mode
-        } else {
-            current_mode
-        }
-    }
-
-    fn render_spv_status(
-        &self,
-        ui: &mut Ui,
-        dark_mode: bool,
-        snapshot: &SpvStatusSnapshot,
-        context: &Arc<AppContext>,
-    ) {
-        let (label, color) = self.spv_status_label(snapshot, dark_mode);
-        ui.vertical(|ui| {
-            ui.colored_label(color, label);
-            if let Some(detail) = self.spv_status_detail(snapshot) {
-                ui.label(egui::RichText::new(detail).color(DashColors::text_secondary(dark_mode)));
-            }
-        });
-
-        if snapshot.status.is_active() {
-            // Always request repaint while SPV is active so progress updates render,
-            // even when animations are disabled in developer mode.
-            context.repaint_animation(ui.ctx());
-            ui.ctx().request_repaint();
-        }
-    }
-
-    fn spv_status_label(
-        &self,
-        snapshot: &SpvStatusSnapshot,
-        dark_mode: bool,
-    ) -> (String, egui::Color32) {
-        match snapshot.status {
-            SpvStatus::Idle => ("Idle".to_string(), DashColors::muted_color(dark_mode)),
-            SpvStatus::Starting => (
-                "Starting...".to_string(),
-                DashColors::warning_color(dark_mode),
-            ),
-            SpvStatus::Syncing => (
-                "Syncing...".to_string(),
-                DashColors::warning_color(dark_mode),
-            ),
-            SpvStatus::Running => ("Synced".to_string(), DashColors::success_color(dark_mode)),
-            SpvStatus::Stopping => (
-                "Disconnecting...".to_string(),
-                DashColors::warning_color(dark_mode),
-            ),
-            SpvStatus::Stopped => ("Stopped".to_string(), DashColors::muted_color(dark_mode)),
-            SpvStatus::Error => ("Error".to_string(), DashColors::error_color(dark_mode)),
-        }
-    }
-
     fn spv_status_detail(&self, snapshot: &SpvStatusSnapshot) -> Option<String> {
-        if let SpvStatus::Error = snapshot.status {
-            if let Some(err) = &snapshot.last_error {
-                return Some(err.clone());
-            }
+        if let SpvStatus::Error = snapshot.status
+            && let Some(err) = &snapshot.last_error
+        {
+            return Some(err.clone());
         }
 
         if let Some(progress) = snapshot.detailed_progress.as_ref() {
@@ -1376,10 +1063,10 @@ impl NetworkChooserScreen {
             message = format!("{message} | Peers: {}", progress.sync_progress.peer_count);
         }
 
-        if let Some(eta) = progress.calculate_eta() {
-            if eta.as_secs() > 0 {
-                message = format!("{message} | ETA: {}s", eta.as_secs());
-            }
+        if let Some(eta) = progress.calculate_eta()
+            && eta.as_secs() > 0
+        {
+            message = format!("{message} | ETA: {}s", eta.as_secs());
         }
 
         message

@@ -19,14 +19,14 @@ use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
-use tokio::runtime::Runtime as TokioRuntime;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Preferred backend for Core-level operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CoreBackendMode {
+    #[default]
     Rpc = 0,
     Spv = 1,
 }
@@ -34,12 +34,6 @@ pub enum CoreBackendMode {
 impl CoreBackendMode {
     pub fn as_u8(self) -> u8 {
         self as u8
-    }
-}
-
-impl Default for CoreBackendMode {
-    fn default() -> Self {
-        CoreBackendMode::Rpc
     }
 }
 
@@ -53,8 +47,9 @@ impl From<u8> for CoreBackendMode {
 }
 
 /// High-level status of the SPV client runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpvStatus {
+    #[default]
     Idle,
     Starting,
     Syncing,
@@ -70,12 +65,6 @@ impl SpvStatus {
             self,
             SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running | SpvStatus::Stopping
         )
-    }
-}
-
-impl Default for SpvStatus {
-    fn default() -> Self {
-        SpvStatus::Idle
     }
 }
 
@@ -99,6 +88,7 @@ pub struct SpvManager {
     config: Arc<RwLock<NetworkConfig>>,
     subtasks: Arc<TaskManager>,
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
+    #[allow(clippy::type_complexity)]
     client: Arc<
         AsyncRwLock<
             Option<
@@ -621,10 +611,9 @@ impl SpvManager {
                                     SpvEvent::BalanceUpdate { .. } |
                                     SpvEvent::BlockProcessed { .. }
                                 );
-                                if should_signal {
-                                    if let Some(ref tx) = reconcile_tx {
-                                        let _ = tx.try_send(());
-                                    }
+                                if should_signal
+                                    && let Some(ref tx) = reconcile_tx {
+                                    let _ = tx.try_send(());
                                 }
                             }
                             None => break,
@@ -659,10 +648,10 @@ impl SpvManager {
             }
         } else if self.network == Network::Testnet {
             // For testnet testing, connect only to local Dash Core at 127.0.0.1:19999
-            if let Ok(mut it) = "127.0.0.1:19999".to_socket_addrs() {
-                if let Some(peer) = it.next() {
-                    config.add_peer(peer);
-                }
+            if let Ok(mut it) = "127.0.0.1:19999".to_socket_addrs()
+                && let Some(peer) = it.next()
+            {
+                config.add_peer(peer);
             }
         }
 

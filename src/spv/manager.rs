@@ -19,9 +19,9 @@ use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
+use tokio::runtime::Runtime as TokioRuntime;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::mpsc;
-use tokio::runtime::Runtime as TokioRuntime;
 use tokio_util::sync::CancellationToken;
 
 /// Preferred backend for Core-level operations.
@@ -99,7 +99,17 @@ pub struct SpvManager {
     config: Arc<RwLock<NetworkConfig>>,
     subtasks: Arc<TaskManager>,
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
-    client: Arc<AsyncRwLock<Option<DashSpvClient<WalletManager<ManagedWalletInfo>, MultiPeerNetworkManager, DiskStorageManager>>>>,
+    client: Arc<
+        AsyncRwLock<
+            Option<
+                DashSpvClient<
+                    WalletManager<ManagedWalletInfo>,
+                    MultiPeerNetworkManager,
+                    DiskStorageManager,
+                >,
+            >,
+        >,
+    >,
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
@@ -144,8 +154,15 @@ impl SpvManager {
     pub async fn status_async(&self) -> SpvStatusSnapshot {
         let client_guard = self.client.read().await;
         let status = *self.status.read().expect("SPV status lock poisoned");
-        let last_error = self.last_error.read().expect("SPV last_error lock poisoned").clone();
-        let started_at = *self.started_at.read().expect("SPV started_at lock poisoned");
+        let last_error = self
+            .last_error
+            .read()
+            .expect("SPV last_error lock poisoned")
+            .clone();
+        let started_at = *self
+            .started_at
+            .read()
+            .expect("SPV started_at lock poisoned");
 
         // Get progress directly from the client if available
         let (sync_progress, detailed_progress) = if let Some(_client) = client_guard.as_ref() {
@@ -169,8 +186,15 @@ impl SpvManager {
     /// Sync status method for UI updates (doesn't fetch detailed progress)
     pub fn status(&self) -> SpvStatusSnapshot {
         let status = *self.status.read().expect("SPV status lock poisoned");
-        let last_error = self.last_error.read().expect("SPV last_error lock poisoned").clone();
-        let started_at = *self.started_at.read().expect("SPV started_at lock poisoned");
+        let last_error = self
+            .last_error
+            .read()
+            .expect("SPV last_error lock poisoned")
+            .clone();
+        let started_at = *self
+            .started_at
+            .read()
+            .expect("SPV started_at lock poisoned");
 
         SpvStatusSnapshot {
             status,
@@ -185,18 +209,30 @@ impl SpvManager {
     pub fn start(self: &Arc<Self>) -> Result<(), String> {
         // Check if already running
         {
-            let stop_token_guard = self.stop_token.lock().expect("SPV stop_token lock poisoned");
+            let stop_token_guard = self
+                .stop_token
+                .lock()
+                .expect("SPV stop_token lock poisoned");
             if stop_token_guard.is_some() {
                 return Ok(());
             }
         }
 
         *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Starting;
-        *self.last_error.write().expect("SPV last_error lock poisoned") = None;
-        *self.started_at.write().expect("SPV started_at lock poisoned") = Some(SystemTime::now());
+        *self
+            .last_error
+            .write()
+            .expect("SPV last_error lock poisoned") = None;
+        *self
+            .started_at
+            .write()
+            .expect("SPV started_at lock poisoned") = Some(SystemTime::now());
 
         let stop_token = CancellationToken::new();
-        *self.stop_token.lock().expect("SPV stop_token lock poisoned") = Some(stop_token.clone());
+        *self
+            .stop_token
+            .lock()
+            .expect("SPV stop_token lock poisoned") = Some(stop_token.clone());
 
         let manager = Arc::clone(self);
         let global_cancel = self.subtasks.cancellation_token.clone();
@@ -234,7 +270,12 @@ impl SpvManager {
         *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopping;
 
         // Signal the runtime to stop
-        if let Some(token) = self.stop_token.lock().expect("SPV stop_token lock poisoned").as_ref() {
+        if let Some(token) = self
+            .stop_token
+            .lock()
+            .expect("SPV stop_token lock poisoned")
+            .as_ref()
+        {
             token.cancel();
         }
     }
@@ -386,7 +427,6 @@ impl SpvManager {
         Ok(())
     }
 
-
     async fn run_spv_loop(
         self: Arc<Self>,
         stop_token: CancellationToken,
@@ -394,7 +434,10 @@ impl SpvManager {
     ) -> Result<(), String> {
         // Build and start the client
         let mut client = self.build_client().await?;
-        client.start().await.map_err(|e| format!("SPV start failed: {e}"))?;
+        client
+            .start()
+            .await
+            .map_err(|e| format!("SPV start failed: {e}"))?;
 
         // Set up progress handler
         if let Some(progress_rx) = client.take_progress_receiver() {
@@ -453,12 +496,17 @@ impl SpvManager {
                 match client.sync_to_tip().await {
                     Ok(progress) => {
                         tracing::info!("Initial sync complete: {:?}", progress);
-                        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Running;
+                        *self.status.write().expect("SPV status lock poisoned") =
+                            SpvStatus::Running;
                     }
                     Err(err) => {
                         tracing::error!("Initial sync failed: {}", err);
                         let _ = client.stop().await;
-                        *self.last_error.write().expect("SPV last_error lock poisoned") = Some(format!("Initial sync failed: {err}"));
+                        *self
+                            .last_error
+                            .write()
+                            .expect("SPV last_error lock poisoned") =
+                            Some(format!("Initial sync failed: {err}"));
                         *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
                         return Err(format!("Initial sync failed: {err}"));
                     }
@@ -485,19 +533,24 @@ impl SpvManager {
                 match outcome {
                     MonitorOutcome::Completed(Ok(())) => {
                         let _ = client.stop().await;
-                        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                        *self.status.write().expect("SPV status lock poisoned") =
+                            SpvStatus::Stopped;
                         Ok(())
                     }
                     MonitorOutcome::Completed(Err(err)) => {
                         let _ = client.stop().await;
                         let message = format!("monitor_network failed: {err}");
-                        *self.last_error.write().expect("SPV last_error lock poisoned") = Some(message.clone());
+                        *self
+                            .last_error
+                            .write()
+                            .expect("SPV last_error lock poisoned") = Some(message.clone());
                         *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
                         Err(message)
                     }
                     MonitorOutcome::StopRequested | MonitorOutcome::GlobalCancelled => {
                         let _ = client.stop().await;
-                        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                        *self.status.write().expect("SPV status lock poisoned") =
+                            SpvStatus::Stopped;
                         Ok(())
                     }
                 }
@@ -509,7 +562,10 @@ impl SpvManager {
         }
     }
 
-    fn spawn_progress_handler(&self, mut progress_rx: tokio::sync::mpsc::UnboundedReceiver<DetailedSyncProgress>) {
+    fn spawn_progress_handler(
+        &self,
+        mut progress_rx: tokio::sync::mpsc::UnboundedReceiver<DetailedSyncProgress>,
+    ) {
         let status = Arc::clone(&self.status);
         let cancel = self.subtasks.cancellation_token.clone();
 
@@ -525,7 +581,7 @@ impl SpvManager {
                             Some(detailed) => {
                                 if last_update.elapsed() >= min_interval {
                                     // Update status based on progress
-                                    if detailed.percentage >= 100.0 || detailed.current_height >= detailed.peer_best_height {
+                                    if detailed.percentage >= 100.0 || detailed.sync_progress.header_height >= detailed.peer_best_height {
                                         *status.write().expect("SPV status lock poisoned") = SpvStatus::Running;
                                     } else {
                                         let current = *status.read().expect("SPV status lock poisoned");
@@ -545,7 +601,11 @@ impl SpvManager {
     }
 
     fn spawn_event_handler(&self, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SpvEvent>) {
-        let reconcile_tx = self.reconcile_tx.lock().expect("reconcile_tx poisoned").clone();
+        let reconcile_tx = self
+            .reconcile_tx
+            .lock()
+            .expect("reconcile_tx poisoned")
+            .clone();
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync(async move {
@@ -659,7 +719,6 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
 
     Ok(base.join(network_dir))
 }
-
 
 impl fmt::Debug for SpvManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

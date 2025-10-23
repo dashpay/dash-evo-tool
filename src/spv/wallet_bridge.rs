@@ -1,6 +1,6 @@
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 

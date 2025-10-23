@@ -74,6 +74,7 @@ impl AppContext {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            creator_id: None,
         });
         let domain_document = Document::V0(DocumentV0 {
             id: domain_id,
@@ -116,6 +117,7 @@ impl AppContext {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            creator_id: None,
         });
 
         let public_key = qualified_identity

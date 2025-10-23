@@ -68,7 +68,8 @@ impl ContextProvider for SpvProvider {
     fn get_token_configuration(
         &self,
         token_id: &dash_sdk::platform::Identifier,
-    ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError> {
+    ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
+    {
         let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
         let app_ctx = app_ctx_guard
             .as_ref()
@@ -91,10 +92,11 @@ impl ContextProvider for SpvProvider {
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
 
         // Ask SPV manager for the public key corresponding to (type, hash)
-        match app_ctx
-            .spv_manager()
-            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
-        {
+        match app_ctx.spv_manager().get_quorum_public_key(
+            quorum_type,
+            quorum_hash,
+            core_chain_locked_height,
+        ) {
             Ok(key) => Ok(key),
             Err(e) => Err(ContextProviderError::Generic(format!(
                 "SPV quorum key lookup failed: {}",

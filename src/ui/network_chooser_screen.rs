@@ -979,7 +979,9 @@ impl NetworkChooserScreen {
                                     egui::RichText::new("Overall Progress:")
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
-                                let overall = ((ev.filter_header_height as f32 / ev.header_height.max(1) as f32)).clamp(0.0, 1.0);
+                                let overall = (ev.filter_header_height as f32
+                                    / ev.header_height.max(1) as f32)
+                                    .clamp(0.0, 1.0);
                                 ui.add(egui::ProgressBar::new(overall).show_percentage());
                                 ui.end_row();
 
@@ -987,11 +989,16 @@ impl NetworkChooserScreen {
                                     egui::RichText::new("Synced:")
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
-                                ui.label(format!("{} / {}", ev.header_height, ev.filter_header_height));
+                                ui.label(format!(
+                                    "{} / {}",
+                                    ev.header_height, ev.filter_header_height
+                                ));
                                 ui.end_row();
                             }
                         } else if let Some(ev) = &snapshot.sync_progress {
-                            let overall = ((ev.filter_header_height as f32 / ev.header_height.max(1) as f32)).clamp(0.0, 1.0);
+                            let overall = (ev.filter_header_height as f32
+                                / ev.header_height.max(1) as f32)
+                                .clamp(0.0, 1.0);
 
                             ui.label(
                                 egui::RichText::new("Overall Progress:")
@@ -1004,7 +1011,10 @@ impl NetworkChooserScreen {
                                 egui::RichText::new("Synced:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
-                            ui.label(format!("{} / {}", ev.header_height, ev.filter_header_height));
+                            ui.label(format!(
+                                "{} / {}",
+                                ev.header_height, ev.filter_header_height
+                            ));
                             ui.end_row();
                         }
                     });
@@ -1017,7 +1027,9 @@ impl NetworkChooserScreen {
             match &detailed.sync_stage {
                 SyncStage::DownloadingHeaders { start, end } => {
                     if end > start {
-                        ((detailed.current_height - start) as f32 / (end - start) as f32).min(1.0)
+                        ((detailed.sync_progress.header_height - start) as f32
+                            / (end - start) as f32)
+                            .min(1.0)
                     } else {
                         0.0
                     }
@@ -1426,7 +1438,9 @@ impl NetworkChooserScreen {
         if let Some(ev) = snapshot.sync_progress.as_ref() {
             return Some(format!(
                 "Sync: {} / {} ({:.1}%)",
-                ev.header_height, ev.filter_header_height, (ev.filter_header_height as f32 / ev.header_height.max(1) as f32 * 100.0)
+                ev.header_height,
+                ev.filter_header_height,
+                (ev.filter_header_height as f32 / ev.header_height.max(1) as f32 * 100.0)
             ));
         }
 
@@ -1455,10 +1469,19 @@ impl NetworkChooserScreen {
             }
             SyncStage::Complete => "Sync complete".to_string(),
             SyncStage::Failed(reason) => format!("Failed: {reason}"),
+            SyncStage::DownloadingFilterHeaders { current, target } => {
+                format!("FilterHeaders: {current} / {target}")
+            }
+            SyncStage::DownloadingFilters { completed, total } => {
+                format!("Filters: {completed} / {total}")
+            }
+            SyncStage::DownloadingBlocks { pending } => {
+                format!("Blocks: {pending}")
+            }
         };
 
-        if progress.connected_peers > 0 {
-            message = format!("{message} | Peers: {}", progress.connected_peers);
+        if progress.sync_progress.peer_count > 0 {
+            message = format!("{message} | Peers: {}", progress.sync_progress.peer_count);
         }
 
         if let Some(eta) = progress.calculate_eta() {

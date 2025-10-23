@@ -12,8 +12,8 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::spv::WatchOnlyWalletAttachment;
 use crate::spv::{CoreBackendMode, SpvManager};
-use crate::spv::{WatchOnlyWalletAttachment};
 use crate::ui::RootScreenType;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::utils::tasks::TaskManager;
@@ -29,6 +29,7 @@ use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -41,7 +42,6 @@ use dash_sdk::query_types::IndexMap;
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
@@ -114,8 +114,8 @@ impl AppContext {
         // Create both providers; bind to app context later (post construction) due to circularity
         let spv_provider =
             SpvProvider::new(db.clone(), network).expect("Failed to initialize SPV provider");
-        let rpc_provider =
-            RpcProvider::new(db.clone(), network, &network_config).expect("Failed to initialize RPC provider");
+        let rpc_provider = RpcProvider::new(db.clone(), network, &network_config)
+            .expect("Failed to initialize RPC provider");
 
         // Default to SPV provider initially; UI can switch backend after
         let sdk = initialize_sdk(&network_config, network, spv_provider.clone());
@@ -259,7 +259,8 @@ impl AppContext {
     }
 
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
-        self.core_backend_mode.store(mode.as_u8(), Ordering::Relaxed);
+        self.core_backend_mode
+            .store(mode.as_u8(), Ordering::Relaxed);
 
         // Switch SDK context provider to match the selected backend
         match mode {
@@ -313,7 +314,7 @@ impl AppContext {
 
     /// Subscribe to SPV reconcile signals and debounce updates.
     pub fn spv_setup_reconcile_listener(self: &Arc<Self>) {
-        use tokio::time::{sleep, Duration, Instant};
+        use tokio::time::{Duration, Instant, sleep};
         let rx = self.spv_manager.register_reconcile_channel();
         let ctx = Arc::clone(self);
         self.subtasks.spawn_sync(async move {
@@ -361,12 +362,13 @@ impl AppContext {
             tracing::debug!(wallet = %hex::encode(seed_hash), confirmed = balance.confirmed, unconfirmed = balance.unconfirmed, total = balance.total, "SPV balance snapshot");
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
-            let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> = if let Some(wref) = wallets_guard.get(seed_hash) {
-                let w = wref.read().unwrap();
-                w.known_addresses.keys().cloned().collect()
-            } else {
-                continue;
-            };
+            let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> =
+                if let Some(wref) = wallets_guard.get(seed_hash) {
+                    let w = wref.read().unwrap();
+                    w.known_addresses.keys().cloned().collect()
+                } else {
+                    continue;
+                };
 
             // Clear existing UTXOs for these addresses in this network
             for addr in &known_addresses {
@@ -384,7 +386,8 @@ impl AppContext {
             use dash_sdk::dpp::dashcore::Address as CoreAddress;
             // no-op
 
-            let mut per_address_sum: std::collections::BTreeMap<CoreAddress, u64> = Default::default();
+            let mut per_address_sum: std::collections::BTreeMap<CoreAddress, u64> =
+                Default::default();
 
             for u in utxos {
                 // Best-effort accessors for outpoint/txout; adjust if API differs
@@ -403,18 +406,28 @@ impl AppContext {
                     if let Some(info) = wm.get_wallet_info(wallet_id) {
                         // Map network for accounts lookup if required by API
                         let net = match self.network {
-                            dash_sdk::dpp::dashcore::Network::Dash => dash_sdk::dpp::key_wallet::Network::Dash,
-                            dash_sdk::dpp::dashcore::Network::Testnet => dash_sdk::dpp::key_wallet::Network::Testnet,
-                            dash_sdk::dpp::dashcore::Network::Devnet => dash_sdk::dpp::key_wallet::Network::Devnet,
-                            dash_sdk::dpp::dashcore::Network::Regtest => dash_sdk::dpp::key_wallet::Network::Regtest,
+                            dash_sdk::dpp::dashcore::Network::Dash => {
+                                dash_sdk::dpp::key_wallet::Network::Dash
+                            }
+                            dash_sdk::dpp::dashcore::Network::Testnet => {
+                                dash_sdk::dpp::key_wallet::Network::Testnet
+                            }
+                            dash_sdk::dpp::dashcore::Network::Devnet => {
+                                dash_sdk::dpp::key_wallet::Network::Devnet
+                            }
+                            dash_sdk::dpp::dashcore::Network::Regtest => {
+                                dash_sdk::dpp::key_wallet::Network::Regtest
+                            }
                             _ => dash_sdk::dpp::key_wallet::Network::Dash,
                         };
                         if let Some(collection) = info.accounts(net) {
                             let mut registered = false;
                             for acc in collection.all_accounts() {
                                 if let Some(ai) = acc.get_address_info(&address) {
+                                    use crate::model::wallet::{
+                                        DerivationPathReference, DerivationPathType,
+                                    };
                                     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
-                                    use crate::model::wallet::{DerivationPathReference, DerivationPathType};
                                     // Determine branch: look at the second-to-last child in the path
                                     let comps = ai.path.as_ref();
                                     let branch_is_external = comps
@@ -442,16 +455,23 @@ impl AppContext {
                                             );
                                             // Update in-memory maps
                                             use crate::model::wallet::AddressInfo as WalletAddressInfo;
-                                            w.known_addresses.insert(address.clone(), ai.path.clone());
+                                            w.known_addresses
+                                                .insert(address.clone(), ai.path.clone());
                                             w.watched_addresses.insert(
                                                 ai.path.clone(),
-                                                WalletAddressInfo { address: address.clone(), path_type, path_reference },
+                                                WalletAddressInfo {
+                                                    address: address.clone(),
+                                                    path_type,
+                                                    path_reference,
+                                                },
                                             );
                                             known_addresses.insert(address.clone());
                                             registered = true;
                                         }
                                     }
-                                    if registered { break; }
+                                    if registered {
+                                        break;
+                                    }
                                 }
                             }
                             if !registered {

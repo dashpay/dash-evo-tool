@@ -511,7 +511,7 @@ impl GroveSTARKScreen {
 
         if debug_build {
             ui.colored_label(
-                egui::Color32::YELLOW,
+                egui::Color32::DARK_RED,
                 "GroveSTARK proofs require a release build (cargo run --release).",
             );
             ui.add_space(Spacing::SM);
@@ -590,7 +590,7 @@ impl GroveSTARKScreen {
                     if available_keys.is_empty() {
                         ui.label(
                             RichText::new("⚠️ No EdDSA keys available for ZK proof generation")
-                                .color(egui::Color32::YELLOW),
+                                .color(egui::Color32::DARK_RED),
                         );
                         ui.label(
                             RichText::new("ZK proofs require EdDSA (Ed25519) keys. Please add an EdDSA key to this identity.")

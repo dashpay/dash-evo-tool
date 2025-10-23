@@ -3,6 +3,7 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::{
     Document, DriveDocumentQuery, Fetch, FetchMany, IdentityKeysQuery, IdentityPublicKey,
@@ -69,10 +70,9 @@ impl GroveSTARKProver {
         key_id: u32,
         private_key: &[u8; 32],
         public_key: &[u8; 32],
-    ) -> Result<ProofDataOutput, ProofError> {
+    ) -> Result<ProofDataOutput, GroveSTARKError> {
         if cfg!(debug_assertions) {
-            tracing::warn!("GroveSTARK proof generation attempted in debug build; aborting");
-            return Err(ProofError::UnsupportedBuild(
+            return Err(GroveSTARKError::UnsupportedBuild(
                 "GroveSTARK proof generation requires a release build (cargo run --release)"
                     .to_string(),
             ));
@@ -88,19 +88,13 @@ impl GroveSTARKProver {
 
         // Step 1: Parse identifiers
         tracing::debug!("Parsing identifiers...");
-        let identity_identifier = Identifier::from_string(
-            identity_id,
-            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-        )
-        .map_err(|e| {
-            tracing::error!("Failed to parse identity ID: {}", e);
-            ProofError::InvalidIdentityId(e.to_string())
-        })?;
-        let contract_identifier = Identifier::from_string(
-            contract_id,
-            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-        )
-        .map_err(|e| ProofError::InvalidContractId(e.to_string()))?;
+        let identity_identifier =
+            Identifier::from_string(identity_id, Encoding::Base58).map_err(|e| {
+                tracing::error!("Failed to parse identity ID: {}", e);
+                GroveSTARKError::InvalidIdentityId(e.to_string())
+            })?;
+        let contract_identifier = Identifier::from_string(contract_id, Encoding::Base58)
+            .map_err(|e| GroveSTARKError::InvalidContractId(e.to_string()))?;
 
         // Step 2: Fetch specific key with proof using new SDK API
         tracing::info!("Fetching specific key {} with proof...", key_id);
@@ -115,7 +109,7 @@ impl GroveSTARKProver {
                 .await
                 .map_err(|e| {
                     tracing::error!("Failed to fetch key with proof: {}", e);
-                    ProofError::Platform(e.to_string())
+                    GroveSTARKError::Platform(e.to_string())
                 })?;
 
         // Verify the key exists in the identity
@@ -124,12 +118,12 @@ impl GroveSTARKProver {
             .and_then(|maybe_key| maybe_key.as_ref())
             .ok_or_else(|| {
                 tracing::error!("Key {} not found for identity", key_id);
-                ProofError::PrivateKeyNotAvailable
+                GroveSTARKError::PrivateKeyNotAvailable
             })?;
 
         // Verify it's an EdDSA key
         if identity_key.key_type() != KeyType::EDDSA_25519_HASH160 {
-            return Err(ProofError::InvalidProof(
+            return Err(GroveSTARKError::InvalidProof(
                 "Key is not EdDSA type required for ZK proofs".to_string(),
             ));
         }
@@ -158,21 +152,21 @@ impl GroveSTARKProver {
             .await
             .map_err(|e| {
                 tracing::error!("Failed to fetch contract: {}", e);
-                ProofError::Platform(e.to_string())
+                GroveSTARKError::Platform(e.to_string())
             })?
             .ok_or_else(|| {
                 tracing::error!("Contract not found for ID: {}", contract_id);
-                ProofError::InvalidContractId("Contract not found".to_string())
+                GroveSTARKError::InvalidContractId("Contract not found".to_string())
             })?;
 
         let document_id_identifier = Identifier::from_string(
             document_id,
             dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
         )
-        .map_err(|e| ProofError::Platform(e.to_string()))?;
+        .map_err(|e| GroveSTARKError::Platform(e.to_string()))?;
 
         let query = DocumentQuery::new(contract, document_type)
-            .map_err(|e| ProofError::Platform(e.to_string()))?
+            .map_err(|e| GroveSTARKError::Platform(e.to_string()))?
             .with_document_id(&document_id_identifier);
 
         tracing::info!("Fetching document with proof...");
@@ -181,12 +175,12 @@ impl GroveSTARKProver {
                 .await
                 .map_err(|e| {
                     tracing::error!("Failed to fetch document with proof: {}", e);
-                    ProofError::Platform(e.to_string())
+                    GroveSTARKError::Platform(e.to_string())
                 })?;
 
         let document = document_opt.ok_or_else(|| {
             tracing::error!("Document not found for ID: {}", document_id);
-            ProofError::DocumentNotFound
+            GroveSTARKError::DocumentNotFound
         })?;
 
         // COMPREHENSIVE LOGGING FOR DEBUGGING
@@ -214,7 +208,7 @@ impl GroveSTARKProver {
 
         // For witness creation, we need proper serialization
         let document_cbor = serde_json::to_vec(&document).map_err(|e| {
-            ProofError::SerializationError(format!("Failed to encode document: {}", e))
+            GroveSTARKError::SerializationError(format!("Failed to encode document: {}", e))
         })?;
 
         // 5. EXPECTED VALUES FOR VERIFICATION
@@ -267,12 +261,12 @@ impl GroveSTARKProver {
         // Step 4: Get current state root by verifying document proof
         let drive_document_query: DriveDocumentQuery = (&query)
             .try_into()
-            .map_err(|e: dash_sdk::error::Error| ProofError::Platform(e.to_string()))?;
+            .map_err(|e: dash_sdk::error::Error| GroveSTARKError::Platform(e.to_string()))?;
         let (state_root, _documents) = drive_document_query
             .verify_proof(&proof.grovedb_proof, sdk.version())
             .map_err(|e| {
                 tracing::error!("Failed to verify document proof: {}", e);
-                ProofError::InvalidProof(e.to_string())
+                GroveSTARKError::InvalidProof(e.to_string())
             })?;
 
         tracing::info!(
@@ -358,7 +352,7 @@ impl GroveSTARKProver {
         )
         .map_err(|e| {
             tracing::error!("GroveSTARK witness creation failed: {:?}", e);
-            ProofError::ProofGenerationFailed(format!(
+            GroveSTARKError::ProofGenerationFailed(format!(
                 "GroveSTARK witness creation failed: {:?}",
                 e
             ))
@@ -373,7 +367,7 @@ impl GroveSTARKProver {
             message_hash: challenge,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| ProofError::TimeError(e.to_string()))?
+                .map_err(|e| GroveSTARKError::TimeError(e.to_string()))?
                 .as_secs(),
         };
 
@@ -385,14 +379,14 @@ impl GroveSTARKProver {
             .prove(witness, public_inputs.clone())
             .map_err(|e| {
                 tracing::error!("STARK proof generation failed: {}", e);
-                ProofError::ProofGenerationFailed(e.to_string())
+                GroveSTARKError::ProofGenerationFailed(e.to_string())
             })?;
 
         tracing::info!("STARK proof generated successfully");
 
         // Step 10: Serialize the proof
         let serialized_proof = serde_json::to_vec(&proof)
-            .map_err(|e| ProofError::SerializationError(e.to_string()))?;
+            .map_err(|e| GroveSTARKError::SerializationError(e.to_string()))?;
 
         let generation_time = start_time.elapsed();
         tracing::info!(
@@ -418,10 +412,10 @@ impl GroveSTARKProver {
     }
 
     /// Verify a proof
-    pub fn verify_proof(&self, proof_data: &ProofDataOutput) -> Result<bool, ProofError> {
+    pub fn verify_proof(&self, proof_data: &ProofDataOutput) -> Result<bool, GroveSTARKError> {
         if cfg!(debug_assertions) {
             tracing::warn!("GroveSTARK proof verification attempted in debug build; aborting");
-            return Err(ProofError::UnsupportedBuild(
+            return Err(GroveSTARKError::UnsupportedBuild(
                 "GroveSTARK proof verification requires a release build (cargo run --release)"
                     .to_string(),
             ));
@@ -429,7 +423,7 @@ impl GroveSTARKProver {
 
         // Step 1: Deserialize the proof
         let stark_proof: STARKProof = serde_json::from_slice(&proof_data.proof)
-            .map_err(|e| ProofError::DeserializationError(e.to_string()))?;
+            .map_err(|e| GroveSTARKError::DeserializationError(e.to_string()))?;
 
         // Step 2: Reconstruct public inputs
         let public_inputs = PublicInputs {
@@ -442,36 +436,38 @@ impl GroveSTARKProver {
         // Step 3: Verify the proof using GroveSTARK's verify method
         self.prover
             .verify(&stark_proof, &public_inputs)
-            .map_err(|e| ProofError::VerificationFailed(e.to_string()))
+            .map_err(|e| GroveSTARKError::VerificationFailed(e.to_string()))
     }
 }
 
 impl ProofDataOutput {
     /// Serialize the proof to JSON string
-    pub fn to_json_string(&self) -> Result<String, ProofError> {
-        serde_json::to_string(self).map_err(|e| ProofError::SerializationError(e.to_string()))
+    pub fn to_json_string(&self) -> Result<String, GroveSTARKError> {
+        serde_json::to_string(self).map_err(|e| GroveSTARKError::SerializationError(e.to_string()))
     }
 
     /// Serialize the proof to base64-encoded JSON
-    pub fn to_base64(&self) -> Result<String, ProofError> {
+    pub fn to_base64(&self) -> Result<String, GroveSTARKError> {
         use base64::{Engine as _, engine::general_purpose};
-        let json_bytes =
-            serde_json::to_vec(self).map_err(|e| ProofError::SerializationError(e.to_string()))?;
+        let json_bytes = serde_json::to_vec(self)
+            .map_err(|e| GroveSTARKError::SerializationError(e.to_string()))?;
         Ok(general_purpose::STANDARD.encode(json_bytes))
     }
 
     /// Deserialize from base64-encoded JSON
-    pub fn from_base64(base64_str: &str) -> Result<Self, ProofError> {
+    pub fn from_base64(base64_str: &str) -> Result<Self, GroveSTARKError> {
         use base64::{Engine as _, engine::general_purpose};
-        let bytes = general_purpose::STANDARD
-            .decode(base64_str)
-            .map_err(|e| ProofError::DeserializationError(format!("Base64 decode error: {}", e)))?;
-        serde_json::from_slice(&bytes).map_err(|e| ProofError::DeserializationError(e.to_string()))
+        let bytes = general_purpose::STANDARD.decode(base64_str).map_err(|e| {
+            GroveSTARKError::DeserializationError(format!("Base64 decode error: {}", e))
+        })?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| GroveSTARKError::DeserializationError(e.to_string()))
     }
 
     /// Deserialize from JSON string
-    pub fn from_json_string(json_str: &str) -> Result<Self, ProofError> {
-        serde_json::from_str(json_str).map_err(|e| ProofError::DeserializationError(e.to_string()))
+    pub fn from_json_string(json_str: &str) -> Result<Self, GroveSTARKError> {
+        serde_json::from_str(json_str)
+            .map_err(|e| GroveSTARKError::DeserializationError(e.to_string()))
     }
 }
 
@@ -491,7 +487,7 @@ fn create_challenge(state_root: &[u8; 32], contract_id: &str, document_id: &str)
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ProofError {
+pub enum GroveSTARKError {
     #[error("Platform error: {0}")]
     Platform(String),
 

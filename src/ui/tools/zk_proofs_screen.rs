@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
-use crate::backend_task::grovestark::ZKProofTask;
+use crate::backend_task::grovestark::GroveStarkTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::RootScreenType;
@@ -269,6 +269,15 @@ impl ZKProofsScreen {
     }
 
     fn generate_proof(&mut self, app_context: &AppContext) -> AppAction {
+        if cfg!(debug_assertions) {
+            self.gen_error_message = Some(
+                "GroveSTARK proof generation requires a release build (cargo run --release)."
+                    .to_string(),
+            );
+            self.is_generating = false;
+            return AppAction::None;
+        }
+
         // Reset any prior messages/results before starting a new generation
         self.is_generating = true;
         self.gen_error_message = None;
@@ -394,7 +403,7 @@ impl ZKProofsScreen {
         };
 
         // Use fixed parameters for simplicity and consistency
-        let task = BackendTask::GroveSTARKTask(ZKProofTask::GenerateProof {
+        let task = BackendTask::GroveSTARKTask(GroveStarkTask::GenerateProof {
             identity_id,
             contract_id,
             document_type,
@@ -408,6 +417,15 @@ impl ZKProofsScreen {
     }
 
     fn verify_proof(&mut self, _app_context: &AppContext) -> AppAction {
+        if cfg!(debug_assertions) {
+            self.verify_error_message = Some(
+                "GroveSTARK proof verification requires a release build (cargo run --release)."
+                    .to_string(),
+            );
+            self.is_verifying = false;
+            return AppAction::None;
+        }
+
         self.is_verifying = true;
         self.verify_error_message = None;
         self.verification_result = None; // Clear any previous results
@@ -426,7 +444,7 @@ impl ZKProofsScreen {
 
         match proof_result {
             Ok(proof_data) => {
-                let task = BackendTask::GroveSTARKTask(ZKProofTask::VerifyProof { proof_data });
+                let task = BackendTask::GroveSTARKTask(GroveStarkTask::VerifyProof { proof_data });
                 AppAction::BackendTask(task)
             }
             Err(e) => {
@@ -475,6 +493,7 @@ impl ZKProofsScreen {
 
     fn render_generation_ui(&mut self, ui: &mut Ui, app_context: &AppContext) -> Option<AppAction> {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let debug_build = cfg!(debug_assertions);
 
         ui.label(
             RichText::new("Contract Membership Circuit")
@@ -489,6 +508,14 @@ impl ZKProofsScreen {
         );
         ui.add_space(Spacing::SM);
         ui.separator();
+
+        if debug_build {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "GroveSTARK proofs require a release build (cargo run --release).",
+            );
+            ui.add_space(Spacing::SM);
+        }
 
         // Step 1: Select Identity
         Frame::new()
@@ -764,7 +791,10 @@ impl ZKProofsScreen {
                     ui.label("Generating ZK proof...");
                 });
             } else if ui
-                .add_enabled(can_generate, Button::new("🔐 Generate Proof"))
+                .add_enabled(
+                    !debug_build && can_generate,
+                    Button::new("🔐 Generate Proof"),
+                )
                 .clicked()
             {
                 action = Some(self.generate_proof(app_context));
@@ -808,6 +838,7 @@ impl ZKProofsScreen {
         app_context: &AppContext,
     ) -> Option<AppAction> {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let debug_build = cfg!(debug_assertions);
 
         ui.label(
             RichText::new("Verify Zero-Knowledge Proof")
@@ -853,7 +884,7 @@ impl ZKProofsScreen {
                 ui.add(egui::widgets::Spinner::new().color(DashColors::DASH_BLUE));
                 ui.label("Verifying ZK proof...");
             } else if ui
-                .add_enabled(can_verify, Button::new("✅ Verify Proof"))
+                .add_enabled(!debug_build && can_verify, Button::new("✅ Verify Proof"))
                 .clicked()
             {
                 action = Some(self.verify_proof(app_context));

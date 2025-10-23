@@ -37,17 +37,17 @@ pub struct ProofMetadata {
     pub security_level: u32,
 }
 
-pub struct GroveStarkIntegration {
+pub struct GroveStarkProver {
     prover: GroveSTARK,
 }
 
-impl Default for GroveStarkIntegration {
+impl Default for GroveStarkProver {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GroveStarkIntegration {
+impl GroveStarkProver {
     pub fn new() -> Self {
         // Use GroveSTARK's default config
         let config = STARKConfig::default();
@@ -70,6 +70,14 @@ impl GroveStarkIntegration {
         private_key: &[u8; 32],
         public_key: &[u8; 32],
     ) -> Result<ProofDataOutput, ProofError> {
+        if cfg!(debug_assertions) {
+            tracing::warn!("GroveSTARK proof generation attempted in debug build; aborting");
+            return Err(ProofError::UnsupportedBuild(
+                "GroveSTARK proof generation requires a release build (cargo run --release)"
+                    .to_string(),
+            ));
+        }
+
         let start_time = Instant::now();
 
         tracing::info!("Starting ZK proof generation");
@@ -411,6 +419,14 @@ impl GroveStarkIntegration {
 
     /// Verify a proof
     pub fn verify_proof(&self, proof_data: &ProofDataOutput) -> Result<bool, ProofError> {
+        if cfg!(debug_assertions) {
+            tracing::warn!("GroveSTARK proof verification attempted in debug build; aborting");
+            return Err(ProofError::UnsupportedBuild(
+                "GroveSTARK proof verification requires a release build (cargo run --release)"
+                    .to_string(),
+            ));
+        }
+
         // Step 1: Deserialize the proof
         let stark_proof: STARKProof = serde_json::from_slice(&proof_data.proof)
             .map_err(|e| ProofError::DeserializationError(e.to_string()))?;
@@ -514,4 +530,7 @@ pub enum ProofError {
 
     #[error("Time error: {0}")]
     TimeError(String),
+
+    #[error("{0}")]
+    UnsupportedBuild(String),
 }

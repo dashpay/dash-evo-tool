@@ -71,21 +71,11 @@ native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
 [dev-dependencies]
-
 tempfile = { version = "3.20.0" }
 egui_kittest = { version = "0.32.0", features = ["eframe"] }
 
 [lints.clippy]
 uninlined_format_args = "allow"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-
-# This ensures grovestark is also optimized
-[profile.release.build-override]
-opt-level = 3
 
 [patch.crates-io]
 elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }

@@ -184,7 +184,7 @@ impl From<RootScreenType> for ScreenType {
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
             RootScreenType::RootScreenToolsGroveSTARKScreen => ScreenType::GroveSTARK,
-            RootScreenType::RootScreenContractsDashPay => ScreenType::ContractsDashPayComingSoon,
+            RootScreenType::RootScreenContractsDashPay => ScreenType::ContractsDashpay,
         }
     }
 }
@@ -226,7 +226,7 @@ pub enum ScreenType {
     ContractsVisualizer,
     PlatformInfo,
     GroveSTARK,
-    ContractsDashPayComingSoon,
+    ContractsDashpay,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -344,7 +344,7 @@ impl ScreenType {
                 Screen::PlatformInfoScreen(PlatformInfoScreen::new(app_context))
             }
             ScreenType::GroveSTARK => Screen::GroveSTARKScreen(GroveSTARKScreen::new(app_context)),
-            ScreenType::ContractsDashPayComingSoon => {
+            ScreenType::ContractsDashpay => {
                 Screen::DashPayComingSoonScreen(DashPayComingSoonScreen::new(app_context))
             }
             ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
@@ -619,7 +619,7 @@ impl Screen {
                 dpns_subscreen: DPNSSubscreen::ScheduledVotes,
                 ..
             }) => ScreenType::ScheduledVotes,
-            Screen::DashPayComingSoonScreen(_) => ScreenType::ContractsDashPayComingSoon,
+            Screen::DashPayComingSoonScreen(_) => ScreenType::ContractsDashpay,
             Screen::TransitionVisualizerScreen(_) => ScreenType::TransitionVisualizer,
             Screen::ContractVisualizerScreen(_) => ScreenType::ContractsVisualizer,
             Screen::WithdrawalScreen(screen) => {

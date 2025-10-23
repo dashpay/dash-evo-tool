@@ -21,12 +21,12 @@ use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
+use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
-use crate::ui::tools::zk_proofs_screen::GroveSTARKScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
@@ -221,7 +221,7 @@ impl AppState {
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
-        let mut zk_proofs_screen = GroveSTARKScreen::new(&mainnet_app_context);
+        let mut grovestark_screen = GroveSTARKScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
@@ -263,7 +263,7 @@ impl AppState {
             document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
             document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-            zk_proofs_screen = GroveSTARKScreen::new(testnet_app_context);
+            grovestark_screen = GroveSTARKScreen::new(testnet_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
             proof_log_screen = ProofLogScreen::new(testnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
@@ -291,7 +291,7 @@ impl AppState {
             document_query_screen = DocumentQueryScreen::new(devnet_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(devnet_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
-            zk_proofs_screen = GroveSTARKScreen::new(devnet_app_context);
+            grovestark_screen = GroveSTARKScreen::new(devnet_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
             proof_log_screen = ProofLogScreen::new(devnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
@@ -315,7 +315,7 @@ impl AppState {
             document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
             document_query_screen = DocumentQueryScreen::new(local_app_context);
-            zk_proofs_screen = GroveSTARKScreen::new(local_app_context);
+            grovestark_screen = GroveSTARKScreen::new(local_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
             proof_log_screen = ProofLogScreen::new(local_app_context);
@@ -452,7 +452,7 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenToolsGroveSTARKScreen,
-                    Screen::GroveSTARKScreen(zk_proofs_screen),
+                    Screen::GroveSTARKScreen(grovestark_screen),
                 ),
                 (
                     RootScreenType::RootScreenDocumentQuery,

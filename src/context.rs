@@ -156,7 +156,9 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
-        let animate = match config.developer_mode.unwrap_or(false) {
+        let developer_mode_enabled = config.developer_mode.unwrap_or(false);
+
+        let animate = match developer_mode_enabled {
             true => {
                 tracing::debug!("developer_mode is enabled, disabling animations");
                 AtomicBool::new(false)
@@ -166,7 +168,7 @@ impl AppContext {
 
         let app_context = AppContext {
             network,
-            developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
+            developer_mode: AtomicBool::new(developer_mode_enabled),
             devnet_name: None,
             db,
             sdk: sdk.into(),

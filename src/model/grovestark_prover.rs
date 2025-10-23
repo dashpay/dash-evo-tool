@@ -335,7 +335,6 @@ impl GroveSTARKProver {
         tracing::info!("Public key (raw bytes): {:?}", public_key_bytes);
         tracing::info!("Message/Challenge (hex): {}", hex::encode(challenge));
         tracing::info!("Message/Challenge (raw bytes): {:?}", challenge);
-        tracing::info!("Private key (hex): {}", hex::encode(private_key));
 
         // Step 8: Use GroveSTARK's new platform proofs V2 API
         tracing::info!("Creating witness with GroveSTARK platform proofs V2...");
@@ -348,7 +347,6 @@ impl GroveSTARKProver {
             &signature_r,             // Signature R component
             &signature_s,             // Signature s component
             &challenge,               // Message to sign
-            private_key,              // Private key
         )
         .map_err(|e| {
             tracing::error!("GroveSTARK witness creation failed: {:?}", e);
@@ -372,7 +370,7 @@ impl GroveSTARKProver {
         };
 
         // Step 9: Generate the STARK proof
-        tracing::info!("Generating STARK proof (this may take 10-30 seconds)...");
+        tracing::info!("Generating STARK proof (this normally takes around 10 seconds)...");
         eprintln!("Rayon thread pool size: {}", rayon::current_num_threads());
         let proof = self
             .prover

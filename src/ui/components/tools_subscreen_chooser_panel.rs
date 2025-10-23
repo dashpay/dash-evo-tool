@@ -63,7 +63,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
             ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
                 ToolsSubscreen::MasternodeListDiff
             }
-            ui::RootScreenType::RootScreenToolsZKProofsScreen => ToolsSubscreen::ZKProofs,
+            ui::RootScreenType::RootScreenToolsGroveStarkScreen => ToolsSubscreen::ZKProofs,
             _ => ToolsSubscreen::PlatformInfo,
         },
         _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
@@ -160,7 +160,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                     }
                                     ToolsSubscreen::ZKProofs => {
                                         action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsZKProofsScreen)
+                                            RootScreenType::RootScreenToolsGroveStarkScreen)
                                     }
                                 }
                             }

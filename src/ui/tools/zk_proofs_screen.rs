@@ -44,7 +44,7 @@ pub struct ProofData {
     pub generation_time: Duration,
 }
 
-pub struct ZKProofsScreen {
+pub struct GroveStarkScreen {
     pub(crate) app_context: Arc<AppContext>,
     mode: ProofMode,
 
@@ -75,7 +75,7 @@ pub struct ZKProofsScreen {
     verify_error_message: Option<String>,
 }
 
-impl ZKProofsScreen {
+impl GroveStarkScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         // Load initial qualified identities
         let qualified_identities = app_context
@@ -957,7 +957,7 @@ impl ZKProofsScreen {
     }
 }
 
-impl ScreenLike for ZKProofsScreen {
+impl ScreenLike for GroveStarkScreen {
     fn refresh(&mut self) {
         // Refresh implementation if needed
     }
@@ -1053,7 +1053,7 @@ impl ScreenLike for ZKProofsScreen {
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenToolsZKProofsScreen,
+            RootScreenType::RootScreenToolsGroveStarkScreen,
         );
 
         // Add tools subscreen chooser panel

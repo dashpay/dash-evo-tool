@@ -33,7 +33,7 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
-use grovestark::GroveStarkTask;
+use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -64,7 +64,7 @@ pub enum BackendTask {
     SystemTask(SystemTask),
     MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
-    GroveSTARKTask(GroveStarkTask),
+    GroveSTARKTask(GroveSTARKTask),
     None,
 }
 

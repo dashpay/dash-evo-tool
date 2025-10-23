@@ -27,7 +27,7 @@ use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
-use crate::ui::tools::zk_proofs_screen::GroveStarkScreen;
+use crate::ui::tools::zk_proofs_screen::GroveSTARKScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
@@ -93,7 +93,7 @@ pub enum RootScreenType {
     RootScreenToolsMasternodeListDiffScreen,
     RootScreenToolsContractVisualizerScreen,
     RootScreenToolsPlatformInfoScreen,
-    RootScreenToolsGroveStarkScreen,
+    RootScreenToolsGroveSTARKScreen,
     RootScreenContractsDashPay,
 }
 
@@ -121,7 +121,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsPlatformInfoScreen => 17,
             RootScreenType::RootScreenToolsMasternodeListDiffScreen => 18,
             RootScreenType::RootScreenContractsDashPay => 19,
-            RootScreenType::RootScreenToolsGroveStarkScreen => 20,
+            RootScreenType::RootScreenToolsGroveSTARKScreen => 20,
         }
     }
 
@@ -148,7 +148,7 @@ impl RootScreenType {
             17 => Some(RootScreenType::RootScreenToolsPlatformInfoScreen),
             18 => Some(RootScreenType::RootScreenToolsMasternodeListDiffScreen),
             19 => Some(RootScreenType::RootScreenContractsDashPay),
-            20 => Some(RootScreenType::RootScreenToolsGroveStarkScreen),
+            20 => Some(RootScreenType::RootScreenToolsGroveSTARKScreen),
             _ => None,
         }
     }
@@ -183,7 +183,7 @@ impl From<RootScreenType> for ScreenType {
                 ScreenType::ContractsVisualizer
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
-            RootScreenType::RootScreenToolsGroveStarkScreen => ScreenType::ZKProofs,
+            RootScreenType::RootScreenToolsGroveSTARKScreen => ScreenType::ZKProofs,
             RootScreenType::RootScreenContractsDashPay => ScreenType::ContractsDashPayComingSoon,
         }
     }
@@ -343,7 +343,7 @@ impl ScreenType {
             ScreenType::PlatformInfo => {
                 Screen::PlatformInfoScreen(PlatformInfoScreen::new(app_context))
             }
-            ScreenType::ZKProofs => Screen::GroveStarkScreen(GroveStarkScreen::new(app_context)),
+            ScreenType::ZKProofs => Screen::GroveSTARKScreen(GroveSTARKScreen::new(app_context)),
             ScreenType::ContractsDashPayComingSoon => {
                 Screen::DashPayComingSoonScreen(DashPayComingSoonScreen::new(app_context))
             }
@@ -474,7 +474,7 @@ pub enum Screen {
     ProofVisualizerScreen(ProofVisualizerScreen),
     MasternodeListDiffScreen(MasternodeListDiffScreen),
     PlatformInfoScreen(PlatformInfoScreen),
-    GroveStarkScreen(GroveStarkScreen),
+    GroveSTARKScreen(GroveSTARKScreen),
 
     // Token Screens
     TokensScreen(Box<TokensScreen>),
@@ -535,7 +535,7 @@ impl Screen {
             }
             Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::PlatformInfoScreen(screen) => screen.app_context = app_context,
-            Screen::GroveStarkScreen(screen) => screen.app_context = app_context,
+            Screen::GroveSTARKScreen(screen) => screen.app_context = app_context,
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.app_context = app_context,
@@ -653,7 +653,7 @@ impl Screen {
             Screen::MasternodeListDiffScreen(_) => ScreenType::MasternodeListDiff,
             Screen::DocumentVisualizerScreen(_) => ScreenType::DocumentsVisualizer,
             Screen::PlatformInfoScreen(_) => ScreenType::PlatformInfo,
-            Screen::GroveStarkScreen(_) => ScreenType::ZKProofs,
+            Screen::GroveSTARKScreen(_) => ScreenType::ZKProofs,
 
             // Token Screens
             Screen::TokensScreen(screen)
@@ -752,7 +752,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.refresh(),
             Screen::ContractVisualizerScreen(screen) => screen.refresh(),
             Screen::PlatformInfoScreen(screen) => screen.refresh(),
-            Screen::GroveStarkScreen(screen) => screen.refresh(),
+            Screen::GroveSTARKScreen(screen) => screen.refresh(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh(),
@@ -804,7 +804,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::ContractVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::PlatformInfoScreen(screen) => screen.refresh_on_arrival(),
-            Screen::GroveStarkScreen(screen) => screen.refresh_on_arrival(),
+            Screen::GroveSTARKScreen(screen) => screen.refresh_on_arrival(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.refresh_on_arrival(),
@@ -856,7 +856,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.ui(ctx),
             Screen::ContractVisualizerScreen(screen) => screen.ui(ctx),
             Screen::PlatformInfoScreen(screen) => screen.ui(ctx),
-            Screen::GroveStarkScreen(screen) => screen.ui(ctx),
+            Screen::GroveSTARKScreen(screen) => screen.ui(ctx),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.ui(ctx),
@@ -924,7 +924,7 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             Screen::PlatformInfoScreen(screen) => screen.display_message(message, message_type),
-            Screen::GroveStarkScreen(screen) => screen.display_message(message, message_type),
+            Screen::GroveSTARKScreen(screen) => screen.display_message(message, message_type),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.display_message(message, message_type),
@@ -1032,7 +1032,7 @@ impl ScreenLike for Screen {
             Screen::PlatformInfoScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
-            Screen::GroveStarkScreen(screen) => {
+            Screen::GroveSTARKScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
 
@@ -1112,7 +1112,7 @@ impl ScreenLike for Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::ContractVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::PlatformInfoScreen(screen) => screen.pop_on_success(),
-            Screen::GroveStarkScreen(screen) => screen.pop_on_success(),
+            Screen::GroveSTARKScreen(screen) => screen.pop_on_success(),
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.pop_on_success(),

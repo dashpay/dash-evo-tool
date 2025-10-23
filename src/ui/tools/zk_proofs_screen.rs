@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
-use crate::backend_task::grovestark::GroveStarkTask;
+use crate::backend_task::grovestark::GroveSTARKTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::RootScreenType;
@@ -44,7 +44,7 @@ pub struct ProofData {
     pub generation_time: Duration,
 }
 
-pub struct GroveStarkScreen {
+pub struct GroveSTARKScreen {
     pub(crate) app_context: Arc<AppContext>,
     mode: ProofMode,
 
@@ -75,7 +75,7 @@ pub struct GroveStarkScreen {
     verify_error_message: Option<String>,
 }
 
-impl GroveStarkScreen {
+impl GroveSTARKScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         // Load initial qualified identities
         let qualified_identities = app_context
@@ -403,7 +403,7 @@ impl GroveStarkScreen {
         };
 
         // Use fixed parameters for simplicity and consistency
-        let task = BackendTask::GroveSTARKTask(GroveStarkTask::GenerateProof {
+        let task = BackendTask::GroveSTARKTask(GroveSTARKTask::GenerateProof {
             identity_id,
             contract_id,
             document_type,
@@ -444,7 +444,7 @@ impl GroveStarkScreen {
 
         match proof_result {
             Ok(proof_data) => {
-                let task = BackendTask::GroveSTARKTask(GroveStarkTask::VerifyProof { proof_data });
+                let task = BackendTask::GroveSTARKTask(GroveSTARKTask::VerifyProof { proof_data });
                 AppAction::BackendTask(task)
             }
             Err(e) => {
@@ -957,7 +957,7 @@ impl GroveStarkScreen {
     }
 }
 
-impl ScreenLike for GroveStarkScreen {
+impl ScreenLike for GroveSTARKScreen {
     fn refresh(&mut self) {
         // Refresh implementation if needed
     }
@@ -1053,7 +1053,7 @@ impl ScreenLike for GroveStarkScreen {
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenToolsGroveStarkScreen,
+            RootScreenType::RootScreenToolsGroveSTARKScreen,
         );
 
         // Add tools subscreen chooser panel

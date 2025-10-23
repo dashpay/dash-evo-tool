@@ -37,17 +37,17 @@ pub struct ProofMetadata {
     pub security_level: u32,
 }
 
-pub struct GroveStarkProver {
+pub struct GroveSTARKProver {
     prover: GroveSTARK,
 }
 
-impl Default for GroveStarkProver {
+impl Default for GroveSTARKProver {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GroveStarkProver {
+impl GroveSTARKProver {
     pub fn new() -> Self {
         // Use GroveSTARK's default config
         let config = STARKConfig::default();

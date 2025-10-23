@@ -1,13 +1,13 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::proofs::grovestark_integration::{GroveStarkProver, ProofDataOutput};
+use crate::proofs::grovestark_integration::{GroveSTARKProver, ProofDataOutput};
 use dash_sdk::Sdk;
 
 pub async fn run_grovestark_task(
-    task: GroveStarkTask,
+    task: GroveSTARKTask,
     sdk: &Sdk,
 ) -> Result<BackendTaskSuccessResult, String> {
     match task {
-        GroveStarkTask::GenerateProof {
+        GroveSTARKTask::GenerateProof {
             identity_id,
             contract_id,
             document_type,
@@ -16,7 +16,7 @@ pub async fn run_grovestark_task(
             private_key,
             public_key,
         } => {
-            let prover = GroveStarkProver::new();
+            let prover = GroveSTARKProver::new();
 
             match prover
                 .generate_proof(
@@ -35,8 +35,8 @@ pub async fn run_grovestark_task(
                 Err(e) => Err(format!("Failed to generate proof: {}", e)),
             }
         }
-        GroveStarkTask::VerifyProof { proof_data } => {
-            let prover = GroveStarkProver::new();
+        GroveSTARKTask::VerifyProof { proof_data } => {
+            let prover = GroveSTARKProver::new();
 
             match prover.verify_proof(&proof_data) {
                 Ok(is_valid) => Ok(BackendTaskSuccessResult::VerifiedZKProof(
@@ -49,7 +49,7 @@ pub async fn run_grovestark_task(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GroveStarkTask {
+pub enum GroveSTARKTask {
     GenerateProof {
         identity_id: String,
         contract_id: String,

@@ -67,13 +67,13 @@ pub struct AppState {
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub mainnet_core_zmq_listener: CoreZMQListener,
+    pub mainnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub testnet_core_zmq_listener: CoreZMQListener,
+    pub testnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub devnet_core_zmq_listener: CoreZMQListener,
+    pub devnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub local_core_zmq_listener: CoreZMQListener,
+    pub local_core_zmq_listener: Option<CoreZMQListener>,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -339,13 +339,25 @@ impl AppState {
             .core_zmq_endpoint
             .clone()
             .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
-        let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Dash,
-            &mainnet_core_zmq_endpoint,
-            core_message_sender.clone(), // Clone the sender for each listener
-            Some(mainnet_app_context.sx_zmq_status.clone()),
-        )
-        .expect("Failed to create mainnet InstantSend listener");
+        let mainnet_disable_zmq = mainnet_app_context
+            .get_settings()
+            .ok()
+            .flatten()
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Dash,
+                    &mainnet_core_zmq_endpoint,
+                    core_message_sender.clone(), // Clone the sender for each listener
+                    Some(mainnet_app_context.sx_zmq_status.clone()),
+                )
+                .expect("Failed to create mainnet InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         let testnet_tx_zmq_status_option = testnet_app_context
             .as_ref()
@@ -355,13 +367,24 @@ impl AppState {
             .as_ref()
             .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:23709".to_string());
-        let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Testnet,
-            &testnet_core_zmq_endpoint,
-            core_message_sender.clone(), // Use the original sender or create a new one if needed
-            testnet_tx_zmq_status_option,
-        )
-        .expect("Failed to create testnet InstantSend listener");
+        let testnet_disable_zmq = testnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.get_settings().ok().flatten())
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let testnet_core_zmq_listener = if !testnet_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Testnet,
+                    &testnet_core_zmq_endpoint,
+                    core_message_sender.clone(), // Use the original sender or create a new one if needed
+                    testnet_tx_zmq_status_option,
+                )
+                .expect("Failed to create testnet InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         let devnet_tx_zmq_status_option = devnet_app_context
             .as_ref()
@@ -371,13 +394,24 @@ impl AppState {
             .as_ref()
             .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:23710".to_string());
-        let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Devnet,
-            &devnet_core_zmq_endpoint,
-            core_message_sender.clone(),
-            devnet_tx_zmq_status_option,
-        )
-        .expect("Failed to create devnet InstantSend listener");
+        let devnet_disable_zmq = devnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.get_settings().ok().flatten())
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let devnet_core_zmq_listener = if !devnet_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Devnet,
+                    &devnet_core_zmq_endpoint,
+                    core_message_sender.clone(),
+                    devnet_tx_zmq_status_option,
+                )
+                .expect("Failed to create devnet InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         let local_tx_zmq_status_option = local_app_context
             .as_ref()
@@ -387,13 +421,24 @@ impl AppState {
             .as_ref()
             .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:20302".to_string());
-        let local_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Regtest,
-            &local_core_zmq_endpoint,
-            core_message_sender,
-            local_tx_zmq_status_option,
-        )
-        .expect("Failed to create local InstantSend listener");
+        let local_disable_zmq = local_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.get_settings().ok().flatten())
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let local_core_zmq_listener = if !local_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Regtest,
+                    &local_core_zmq_endpoint,
+                    core_message_sender,
+                    local_tx_zmq_status_option,
+                )
+                .expect("Failed to create local InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         Self {
             main_screens: [

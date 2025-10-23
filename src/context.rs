@@ -2,7 +2,8 @@ use crate::app_dir::core_cookie_path;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
-use crate::context_provider::Provider;
+use crate::context_provider::Provider as RpcProvider;
+use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
 use crate::model::password_info::PasswordInfo;
@@ -11,6 +12,8 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::spv::WatchOnlyWalletAttachment;
+use crate::spv::{CoreBackendMode, SpvManager};
 use crate::ui::RootScreenType;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::utils::tasks::TaskManager;
@@ -26,6 +29,7 @@ use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -37,7 +41,7 @@ use dash_sdk::query_types::IndexMap;
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
@@ -56,7 +60,10 @@ pub struct AppContext {
     pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
-    pub(crate) config: RwLock<NetworkConfig>,
+    // Context providers for SDK, so we can switch when backend mode changes
+    spv_context_provider: RwLock<SpvProvider>,
+    rpc_context_provider: RwLock<RpcProvider>,
+    pub(crate) config: Arc<RwLock<NetworkConfig>>,
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
     pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
@@ -80,6 +87,8 @@ pub struct AppContext {
     cached_settings: RwLock<Option<Settings>>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
+    pub(crate) spv_manager: Arc<SpvManager>,
+    core_backend_mode: AtomicU8,
 }
 
 impl AppContext {
@@ -98,13 +107,17 @@ impl AppContext {
         };
 
         let network_config = config.config_for_network(network).clone()?;
+        let config_lock = Arc::new(RwLock::new(network_config.clone()));
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
-        // we create provider, but we need to set app context to it later, as we have a circular dependency
-        let provider =
-            Provider::new(db.clone(), network, &network_config).expect("Failed to initialize SDK");
+        // Create both providers; bind to app context later (post construction) due to circularity
+        let spv_provider =
+            SpvProvider::new(db.clone(), network).expect("Failed to initialize SPV provider");
+        let rpc_provider = RpcProvider::new(db.clone(), network, &network_config)
+            .expect("Failed to initialize RPC provider");
 
-        let sdk = initialize_sdk(&network_config, network, provider.clone());
+        // Default to SPV provider initially; UI can switch backend after
+        let sdk = initialize_sdk(&network_config, network, spv_provider.clone());
         let platform_version = sdk.version();
 
         let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
@@ -164,13 +177,24 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
+        let spv_manager = match SpvManager::new(network, Arc::clone(&config_lock), subtasks.clone())
+        {
+            Ok(manager) => manager,
+            Err(err) => {
+                tracing::error!(?err, ?network, "Failed to initialize SPV manager");
+                return None;
+            }
+        };
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
             devnet_name: None,
             db,
             sdk: sdk.into(),
-            config: network_config.into(),
+            spv_context_provider: spv_provider.into(),
+            rpc_context_provider: rpc_provider.into(),
+            config: config_lock,
             sx_zmq_status,
             rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
@@ -186,10 +210,32 @@ impl AppContext {
             animate,
             cached_settings: RwLock::new(None),
             subtasks,
+            spv_manager,
+            core_backend_mode: AtomicU8::new(CoreBackendMode::Spv.as_u8()),
         };
 
         let app_context = Arc::new(app_context);
-        provider.bind_app_context(app_context.clone());
+        // Bind providers to the newly created app_context.
+        // Only the active provider is registered with the SDK here (SPV by default).
+        app_context
+            .spv_context_provider
+            .read()
+            .unwrap()
+            .bind_app_context(app_context.clone());
+
+        // If defaulting to RPC is desired, swap provider after binding.
+        if app_context.core_backend_mode() == CoreBackendMode::Rpc {
+            app_context
+                .rpc_context_provider
+                .read()
+                .unwrap()
+                .bind_app_context(app_context.clone());
+        } else {
+            // Ensure SDK uses the SPV provider
+            let sdk_lock = app_context.sdk.write().expect("SDK lock poisoned");
+            let provider = app_context.spv_context_provider.read().unwrap().clone();
+            sdk_lock.set_context_provider(provider);
+        }
 
         Some(app_context)
     }
@@ -205,6 +251,257 @@ impl AppContext {
         self.developer_mode.store(enable, Ordering::Relaxed);
         // Animations are reverse of developer mode
         self.enable_animations(!enable);
+    }
+
+    pub fn core_backend_mode(&self) -> CoreBackendMode {
+        self.core_backend_mode.load(Ordering::Relaxed).into()
+    }
+
+    pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.core_backend_mode
+            .store(mode.as_u8(), Ordering::Relaxed);
+
+        // Switch SDK context provider to match the selected backend
+        match mode {
+            CoreBackendMode::Spv => {
+                // Make sure SPV provider knows about the app context
+                self.spv_context_provider
+                    .read()
+                    .unwrap()
+                    .bind_app_context(Arc::clone(self));
+                let sdk = self.sdk.write().expect("SDK lock poisoned");
+                let provider = self.spv_context_provider.read().unwrap().clone();
+                sdk.set_context_provider(provider);
+            }
+            CoreBackendMode::Rpc => {
+                // RPC provider binding also sets itself on the SDK
+                self.rpc_context_provider
+                    .read()
+                    .unwrap()
+                    .bind_app_context(Arc::clone(self));
+            }
+        }
+    }
+
+    pub fn spv_manager(&self) -> &Arc<SpvManager> {
+        &self.spv_manager
+    }
+
+    pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
+        self.spv_manager.start()?;
+        self.spv_attach_current_wallets();
+        self.spv_setup_reconcile_listener();
+        Ok(())
+    }
+
+    pub fn spv_attach_current_wallets(&self) {
+        // Build attachment from current wallets and schedule attach.
+        let spv = Arc::clone(&self.spv_manager);
+        let network = self.network;
+        let wallets_snapshot = {
+            let wallets = self.wallets.read().unwrap();
+            wallets.clone()
+        };
+        let attachment = WatchOnlyWalletAttachment::from_wallets(network, &wallets_snapshot);
+        let subtasks = self.subtasks.clone();
+        subtasks.spawn_sync(async move {
+            if let Err(e) = spv.attach_watch_only_accounts(attachment).await {
+                tracing::warn!("Failed to attach watch-only wallets to SPV: {}", e);
+            }
+        });
+    }
+
+    /// Subscribe to SPV reconcile signals and debounce updates.
+    pub fn spv_setup_reconcile_listener(self: &Arc<Self>) {
+        use tokio::time::{Duration, Instant, sleep};
+        let rx = self.spv_manager.register_reconcile_channel();
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync(async move {
+            tokio::pin!(rx);
+            let mut last = Instant::now();
+            loop {
+                tokio::select! {
+                    maybe = rx.recv() => {
+                        if maybe.is_none() { break; }
+                        // simple debounce window
+                        if last.elapsed() > Duration::from_millis(300) {
+                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            last = Instant::now();
+                        } else {
+                            sleep(Duration::from_millis(300)).await;
+                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            last = Instant::now();
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Reconcile SPV wallet state into DET.
+    pub async fn reconcile_spv_wallets(&self) -> Result<(), String> {
+        let wm_arc = self.spv_manager.wallet();
+        let wm = wm_arc.read().await;
+        let mapping = self.spv_manager.det_wallets_snapshot();
+
+        // Take a snapshot of known addresses per wallet so we can scope DB updates
+        let wallets_guard = self.wallets.read().unwrap();
+
+        for (seed_hash, wallet_id) in mapping.iter() {
+            // Log total balance for visibility
+            let balance = wm
+                .get_wallet_balance(wallet_id)
+                .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
+            tracing::debug!(wallet = %hex::encode(seed_hash), confirmed = balance.confirmed, unconfirmed = balance.unconfirmed, total = balance.total, "SPV balance snapshot");
+
+            // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
+            let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> =
+                if let Some(wref) = wallets_guard.get(seed_hash) {
+                    let w = wref.read().unwrap();
+                    w.known_addresses.keys().cloned().collect()
+                } else {
+                    continue;
+                };
+
+            // Clear existing UTXOs for these addresses in this network
+            for addr in &known_addresses {
+                let _ = self.db.execute(
+                    "DELETE FROM utxos WHERE address = ? AND network = ?",
+                    rusqlite::params![addr.to_string(), self.network.to_string()],
+                );
+            }
+
+            // Read current UTXOs from SPV and re-insert, registering unknown addresses if derivation metadata is available
+            let utxos = wm
+                .wallet_utxos(wallet_id)
+                .map_err(|e| format!("wallet_utxos failed: {e}"))?;
+
+            use dash_sdk::dpp::dashcore::Address as CoreAddress;
+            // no-op
+
+            let mut per_address_sum: std::collections::BTreeMap<CoreAddress, u64> =
+                Default::default();
+
+            for u in utxos {
+                // Best-effort accessors for outpoint/txout; adjust if API differs
+                // Try field access (common struct layout): `outpoint` + `txout`
+                let outpoint = u.outpoint;
+                let tx_out = u.txout.clone();
+
+                // Derive address from script
+                let address = match CoreAddress::from_script(&tx_out.script_pubkey, self.network) {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+
+                // If address unknown to DET, try to register using SPV metadata
+                if !known_addresses.contains(&address) {
+                    if let Some(info) = wm.get_wallet_info(wallet_id) {
+                        // Map network for accounts lookup if required by API
+                        let net = match self.network {
+                            dash_sdk::dpp::dashcore::Network::Dash => {
+                                dash_sdk::dpp::key_wallet::Network::Dash
+                            }
+                            dash_sdk::dpp::dashcore::Network::Testnet => {
+                                dash_sdk::dpp::key_wallet::Network::Testnet
+                            }
+                            dash_sdk::dpp::dashcore::Network::Devnet => {
+                                dash_sdk::dpp::key_wallet::Network::Devnet
+                            }
+                            dash_sdk::dpp::dashcore::Network::Regtest => {
+                                dash_sdk::dpp::key_wallet::Network::Regtest
+                            }
+                            _ => dash_sdk::dpp::key_wallet::Network::Dash,
+                        };
+                        if let Some(collection) = info.accounts(net) {
+                            let mut registered = false;
+                            for acc in collection.all_accounts() {
+                                if let Some(ai) = acc.get_address_info(&address) {
+                                    use crate::model::wallet::{
+                                        DerivationPathReference, DerivationPathType,
+                                    };
+
+                                    let path_reference = DerivationPathReference::BIP44;
+                                    let path_type = DerivationPathType::CLEAR_FUNDS; // minimal classification
+
+                                    // Insert into DB (idempotent) and update in-memory wallet model
+                                    if let Some(wref) = wallets_guard.get(seed_hash)
+                                        && let Ok(mut w) = wref.write()
+                                    {
+                                        let _ = self.db.add_address_if_not_exists(
+                                            seed_hash,
+                                            &address,
+                                            &self.network,
+                                            &ai.path,
+                                            path_reference,
+                                            path_type,
+                                            None,
+                                        );
+                                        // Update in-memory maps
+                                        use crate::model::wallet::AddressInfo as WalletAddressInfo;
+                                        w.known_addresses.insert(address.clone(), ai.path.clone());
+                                        w.watched_addresses.insert(
+                                            ai.path.clone(),
+                                            WalletAddressInfo {
+                                                address: address.clone(),
+                                                path_type,
+                                                path_reference,
+                                            },
+                                        );
+                                        known_addresses.insert(address.clone());
+                                        registered = true;
+                                    }
+                                    if registered {
+                                        break;
+                                    }
+                                }
+                            }
+                            if !registered {
+                                // SPV has no derivation metadata for this address under this wallet; skip it.
+                                continue;
+                            }
+                        } else {
+                            // No accounts collection; skip registration
+                            continue;
+                        }
+                    } else {
+                        // No wallet info available; skip registration
+                        continue;
+                    }
+                }
+
+                // Insert UTXO row
+                self.db
+                    .insert_utxo(
+                        outpoint.txid.as_ref(),
+                        outpoint.vout,
+                        &address,
+                        tx_out.value,
+                        &tx_out.script_pubkey.to_bytes(),
+                        self.network,
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                // Sum per address for balance update
+                *per_address_sum.entry(address).or_default() += tx_out.value;
+            }
+
+            // Write per-address balances into DB and wallet model
+            if let Some(wref) = wallets_guard.get(seed_hash)
+                && let Ok(mut w) = wref.write()
+            {
+                for (addr, sum) in per_address_sum.into_iter() {
+                    // Update wallet and DB through model helper
+                    let _ = w.update_address_balance(&addr, sum, self);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn stop_spv(&self) {
+        self.spv_manager.stop();
     }
 
     pub fn is_developer_mode(&self) -> bool {
@@ -260,10 +557,25 @@ impl AppContext {
         )
         .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
 
-        // 3. Rebuild the Sdk with the updated config
-        let provider = Provider::new(self.db.clone(), self.network, &cfg)
-            .map_err(|e| format!("Failed to init provider: {e}"))?;
-        let new_sdk = initialize_sdk(&cfg, self.network, provider.clone());
+        // 3. Rebuild the Sdk with the updated config and current backend mode
+        let new_sdk = match self.core_backend_mode() {
+            CoreBackendMode::Spv => {
+                // Reuse existing SPV provider (rebinding below to ensure context is set)
+                let provider = self.spv_context_provider.read().unwrap().clone();
+                initialize_sdk(&cfg, self.network, provider)
+            }
+            CoreBackendMode::Rpc => {
+                // Create a fresh RPC provider with the new config
+                let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
+                    .map_err(|e| format!("Failed to init RPC provider: {e}"))?;
+                // Swap in the updated RPC provider for future switches
+                {
+                    let mut guard = self.rpc_context_provider.write().unwrap();
+                    *guard = rpc_provider.clone();
+                }
+                initialize_sdk(&cfg, self.network, rpc_provider)
+            }
+        };
 
         // 4. Swap them in
         {
@@ -278,8 +590,21 @@ impl AppContext {
             *sdk_lock = new_sdk;
         }
 
-        // Rebind the provider to the new app context
-        provider.bind_app_context(self.clone());
+        // Rebind providers to ensure they hold the new AppContext reference
+        self.spv_context_provider
+            .read()
+            .unwrap()
+            .bind_app_context(self.clone());
+        if self.core_backend_mode() == CoreBackendMode::Rpc {
+            self.rpc_context_provider
+                .read()
+                .unwrap()
+                .bind_app_context(self.clone());
+        } else {
+            let sdk_lock = self.sdk.write().expect("SDK lock poisoned");
+            let provider = self.spv_context_provider.read().unwrap().clone();
+            sdk_lock.set_context_provider(provider);
+        }
 
         Ok(())
     }
@@ -509,6 +834,12 @@ impl AppContext {
 
         self.db
             .update_dash_core_execution_settings(custom_dash_qt_path, overwrite_dash_conf)
+    }
+
+    /// Updates the disable_zmq flag in settings
+    pub fn update_disable_zmq(&self, disable: bool) -> Result<()> {
+        let _guard = self.invalidate_settings_cache();
+        self.db.update_disable_zmq(disable)
     }
 
     /// Invalidates the settings cache and returns a guard

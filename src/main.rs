@@ -16,7 +16,7 @@ fn main() -> eframe::Result<()> {
     check_cpu_compatibility();
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(40)
+        .worker_threads(12)
         .enable_all()
         .build()
         .expect("multi-threading runtime cannot be initialized");

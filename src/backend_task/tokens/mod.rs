@@ -720,6 +720,8 @@ impl AppContext {
                 let mut validation_operations = Vec::new();
                 match dash_sdk::dpp::data_contract::document_type::DocumentType::try_from_schema(
                     contract_id,
+                    0,
+                    0,
                     &name,
                     platform_value,
                     None, // schema_defs

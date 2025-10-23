@@ -1244,6 +1244,7 @@ impl DocumentActionScreen {
             id,
             properties,
             owner_id,
+            creator_id: None,
             revision,
             created_at: None,
             updated_at: None,
@@ -1412,6 +1413,7 @@ impl DocumentActionScreen {
             id: original_doc.id(),
             properties,
             owner_id: original_doc.owner_id(),
+            creator_id: original_doc.creator_id(),
             revision: new_revision,
             created_at: None,
             updated_at: None,
@@ -1468,6 +1470,12 @@ impl ScreenLike for DocumentActionScreen {
             ctx,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
+        );
+
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
         );
 
         action |= island_central_panel(ctx, |ui| match &self.broadcast_status {

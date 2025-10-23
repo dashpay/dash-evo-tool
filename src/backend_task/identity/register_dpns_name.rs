@@ -60,6 +60,7 @@ impl AppContext {
         let preorder_document = Document::V0(DocumentV0 {
             id: preorder_id,
             owner_id: qualified_identity.identity.id(),
+            creator_id: None,
             properties: BTreeMap::from([(
                 "saltedDomainHash".to_string(),
                 salted_domain_hash.into(),
@@ -79,6 +80,7 @@ impl AppContext {
         let domain_document = Document::V0(DocumentV0 {
             id: domain_id,
             owner_id: qualified_identity.identity.id(),
+            creator_id: None,
             properties: BTreeMap::from([
                 ("parentDomainName".to_string(), "dash".into()),
                 ("normalizedParentDomainName".to_string(), "dash".into()),

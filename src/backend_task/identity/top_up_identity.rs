@@ -1,4 +1,3 @@
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::context::AppContext;
@@ -21,7 +20,6 @@ impl AppContext {
     pub(super) async fn top_up_identity(
         &self,
         input: IdentityTopUpInfo,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let IdentityTopUpInfo {
             mut qualified_identity,
@@ -330,13 +328,6 @@ impl AppContext {
                 )
                 .map_err(|e| e.to_string())?;
         }
-
-        sender
-            .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::None,
-            )))
-            .await
-            .map_err(|e| e.to_string())?;
 
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,

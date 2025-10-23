@@ -918,104 +918,6 @@ impl NetworkChooserScreen {
                                     ui.end_row();
                                 }
                             }
-                        } else if let Some(progress) = &snapshot.sync_progress {
-                            // Current sync heights
-                            ui.label(
-                                egui::RichText::new("Synced:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(format!(
-                                "Headers: {} | Filters: {}",
-                                progress.header_height, progress.filter_header_height
-                            ));
-                            ui.end_row();
-
-                            // Peers
-                            if progress.peer_count > 0 {
-                                ui.label(
-                                    egui::RichText::new("Peers:")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                                ui.label(format!("{}", progress.peer_count));
-                                ui.end_row();
-                            }
-
-                            // Add separator between stats and progress bars
-                            ui.separator();
-                            ui.separator();
-                            ui.end_row();
-
-                            // Progress bars for different components
-                            // Headers progress bar
-                            ui.label(
-                                egui::RichText::new("Headers:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            let headers_progress = self.calculate_headers_progress(snapshot);
-                            ui.add(egui::ProgressBar::new(headers_progress).show_percentage());
-                            ui.end_row();
-
-                            // Masternode Lists progress bar (estimate based on sync stage)
-                            ui.label(
-                                egui::RichText::new("Masternode Lists:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            let mn_progress = self.calculate_mn_progress(snapshot);
-                            ui.add(egui::ProgressBar::new(mn_progress).show_percentage());
-                            ui.end_row();
-
-                            // Blocks/Filters progress bar
-                            ui.label(
-                                egui::RichText::new("Blocks:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            let blocks_progress = self.calculate_blocks_progress(snapshot);
-                            ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
-                            ui.end_row();
-
-                            // Additionally show event-driven overall progress if available
-                            if let Some(ev) = &snapshot.sync_progress {
-                                ui.label(
-                                    egui::RichText::new("Overall Progress:")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                                let overall = (ev.filter_header_height as f32
-                                    / ev.header_height.max(1) as f32)
-                                    .clamp(0.0, 1.0);
-                                ui.add(egui::ProgressBar::new(overall).show_percentage());
-                                ui.end_row();
-
-                                ui.label(
-                                    egui::RichText::new("Synced:")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                                ui.label(format!(
-                                    "{} / {}",
-                                    ev.header_height, ev.filter_header_height
-                                ));
-                                ui.end_row();
-                            }
-                        } else if let Some(ev) = &snapshot.sync_progress {
-                            let overall = (ev.filter_header_height as f32
-                                / ev.header_height.max(1) as f32)
-                                .clamp(0.0, 1.0);
-
-                            ui.label(
-                                egui::RichText::new("Overall Progress:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.add(egui::ProgressBar::new(overall as f32).show_percentage());
-                            ui.end_row();
-
-                            ui.label(
-                                egui::RichText::new("Synced:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(format!(
-                                "{} / {}",
-                                ev.header_height, ev.filter_header_height
-                            ));
-                            ui.end_row();
                         }
                     });
             });
@@ -1042,16 +944,6 @@ impl NetworkChooserScreen {
             // Estimate based on filter progress
             if ev.filter_header_height > 0 && ev.header_height > 0 {
                 (ev.filter_header_height as f32 / ev.header_height as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            }
-        } else if let Some(progress) = &snapshot.sync_progress {
-            // Estimate based on sync progress
-            if progress.filter_header_height > 0 {
-                1.0 // Headers done if we have filters
-            } else if progress.header_height > 0 {
-                // Keep legacy placeholder at 50% if we only know header height
-                0.5
             } else {
                 0.0
             }

@@ -731,12 +731,18 @@ impl SpvManager {
         >,
         String,
     > {
+        let start_height = {
+            let guard = self.wallet.read().await;
+            if guard.wallet_count() == 0 {
+                u32::MAX
+            } else {
+                0
+            }
+        };
         let mut config = ClientConfig::new(self.network)
             .with_storage_path(self.data_dir.clone())
             .with_validation_mode(ValidationMode::Full)
-            // Start from the latest built-in checkpoint instead of genesis
-            // (effective only when storage is empty / first initialization)
-            .with_start_height(u32::MAX);
+            .with_start_height(start_height);
 
         // Pin peers when running against local nodes to avoid random peers.
         if self.network == Network::Devnet || self.network == Network::Regtest {

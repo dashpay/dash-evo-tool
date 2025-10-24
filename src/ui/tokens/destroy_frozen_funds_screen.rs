@@ -168,17 +168,17 @@ impl DestroyFrozenFundsScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        if group.is_some()
+            && let Some((_, group)) = group.clone()
+        {
+            let your_power = group
+                .members()
+                .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                is_unilateral_group_member = true;
             }
         };
 
@@ -379,13 +379,12 @@ impl ScreenLike for DestroyFrozenFundsScreen {
 
     fn refresh(&mut self) {
         // Reload the identity data if needed
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
-            {
-                self.identity = updated_identity;
-            }
+        {
+            self.identity = updated_identity;
         }
     }
 

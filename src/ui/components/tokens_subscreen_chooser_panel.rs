@@ -27,18 +27,15 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
     let dark_mode = ctx.style().visuals.dark_mode;
 
     SidePanel::left("tokens_subscreen_chooser_panel")
-        .resizable(true)
-        .default_width(270.0) // Increased to account for margins
+        .resizable(false)
+        .default_width(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
-                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
+                .inner_margin(Margin::symmetric(10, 10)),
         )
         .show(ctx, |ui| {
-            // Fill the entire available height
             let available_height = ui.available_height();
-
-            // Create an island panel with rounded edges that fills the height
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
@@ -46,7 +43,6 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
-                    // Account for both outer margin (10px * 2) and inner margin
                     ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     // Display subscreen names
                     ui.vertical(|ui| {

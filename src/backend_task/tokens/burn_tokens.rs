@@ -89,21 +89,16 @@ impl AppContext {
                 BurnResult::HistoricalDocument(document) => {
                     if let (Some(owner_value), Some(amount_value)) =
                         (document.get("ownerId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(owner_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
                             (owner_value, amount_value)
-                        {
-                            if let Ok(owner_id) = Identifier::from_bytes(owner_bytes) {
-                                if let Err(e) = self
-                                    .insert_token_identity_balance(&token_id, &owner_id, *amount)
-                                {
-                                    eprintln!(
-                                        "Failed to update token balance from historical document: {}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
+                        && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &owner_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from historical document: {}",
+                            e
+                        );
                     }
                 }
 
@@ -111,21 +106,16 @@ impl AppContext {
                 BurnResult::GroupActionWithDocument(_, Some(document)) => {
                     if let (Some(owner_value), Some(amount_value)) =
                         (document.get("ownerId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(owner_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
                             (owner_value, amount_value)
-                        {
-                            if let Ok(owner_id) = Identifier::from_bytes(owner_bytes) {
-                                if let Err(e) = self
-                                    .insert_token_identity_balance(&token_id, &owner_id, *amount)
-                                {
-                                    eprintln!(
-                                        "Failed to update token balance from group action document: {}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
+                        && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &owner_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from group action document: {}",
+                            e
+                        );
                     }
                 }
 

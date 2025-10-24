@@ -1,34 +1,53 @@
+use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::RootScreenType;
-use crate::ui::dpns::dpns_contested_names_screen::DPNSSubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use crate::{app::AppAction, ui};
+use crate::ui::{self, RootScreenType};
 use egui::{Context, Frame, Margin, RichText, SidePanel};
 
-pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractsSubscreen {
+    Contracts,
+    DPNS,
+    Dashpay,
+}
+
+impl ContractsSubscreen {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ContractsSubscreen::Contracts => "All Contracts",
+            ContractsSubscreen::DPNS => "DPNS",
+            ContractsSubscreen::Dashpay => "Dashpay",
+        }
+    }
+}
+
+pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
 
     let subscreens = vec![
-        DPNSSubscreen::Active,
-        DPNSSubscreen::Past,
-        DPNSSubscreen::Owned,
-        DPNSSubscreen::ScheduledVotes,
+        ContractsSubscreen::Contracts,
+        ContractsSubscreen::DPNS,
+        ContractsSubscreen::Dashpay,
     ];
 
+    // Determine active selection from settings; default to Contracts
     let active_screen = match app_context.get_settings() {
         Ok(Some(settings)) => match settings.root_screen_type {
-            ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
-            ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
-            ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,
-            ui::RootScreenType::RootScreenDPNSScheduledVotes => DPNSSubscreen::ScheduledVotes,
-            _ => DPNSSubscreen::Active,
+            ui::RootScreenType::RootScreenDocumentQuery => ContractsSubscreen::Contracts,
+            ui::RootScreenType::RootScreenDPNSActiveContests
+            | ui::RootScreenType::RootScreenDPNSPastContests
+            | ui::RootScreenType::RootScreenDPNSOwnedNames
+            | ui::RootScreenType::RootScreenDPNSScheduledVotes => ContractsSubscreen::DPNS,
+            ui::RootScreenType::RootScreenDashpay => ContractsSubscreen::Dashpay,
+            _ => ContractsSubscreen::Contracts,
         },
-        _ => DPNSSubscreen::Active,
+        _ => ContractsSubscreen::Contracts,
     };
 
-    SidePanel::left("dpns_subscreen_chooser_panel")
-        .resizable(true)
+    let dark_mode = ctx.style().visuals.dark_mode;
+
+    SidePanel::left("contracts_subscreen_chooser_panel")
+        .resizable(false)
         .default_width(270.0)
         .frame(
             Frame::new()
@@ -47,7 +66,12 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                 .show(ui, |ui| {
                     ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     ui.vertical(|ui| {
-                        ui.add_space(Spacing::SM);
+                        ui.label(
+                            RichText::new("Contracts")
+                                .font(Typography::heading_small())
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                        ui.add_space(Spacing::MD);
 
                         for subscreen in subscreens {
                             let is_active = active_screen == subscreen;
@@ -74,37 +98,30 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 
-                            // Show the subscreen name as a clickable option
                             if ui.add(button).clicked() {
-                                // Handle navigation based on which subscreen is selected
-                                match subscreen {
-                                    DPNSSubscreen::Active => {
-                                        action = AppAction::SetMainScreen(
+                                action = match subscreen {
+                                    ContractsSubscreen::Contracts => {
+                                        AppAction::SetMainScreenThenGoToMainScreen(
+                                            RootScreenType::RootScreenDocumentQuery,
+                                        )
+                                    }
+                                    ContractsSubscreen::DPNS => {
+                                        AppAction::SetMainScreenThenGoToMainScreen(
                                             RootScreenType::RootScreenDPNSActiveContests,
                                         )
                                     }
-                                    DPNSSubscreen::Past => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenDPNSPastContests,
+                                    ContractsSubscreen::Dashpay => {
+                                        AppAction::SetMainScreenThenGoToMainScreen(
+                                            RootScreenType::RootScreenDashpay,
                                         )
                                     }
-                                    DPNSSubscreen::Owned => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenDPNSOwnedNames,
-                                        )
-                                    }
-                                    DPNSSubscreen::ScheduledVotes => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenDPNSScheduledVotes,
-                                        )
-                                    }
-                                }
+                                };
                             }
 
                             ui.add_space(Spacing::SM);
                         }
                     });
-                }); // Close the island frame
+                });
         });
 
     action

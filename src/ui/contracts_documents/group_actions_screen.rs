@@ -429,7 +429,9 @@ impl GroupActionsScreen {
             }
             TokenEvent::ChangePriceForDirectPurchase(schedule, note_opt) => {
                 let mut change_price_screen =
-                    SetTokenPriceScreen::new(identity_token_info, &self.app_context);
+                    SetTokenPriceScreen::new(identity_token_info, &self.app_context)
+                        .with_schedule(schedule.clone());
+
                 change_price_screen.group_action_id = Some(action_id);
                 change_price_screen.token_pricing_schedule = format!("{:?}", schedule);
                 change_price_screen.public_note = note_opt.clone();
@@ -487,6 +489,12 @@ impl ScreenLike for GroupActionsScreen {
             ctx,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
+        );
+
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
         );
 
         let central_panel_action = island_central_panel(ctx, |ui| {
@@ -601,15 +609,15 @@ impl ScreenLike for GroupActionsScreen {
                 _ => {}
             }
 
-            if fetch_clicked {
-                if let (Some(contract), Some(identity)) = (
+            if fetch_clicked
+                && let (Some(contract), Some(identity)) = (
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
-                ) {
-                    action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::FetchActiveGroupActions(contract, identity),
-                    )));
-                }
+                )
+            {
+                action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchActiveGroupActions(contract, identity),
+                )));
             }
 
             if let FetchGroupActionsStatus::Complete(group_actions) =

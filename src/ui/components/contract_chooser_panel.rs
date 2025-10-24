@@ -182,7 +182,7 @@ pub fn add_contract_chooser_panel(
     SidePanel::left("contract_chooser_panel")
         // Let the user resize this panel horizontally
         .resizable(true)
-        .default_width(270.0) // Increased to account for margins
+        .default_width(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
@@ -541,63 +541,62 @@ pub fn add_contract_chooser_panel(
         });
 
     // Show context menu if right-clicked
-    if chooser_state.show_context_menu {
-        if let Some(ref contract_id_str) = chooser_state.right_click_contract_id {
-            // Find the contract that was right-clicked
-            let contract_opt = contracts
-                .iter()
-                .find(|c| c.contract.id().to_string(Encoding::Base58) == *contract_id_str);
+    if chooser_state.show_context_menu
+        && let Some(ref contract_id_str) = chooser_state.right_click_contract_id
+    {
+        // Find the contract that was right-clicked
+        let contract_opt = contracts
+            .iter()
+            .find(|c| c.contract.id().to_string(Encoding::Base58) == *contract_id_str);
 
-            if let Some(contract) = contract_opt {
-                egui::Window::new("Contract Menu")
-                    .id(egui::Id::new("contract_context_menu"))
-                    .title_bar(false)
-                    .resizable(false)
-                    .collapsible(false)
-                    .fixed_pos(chooser_state.context_menu_position)
-                    .show(ctx, |ui| {
-                        ui.set_min_width(150.0);
+        if let Some(contract) = contract_opt {
+            egui::Window::new("Contract Menu")
+                .id(egui::Id::new("contract_context_menu"))
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .fixed_pos(chooser_state.context_menu_position)
+                .show(ctx, |ui| {
+                    ui.set_min_width(150.0);
 
-                        // Copy Hex option
-                        if ui.button("Copy (Hex)").clicked() {
-                            // Serialize contract to bytes
-                            if let Ok(bytes) =
-                                contract.contract.serialize_to_bytes_with_platform_version(
-                                    app_context.platform_version(),
-                                )
-                            {
-                                let hex_string = hex::encode(&bytes);
-                                ui.ctx().copy_text(hex_string);
-                            }
-                            chooser_state.show_context_menu = false;
+                    // Copy Hex option
+                    if ui.button("Copy (Hex)").clicked() {
+                        // Serialize contract to bytes
+                        if let Ok(bytes) =
+                            contract.contract.serialize_to_bytes_with_platform_version(
+                                app_context.platform_version(),
+                            )
+                        {
+                            let hex_string = hex::encode(&bytes);
+                            ui.ctx().copy_text(hex_string);
                         }
-
-                        // Copy JSON option
-                        if ui.button("Copy (JSON)").clicked() {
-                            // Convert contract to JSON
-                            if let Ok(json_value) =
-                                contract.contract.to_json(app_context.platform_version())
-                            {
-                                if let Ok(json_string) = serde_json::to_string_pretty(&json_value) {
-                                    ui.ctx().copy_text(json_string);
-                                }
-                            }
-                            chooser_state.show_context_menu = false;
-                        }
-                    });
-
-                // Close menu if clicked elsewhere
-                if ctx.input(|i| i.pointer.any_click()) {
-                    // Check if click was outside the menu
-                    let menu_rect = egui::Rect::from_min_size(
-                        chooser_state.context_menu_position,
-                        egui::vec2(150.0, 70.0), // Approximate size
-                    );
-                    if let Some(pointer_pos) = ctx.pointer_interact_pos() {
-                        if !menu_rect.contains(pointer_pos) {
-                            chooser_state.show_context_menu = false;
-                        }
+                        chooser_state.show_context_menu = false;
                     }
+
+                    // Copy JSON option
+                    if ui.button("Copy (JSON)").clicked() {
+                        // Convert contract to JSON
+                        if let Ok(json_value) =
+                            contract.contract.to_json(app_context.platform_version())
+                            && let Ok(json_string) = serde_json::to_string_pretty(&json_value)
+                        {
+                            ui.ctx().copy_text(json_string);
+                        }
+                        chooser_state.show_context_menu = false;
+                    }
+                });
+
+            // Close menu if clicked elsewhere
+            if ctx.input(|i| i.pointer.any_click()) {
+                // Check if click was outside the menu
+                let menu_rect = egui::Rect::from_min_size(
+                    chooser_state.context_menu_position,
+                    egui::vec2(150.0, 70.0), // Approximate size
+                );
+                if let Some(pointer_pos) = ctx.pointer_interact_pos()
+                    && !menu_rect.contains(pointer_pos)
+                {
+                    chooser_state.show_context_menu = false;
                 }
             }
         }

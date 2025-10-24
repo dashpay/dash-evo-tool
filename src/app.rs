@@ -11,6 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
+use crate::ui::contracts_documents::dashpay_coming_soon_screen::DashpayScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
@@ -21,6 +22,8 @@ use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
+use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
+use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
@@ -219,6 +222,7 @@ impl AppState {
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
+        let mut grovestark_screen = GroveSTARKScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
@@ -226,6 +230,7 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
+        let mut contracts_dashpay_screen = DashpayScreen::new(&mainnet_app_context);
 
         // Create DashPay screens
         let mut dashpay_contacts_screen =
@@ -248,14 +253,17 @@ impl AppState {
             overwrite_dash_conf,
         );
 
+        let mut masternode_list_diff_screen = MasternodeListDiffScreen::new(&mainnet_app_context);
+
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
         let selected_main_screen = settings.root_screen_type;
         let chosen_network = settings.network;
         network_chooser_screen.current_network = chosen_network;
 
-        if chosen_network == Network::Testnet && testnet_app_context.is_some() {
-            let testnet_app_context = testnet_app_context.as_ref().unwrap();
+        if let (Network::Testnet, Some(testnet_app_context)) =
+            (chosen_network, testnet_app_context.as_ref())
+        {
             identities_screen = IdentitiesScreen::new(testnet_app_context);
             dpns_active_contests_screen =
                 DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
@@ -268,9 +276,12 @@ impl AppState {
             document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
             document_query_screen = DocumentQueryScreen::new(testnet_app_context);
+            grovestark_screen = GroveSTARKScreen::new(testnet_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
             proof_log_screen = ProofLogScreen::new(testnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
+            masternode_list_diff_screen = MasternodeListDiffScreen::new(testnet_app_context);
+            contracts_dashpay_screen = DashpayScreen::new(testnet_app_context);
             tokens_balances_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
@@ -286,8 +297,9 @@ impl AppState {
             dashpay_payments_screen =
                 DashPayScreen::new(testnet_app_context, DashPaySubscreen::Payments);
             dashpay_profile_search_screen = ProfileSearchScreen::new(testnet_app_context.clone());
-        } else if chosen_network == Network::Devnet && devnet_app_context.is_some() {
-            let devnet_app_context = devnet_app_context.as_ref().unwrap();
+        } else if let (Network::Devnet, Some(devnet_app_context)) =
+            (chosen_network, devnet_app_context.as_ref())
+        {
             identities_screen = IdentitiesScreen::new(devnet_app_context);
             dpns_active_contests_screen =
                 DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
@@ -299,7 +311,9 @@ impl AppState {
             proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
             document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
             document_query_screen = DocumentQueryScreen::new(devnet_app_context);
+            masternode_list_diff_screen = MasternodeListDiffScreen::new(devnet_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
+            grovestark_screen = GroveSTARKScreen::new(devnet_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
             proof_log_screen = ProofLogScreen::new(devnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
@@ -318,8 +332,9 @@ impl AppState {
             dashpay_payments_screen =
                 DashPayScreen::new(devnet_app_context, DashPaySubscreen::Payments);
             dashpay_profile_search_screen = ProfileSearchScreen::new(devnet_app_context.clone());
-        } else if chosen_network == Network::Regtest && local_app_context.is_some() {
-            let local_app_context = local_app_context.as_ref().unwrap();
+        } else if let (Network::Regtest, Some(local_app_context)) =
+            (chosen_network, local_app_context.as_ref())
+        {
             identities_screen = IdentitiesScreen::new(local_app_context);
             dpns_active_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
             dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
@@ -331,9 +346,12 @@ impl AppState {
             document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
             contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
             document_query_screen = DocumentQueryScreen::new(local_app_context);
+            grovestark_screen = GroveSTARKScreen::new(local_app_context);
             wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
+            masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
             proof_log_screen = ProofLogScreen::new(local_app_context);
             platform_info_screen = PlatformInfoScreen::new(local_app_context);
+            contracts_dashpay_screen = DashpayScreen::new(local_app_context);
             tokens_balances_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
@@ -473,12 +491,24 @@ impl AppState {
                     Screen::PlatformInfoScreen(platform_info_screen),
                 ),
                 (
+                    RootScreenType::RootScreenToolsGroveSTARKScreen,
+                    Screen::GroveSTARKScreen(grovestark_screen),
+                ),
+                (
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::DocumentQueryScreen(document_query_screen),
                 ),
                 (
+                    RootScreenType::RootScreenDashpay,
+                    Screen::DashpayScreen(contracts_dashpay_screen),
+                ),
+                (
                     RootScreenType::RootScreenNetworkChooser,
                     Screen::NetworkChooserScreen(network_chooser_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsMasternodeListDiffScreen,
+                    Screen::MasternodeListDiffScreen(masternode_list_diff_screen),
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,
@@ -667,10 +697,10 @@ impl App for AppState {
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
-        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv() {
-            if let Ok(mut status) = self.current_app_context().zmq_connection_status.lock() {
-                *status = event;
-            }
+        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv()
+            && let Ok(mut status) = self.current_app_context().zmq_connection_status.lock()
+        {
+            *status = event;
         }
 
         // Poll the receiver for any new task results
@@ -755,10 +785,14 @@ impl App for AppState {
             match message {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {
                     // Store the asset lock transaction in the database
-                    match app_context.received_transaction_finality(&tx, Some(is_lock), None) {
+                    match app_context.received_transaction_finality(
+                        &tx,
+                        Some(is_lock.clone()),
+                        None,
+                    ) {
                         Ok(utxos) => {
                             let core_item =
-                                CoreItem::ReceivedAvailableUTXOTransaction(tx.clone(), utxos);
+                                CoreItem::InstantLockedTransaction(tx.clone(), utxos, is_lock);
                             self.visible_screen_mut()
                                 .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
                         }
@@ -774,7 +808,13 @@ impl App for AppState {
                         eprintln!("Failed to store asset lock: {}", e);
                     }
                 }
-                ZMQMessage::ChainLockedBlock(_) => {}
+                ZMQMessage::ChainLockedBlock(block, chain_lock) => {
+                    self.visible_screen_mut().display_task_result(
+                        BackendTaskSuccessResult::CoreItem(CoreItem::ChainLockedBlock(
+                            block, chain_lock,
+                        )),
+                    );
+                }
             }
         }
 

@@ -8,17 +8,23 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::context::AppContext;
+use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
+use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
+use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
 use crate::utils::egui_mpsc::SenderAsync;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
+use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
@@ -28,6 +34,7 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
+use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -35,7 +42,9 @@ pub mod contract;
 pub mod core;
 pub mod dashpay;
 pub mod document;
+pub mod grovestark;
 pub mod identity;
+pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
 pub mod system_task;
@@ -56,7 +65,9 @@ pub enum BackendTask {
     BroadcastStateTransition(StateTransition),
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
+    MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
+    GroveSTARKTask(GroveSTARKTask),
     None,
 }
 
@@ -102,7 +113,7 @@ pub enum BackendTaskSuccessResult {
     ActiveGroupActions(IndexMap<Identifier, GroupAction>),
     TokenPricing {
         token_id: Identifier,
-        prices: Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
+        prices: Option<TokenPricingSchedule>,
     },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
@@ -125,6 +136,24 @@ pub enum BackendTaskSuccessResult {
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
+    GeneratedZKProof(ProofDataOutput),
+    VerifiedZKProof(bool, ProofDataOutput),
+
+    // MNList-specific results
+    MnListFetchedDiff {
+        base_height: u32,
+        height: u32,
+        diff: MnListDiff,
+    },
+    MnListFetchedQrInfo {
+        qr_info: QRInfo,
+    },
+    MnListChainLockSigs {
+        entries: Vec<((u32, BlockHash), Option<BLSSignature>)>,
+    },
+    MnListFetchedDiffs {
+        items: Vec<((u32, u32), MnListDiff)>,
+    },
 }
 
 impl BackendTaskSuccessResult {}
@@ -200,8 +229,14 @@ impl AppContext {
                 self.run_token_task(*token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
+            BackendTask::MnListTask(mnlist_task) => {
+                mnlist::run_mnlist_task(self, mnlist_task).await
+            }
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
+            }
+            BackendTask::GroveSTARKTask(grovestark_task) => {
+                grovestark::run_grovestark_task(grovestark_task, &sdk).await
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

@@ -1,5 +1,5 @@
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit};
 use argon2::{self, Argon2};
 use bip39::rand::{RngCore, rngs::OsRng};
 
@@ -50,7 +50,7 @@ pub fn encrypt_message(
 
     // Encrypt the seed
     let encrypted_seed = cipher
-        .encrypt(Nonce::from_slice(&nonce), message)
+        .encrypt(nonce.as_slice().into(), message)
         .map_err(|e| e.to_string())?;
 
     Ok((encrypted_seed, salt, nonce))
@@ -85,10 +85,7 @@ impl ClosedKeyItem {
 
         // Decrypt the seed
         let seed = cipher
-            .decrypt(
-                Nonce::from_slice(&self.nonce),
-                self.encrypted_seed.as_slice(),
-            )
+            .decrypt(self.nonce.as_slice().into(), self.encrypted_seed.as_slice())
             .map_err(|e| e.to_string())?;
 
         let sized_seed = seed.try_into().map_err(|e: Vec<u8>| {

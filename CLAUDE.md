@@ -56,7 +56,7 @@ cross build --target x86_64-pc-windows-gnu --release
 ## Development Environment Setup
 
 ### Prerequisites
-1. **Rust**: Version 1.88+ (enforced by rust-toolchain.toml)
+1. **Rust**: Version 1.89+ (enforced by rust-toolchain.toml)
 2. **System Dependencies** (Ubuntu): `build-essential libssl-dev pkg-config unzip`
 3. **Protocol Buffers**: protoc v25.2+ required for dash-sdk
 4. **Dash Core Wallet**: Must be synced for full functionality

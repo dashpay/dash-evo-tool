@@ -1,9 +1,9 @@
-use crate::app::AppAction;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::tokens::tokens_screen::TokensScreen;
+use crate::{app::AppAction, ui::theme::DashColors};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::Ui;
+use egui::{Frame, Margin, Ui};
 
 impl TokensScreen {
     /// Renders details for the selected_contract_id.
@@ -14,17 +14,28 @@ impl TokensScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
+        let mut go_back = false;
+        ui.horizontal(|ui| {
+            if ui.button("Back to Search Results").clicked() {
+                go_back = true;
+            }
+        });
+
+        if go_back {
+            self.selected_contract_id = None;
+            self.contract_details_loading = false;
+            self.selected_contract_description = None;
+            self.selected_token_infos.clear();
+            return action;
+        }
+
+        ui.add_space(10.0);
+
         // Show loading spinner if data is being fetched
         if self.contract_details_loading {
-            ui.vertical_centered(|ui| {
-                ui.add_space(50.0);
-                ui.heading("Loading contract details...");
-                ui.add_space(20.0);
-                ui.add(
-                    egui::widgets::Spinner::default()
-                        .size(50.0)
-                        .color(crate::ui::theme::DashColors::DASH_BLUE),
-                );
+            ui.horizontal(|ui| {
+                ui.label("Loading contract details...");
+                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
             });
             return action;
         }
@@ -33,10 +44,10 @@ impl TokensScreen {
             ui.heading("Contract Description:");
             ui.add_space(10.0);
             ui.label(description.description.clone());
+            ui.add_space(10.0);
+            ui.separator();
         }
 
-        ui.add_space(10.0);
-        ui.separator();
         ui.add_space(10.0);
 
         ui.heading("Tokens:");
@@ -46,54 +57,52 @@ impl TokensScreen {
             .filter(|token| token.data_contract_id == *contract_id)
             .cloned()
             .collect::<Vec<_>>();
+        let visuals = ui.visuals().clone();
         for token in token_infos {
-            if token.data_contract_id == *contract_id {
-                ui.add_space(10.0);
-                ui.heading(format!("• {}", token.token_name.clone()));
-                ui.add_space(10.0);
-                ui.label(format!(
-                    "ID: {}",
-                    token.token_id.to_string(Encoding::Base58)
-                ));
-                ui.label(format!(
-                    "Description: {}",
-                    token
+            ui.add_space(10.0);
+            Frame::group(ui.style())
+                .stroke(visuals.widgets.noninteractive.bg_stroke)
+                .fill(visuals.extreme_bg_color)
+                .inner_margin(Margin::same(12))
+                .show(ui, |ui| {
+                    ui.heading(token.token_name.clone());
+                    ui.add_space(6.0);
+                    ui.label(format!(
+                        "ID: {}",
+                        token.token_id.to_string(Encoding::Base58)
+                    ));
+                    let description = token
                         .description
                         .clone()
-                        .unwrap_or("No description".to_string())
-                ));
-            }
+                        .unwrap_or_else(|| "No description".to_string());
+                    ui.label(format!("Description: {}", description));
 
-            ui.add_space(10.0);
+                    ui.add_space(12.0);
 
-            // Add button to add token to my tokens
-            ui.horizontal(|ui| {
-                if ui.button("Add to My Tokens").clicked() {
-                    match self.add_token_to_tracked_tokens(token.clone()) {
-                        Ok(internal_action) => {
-                            // Add token to my tokens
-                            action |= internal_action;
+                    ui.horizontal(|ui| {
+                        if ui.button("Add to My Tokens").clicked() {
+                            match self.add_token_to_tracked_tokens(token.clone()) {
+                                Ok(internal_action) => {
+                                    action |= internal_action;
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e));
+                                }
+                            }
                         }
-                        Err(e) => {
-                            self.set_error_message(Some(e));
+                        if ui.button("View schema").clicked() {
+                            match serde_json::to_string_pretty(&token.token_configuration) {
+                                Ok(schema) => {
+                                    self.show_json_popup = true;
+                                    self.json_popup_text = schema;
+                                }
+                                Err(e) => {
+                                    self.set_error_message(Some(e.to_string()));
+                                }
+                            }
                         }
-                    }
-                }
-                if ui.button("View schema").clicked() {
-                    // Show a popup window with the schema
-                    match serde_json::to_string_pretty(&token.token_configuration) {
-                        Ok(schema) => {
-                            self.show_json_popup = true;
-                            self.json_popup_text = schema;
-                        }
-                        Err(e) => {
-                            self.set_error_message(Some(e.to_string()));
-                        }
-                    }
-                }
-            });
-
-            ui.add_space(20.0);
+                    });
+                });
         }
 
         action

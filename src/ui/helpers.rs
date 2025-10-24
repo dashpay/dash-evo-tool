@@ -377,23 +377,25 @@ where
                             let allowed_purposes = transaction_type.allowed_purposes();
                             let allowed_security_levels = if transaction_type
                                 == TransactionType::DocumentAction
-                                && document_type.is_some()
                             {
-                                // For document actions with a specific document type, use its security requirement
-                                let required_level =
-                                    document_type.unwrap().security_level_requirement();
-                                let allowed_levels =
-                                    SecurityLevel::CRITICAL as u8..=required_level as u8;
-                                let allowed_levels: Vec<SecurityLevel> = [
-                                    SecurityLevel::CRITICAL,
-                                    SecurityLevel::HIGH,
-                                    SecurityLevel::MEDIUM,
-                                ]
-                                .iter()
-                                .cloned()
-                                .filter(|level| allowed_levels.contains(&(*level as u8)))
-                                .collect();
-                                allowed_levels
+                                if let Some(document_type) = document_type {
+                                    // For document actions with a specific document type, use its security requirement
+                                    let required_level = document_type.security_level_requirement();
+                                    let allowed_levels =
+                                        SecurityLevel::CRITICAL as u8..=required_level as u8;
+                                    let allowed_levels: Vec<SecurityLevel> = [
+                                        SecurityLevel::CRITICAL,
+                                        SecurityLevel::HIGH,
+                                        SecurityLevel::MEDIUM,
+                                    ]
+                                    .iter()
+                                    .cloned()
+                                    .filter(|level| allowed_levels.contains(&(*level as u8)))
+                                    .collect();
+                                    allowed_levels
+                                } else {
+                                    transaction_type.allowed_security_levels()
+                                }
                             } else {
                                 transaction_type.allowed_security_levels()
                             };

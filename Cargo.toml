@@ -20,7 +20,7 @@ eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
 grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "5313ba9df590f114e11934e281f1e8c8bc462794" }
 rayon = "1.8"
-dash-sdk = { git = "https://github.com/dashpay/platform", features = ["core_key_wallet", "core_key_wallet_manager", "core_spv", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"], rev = "2c681e3713e86452ef061b757dc0af9350ed6b05" }
+dash-sdk = { git = "https://github.com/dashpay/platform", features = ["core_key_wallet", "core_key_wallet_manager", "core_spv", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"], rev = "37bdbf40c9c52bf3c065967a17fe51983ca9f57d" }
 thiserror = "2.0.12"
 serde = "1.0.219"
 serde_json = "1.0.140"

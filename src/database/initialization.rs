@@ -34,10 +34,10 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
-            12 => {
-                // Add DashPay tables in version 12
+            13 => {
                 self.init_dashpay_tables_in_tx(tx)?;
             }
+            12 => self.add_disable_zmq_column(tx)?,
             11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
             10 => {
                 self.add_theme_preference_column(tx)?;
@@ -219,6 +219,7 @@ impl Database {
             start_root_screen INTEGER NOT NULL,
             custom_dash_qt_path TEXT,
             overwrite_dash_conf INTEGER,
+            disable_zmq INTEGER DEFAULT 0,
             theme_preference TEXT DEFAULT 'System',
             database_version INTEGER NOT NULL
         )",

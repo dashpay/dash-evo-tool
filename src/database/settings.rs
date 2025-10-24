@@ -119,6 +119,24 @@ impl Database {
 
         Ok(())
     }
+
+    pub fn add_disable_zmq_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // Check if disable_zmq column exists
+        let disable_zmq_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='disable_zmq'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !disable_zmq_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN disable_zmq INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
     /// Updates the theme preference in the settings table.
     ///
     /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
@@ -136,6 +154,15 @@ impl Database {
             rusqlite::params![theme_str],
         )?;
 
+        Ok(())
+    }
+
+    /// Updates the disable_zmq flag in the settings table.
+    pub fn update_disable_zmq(&self, disable: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET disable_zmq = ? WHERE id = 1",
+            rusqlite::params![disable],
+        )?;
         Ok(())
     }
 
@@ -165,13 +192,15 @@ impl Database {
             Option<PasswordInfo>,
             Option<PathBuf>,
             bool,
+            bool,
             ThemeMode,
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, theme_preference FROM settings WHERE id = 1")?;
+        let mut stmt = conn.prepare(
+            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference FROM settings WHERE id = 1",
+        )?;
 
         let result = stmt.query_row([], |row| {
             let network: String = row.get(0)?;
@@ -181,7 +210,8 @@ impl Database {
             let main_password_nonce: Option<Vec<u8>> = row.get(4)?;
             let custom_dash_qt_path: Option<String> = row.get(5)?;
             let overwrite_dash_conf: Option<bool> = row.get(6)?;
-            let theme_preference: Option<String> = row.get(7)?;
+            let disable_zmq: Option<bool> = row.get(7)?;
+            let theme_preference: Option<String> = row.get(8)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -215,6 +245,7 @@ impl Database {
                 password_data,
                 custom_dash_qt_path.map(PathBuf::from),
                 overwrite_dash_conf.unwrap_or(true),
+                disable_zmq.unwrap_or(false),
                 theme_mode,
             ))
         });

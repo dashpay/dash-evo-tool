@@ -3,8 +3,10 @@ use super::encryption::{
 };
 use super::hd_derivation::generate_contact_xpub_data;
 use super::validation::validate_contact_request_before_send;
-use crate::backend_task::dashpay::auto_accept_proof::{AutoAcceptProofData, create_auto_accept_proof_bytes_with_key};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::auto_accept_proof::{
+    AutoAcceptProofData, create_auto_accept_proof_bytes_with_key,
+};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use bip39::rand::{SeedableRng, rngs::StdRng};

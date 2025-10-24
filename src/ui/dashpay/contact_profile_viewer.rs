@@ -3,9 +3,12 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
+use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -607,18 +610,30 @@ impl ScreenLike for ContactProfileViewerScreen {
             ctx,
             &self.app_context,
             vec![
-                ("DashPay", AppAction::None),
+                (
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
+                ),
+                (
+                    "DashPay",
+                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
+                ),
                 ("Contact Profile", AppAction::None),
             ],
             vec![],
         );
 
-        // Add left panel
+        // Add navigation panels
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDashPayContacts,
+            RootScreenType::RootScreenDocumentQuery,
         );
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        action |=
+            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
         action |= island_central_panel(ctx, |ui| self.render(ui));
 

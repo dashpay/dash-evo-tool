@@ -2,7 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
-use aes_gcm::aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes_gcm::aes::cipher::{BlockEncrypt, KeyInit};
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use cbc::cipher::{BlockEncryptMut, KeyIvInit};
 use dash_sdk::Sdk;
@@ -127,7 +127,9 @@ fn derive_contact_info_keys(
 }
 
 // Encrypt toUserId using AES-256-ECB
+#[allow(deprecated)]
 fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], String> {
+    use aes_gcm::aead::generic_array::GenericArray;
     let cipher = Aes256::new(GenericArray::from_slice(key));
 
     // Split the 32-byte ID into two 16-byte blocks for ECB mode
@@ -146,7 +148,9 @@ fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], St
 }
 
 // Decrypt toUserId using AES-256-ECB
+#[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
+    use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::aes::cipher::BlockDecrypt;
 
     if encrypted.len() != 32 {
@@ -362,7 +366,37 @@ pub async fn create_or_update_contact_info(
         Value::Bytes(encrypted_private_data),
     );
 
-    if found_existing_doc.is_none() {
+    if let Some(existing_doc) = found_existing_doc {
+        // Update existing document
+        let mut updated_doc = existing_doc.clone();
+
+        // Update properties
+        for (key, value) in properties {
+            updated_doc.set(&key, value);
+        }
+
+        // Bump revision
+        updated_doc.bump_revision();
+
+        // Create replacement transition
+        use dash_sdk::platform::documents::transitions::DocumentReplaceTransitionBuilder;
+        let mut builder = DocumentReplaceTransitionBuilder::new(
+            dashpay_contract,
+            "contactInfo".to_string(),
+            updated_doc,
+        );
+
+        // Add state transition options if available
+        let maybe_options = app_context.state_transition_options();
+        if let Some(options) = maybe_options {
+            builder = builder.with_state_transition_creation_options(options);
+        }
+
+        let _result = sdk
+            .document_replace(builder, signing_key, &identity)
+            .await
+            .map_err(|e| format!("Error updating contact info: {}", e))?;
+    } else {
         // Create new contactInfo document
         let mut rng = StdRng::from_entropy();
         let entropy = Bytes32::random_with_rng(&mut rng);
@@ -377,6 +411,7 @@ pub async fn create_or_update_contact_info(
         let document = DppDocument::V0(DocumentV0 {
             id: document_id,
             owner_id: identity_id,
+            creator_id: None,
             properties,
             revision: Some(1),
             created_at: None,
@@ -410,37 +445,6 @@ pub async fn create_or_update_contact_info(
             .document_create(builder, signing_key, &identity)
             .await
             .map_err(|e| format!("Error creating contact info: {}", e))?;
-    } else {
-        // Update existing document
-        let existing_doc = found_existing_doc.unwrap();
-        let mut updated_doc = existing_doc.clone();
-
-        // Update properties
-        for (key, value) in properties {
-            updated_doc.set(&key, value);
-        }
-
-        // Bump revision
-        updated_doc.bump_revision();
-
-        // Create replacement transition
-        use dash_sdk::platform::documents::transitions::DocumentReplaceTransitionBuilder;
-        let mut builder = DocumentReplaceTransitionBuilder::new(
-            dashpay_contract,
-            "contactInfo".to_string(),
-            updated_doc,
-        );
-
-        // Add state transition options if available
-        let maybe_options = app_context.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let _result = sdk
-            .document_replace(builder, signing_key, &identity)
-            .await
-            .map_err(|e| format!("Error updating contact info: {}", e))?;
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated(

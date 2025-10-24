@@ -261,18 +261,16 @@ where
                 let mut show_combo = true;
                 if let Some(qi) = selected_identity {
                     let allowed_purposes = transaction_type.allowed_purposes();
-                    let allowed_security_levels = if transaction_type == TransactionType::DocumentAction
-                        && document_type.is_some()
-                    {
-                        let required_level = document_type.unwrap().security_level_requirement();
-                        let allowed_levels = SecurityLevel::CRITICAL as u8..=required_level as u8;
-                        [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]
-                            .iter()
-                            .cloned()
-                            .filter(|level| allowed_levels.contains(&(*level as u8)))
-                            .collect()
-                    } else {
-                        transaction_type.allowed_security_levels()
+                    let allowed_security_levels: Vec<SecurityLevel> = match (transaction_type, document_type) {
+                        (TransactionType::DocumentAction, Some(doc_type)) => {
+                            let required_level = doc_type.security_level_requirement();
+                            let allowed_levels = SecurityLevel::CRITICAL as u8..=required_level as u8;
+                            [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]
+                                .into_iter()
+                                .filter(|level| allowed_levels.contains(&(*level as u8)))
+                                .collect()
+                        }
+                        _ => transaction_type.allowed_security_levels(),
                     };
 
                     // Check for keys with private keys loaded
@@ -333,9 +331,9 @@ where
                                 }
 
                                 if has_eligible_public_keys_without_private {
-                                    ui.label(format!(
+                                    ui.label(
                                         "This Identity already has an eligible public key but the private key isn't loaded into Dash Evo Tool yet.",
-                                    ));
+                                    );
                                     ui.label("Go to the Identities screen to load an existing private key, or use the button below to add a new key:");
                                 }
 

@@ -1,7 +1,7 @@
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
-use dash_sdk::dpp::dashcore::{
-    Network,
-    bip32::{ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey},
+use dash_sdk::dpp::key_wallet::bip32::{
+    ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
 };
 use dash_sdk::platform::Identifier;
 use std::str::FromStr;
@@ -182,8 +182,6 @@ mod tests {
 
         let account_ref = calculate_account_reference(&secret_key, &xpub, 0, 0);
 
-        // Verify it's a valid u32
-        assert!(account_ref <= u32::MAX);
         // Verify version bits are in the right place
         assert_eq!(account_ref >> 28, 0);
     }

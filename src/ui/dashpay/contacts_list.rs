@@ -76,15 +76,15 @@ impl ContactsList {
         };
 
         // Auto-select first identity on creation if available
-        if let Ok(identities) = app_context.load_local_qualified_identities() {
-            if !identities.is_empty() {
-                new_self.selected_identity = Some(identities[0].clone());
-                new_self.selected_identity_string =
-                    identities[0].identity.id().to_string(Encoding::Base58);
+        if let Ok(identities) = app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            new_self.selected_identity = Some(identities[0].clone());
+            new_self.selected_identity_string =
+                identities[0].identity.id().to_string(Encoding::Base58);
 
-                // Load contacts from database for this identity
-                new_self.load_contacts_from_database();
-            }
+            // Load contacts from database for this identity
+            new_self.load_contacts_from_database();
         }
 
         new_self
@@ -132,15 +132,15 @@ impl ContactsList {
                     .load_all_contact_private_info(&identity_id)
                 {
                     for info in private_infos {
-                        if let Ok(contact_id) = Identifier::from_bytes(&info.contact_identity_id) {
-                            if let Some(contact) = self.contacts.get_mut(&contact_id) {
-                                contact.nickname = if info.nickname.is_empty() {
-                                    None
-                                } else {
-                                    Some(info.nickname)
-                                };
-                                contact.is_hidden = info.is_hidden;
-                            }
+                        if let Ok(contact_id) = Identifier::from_bytes(&info.contact_identity_id)
+                            && let Some(contact) = self.contacts.get_mut(&contact_id)
+                        {
+                            contact.nickname = if info.nickname.is_empty() {
+                                None
+                            } else {
+                                Some(info.nickname)
+                            };
+                            contact.is_hidden = info.is_hidden;
                         }
                     }
                 }
@@ -175,14 +175,12 @@ impl ContactsList {
         self.loading = false;
 
         // Auto-select first identity if none selected
-        if self.selected_identity.is_none() {
-            if let Ok(identities) = self.app_context.load_local_qualified_identities() {
-                if !identities.is_empty() {
-                    self.selected_identity = Some(identities[0].clone());
-                    self.selected_identity_string =
-                        identities[0].identity.id().to_string(Encoding::Base58);
-                }
-            }
+        if self.selected_identity.is_none()
+            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            self.selected_identity = Some(identities[0].clone());
+            self.selected_identity_string = identities[0].identity.id().to_string(Encoding::Base58);
         }
 
         // Load contacts from database if we have an identity selected and no contacts loaded
@@ -412,31 +410,31 @@ impl ContactsList {
                 let search_in_text = |text: &str| text.to_lowercase().contains(&query);
 
                 // Search in username
-                if let Some(username) = &contact.username {
-                    if search_in_text(username) {
-                        return true;
-                    }
+                if let Some(username) = &contact.username
+                    && search_in_text(username)
+                {
+                    return true;
                 }
 
                 // Search in display name
-                if let Some(display_name) = &contact.display_name {
-                    if search_in_text(display_name) {
-                        return true;
-                    }
+                if let Some(display_name) = &contact.display_name
+                    && search_in_text(display_name)
+                {
+                    return true;
                 }
 
                 // Search in nickname
-                if let Some(nickname) = &contact.nickname {
-                    if search_in_text(nickname) {
-                        return true;
-                    }
+                if let Some(nickname) = &contact.nickname
+                    && search_in_text(nickname)
+                {
+                    return true;
                 }
 
                 // Search in bio
-                if let Some(bio) = &contact.bio {
-                    if search_in_text(bio) {
-                        return true;
-                    }
+                if let Some(bio) = &contact.bio
+                    && search_in_text(bio)
+                {
+                    return true;
                 }
 
                 // Search in identity ID (partial match)
@@ -542,15 +540,15 @@ impl ContactsList {
                                 );
 
                                 // Username if different from display name
-                                if let Some(username) = &contact.username {
-                                    if contact.display_name.is_some() || contact.nickname.is_some()
-                                    {
-                                        ui.label(
-                                            RichText::new(format!("@{}", username))
-                                                .small()
-                                                .color(DashColors::text_secondary(dark_mode)),
-                                        );
-                                    }
+                                if let Some(username) = &contact.username
+                                    && (contact.display_name.is_some()
+                                        || contact.nickname.is_some())
+                                {
+                                    ui.label(
+                                        RichText::new(format!("@{}", username))
+                                            .small()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
                                 }
 
                                 // Bio

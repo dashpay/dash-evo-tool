@@ -234,23 +234,23 @@ pub fn validate_contact_request_field_sizes(
     }
 
     // Validate encryptedAccountLabel size (48-80 bytes if present)
-    if let Some(label) = encrypted_account_label {
-        if label.len() < 48 || label.len() > 80 {
-            validation.add_error(format!(
-                "encryptedAccountLabel must be 48-80 bytes, got {}",
-                label.len()
-            ));
-        }
+    if let Some(label) =
+        encrypted_account_label.filter(|label| label.len() < 48 || label.len() > 80)
+    {
+        validation.add_error(format!(
+            "encryptedAccountLabel must be 48-80 bytes, got {}",
+            label.len()
+        ));
     }
 
     // Validate autoAcceptProof size (38-102 bytes if present and not empty)
-    if let Some(proof) = auto_accept_proof {
-        if !proof.is_empty() && (proof.len() < 38 || proof.len() > 102) {
-            validation.add_error(format!(
-                "autoAcceptProof must be 38-102 bytes when present, got {}",
-                proof.len()
-            ));
-        }
+    if let Some(proof) = auto_accept_proof
+        .filter(|proof| !proof.is_empty() && (proof.len() < 38 || proof.len() > 102))
+    {
+        validation.add_error(format!(
+            "autoAcceptProof must be 38-102 bytes when present, got {}",
+            proof.len()
+        ));
     }
 
     validation
@@ -267,58 +267,49 @@ pub fn validate_profile_field_sizes(
     let mut validation = ContactRequestValidation::new();
 
     // Validate displayName (0-25 characters)
-    if let Some(name) = display_name {
-        if name.chars().count() > 25 {
-            validation.add_error(format!(
-                "displayName must be 0-25 characters, got {}",
-                name.chars().count()
-            ));
-        }
+    if let Some(name) = display_name.filter(|name| name.chars().count() > 25) {
+        validation.add_error(format!(
+            "displayName must be 0-25 characters, got {}",
+            name.chars().count()
+        ));
     }
 
     // Validate publicMessage (0-140 characters)
-    if let Some(msg) = public_message {
-        if msg.chars().count() > 140 {
-            validation.add_error(format!(
-                "publicMessage must be 0-140 characters, got {}",
-                msg.chars().count()
-            ));
-        }
+    if let Some(msg) = public_message.filter(|msg| msg.chars().count() > 140) {
+        validation.add_error(format!(
+            "publicMessage must be 0-140 characters, got {}",
+            msg.chars().count()
+        ));
     }
 
     // Validate avatarUrl (0-2048 characters)
-    if let Some(url) = avatar_url {
-        if url.chars().count() > 2048 {
-            validation.add_error(format!(
-                "avatarUrl must be 0-2048 characters, got {}",
-                url.chars().count()
-            ));
-        }
+    if let Some(url) = avatar_url.filter(|url| url.chars().count() > 2048) {
+        validation.add_error(format!(
+            "avatarUrl must be 0-2048 characters, got {}",
+            url.chars().count()
+        ));
+    }
 
-        // Validate URL format
-        if !url.is_empty() && !url.starts_with("https://") && !url.starts_with("http://") {
-            validation.add_warning("avatarUrl should use HTTPS protocol".to_string());
-        }
+    if avatar_url.is_some_and(|url| {
+        !url.is_empty() && !url.starts_with("https://") && !url.starts_with("http://")
+    }) {
+        validation.add_warning("avatarUrl should use HTTPS protocol".to_string());
     }
 
     // Validate avatarHash (exactly 32 bytes if present)
-    if let Some(hash) = avatar_hash {
-        if hash.len() != 32 {
-            validation.add_error(format!(
-                "avatarHash must be exactly 32 bytes, got {}",
-                hash.len()
-            ));
-        }
+    if let Some(hash) = avatar_hash.filter(|hash| hash.len() != 32) {
+        validation.add_error(format!(
+            "avatarHash must be exactly 32 bytes, got {}",
+            hash.len()
+        ));
     }
 
     // Validate avatarFingerprint (exactly 8 bytes if present)
-    if let Some(fingerprint) = avatar_fingerprint {
-        if fingerprint.len() != 8 {
-            validation.add_error(format!(
-                "avatarFingerprint must be exactly 8 bytes, got {}",
-                fingerprint.len()
-            ));
-        }
+    if let Some(fingerprint) = avatar_fingerprint.filter(|fingerprint| fingerprint.len() != 8) {
+        validation.add_error(format!(
+            "avatarFingerprint must be exactly 8 bytes, got {}",
+            fingerprint.len()
+        ));
     }
 
     validation

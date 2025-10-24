@@ -83,9 +83,10 @@ fn derive_contact_info_keys(
 }
 
 // Helper function to decrypt toUserId using AES-256-ECB
+#[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
+    use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::aes::Aes256;
-    use aes_gcm::aes::cipher::generic_array::GenericArray;
     use aes_gcm::aes::cipher::{BlockDecrypt, KeyInit};
 
     if encrypted.len() != 32 {
@@ -251,86 +252,84 @@ pub async fn load_contacts(
                     };
 
                 // Decrypt encToUserId to find which contact this is for
-                if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") {
-                    if let Ok(decrypted_id) = decrypt_to_user_id(enc_user_id, &enc_user_id_key) {
-                        let contact_id = Identifier::from_bytes(&decrypted_id).unwrap();
+                if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId")
+                    && let Ok(decrypted_id) = decrypt_to_user_id(enc_user_id, &enc_user_id_key)
+                {
+                    let contact_id = Identifier::from_bytes(&decrypted_id).unwrap();
 
-                        // Decrypt private data if available
-                        let mut nickname = None;
-                        let mut note = None;
-                        let mut is_hidden = false;
-                        let mut account_reference = 0u32;
+                    // Decrypt private data if available
+                    let mut nickname = None;
+                    let mut note = None;
+                    let mut is_hidden = false;
+                    let mut account_reference = 0u32;
 
-                        if let Some(Value::Bytes(encrypted_private)) = props.get("privateData") {
-                            if let Ok(decrypted_data) =
-                                decrypt_private_data(encrypted_private, &private_data_key)
-                            {
-                                // Parse the decrypted data
-                                // Simple format: version(4) + alias_len(1) + alias + note_len(1) + note + hidden(1) + accounts_len(1) + accounts
-                                if decrypted_data.len() >= 8 {
-                                    let mut pos = 4; // Skip version
+                    if let Some(Value::Bytes(encrypted_private)) = props.get("privateData")
+                        && let Ok(decrypted_data) =
+                            decrypt_private_data(encrypted_private, &private_data_key)
+                    {
+                        // Parse the decrypted data
+                        // Simple format: version(4) + alias_len(1) + alias + note_len(1) + note + hidden(1) + accounts_len(1) + accounts
+                        if decrypted_data.len() >= 8 {
+                            let mut pos = 4; // Skip version
 
-                                    // Read alias
-                                    if pos < decrypted_data.len() {
-                                        let alias_len = decrypted_data[pos] as usize;
-                                        pos += 1;
-                                        if pos + alias_len <= decrypted_data.len() && alias_len > 0
-                                        {
-                                            nickname = String::from_utf8(
-                                                decrypted_data[pos..pos + alias_len].to_vec(),
-                                            )
-                                            .ok();
-                                            pos += alias_len;
-                                        }
-                                    }
+                            // Read alias
+                            if pos < decrypted_data.len() {
+                                let alias_len = decrypted_data[pos] as usize;
+                                pos += 1;
+                                if pos + alias_len <= decrypted_data.len() && alias_len > 0 {
+                                    nickname = String::from_utf8(
+                                        decrypted_data[pos..pos + alias_len].to_vec(),
+                                    )
+                                    .ok();
+                                    pos += alias_len;
+                                }
+                            }
 
-                                    // Read note
-                                    if pos < decrypted_data.len() {
-                                        let note_len = decrypted_data[pos] as usize;
-                                        pos += 1;
-                                        if pos + note_len <= decrypted_data.len() && note_len > 0 {
-                                            note = String::from_utf8(
-                                                decrypted_data[pos..pos + note_len].to_vec(),
-                                            )
-                                            .ok();
-                                            pos += note_len;
-                                        }
-                                    }
+                            // Read note
+                            if pos < decrypted_data.len() {
+                                let note_len = decrypted_data[pos] as usize;
+                                pos += 1;
+                                if pos + note_len <= decrypted_data.len() && note_len > 0 {
+                                    note = String::from_utf8(
+                                        decrypted_data[pos..pos + note_len].to_vec(),
+                                    )
+                                    .ok();
+                                    pos += note_len;
+                                }
+                            }
 
-                                    // Read hidden flag
-                                    if pos < decrypted_data.len() {
-                                        is_hidden = decrypted_data[pos] != 0;
-                                        pos += 1;
-                                    }
+                            // Read hidden flag
+                            if pos < decrypted_data.len() {
+                                is_hidden = decrypted_data[pos] != 0;
+                                pos += 1;
+                            }
 
-                                    // Read accounts (simplified - just take first if available)
-                                    if pos < decrypted_data.len() {
-                                        let accounts_len = decrypted_data[pos] as usize;
-                                        pos += 1;
-                                        if accounts_len > 0 && pos + 4 <= decrypted_data.len() {
-                                            account_reference = u32::from_le_bytes([
-                                                decrypted_data[pos],
-                                                decrypted_data[pos + 1],
-                                                decrypted_data[pos + 2],
-                                                decrypted_data[pos + 3],
-                                            ]);
-                                        }
-                                    }
+                            // Read accounts (simplified - just take first if available)
+                            if pos < decrypted_data.len() {
+                                let accounts_len = decrypted_data[pos] as usize;
+                                pos += 1;
+                                if accounts_len > 0 && pos + 4 <= decrypted_data.len() {
+                                    account_reference = u32::from_le_bytes([
+                                        decrypted_data[pos],
+                                        decrypted_data[pos + 1],
+                                        decrypted_data[pos + 2],
+                                        decrypted_data[pos + 3],
+                                    ]);
                                 }
                             }
                         }
-
-                        contact_info_map.insert(
-                            contact_id,
-                            ContactData {
-                                identity_id: contact_id,
-                                nickname,
-                                note,
-                                is_hidden,
-                                account_reference,
-                            },
-                        );
                     }
+
+                    contact_info_map.insert(
+                        contact_id,
+                        ContactData {
+                            identity_id: contact_id,
+                            nickname,
+                            note,
+                            is_hidden,
+                            account_reference,
+                        },
+                    );
                 }
             }
         }

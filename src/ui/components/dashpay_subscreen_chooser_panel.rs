@@ -25,7 +25,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
     let active_screen = current_subscreen;
 
     SidePanel::left("dashpay_subscreen_chooser_panel")
-        .default_width(270.0) // Increased to account for margins
+        .default_width(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode)) // Light background instead of transparent
@@ -39,12 +39,12 @@ pub fn add_dashpay_subscreen_chooser_panel(
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .inner_margin(Margin::same(Spacing::MD_I8))
+                .inner_margin(Margin::same(Spacing::XL as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     // Account for both outer margin (10px * 2) and inner margin
-                    ui.set_min_height(available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0));
+                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     // Display subscreen names
                     ui.vertical(|ui| {
                         ui.add_space(Spacing::SM);

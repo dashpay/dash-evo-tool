@@ -5,11 +5,14 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
+use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
@@ -182,10 +185,10 @@ impl SendPaymentScreen {
                 // Update max amount in case balance changed
                 amount_input.set_max_amount(Some(balance));
                 let response = amount_input.show(ui);
-                if response.inner.has_changed() {
-                    if let Some(new_amount) = response.inner.changed_value() {
-                        self.amount = new_amount.clone();
-                    }
+                if response.inner.has_changed()
+                    && let Some(new_amount) = response.inner.changed_value()
+                {
+                    self.amount = new_amount.clone();
                 }
 
                 ui.add_space(10.0);
@@ -272,18 +275,30 @@ impl ScreenLike for SendPaymentScreen {
             ctx,
             &self.app_context,
             vec![
-                ("DashPay", AppAction::None),
+                (
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
+                ),
+                (
+                    "DashPay",
+                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
+                ),
                 ("Send Payment", AppAction::None),
             ],
             vec![],
         );
 
-        // Add left panel
+        // Add navigation panels
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDashPayPayments,
+            RootScreenType::RootScreenDocumentQuery,
         );
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        action |=
+            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Payments);
 
         action |= island_central_panel(ctx, |ui| self.render(ui));
 
@@ -329,16 +344,16 @@ impl PaymentHistory {
         };
 
         // Auto-select first identity on creation if available
-        if let Ok(identities) = app_context.load_local_qualified_identities() {
-            if !identities.is_empty() {
-                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                new_self.selected_identity = Some(identities[0].clone());
-                new_self.selected_identity_string =
-                    identities[0].identity.id().to_string(Encoding::Base58);
+        if let Ok(identities) = app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            new_self.selected_identity = Some(identities[0].clone());
+            new_self.selected_identity_string =
+                identities[0].identity.id().to_string(Encoding::Base58);
 
-                // Load payments from database for this identity
-                new_self.load_payments_from_database();
-            }
+            // Load payments from database for this identity
+            new_self.load_payments_from_database();
         }
 
         new_self
@@ -426,13 +441,12 @@ impl PaymentHistory {
         self.loading = false;
 
         // Auto-select first identity if none selected
-        if self.selected_identity.is_none() {
-            if let Ok(identities) = self.app_context.load_local_qualified_identities() {
-                if !identities.is_empty() {
-                    self.selected_identity = Some(identities[0].clone());
-                    self.selected_identity_string = identities[0].display_string();
-                }
-            }
+        if self.selected_identity.is_none()
+            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            self.selected_identity = Some(identities[0].clone());
+            self.selected_identity_string = identities[0].display_string();
         }
 
         // Load payments from database if we have an identity selected and no payments loaded

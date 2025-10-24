@@ -1,6 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -121,21 +122,29 @@ impl ScreenLike for DashPayScreen {
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![("DashPay", AppAction::None)],
+            vec![
+                (
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
+                ),
+                ("DashPay", AppAction::None),
+            ],
             right_buttons,
         );
 
-        // Add left panel - map subscreen to appropriate RootScreenType
-        let root_screen = match self.dashpay_subscreen {
-            DashPaySubscreen::Contacts => RootScreenType::RootScreenDashPayContacts,
-            DashPaySubscreen::Requests => RootScreenType::RootScreenDashPayRequests,
-            DashPaySubscreen::Profile => RootScreenType::RootScreenDashPayProfile,
-            DashPaySubscreen::Payments => RootScreenType::RootScreenDashPayPayments,
-            DashPaySubscreen::ProfileSearch => RootScreenType::RootScreenDashPayProfileSearch,
-        };
-        action |= add_left_panel(ctx, &self.app_context, root_screen);
+        // Highlight Contracts in the main left panel
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenDocumentQuery,
+        );
 
-        // Add DashPay subscreen chooser panel on the left side
+        // Contracts sub-navigation
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+
+        // DashPay subscreen chooser panel on the left side of the content area
         action |=
             add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, self.dashpay_subscreen);
 

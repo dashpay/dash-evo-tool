@@ -1987,36 +1987,11 @@ impl ScreenLike for DPNSScreen {
         }
 
         // Left panel
-        match self.dpns_subscreen {
-            DPNSSubscreen::Active => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSActiveContests,
-                );
-            }
-            DPNSSubscreen::Past => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSPastContests,
-                );
-            }
-            DPNSSubscreen::Owned => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSOwnedNames,
-                );
-            }
-            DPNSSubscreen::ScheduledVotes => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSScheduledVotes,
-                );
-            }
-        }
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenDocumentQuery,
+        );
 
         // Contracts area chooser (DPNS / Dashpay / Contracts)
         action |= add_contracts_subscreen_chooser_panel(ctx, self.app_context.as_ref());

@@ -99,35 +99,34 @@ impl ProfileScreen {
         };
 
         // Auto-select identity on creation - prefer one with a profile
-        if let Ok(identities) = app_context.load_local_qualified_identities() {
-            if !identities.is_empty() {
-                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        if let Ok(identities) = app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
-                // Try to find an identity with an actual profile (not just a "no profile" marker)
-                let mut selected_idx = 0;
-                for (idx, identity) in identities.iter().enumerate() {
-                    let identity_id = identity.identity.id();
-                    if let Ok(Some(profile)) = app_context.db.load_dashpay_profile(&identity_id) {
-                        // Check if this is an actual profile with data (not a "no profile" marker)
-                        if profile.display_name.is_some()
-                            || profile.bio.is_some()
-                            || profile.avatar_url.is_some()
-                        {
-                            selected_idx = idx;
-                            break;
-                        }
-                    }
+            // Try to find an identity with an actual profile (not just a "no profile" marker)
+            let mut selected_idx = 0;
+            for (idx, identity) in identities.iter().enumerate() {
+                let identity_id = identity.identity.id();
+                if let Ok(Some(profile)) = app_context.db.load_dashpay_profile(&identity_id)
+                    && (profile.display_name.is_some()
+                        || profile.bio.is_some()
+                        || profile.avatar_url.is_some())
+                {
+                    // Check if this is an actual profile with data (not a "no profile" marker)
+                    selected_idx = idx;
+                    break;
                 }
-
-                new_self.selected_identity = Some(identities[selected_idx].clone());
-                new_self.selected_identity_string = identities[selected_idx]
-                    .identity
-                    .id()
-                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
-
-                // Load profile from database for this identity
-                new_self.load_profile_from_database();
             }
+
+            new_self.selected_identity = Some(identities[selected_idx].clone());
+            new_self.selected_identity_string = identities[selected_idx]
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            // Load profile from database for this identity
+            new_self.load_profile_from_database();
         }
 
         new_self
@@ -244,13 +243,12 @@ impl ProfileScreen {
         self.message = None;
 
         // Auto-select first identity if none selected
-        if self.selected_identity.is_none() {
-            if let Ok(identities) = self.app_context.load_local_qualified_identities() {
-                if !identities.is_empty() {
-                    self.selected_identity = Some(identities[0].clone());
-                    self.selected_identity_string = identities[0].display_string();
-                }
-            }
+        if self.selected_identity.is_none()
+            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            self.selected_identity = Some(identities[0].clone());
+            self.selected_identity_string = identities[0].display_string();
         }
 
         // Load profile from database if we have an identity selected and no profile loaded
@@ -719,16 +717,16 @@ impl ProfileScreen {
                                 }
 
                                 // Username from identity
-                                if let Some(identity) = &self.selected_identity {
-                                    if !identity.dpns_names.is_empty() {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "@{}",
-                                                identity.dpns_names[0].name
-                                            ))
-                                            .strong(),
-                                        );
-                                    }
+                                if let Some(identity) = &self.selected_identity
+                                    && !identity.dpns_names.is_empty()
+                                {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "@{}",
+                                            identity.dpns_names[0].name
+                                        ))
+                                        .strong(),
+                                    );
                                 }
 
                                 // Identity ID

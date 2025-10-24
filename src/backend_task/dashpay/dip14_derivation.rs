@@ -1,5 +1,4 @@
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
 use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
 use dash_sdk::dpp::dashcore::hashes::sha512;
 /// DIP-14 compliant 256-bit HD key derivation implementation
@@ -8,6 +7,7 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 /// as specified in DIP-0014 for DashPay contact relationships.
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
 use dash_sdk::platform::Identifier;
 
 /// Perform DIP-14 compliant 256-bit child key derivation for private keys
@@ -165,7 +165,7 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     sender_id: &Identifier,
     recipient_id: &Identifier,
 ) -> Result<ExtendedPubKey, String> {
-    use dash_sdk::dpp::dashcore::bip32::DerivationPath;
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use std::str::FromStr;
 
     // Create extended private key from seed
@@ -213,8 +213,8 @@ fn is_index_less_than_2_32(index: &[u8; 32]) -> bool {
 fn index_to_child_number(
     index: &[u8; 32],
     hardened: bool,
-) -> Result<dash_sdk::dpp::dashcore::bip32::ChildNumber, String> {
-    use dash_sdk::dpp::dashcore::bip32::ChildNumber;
+) -> Result<dash_sdk::dpp::key_wallet::bip32::ChildNumber, String> {
+    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 
     // For compatibility with existing ChildNumber structure,
     // we need to ensure the value fits in 31 bits for normal, or set the hardened bit

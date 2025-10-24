@@ -384,6 +384,7 @@ pub async fn send_contact_request_with_proof(
     let document = DppDocument::V0(DocumentV0 {
         id: document_id,
         owner_id: identity.identity.id(),
+        creator_id: None,
         properties,
         revision: Some(1),
         created_at: None,

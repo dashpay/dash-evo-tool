@@ -106,52 +106,45 @@ pub async fn update_profile(
     let mut profile_data = BTreeMap::new();
 
     // Only add non-empty fields according to DashPay DIP
-    if let Some(name) = display_name {
-        if !name.is_empty() {
-            profile_data.insert("displayName".to_string(), Value::Text(name));
-        }
+    if let Some(name) = display_name.filter(|name| !name.is_empty()) {
+        profile_data.insert("displayName".to_string(), Value::Text(name));
     }
-    if let Some(bio_text) = bio {
-        if !bio_text.is_empty() {
-            profile_data.insert("publicMessage".to_string(), Value::Text(bio_text));
-        }
+    if let Some(bio_text) = bio.filter(|bio| !bio.is_empty()) {
+        profile_data.insert("publicMessage".to_string(), Value::Text(bio_text));
     }
-    if let Some(url) = avatar_url {
-        if !url.is_empty() {
-            profile_data.insert("avatarUrl".to_string(), Value::Text(url.clone()));
+    if let Some(url) = avatar_url.filter(|url| !url.is_empty()) {
+        profile_data.insert("avatarUrl".to_string(), Value::Text(url.clone()));
 
-            // Try to fetch and process the avatar image
-            // Note: This requires an HTTP client which may not be available
-            // In production, this should be done asynchronously
-            match super::avatar_processing::fetch_image_bytes(&url).await {
-                Ok(image_bytes) => {
-                    // Calculate SHA-256 hash of the image
-                    let avatar_hash = calculate_avatar_hash(&image_bytes);
-                    profile_data
-                        .insert("avatarHash".to_string(), Value::Bytes(avatar_hash.to_vec()));
+        // Try to fetch and process the avatar image
+        // Note: This requires an HTTP client which may not be available
+        // In production, this should be done asynchronously
+        match super::avatar_processing::fetch_image_bytes(&url).await {
+            Ok(image_bytes) => {
+                // Calculate SHA-256 hash of the image
+                let avatar_hash = calculate_avatar_hash(&image_bytes);
+                profile_data.insert("avatarHash".to_string(), Value::Bytes(avatar_hash.to_vec()));
 
-                    // Calculate DHash perceptual fingerprint
-                    match calculate_dhash_fingerprint(&image_bytes) {
-                        Ok(fingerprint) => {
-                            profile_data.insert(
-                                "avatarFingerprint".to_string(),
-                                Value::Bytes(fingerprint.to_vec()),
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Could not calculate avatar fingerprint: {}", e);
-                            // Continue without fingerprint - it's optional
-                        }
+                // Calculate DHash perceptual fingerprint
+                match calculate_dhash_fingerprint(&image_bytes) {
+                    Ok(fingerprint) => {
+                        profile_data.insert(
+                            "avatarFingerprint".to_string(),
+                            Value::Bytes(fingerprint.to_vec()),
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Could not calculate avatar fingerprint: {}", e);
+                        // Continue without fingerprint - it's optional
                     }
                 }
-                Err(e) => {
-                    // If we can't fetch the image, just set the URL without hash/fingerprint
-                    // These fields are optional according to DIP-0015
-                    eprintln!(
-                        "Warning: Could not fetch avatar image for processing: {}",
-                        e
-                    );
-                }
+            }
+            Err(e) => {
+                // If we can't fetch the image, just set the URL without hash/fingerprint
+                // These fields are optional according to DIP-0015
+                eprintln!(
+                    "Warning: Could not fetch avatar image for processing: {}",
+                    e
+                );
             }
         }
     }
@@ -201,6 +194,7 @@ pub async fn update_profile(
         let document = Document::V0(DocumentV0 {
             id: profile_doc_id,
             owner_id: identity_id,
+            creator_id: None,
             properties: profile_data,
             revision: None,
             created_at: None,
@@ -398,16 +392,16 @@ pub async fn search_profiles(
                     Document::V0(doc_v0) => doc_v0.properties(),
                 };
 
-                if let Some(display_name_val) = properties.get("displayName") {
-                    if let Some(display_name) = display_name_val.as_text() {
-                        if display_name.to_lowercase().contains(&search_lower) {
-                            // Get the identity ID from document owner
-                            let identity_id = match &document {
-                                Document::V0(doc_v0) => doc_v0.owner_id(),
-                            };
-                            results.push((identity_id, document));
-                        }
-                    }
+                if properties
+                    .get("displayName")
+                    .and_then(|value| value.as_text())
+                    .is_some_and(|display_name| display_name.to_lowercase().contains(&search_lower))
+                {
+                    // Get the identity ID from document owner
+                    let identity_id = match &document {
+                        Document::V0(doc_v0) => doc_v0.owner_id(),
+                    };
+                    results.push((identity_id, document));
                 }
             }
         }

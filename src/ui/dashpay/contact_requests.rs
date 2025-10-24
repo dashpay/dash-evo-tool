@@ -68,18 +68,18 @@ impl ContactRequests {
         };
 
         // Auto-select first identity on creation if available
-        if let Ok(identities) = app_context.load_local_qualified_identities() {
-            if !identities.is_empty() {
-                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                new_self.selected_identity = Some(identities[0].clone());
-                new_self.selected_identity_string = identities[0]
-                    .identity
-                    .id()
-                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        if let Ok(identities) = app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            new_self.selected_identity = Some(identities[0].clone());
+            new_self.selected_identity_string = identities[0]
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
-                // Load requests from database for this identity
-                new_self.load_requests_from_database();
-            }
+            // Load requests from database for this identity
+            new_self.load_requests_from_database();
         }
 
         new_self
@@ -171,13 +171,12 @@ impl ContactRequests {
         self.loading = false;
 
         // Auto-select first identity if none selected
-        if self.selected_identity.is_none() {
-            if let Ok(identities) = self.app_context.load_local_qualified_identities() {
-                if !identities.is_empty() {
-                    self.selected_identity = Some(identities[0].clone());
-                    self.selected_identity_string = identities[0].display_string();
-                }
-            }
+        if self.selected_identity.is_none()
+            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            self.selected_identity = Some(identities[0].clone());
+            self.selected_identity_string = identities[0].display_string();
         }
 
         // Load requests from database if we have an identity selected and no requests loaded

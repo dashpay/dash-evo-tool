@@ -4,12 +4,15 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
+use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::IdentityPublicKey;
 use egui::{Context, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -179,18 +182,30 @@ impl ScreenLike for AddContactScreen {
             ctx,
             &self.app_context,
             vec![
-                ("DashPay", AppAction::GoToMainScreen),
+                (
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
+                ),
+                (
+                    "DashPay",
+                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
+                ),
                 ("Send Contact Request", AppAction::None),
             ],
             vec![],
         );
 
-        // Add left panel for DashPay navigation
+        // Add navigation panels
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenDashPayContacts,
+            RootScreenType::RootScreenDocumentQuery,
         );
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        action |=
+            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content in island central panel
         action |= island_central_panel(ctx, |ui| {
@@ -220,16 +235,16 @@ impl ScreenLike for AddContactScreen {
             ui.separator();
 
             // Show message if any (but not if we have an error status, to avoid duplication)
-            if !matches!(self.status, ContactRequestStatus::Error(_)) {
-                if let Some((message, message_type)) = &self.message {
-                    let color = match message_type {
-                        MessageType::Success => egui::Color32::DARK_GREEN,
-                        MessageType::Error => egui::Color32::DARK_RED,
-                        MessageType::Info => egui::Color32::LIGHT_BLUE,
-                    };
-                    ui.colored_label(color, message);
-                    ui.separator();
-                }
+            if !matches!(self.status, ContactRequestStatus::Error(_))
+                && let Some((message, message_type)) = &self.message
+            {
+                let color = match message_type {
+                    MessageType::Success => egui::Color32::DARK_GREEN,
+                    MessageType::Error => egui::Color32::DARK_RED,
+                    MessageType::Info => egui::Color32::LIGHT_BLUE,
+                };
+                ui.colored_label(color, message);
+                ui.separator();
             }
 
             // Identity and Key selector
@@ -448,15 +463,15 @@ impl ScreenLike for AddContactScreen {
                         }
 
                         // Show retry button for recoverable errors
-                        if let ContactRequestStatus::Error(ref err) = self.status {
-                            if err.is_recoverable() {
-                                ui.add_space(10.0);
-                                if ui.button("Retry").clicked() {
-                                    // Clear both status and message before retrying
-                                    self.status = ContactRequestStatus::NotStarted;
-                                    self.message = None;
-                                    inner_action |= self.send_contact_request();
-                                }
+                        if let ContactRequestStatus::Error(ref err) = self.status
+                            && err.is_recoverable()
+                        {
+                            ui.add_space(10.0);
+                            if ui.button("Retry").clicked() {
+                                // Clear both status and message before retrying
+                                self.status = ContactRequestStatus::NotStarted;
+                                self.message = None;
+                                inner_action |= self.send_contact_request();
                             }
                         }
                     });

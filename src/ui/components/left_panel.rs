@@ -58,11 +58,6 @@ pub fn add_left_panel(
     // Define the button details directly in this function
     let buttons = [
         (
-            "P",
-            RootScreenType::RootScreenDashPayContacts,
-            "dashpay.png",
-        ),
-        (
             "Identities",
             RootScreenType::RootScreenIdentities,
             "identity.png",
@@ -94,12 +89,11 @@ pub fn add_left_panel(
         ),
     ];
 
-    let panel_width = 60.0 + (Spacing::MD * 2.0); // Button width + margins
-
     let dark_mode = ctx.style().visuals.dark_mode;
 
     SidePanel::left("left_panel")
-        .default_width(panel_width + 20.0) // Add extra width for margins
+        .min_width(140.0)
+        .max_width(140.0)
         .resizable(false)
         .frame(
             Frame::new()

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -298,18 +299,28 @@ impl ScreenLike for QRCodeGeneratorScreen {
             ctx,
             &self.app_context,
             vec![
-                ("DashPay", AppAction::None),
+                (
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
+                ),
+                (
+                    "DashPay",
+                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
+                ),
                 ("QR Generator", AppAction::None),
             ],
             vec![],
         );
 
-        // Add left panel for DashPay navigation
+        // Add navigation panels
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDashPayContacts,
+            RootScreenType::RootScreenDocumentQuery,
         );
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
 
         // Add DashPay subscreen chooser panel
         action |= add_dashpay_subscreen_chooser_panel(

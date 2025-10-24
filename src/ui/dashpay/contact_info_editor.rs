@@ -3,9 +3,12 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
+use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::Identifier;
@@ -196,10 +199,10 @@ impl ContactInfoEditorScreen {
                         // Parse the account indices
                         self.accepted_accounts.clear();
                         for part in self.account_input.split(',') {
-                            if let Ok(index) = part.trim().parse::<u32>() {
-                                if !self.accepted_accounts.contains(&index) {
-                                    self.accepted_accounts.push(index);
-                                }
+                            if let Ok(index) = part.trim().parse::<u32>()
+                                && !self.accepted_accounts.contains(&index)
+                            {
+                                self.accepted_accounts.push(index);
                             }
                         }
                         self.accepted_accounts.sort();
@@ -283,28 +286,40 @@ impl ScreenLike for ContactInfoEditorScreen {
             ctx,
             &self.app_context,
             vec![
-                ("DashPay", AppAction::None),
+                (
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
+                ),
+                (
+                    "DashPay",
+                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
+                ),
                 ("Contact Details", AppAction::PopScreen),
                 ("Edit", AppAction::None),
             ],
             right_buttons,
         );
 
-        // Add left panel
+        // Navigation panels
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDashPayContacts,
+            RootScreenType::RootScreenDocumentQuery,
         );
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        action |=
+            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content area with island styling
         action |= island_central_panel(ctx, |ui| self.render(ui));
 
         // Handle custom actions from top panel
-        if let AppAction::Custom(command) = &action {
-            if command.as_str() == "refresh_contact_info" {
-                action = self.load_contact_info();
-            }
+        if let AppAction::Custom(command) = &action
+            && command.as_str() == "refresh_contact_info"
+        {
+            action = self.load_contact_info();
         }
 
         action

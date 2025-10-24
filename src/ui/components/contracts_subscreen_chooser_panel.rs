@@ -38,7 +38,12 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
             | ui::RootScreenType::RootScreenDPNSPastContests
             | ui::RootScreenType::RootScreenDPNSOwnedNames
             | ui::RootScreenType::RootScreenDPNSScheduledVotes => ContractsSubscreen::DPNS,
-            ui::RootScreenType::RootScreenDashpay => ContractsSubscreen::Dashpay,
+            ui::RootScreenType::RootScreenDashpay
+            | ui::RootScreenType::RootScreenDashPayContacts
+            | ui::RootScreenType::RootScreenDashPayRequests
+            | ui::RootScreenType::RootScreenDashPayProfile
+            | ui::RootScreenType::RootScreenDashPayPayments
+            | ui::RootScreenType::RootScreenDashPayProfileSearch => ContractsSubscreen::Dashpay,
             _ => ContractsSubscreen::Contracts,
         },
         _ => ContractsSubscreen::Contracts,

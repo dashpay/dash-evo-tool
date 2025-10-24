@@ -2,6 +2,7 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -278,22 +279,32 @@ impl ScreenLike for ProfileSearchScreen {
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![("DashPay", AppAction::None)],
             vec![
-                // Add a Clear Results button to maintain consistent panel size
                 (
-                    "Clear Results",
-                    DesiredAppAction::Custom("clear_search".to_string()),
+                    "Contracts",
+                    AppAction::SetMainScreenThenGoToMainScreen(
+                        RootScreenType::RootScreenDocumentQuery,
+                    ),
                 ),
+                (
+                    "DashPay",
+                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
+                ),
+                ("Profile Search", AppAction::None),
             ],
+            vec![(
+                "Clear Results",
+                DesiredAppAction::Custom("clear_search".to_string()),
+            )],
         );
 
-        // Add left panel for DashPay navigation
+        // Add navigation panels
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDashPayProfileSearch,
+            RootScreenType::RootScreenDocumentQuery,
         );
+        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
 
         // Add DashPay subscreen chooser panel
         action |= add_dashpay_subscreen_chooser_panel(
@@ -306,14 +317,14 @@ impl ScreenLike for ProfileSearchScreen {
         action |= island_central_panel(ctx, |ui| self.render(ui));
 
         // Handle custom action from top panel button
-        if let AppAction::Custom(command) = &action {
-            if command == "clear_search" {
-                self.search_query.clear();
-                self.search_results.clear();
-                self.has_searched = false;
-                self.message = None;
-                action = AppAction::None; // Consume the action
-            }
+        if let AppAction::Custom(command) = &action
+            && command == "clear_search"
+        {
+            self.search_query.clear();
+            self.search_results.clear();
+            self.has_searched = false;
+            self.message = None;
+            action = AppAction::None; // Consume the action
         }
 
         action

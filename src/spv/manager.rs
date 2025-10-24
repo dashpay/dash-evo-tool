@@ -171,12 +171,11 @@ impl SpvManager {
             .read()
             .expect("SPV detailed_progress lock poisoned")
             .clone();
-        let last_updated = self
+        let last_updated = (*self
             .progress_updated_at
             .read()
-            .expect("SPV progress_updated lock poisoned")
-            .clone()
-            .or(Some(SystemTime::now()));
+            .expect("SPV progress_updated lock poisoned"))
+        .or(Some(SystemTime::now()));
 
         SpvStatusSnapshot {
             status,
@@ -210,12 +209,11 @@ impl SpvManager {
             .read()
             .expect("SPV detailed_progress lock poisoned")
             .clone();
-        let last_updated = self
+        let last_updated = (*self
             .progress_updated_at
             .read()
-            .expect("SPV progress_updated lock poisoned")
-            .clone()
-            .or(Some(SystemTime::now()));
+            .expect("SPV progress_updated lock poisoned"))
+        .or(Some(SystemTime::now()));
 
         SpvStatusSnapshot {
             status,

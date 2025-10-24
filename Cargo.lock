@@ -3703,7 +3703,6 @@ dependencies = [
 [[package]]
 name = "grovestark"
 version = "0.1.0"
-source = "git+https://www.github.com/pauldelucia/grovestark?rev=e294ff4a7df23d4695f90fcbc8ef1e626190fed7#e294ff4a7df23d4695f90fcbc8ef1e626190fed7"
 dependencies = [
  "ark-ff",
  "base64 0.22.1",

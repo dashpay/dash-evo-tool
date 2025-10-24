@@ -19,7 +19,7 @@ nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
 dash-sdk = { git = "https://www.github.com/dashpay/platform", rev = "68f77c085643edb9a46afd4ff51c9d20b4ce2912", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"] }
-grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "e294ff4a7df23d4695f90fcbc8ef1e626190fed7" }
+grovestark = { path = "../grovestark" }
 rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"

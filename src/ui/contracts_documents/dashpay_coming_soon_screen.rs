@@ -9,11 +9,11 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{RootScreenType, ScreenLike};
 
-pub struct DashPayComingSoonScreen {
+pub struct DashpayScreen {
     pub app_context: Arc<AppContext>,
 }
 
-impl DashPayComingSoonScreen {
+impl DashpayScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             app_context: app_context.clone(),
@@ -21,14 +21,14 @@ impl DashPayComingSoonScreen {
     }
 }
 
-impl ScreenLike for DashPayComingSoonScreen {
+impl ScreenLike for DashpayScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
-                ("DashPay", AppAction::None),
+                ("Dashpay", AppAction::None),
             ],
             vec![],
         );

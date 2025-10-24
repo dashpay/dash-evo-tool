@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "dash-evo-tool"
-version = "1.0.0-dev"
+version = "0.9.3"
 dependencies = [
  "aes-gcm",
  "arboard",

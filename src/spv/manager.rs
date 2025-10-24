@@ -3,7 +3,9 @@ use crate::config::NetworkConfig;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dash_spv::network::MultiPeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SpvEvent, SyncProgress, ValidationMode};
+use dash_sdk::dash_spv::types::{
+    DetailedSyncProgress, SpvEvent, SyncProgress, SyncStage, ValidationMode,
+};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -103,6 +105,9 @@ pub struct SpvManager {
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
+    sync_progress_state: Arc<RwLock<Option<SyncProgress>>>,
+    detailed_progress_state: Arc<RwLock<Option<DetailedSyncProgress>>>,
+    progress_updated_at: Arc<RwLock<Option<SystemTime>>>,
     // mapping DET wallet seed_hash -> SPV wallet identifier (if created)
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
     // signal channel to trigger external reconcile on wallet-related events
@@ -132,6 +137,9 @@ impl SpvManager {
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
+            sync_progress_state: Arc::new(RwLock::new(None)),
+            detailed_progress_state: Arc::new(RwLock::new(None)),
+            progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
             stop_token: Mutex::new(None),
@@ -142,7 +150,7 @@ impl SpvManager {
 
     /// Async status method for getting full details including progress
     pub async fn status_async(&self) -> SpvStatusSnapshot {
-        let client_guard = self.client.read().await;
+        let _client_guard = self.client.read().await;
         let status = *self.status.read().expect("SPV status lock poisoned");
         let last_error = self
             .last_error
@@ -153,15 +161,21 @@ impl SpvManager {
             .started_at
             .read()
             .expect("SPV started_at lock poisoned");
-
-        // Get progress directly from the client if available
-        let (sync_progress, detailed_progress) = if let Some(_client) = client_guard.as_ref() {
-            // Note: These would need to be exposed by dash-spv's DashSpvClient
-            // For now, we'll track them separately until dash-spv exposes them
-            (None, None)
-        } else {
-            (None, None)
-        };
+        let sync_progress = self
+            .sync_progress_state
+            .read()
+            .expect("SPV sync_progress lock poisoned")
+            .clone();
+        let detailed_progress = self
+            .detailed_progress_state
+            .read()
+            .expect("SPV detailed_progress lock poisoned")
+            .clone();
+        let last_updated = (*self
+            .progress_updated_at
+            .read()
+            .expect("SPV progress_updated lock poisoned"))
+        .or(Some(SystemTime::now()));
 
         SpvStatusSnapshot {
             status,
@@ -169,7 +183,7 @@ impl SpvManager {
             detailed_progress,
             last_error,
             started_at,
-            last_updated: Some(SystemTime::now()),
+            last_updated,
         }
     }
 
@@ -185,14 +199,29 @@ impl SpvManager {
             .started_at
             .read()
             .expect("SPV started_at lock poisoned");
+        let sync_progress = self
+            .sync_progress_state
+            .read()
+            .expect("SPV sync_progress lock poisoned")
+            .clone();
+        let detailed_progress = self
+            .detailed_progress_state
+            .read()
+            .expect("SPV detailed_progress lock poisoned")
+            .clone();
+        let last_updated = (*self
+            .progress_updated_at
+            .read()
+            .expect("SPV progress_updated lock poisoned"))
+        .or(Some(SystemTime::now()));
 
         SpvStatusSnapshot {
             status,
-            sync_progress: None,
-            detailed_progress: None,
+            sync_progress,
+            detailed_progress,
             last_error,
             started_at,
-            last_updated: Some(SystemTime::now()),
+            last_updated,
         }
     }
 
@@ -217,6 +246,18 @@ impl SpvManager {
             .started_at
             .write()
             .expect("SPV started_at lock poisoned") = Some(SystemTime::now());
+        *self
+            .sync_progress_state
+            .write()
+            .expect("SPV sync_progress lock poisoned") = None;
+        *self
+            .detailed_progress_state
+            .write()
+            .expect("SPV detailed_progress lock poisoned") = None;
+        *self
+            .progress_updated_at
+            .write()
+            .expect("SPV progress_updated lock poisoned") = None;
 
         let stop_token = CancellationToken::new();
         *self
@@ -485,9 +526,24 @@ impl SpvManager {
                 // Sync to tip
                 match client.sync_to_tip().await {
                     Ok(progress) => {
-                        tracing::info!("Initial sync complete: {:?}", progress);
+                        tracing::info!("Initial sync progress snapshot: {:?}", progress);
+                        {
+                            let mut stored_sync = self
+                                .sync_progress_state
+                                .write()
+                                .expect("SPV sync_progress lock poisoned");
+                            *stored_sync = Some(progress.clone());
+                        }
+                        {
+                            let mut updated_at = self
+                                .progress_updated_at
+                                .write()
+                                .expect("SPV progress_updated lock poisoned");
+                            *updated_at = Some(SystemTime::now());
+                        }
+                        // Stay in Syncing mode until detailed progress reports completion.
                         *self.status.write().expect("SPV status lock poisoned") =
-                            SpvStatus::Running;
+                            SpvStatus::Syncing;
                     }
                     Err(err) => {
                         tracing::error!("Initial sync failed: {}", err);
@@ -557,6 +613,10 @@ impl SpvManager {
         mut progress_rx: tokio::sync::mpsc::UnboundedReceiver<DetailedSyncProgress>,
     ) {
         let status = Arc::clone(&self.status);
+        let last_error = Arc::clone(&self.last_error);
+        let sync_progress_state = Arc::clone(&self.sync_progress_state);
+        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
+        let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync(async move {
@@ -569,14 +629,49 @@ impl SpvManager {
                     msg = progress_rx.recv() => {
                         match msg {
                             Some(detailed) => {
+                                {
+                                    let mut stored_detailed = detailed_progress_state
+                                        .write()
+                                        .expect("SPV detailed_progress lock poisoned");
+                                    *stored_detailed = Some(detailed.clone());
+                                }
+                                {
+                                    let mut stored_sync = sync_progress_state
+                                        .write()
+                                        .expect("SPV sync_progress lock poisoned");
+                                    *stored_sync = Some(detailed.sync_progress.clone());
+                                }
+                                {
+                                    let mut updated_at = progress_updated_at
+                                        .write()
+                                        .expect("SPV progress_updated lock poisoned");
+                                    *updated_at = Some(detailed.last_update_time);
+                                }
+
                                 if last_update.elapsed() >= min_interval {
-                                    // Update status based on progress
-                                    if detailed.percentage >= 100.0 || detailed.sync_progress.header_height >= detailed.peer_best_height {
-                                        *status.write().expect("SPV status lock poisoned") = SpvStatus::Running;
-                                    } else {
-                                        let current = *status.read().expect("SPV status lock poisoned");
-                                        if matches!(current, SpvStatus::Starting | SpvStatus::Idle | SpvStatus::Stopped) {
-                                            *status.write().expect("SPV status lock poisoned") = SpvStatus::Syncing;
+                                    // Update status based on progress stage and completeness
+                                    let mut status_guard = status
+                                        .write()
+                                        .expect("SPV status lock poisoned");
+                                    let current = *status_guard;
+                                    match &detailed.sync_stage {
+                                        SyncStage::Complete => {
+                                            *status_guard = SpvStatus::Running;
+                                        }
+                                        SyncStage::Failed(message) => {
+                                            *status_guard = SpvStatus::Error;
+                                            let mut err_guard = last_error
+                                                .write()
+                                                .expect("SPV last_error lock poisoned");
+                                            *err_guard = Some(format!("SPV sync failed: {message}"));
+                                        }
+                                        _ => {
+                                            if !matches!(
+                                                current,
+                                                SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error
+                                            ) {
+                                                *status_guard = SpvStatus::Syncing;
+                                            }
                                         }
                                     }
                                     last_update = std::time::Instant::now();
@@ -634,12 +729,18 @@ impl SpvManager {
         >,
         String,
     > {
+        let start_height = {
+            let guard = self.wallet.read().await;
+            if guard.wallet_count() == 0 {
+                u32::MAX
+            } else {
+                0
+            }
+        };
         let mut config = ClientConfig::new(self.network)
             .with_storage_path(self.data_dir.clone())
             .with_validation_mode(ValidationMode::Full)
-            // Start from the latest built-in checkpoint instead of genesis
-            // (effective only when storage is empty / first initialization)
-            .with_start_height(u32::MAX);
+            .with_start_height(start_height);
 
         // Pin peers when running against local nodes to avoid random peers.
         if self.network == Network::Devnet || self.network == Network::Regtest {

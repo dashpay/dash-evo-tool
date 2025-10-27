@@ -116,12 +116,34 @@ jobs:
 
       - name: Build project
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          set -euo pipefail
+          echo "::group::Cargo build output (${{ matrix.target }})"
+          cargo build --release --target ${{ matrix.target }} 2>&1 | tee build-${{ matrix.platform }}.log
+          echo "::endgroup::"
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
         env:
           CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CFLAGS_x86_64_pc_windows_gnu: "-O2"
+          RUST_BACKTRACE: "1"
+
+      - name: Summarize build errors
+        if: failure()
+        run: |
+          echo "::group::Detected error lines"
+          # Try to extract the most relevant error lines from the log
+          grep -nE "^error(\[[A-Z0-9]+\])?:|^thread '.*' panicked at|^note:|^= note:" -m 200 build-${{ matrix.platform }}.log || true
+          echo "::endgroup::"
+          echo "::group::Last 200 lines of build output"
+          tail -n 200 build-${{ matrix.platform }}.log || true
+          echo "::endgroup::"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.platform }}
+          path: build-${{ matrix.platform }}.log
 
       - name: Package release
         run: |

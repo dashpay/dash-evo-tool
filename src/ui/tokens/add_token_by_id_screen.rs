@@ -128,33 +128,31 @@ impl AddTokenByIdScreen {
     }
 
     fn render_add_button(&mut self, ui: &mut Ui) -> AppAction {
-        if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token) {
-            if ui
+        if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token)
+            && ui
                 .add(
                     egui::Button::new(RichText::new("Add Token").color(Color32::WHITE))
                         .fill(Color32::from_rgb(0, 120, 0)),
                 )
                 .clicked()
-            {
-                let insert_mode =
-                    InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
+        {
+            let insert_mode = InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
 
-                // Set status to show we're processing
-                self.status = AddTokenStatus::Searching(chrono::Utc::now().timestamp() as u32);
+            // Set status to show we're processing
+            self.status = AddTokenStatus::Searching(chrono::Utc::now().timestamp() as u32);
 
-                // None for alias; change if you allow user alias input
-                return AppAction::BackendTasks(
-                    vec![
-                        BackendTask::ContractTask(Box::new(ContractTask::SaveDataContract(
-                            contract.clone(),
-                            None,
-                            insert_mode,
-                        ))),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                    ],
-                    crate::app::BackendTasksExecutionMode::Sequential,
-                );
-            }
+            // None for alias; change if you allow user alias input
+            return AppAction::BackendTasks(
+                vec![
+                    BackendTask::ContractTask(Box::new(ContractTask::SaveDataContract(
+                        contract.clone(),
+                        None,
+                        insert_mode,
+                    ))),
+                    BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                ],
+                crate::app::BackendTasksExecutionMode::Sequential,
+            );
         }
         AppAction::None
     }

@@ -3,7 +3,13 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -27,7 +33,6 @@ use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
@@ -52,10 +57,12 @@ pub struct MintTokensScreen {
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+    known_identities: Vec<QualifiedIdentity>,
 
     pub recipient_identity_id: String,
 
-    pub amount_to_mint: String,
+    pub amount: Option<Amount>,
+    pub amount_input: Option<AmountInput>,
     status: MintTokensStatus,
     error_message: Option<String>,
 
@@ -63,7 +70,7 @@ pub struct MintTokensScreen {
     pub app_context: Arc<AppContext>,
 
     /// Confirmation popup
-    show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -73,6 +80,10 @@ pub struct MintTokensScreen {
 
 impl MintTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let known_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -152,17 +163,17 @@ impl MintTokensScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        if group.is_some()
+            && let Some((_, group)) = group.clone()
+        {
+            let your_power = group
+                .members()
+                .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                is_unilateral_group_member = true;
             }
         };
 
@@ -181,150 +192,146 @@ impl MintTokensScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
+            known_identities,
             recipient_identity_id: "".to_string(),
-            amount_to_mint: "".to_string(),
+            amount: None,
+            amount_input: None,
             status: MintTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
         }
     }
 
-    /// Renders a text input for the user to specify an amount to mint
+    /// Renders an amount input for the user to specify an amount to mint
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount to Mint:");
-            ui.text_edit_singleline(&mut self.amount_to_mint);
-
-            // Since it's minting, we often don't do "Max."
-            // But you could show a help text or put constraints if needed.
+        // Lazy initialization with proper token configuration
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            // Create appropriate Amount based on token configuration
+            let token_amount = Amount::from_token(&self.identity_token_info, 0);
+            AmountInput::new(token_amount).with_label("Amount to Mint:")
         });
+
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.status {
+            MintTokensStatus::WaitingForResult(_) | MintTokensStatus::Complete => false,
+            MintTokensStatus::NotStarted | MintTokensStatus::ErrorMessage(_) => true,
+        };
+
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
+
+        response.inner.update(&mut self.amount);
+        // errors are handled inside AmountInput
     }
 
     /// Renders an optional text input for the user to specify a "Recipient Identity"
     fn render_recipient_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Recipient:");
-            ui.text_edit_singleline(&mut self.recipient_identity_id);
-        });
+        let _response = ui.add(
+            IdentitySelector::new(
+                "mint_recipient_selector",
+                &mut self.recipient_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Recipient:")
+            .exclude(&[self.identity_token_info.identity.identity.id()]),
+        );
 
         // If empty, minted tokens go to the 'issuer' identity (self.identity).
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Mint")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let amount_ok = self.amount_to_mint.parse::<u64>().ok();
-                if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid amount.".into());
-                    self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
+        let msg = format!(
+            "Are you sure you want to mint {} tokens to {}?",
+            self.amount.clone().unwrap_or(Amount::new(0, 0)),
+            self.recipient_identity_id
+        );
 
-                let maybe_identifier = if self.recipient_identity_id.trim().is_empty() {
-                    None
-                } else {
-                    // Attempt to parse from base58 or hex
-                    match Identifier::from_string_try_encodings(
-                        &self.recipient_identity_id,
-                        &[Encoding::Base58, Encoding::Hex],
-                    ) {
-                        Ok(id) => Some(id),
-                        Err(_) => {
-                            self.error_message = Some("Invalid recipient identity format.".into());
-                            self.status =
-                                MintTokensStatus::ErrorMessage("Invalid recipient identity".into());
-                            self.show_confirmation_popup = false;
-                            return;
-                        }
-                    }
-                };
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Mint", msg)
+                .confirm_text(Some("Mint"))
+                .cancel_text(Some("Cancel"))
+        });
 
-                ui.label(format!(
-                    "Are you sure you want to mint {} token(s)?",
-                    self.amount_to_mint
-                ));
-
-                // If user provided a recipient:
-                if let Some(ref recipient_id) = maybe_identifier {
-                    ui.label(format!(
-                        "Recipient: {}",
-                        recipient_id.to_string(Encoding::Base58)
-                    ));
-                } else {
-                    ui.label("No recipient specified; tokens will be minted to default identity.");
-                }
-
-                ui.add_space(10.0);
-
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = MintTokensStatus::WaitingForResult(now);
-
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
-                    };
-
-                    // Dispatch the actual backend mint action
-                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::MintTokens {
-                            sending_identity: self.identity_token_info.identity.clone(),
-                            data_contract: Arc::new(
-                                self.identity_token_info.data_contract.contract.clone(),
-                            ),
-                            token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
-                            },
-                            amount: amount_ok.unwrap(),
-                            recipient_id: maybe_identifier,
-                            group_info,
-                        },
-                    )));
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+        let response = confirmation_dialog.show(ui);
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                self.confirmation_ok()
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
+    fn confirmation_ok(&mut self) -> AppAction {
+        if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
+            self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
+            self.error_message = Some("Invalid amount".into());
+            return AppAction::None;
+        }
+
+        let parsed_receiver_id = Identifier::from_string_try_encodings(
+            &self.recipient_identity_id,
+            &[
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
+            ],
+        );
+
+        if parsed_receiver_id.is_err() {
+            self.status = MintTokensStatus::ErrorMessage("Invalid receiver".into());
+            self.error_message = Some("Invalid receiver".into());
+            return AppAction::None;
+        }
+
+        let receiver_id = parsed_receiver_id.unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.status = MintTokensStatus::WaitingForResult(now);
+
+        let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
+
+        let group_info = if self.group_action_id.is_some() {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position: *pos,
+                        action_id: self.group_action_id.unwrap(),
+                        action_is_proposer: false,
+                    },
+                )
+            })
+        } else {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+            })
+        };
+
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::MintTokens {
+            sending_identity: self.identity_token_info.identity.clone(),
+            data_contract,
+            token_position: self.identity_token_info.token_position,
+            signing_key: self.selected_key.clone().expect("No key selected"),
+            public_note: if self.group_action_id.is_some() {
+                None
+            } else {
+                self.public_note.clone()
+            },
+            recipient_id: Some(receiver_id),
+            amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
+            group_info,
+        })))
+    }
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
@@ -391,13 +398,12 @@ impl ScreenLike for MintTokensScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
-            {
-                self.identity_token_info.identity = updated_identity;
-            }
+        {
+            self.identity_token_info.identity = updated_identity;
         }
     }
 
@@ -543,7 +549,13 @@ impl ScreenLike for MintTokensScreen {
                         "You are signing an existing group Mint so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!("Amount: {}", self.amount_to_mint));
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount
+                            .as_ref()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default()
+                    ));
                 } else {
                     self.render_amount_input(ui);
                 }
@@ -624,12 +636,21 @@ impl ScreenLike for MintTokensScreen {
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                        let msg = format!(
+                            "Are you sure you want to mint {} tokens to {}?",
+                            self.amount.clone().unwrap_or(Amount::new(0, 0)),
+                            self.recipient_identity_id
+                        );
+                        self.confirmation_dialog = Some(
+                            ConfirmationDialog::new("Confirm Mint", msg)
+                                .confirm_text(Some("Mint"))
+                                .cancel_text(Some("Cancel")),
+                        );
                     }
                 }
 
                 // If the user pressed "Mint," show a popup
-                if self.show_confirmation_popup {
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

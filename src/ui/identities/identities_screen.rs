@@ -123,10 +123,10 @@ impl IdentitiesScreen {
             if desired_idx >= lock.len() {
                 break;
             }
-            if let Some(current_idx) = lock.get_index_of(&id) {
-                if current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
+            if let Some(current_idx) = lock.get_index_of(&id)
+                && current_idx != desired_idx
+            {
+                lock.swap_indices(current_idx, desired_idx);
             }
         }
     }
@@ -197,17 +197,14 @@ impl IdentitiesScreen {
     }
 
     fn wallet_name_for(&self, qi: &QualifiedIdentity) -> String {
-        if let Some(master_identity_public_key) = qi.private_keys.find_master_key() {
-            if let Some(wallet_derivation_path) =
+        if let Some(master_identity_public_key) = qi.private_keys.find_master_key()
+            && let Some(wallet_derivation_path) =
                 &master_identity_public_key.in_wallet_at_derivation_path
-            {
-                if let Some(alias) = self
-                    .wallet_seed_hash_cache
-                    .get(&wallet_derivation_path.wallet_seed_hash)
-                {
-                    return alias.clone();
-                }
-            }
+            && let Some(alias) = self
+                .wallet_seed_hash_cache
+                .get(&wallet_derivation_path.wallet_seed_hash)
+        {
+            return alias.clone();
         }
         "".to_owned()
     }
@@ -272,10 +269,10 @@ impl IdentitiesScreen {
     // Up/down reorder methods
     fn move_identity_up(&mut self, identity_id: &Identifier) {
         let mut lock = self.identities.lock().unwrap();
-        if let Some(idx) = lock.get_index_of(identity_id) {
-            if idx > 0 {
-                lock.swap_indices(idx, idx - 1);
-            }
+        if let Some(idx) = lock.get_index_of(identity_id)
+            && idx > 0
+        {
+            lock.swap_indices(idx, idx - 1);
         }
         drop(lock);
         self.save_current_order();
@@ -284,10 +281,10 @@ impl IdentitiesScreen {
     // arrow down
     fn move_identity_down(&mut self, identity_id: &Identifier) {
         let mut lock = self.identities.lock().unwrap();
-        if let Some(idx) = lock.get_index_of(identity_id) {
-            if idx + 1 < lock.len() {
-                lock.swap_indices(idx, idx + 1);
-            }
+        if let Some(idx) = lock.get_index_of(identity_id)
+            && idx + 1 < lock.len()
+        {
+            lock.swap_indices(idx, idx + 1);
         }
         drop(lock);
         self.save_current_order();
@@ -308,10 +305,10 @@ impl IdentitiesScreen {
         // basically reorder the underlying IndexMap to match ephemeral_list
         for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
             let id = qi.identity.id();
-            if let Some(current_idx) = lock.get_index_of(&id) {
-                if current_idx != desired_idx {
-                    lock.swap_indices(current_idx, desired_idx);
-                }
+            if let Some(current_idx) = lock.get_index_of(&id)
+                && current_idx != desired_idx
+            {
+                lock.swap_indices(current_idx, desired_idx);
             }
         }
     }
@@ -624,50 +621,38 @@ impl IdentitiesScreen {
                                                     let actions_response = ui.add(actions_button).on_hover_text("Manage identity credits");
 
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                        egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
+                                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .show(|ui| {
+                                                        ui.set_min_width(150.0);
 
-                                                    if actions_response.clicked() {
-                                                        ui.memory_mut(|mem| mem.toggle_popup(actions_popup_id));
-                                                    }
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💸 Withdraw")).on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
 
-                                                    egui::popup::popup_below_widget(
-                                                        ui,
-                                                        actions_popup_id,
-                                                        &actions_response,
-                                                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                                                        |ui| {
-                                                            ui.set_min_width(150.0);
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
 
-                                                            if ui.button("💸 Withdraw").on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                                        qualified_identity.clone(),
-                                                                        &self.app_context,
-                                                                    )),
-                                                                );
-                                                                ui.close_menu();
-                                                            }
-
-                                                            if ui.button("💰 Top up").on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
-                                                                        qualified_identity.clone(),
-                                                                        &self.app_context,
-                                                                    )),
-                                                                );
-                                                                ui.close_menu();
-                                                            }
-
-                                                            if ui.button("📤 Transfer").on_hover_text("Transfer credits from this identity to another identity").clicked() {
-                                                                action = AppAction::AddScreen(
-                                                                    Screen::TransferScreen(TransferScreen::new(
-                                                                        qualified_identity.clone(),
-                                                                        &self.app_context,
-                                                                    )),
-                                                                );
-                                                                ui.close_menu();
-                                                            }
-                                                        },
-                                                    );
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📤 Transfer")).on_hover_text("Transfer credits from this identity to another identity").clicked() {
+                                                            action = AppAction::AddScreen(
+                                                                Screen::TransferScreen(TransferScreen::new(
+                                                                    qualified_identity.clone(),
+                                                                    &self.app_context,
+                                                                )),
+                                                            );
+                                                        }
+                                                    });
                                             });
                                             });
                                         });
@@ -690,20 +675,12 @@ impl IdentitiesScreen {
                                                         .corner_radius(3.0)
                                                         .min_size(egui::vec2(50.0, 20.0));
 
-                                                    let response = ui.add(button).on_hover_text("View and manage keys for this identity");
+                                                    let button_response = ui.add(button).on_hover_text("View and manage keys for this identity");
 
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
-
-                                                    if response.clicked() {
-                                                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-                                                    }
-
-                                                    egui::popup::popup_below_widget(
-                                                        ui,
-                                                        popup_id,
-                                                        &response,
-                                                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                                                        |ui| {
+                                                    egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
+                                                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .show(|ui| {
                                                             ui.set_min_width(200.0);
 
                                                             // Main Identity Keys
@@ -743,7 +720,7 @@ impl IdentitiesScreen {
                                                                             holding_private_key,
                                                                             &self.app_context,
                                                                         )));
-                                                                        ui.close_menu();
+                                                                       ui.close_kind(egui::UiKind::Menu);
                                                                     }
                                                                 }
                                                             }
@@ -790,7 +767,7 @@ impl IdentitiesScreen {
                                                                                 holding_private_key,
                                                                                 &self.app_context,
                                                                             )));
-                                                                            ui.close_menu();
+                                                                           ui.close_kind(egui::UiKind::Menu);
                                                                         }
                                                                     }
                                                                 }
@@ -809,7 +786,7 @@ impl IdentitiesScreen {
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
                                                                     )));
-                                                                    ui.close_menu();
+                                                                   ui.close_kind(egui::UiKind::Menu);
                                                                 }
                                                             }
                                                         },
@@ -856,8 +833,9 @@ impl IdentitiesScreen {
         action
     }
 
-    fn show_identity_to_remove(&mut self, ctx: &Context) {
+    fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
         if let Some(identity_to_remove) = self.identity_to_remove.clone() {
+            let action = AppAction::None;
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
@@ -904,6 +882,9 @@ impl IdentitiesScreen {
                         }
                     });
                 });
+            action
+        } else {
+            AppAction::None
         }
     }
 
@@ -1024,6 +1005,11 @@ impl ScreenLike for IdentitiesScreen {
                 inner_action |= self.render_identities_view(ui, &identities_vec);
             }
 
+            // Handle identity removal confirmation dialog
+            if self.identity_to_remove.is_some() {
+                inner_action |= self.show_identity_to_remove(ctx);
+            }
+
             // Show either refreshing indicator or message, but not both
             if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
                 ui.add_space(25.0); // Space above
@@ -1059,10 +1045,6 @@ impl ScreenLike for IdentitiesScreen {
             }
             inner_action
         });
-
-        if self.identity_to_remove.is_some() {
-            self.show_identity_to_remove(ctx);
-        }
 
         match action {
             AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {

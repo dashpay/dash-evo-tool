@@ -2,12 +2,12 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
-use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
 
-use dash_sdk::dpp::dashcore::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::{
     Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
 };
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
@@ -336,6 +336,7 @@ impl Wallet {
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
         derivation_path: &DerivationPath,
+        network: Network,
     ) -> Result<Option<[u8; 32]>, String> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
@@ -344,7 +345,7 @@ impl Wallet {
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Attempt to derive the private key using the provided derivation path
                 let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, Network::Dash)
+                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
                     .map_err(|e| e.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }
@@ -356,9 +357,10 @@ impl Wallet {
     pub fn private_key_at_derivation_path(
         &self,
         derivation_path: &DerivationPath,
+        network: Network,
     ) -> Result<PrivateKey, String> {
         let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, Network::Dash)
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .map_err(|e| e.to_string())?;
         Ok(extended_private_key.to_priv())
     }
@@ -774,11 +776,11 @@ impl Wallet {
         context: &AppContext,
     ) -> Result<(), String> {
         // Check if the new balance differs from the current one.
-        if let Some(current_balance) = self.address_balances.get(address) {
-            if *current_balance == new_balance {
-                // If the balance hasn't changed, skip the update.
-                return Ok(());
-            }
+        if let Some(current_balance) = self.address_balances.get(address)
+            && *current_balance == new_balance
+        {
+            // If the balance hasn't changed, skip the update.
+            return Ok(());
         }
 
         // If there's no current balance or it has changed, update it.

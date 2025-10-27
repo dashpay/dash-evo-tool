@@ -43,6 +43,8 @@ cross build --target x86_64-pc-windows-gnu --release
 - **Async Backend Tasks**: Communication via crossbeam channels with result handling
 - **Network Isolation**: Separate app contexts per network with independent databases
 - **Real-time Updates**: ZMQ listeners for core blockchain events on network-specific ports
+- **Custom UI components**: we build a library of reusable widgets in `ui/components` whenever we need similar
+  widget displayed in more than 2 places
 
 ### Critical Dependencies
 - **dash-sdk**: Core Dash Platform SDK (git dependency, specific revision)
@@ -54,7 +56,7 @@ cross build --target x86_64-pc-windows-gnu --release
 ## Development Environment Setup
 
 ### Prerequisites
-1. **Rust**: Version 1.88+ (enforced by rust-toolchain.toml)
+1. **Rust**: Version 1.89+ (enforced by rust-toolchain.toml)
 2. **System Dependencies** (Ubuntu): `build-essential libssl-dev pkg-config unzip`
 3. **Protocol Buffers**: protoc v25.2+ required for dash-sdk
 4. **Dash Core Wallet**: Must be synced for full functionality

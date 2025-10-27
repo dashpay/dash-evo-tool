@@ -43,7 +43,7 @@ use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::epaint::Color32;
-use egui::{Context, PopupCloseBehavior, RichText, Ui};
+use egui::{Context, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -336,40 +336,42 @@ impl DocumentActionScreen {
                         ui.label(&doc_id_str);
 
                         let view_button_response = ui.button("View");
-                        if view_button_response.clicked() {
-                            ui.memory_mut(|mem| {
-                                mem.open_popup(egui::Id::new(format!("popup_{}", doc_id_str)))
-                            });
-                        }
+
                         if ui.button("Select").clicked() {
                             self.document_id_input = doc_id_str.clone();
                         }
 
-                        egui::popup::popup_above_or_below_widget(
-                            ui,
-                            egui::Id::new(format!("popup_{}", doc_id_str)),
+                        let popup_id = egui::Id::new(format!("popup_{}", doc_id_str));
+                        egui::Popup::new(
+                            popup_id,
+                            ui.ctx().clone(),
                             &view_button_response,
-                            egui::AboveOrBelow::Below,
-                            PopupCloseBehavior::CloseOnClickOutside,
-                            |ui| {
-                                ui.set_min_width(400.0);
-                                ui.label("Document JSON:");
-                                if let Ok(json) = serde_json::to_string_pretty(doc) {
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut json.clone())
-                                            .font(egui::TextStyle::Monospace)
-                                            .desired_rows(10)
-                                            .desired_width(380.0)
-                                            .interactive(false),
-                                    );
-                                } else {
-                                    ui.label("Failed to serialize document.");
-                                }
-                                if ui.button("Close").clicked() {
-                                    ui.memory_mut(|mem| mem.close_popup());
-                                }
-                            },
-                        );
+                            view_button_response.layer_id,
+                        )
+                        .open_memory(
+                            view_button_response
+                                .clicked()
+                                .then_some(egui::SetOpenCommand::Bool(true)),
+                        )
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_min_width(400.0);
+                            ui.label("Document JSON:");
+                            if let Ok(json) = serde_json::to_string_pretty(doc) {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut json.clone())
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_rows(10)
+                                        .desired_width(380.0)
+                                        .interactive(false),
+                                );
+                            } else {
+                                ui.label("Failed to serialize document.");
+                            }
+                            if ui.button("Close").clicked() {
+                                ui.close();
+                            }
+                        });
                     });
                 } else {
                     ui.label("Document not found");
@@ -377,11 +379,11 @@ impl DocumentActionScreen {
             }
         }
 
-        if let Some(backend_message) = &self.backend_message {
-            if backend_message.contains("No owned documents found") {
-                ui.add_space(10.0);
-                ui.label("No owned documents found.");
-            }
+        if let Some(backend_message) = &self.backend_message
+            && backend_message.contains("No owned documents found")
+        {
+            ui.add_space(10.0);
+            ui.label("No owned documents found.");
         }
 
         // Show fetching status
@@ -1242,6 +1244,7 @@ impl DocumentActionScreen {
             id,
             properties,
             owner_id,
+            creator_id: None,
             revision,
             created_at: None,
             updated_at: None,
@@ -1410,6 +1413,7 @@ impl DocumentActionScreen {
             id: original_doc.id(),
             properties,
             owner_id: original_doc.owner_id(),
+            creator_id: original_doc.creator_id(),
             revision: new_revision,
             created_at: None,
             updated_at: None,
@@ -1466,6 +1470,12 @@ impl ScreenLike for DocumentActionScreen {
             ctx,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
+        );
+
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
         );
 
         action |= island_central_panel(ctx, |ui| match &self.broadcast_status {

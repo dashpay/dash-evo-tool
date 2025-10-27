@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::model::amount::Amount;
 use crate::ui::Screen;
 use crate::ui::components::styled::{ClickableCollapsingHeader, StyledButton};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -423,8 +424,10 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
-                                                let formatted_balance = balance.to_string();
-                                                ui.label(formatted_balance);
+                                                // Create an amount using the token's decimal places and alias
+                                                let decimals = itb.token_config.conventions().decimals();
+                                                let amount = Amount::new(balance, decimals).with_unit_name(&itb.token_alias);
+                                                ui.label(amount.to_string_without_unit());
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
                                             }
@@ -434,8 +437,10 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                let formatted_rewards = known_rewards.to_string();
-                                                                ui.label(formatted_rewards);
+                                                                // Create an amount for rewards using the token's decimal places and alias
+                                                                let decimals = itb.token_config.conventions().decimals();
+                                                                let rewards_amount = Amount::new(known_rewards, decimals);
+                                                                ui.label(rewards_amount.to_string());
 
                                                                 // Info button to show explanation
                                                                 let identity_token_id = IdentityTokenIdentifier {
@@ -473,29 +478,27 @@ impl TokensScreen {
                                             });
                                         }
                                         row.col(|ui| {
-                                            ui.horizontal(|ui| {
-                                                if itb.available_actions.shown_buttons() < 6 {
-                                                    action |= self.render_actions(itb, &token_info, 0..10, ui);
-                                                } else {
-                                                    action |= self.render_actions(itb, &token_info, 0..3, ui);
-                                                    // Expandable advanced actions menu
-                                                    ui.menu_button("...", |ui| {
-                                                        action |= self.render_actions(itb, &token_info, 3..128, ui);
-                                                    });
-                                                }
+                                            if itb.available_actions.shown_buttons() < 3 {
+                                                action |= self.render_actions(itb, &token_info, 0..10, ui);
+                                            } else {
+                                                action |= self.render_actions(itb, &token_info, 0..3, ui);
+                                                // Expandable advanced actions menu
+                                                ui.menu_button("...", |ui| {
+                                                    action |= self.render_actions(itb, &token_info, 3..128, ui);
+                                                });
+                                            }
 
-                                                // Remove
-                                                if ui
-                                                    .button("X")
-                                                    .on_hover_text(
-                                                        "Remove identity token balance from DET",
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    self.confirm_remove_identity_token_balance_popup = true;
-                                                    self.identity_token_balance_to_remove = Some(itb.into());
-                                                }
-                                            });
+                                            // Remove
+                                            if ui
+                                                .button("X")
+                                                .on_hover_text(
+                                                    "Remove identity token balance from DET",
+                                                )
+                                                .clicked()
+                                            {
+                                                self.confirm_remove_identity_token_balance_popup = true;
+                                                self.identity_token_balance_to_remove = Some(itb.into());
+                                            }
                                         });
                                     });
                                 }
@@ -516,12 +519,17 @@ impl TokensScreen {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             ui.heading("Reward Estimation Details");
                             ui.separator();
+                            let decimal_places =
+                                token_info.token_configuration.conventions().decimals();
+                            let unit_name = token_info
+                                .token_configuration
+                                .conventions()
+                                .plural_form_by_language_code_or_default("en");
+                            let reward_amount =
+                                Amount::new(explanation.total_amount, decimal_places)
+                                    .with_unit_name(unit_name);
 
-                            let formatted_total = explanation.total_amount.to_string();
-                            ui.label(format!(
-                                "Total Estimated Rewards: {} tokens",
-                                formatted_total
-                            ));
+                            ui.label(format!("Total Estimated Rewards: {}", reward_amount));
                             ui.separator();
 
                             ClickableCollapsingHeader::new("Basic Explanation")
@@ -600,64 +608,62 @@ impl TokensScreen {
     ) -> AppAction {
         let mut pos = 0;
         let mut action = AppAction::None;
+        ui.spacing_mut().item_spacing.x = 5.0;
 
-        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            ui.add_space(-9.0);
-            ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
-
-            if range.contains(&pos) {
-                if itb.available_actions.can_transfer {
-                    if let Some(balance) = itb.balance {
-                        // Transfer
-                        if ui.button("Transfer").clicked() {
-                            action = AppAction::AddScreen(Screen::TransferTokensScreen(
-                                TransferTokensScreen::new(
-                                    itb.to_token_balance(balance),
-                                    &self.app_context,
-                                ),
-                            ));
-                        }
+        if range.contains(&pos) {
+            if itb.available_actions.can_transfer {
+                if let Some(balance) = itb.balance {
+                    // Transfer
+                    if ui.button("Transfer").clicked() {
+                        action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                            TransferTokensScreen::new(
+                                itb.to_token_balance(balance),
+                                &self.app_context,
+                            ),
+                        ));
                     }
-                } else {
-                    // Disabled, grayed-out Transfer button
-                    ui.add_enabled(
-                        false,
-                        egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
-                    )
-                    .on_hover_text("Transfer not available");
                 }
+            } else {
+                // Disabled, grayed-out Transfer button
+                ui.add_enabled(
+                    false,
+                    egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
+                )
+                .on_hover_text("Transfer not available");
             }
+        }
 
-            pos += 1;
+        pos += 1;
 
-            // Claim
-            if itb.available_actions.can_claim {
-                if range.contains(&pos) && ui.button("Claim").clicked() {
-                    match self.app_context.get_contract_by_token_id(&itb.token_id) {
-                        Ok(Some(contract)) => {
-                            action = AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+        // Claim
+        if itb.available_actions.can_claim {
+            if range.contains(&pos) && ui.button("Claim").clicked() {
+                match self.app_context.get_contract_by_token_id(&itb.token_id) {
+                    Ok(Some(contract)) => {
+                        action = AppAction::AddScreen(Screen::ClaimTokensScreen(
+                            ClaimTokensScreen::new(
                                 itb.into(),
                                 contract,
                                 token_info.token_configuration.clone(),
                                 &self.app_context,
-                            )));
-                            ui.close_menu();
-                        }
-                        Ok(None) => {
-                            self.set_error_message(Some("Token contract not found".to_string()));
-                        }
-                        Err(e) => {
-                            self.set_error_message(Some(format!("Error fetching token contract: {e}")));
-                        }
+                            ),
+                        ));
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
+                    Ok(None) => {
+                        self.set_error_message(Some("Token contract not found".to_string()));
+                    }
+                    Err(e) => {
+                        self.set_error_message(Some(format!("Error fetching token contract: {e}")));
                     }
                 }
-                pos += 1;
             }
+            pos += 1;
+        }
 
-            if itb.available_actions.can_mint {
-                if range.contains(&pos) && ui.button("Mint").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+        if itb.available_actions.can_mint {
+            if range.contains(&pos) && ui.button("Mint").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::MintTokensScreen(
@@ -673,13 +679,13 @@ impl TokensScreen {
                         }
                     };
 
-                    ui.close_menu();
-                }
-                pos += 1;
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if itb.available_actions.can_burn {
-                if range.contains(&pos) && ui.button("Burn").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            pos += 1;
+        }
+        if itb.available_actions.can_burn {
+            if range.contains(&pos) && ui.button("Burn").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::BurnTokensScreen(
@@ -694,13 +700,13 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
-                }
-                pos += 1;
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if itb.available_actions.can_freeze {
-                if range.contains(&pos) && ui.button("Freeze").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            pos += 1;
+        }
+        if itb.available_actions.can_freeze {
+            if range.contains(&pos) && ui.button("Freeze").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::FreezeTokensScreen(
@@ -715,13 +721,13 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
-                }
-                pos += 1;
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if itb.available_actions.can_destroy {
-                if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            pos += 1;
+        }
+        if itb.available_actions.can_destroy {
+            if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::DestroyFrozenFundsScreen(
@@ -736,13 +742,13 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
-                }
-                pos += 1;
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if itb.available_actions.can_unfreeze {
-                if range.contains(&pos) && ui.button("Unfreeze").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            pos += 1;
+        }
+        if itb.available_actions.can_unfreeze {
+            if range.contains(&pos) && ui.button("Unfreeze").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::UnfreezeTokensScreen(
@@ -757,14 +763,14 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
-                }
-                pos += 1;
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if itb.available_actions.can_do_emergency_action {
-                if range.contains(&pos) {
-                    if ui.button("Pause").clicked() {
-                        match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            pos += 1;
+        }
+        if itb.available_actions.can_do_emergency_action {
+            if range.contains(&pos) {
+                if ui.button("Pause").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
                                     Screen::PauseTokensScreen(
@@ -779,14 +785,14 @@ impl TokensScreen {
                                 self.set_error_message(Some(e));
                             }
                         };
-                        ui.close_menu();
-                    }
-                    pos += 1;
+                    ui.close_kind(egui::UiKind::Menu);
                 }
+                pos += 1;
+            }
 
-                if range.contains(&pos) {
-                    if ui.button("Resume").clicked() {
-                        match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            if range.contains(&pos) {
+                if ui.button("Resume").clicked() {
+                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
                                     Screen::ResumeTokensScreen(
@@ -801,23 +807,23 @@ impl TokensScreen {
                                 self.set_error_message(Some(e));
                             }
                         };
-                        ui.close_menu();
-                    }
-                    pos += 1;
-                }
-            }
-            if itb.available_actions.can_claim {
-                if range.contains(&pos) && ui.button("View Claims").clicked() {
-                    action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
-                        ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
-                    ));
-                    ui.close_menu();
+                    ui.close_kind(egui::UiKind::Menu);
                 }
                 pos += 1;
             }
-            if itb.available_actions.can_update_config {
-                if range.contains(&pos) && ui.button("Update Config").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+        }
+        if itb.available_actions.can_claim {
+            if range.contains(&pos) && ui.button("View Claims").clicked() {
+                action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
+                    ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
+                ));
+                ui.close_kind(egui::UiKind::Menu);
+            }
+            pos += 1;
+        }
+        if itb.available_actions.can_update_config {
+            if range.contains(&pos) && ui.button("Update Config").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::UpdateTokenConfigScreen(Box::new(
@@ -832,50 +838,50 @@ impl TokensScreen {
                             self.set_error_message(Some(e));
                         }
                     };
-                    ui.close_menu();
-                }
-                pos += 1;
+                ui.close_kind(egui::UiKind::Menu);
             }
-            if itb.available_actions.can_maybe_purchase {
-                if range.contains(&pos) {
-                    // Check if we have pricing data
-                    let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
-                    let is_loading = self
-                        .pricing_loading_state
-                        .get(&itb.token_id)
-                        .copied()
+            pos += 1;
+        }
+        if itb.available_actions.can_maybe_purchase {
+            if range.contains(&pos) {
+                // Check if we have pricing data
+                let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
+                let is_loading = self
+                    .pricing_loading_state
+                    .get(&itb.token_id)
+                    .copied()
+                    .unwrap_or(false);
+
+                if is_loading {
+                    // Show loading spinner
+                    ui.add(egui::Spinner::new());
+                } else if has_pricing_data {
+                    // Check if identity has enough credits for at least one token
+                    let has_credits = self
+                        .app_context
+                        .get_identity_by_id(&itb.identity_id)
+                        .map(|identity_opt| {
+                            identity_opt
+                                .map(|identity| {
+                                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                                    // Check if identity has enough credits for the minimum token price
+                                    if let Some(Some(pricing)) =
+                                        self.token_pricing_data.get(&itb.token_id)
+                                    {
+                                        let min_price = get_min_token_price(pricing);
+                                        identity.identity.balance() >= min_price
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .unwrap_or(false)
+                        })
                         .unwrap_or(false);
 
-                    if is_loading {
-                        // Show loading spinner
-                        ui.add(egui::Spinner::new());
-                    } else if has_pricing_data {
-                        // Check if identity has enough credits for at least one token
-                        let has_credits = self
-                            .app_context
-                            .get_identity_by_id(&itb.identity_id)
-                            .map(|identity_opt| {
-                                identity_opt
-                                    .map(|identity| {
-                                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                                        // Check if identity has enough credits for the minimum token price
-                                        if let Some(Some(pricing)) =
-                                            self.token_pricing_data.get(&itb.token_id)
-                                        {
-                                            let min_price = get_min_token_price(pricing);
-                                            identity.identity.balance() >= min_price
-                                        } else {
-                                            false
-                                        }
-                                    })
-                                    .unwrap_or(false)
-                            })
-                            .unwrap_or(false);
-
-                        if has_credits {
-                            // Purchase button enabled
-                            if ui.button("Purchase").clicked() {
-                                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+                    if has_credits {
+                        // Purchase button enabled
+                        if ui.button("Purchase").clicked() {
+                            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                     Ok(info) => {
                                         action = AppAction::AddScreen(
                                             Screen::PurchaseTokenScreen(
@@ -890,11 +896,11 @@ impl TokensScreen {
                                         self.set_error_message(Some(e));
                                     }
                                 };
-                                ui.close_menu();
-                            }
-                        } else {
-                            // Disabled, grayed-out Purchase button
-                            ui.add_enabled(
+                            ui.close_kind(egui::UiKind::Menu);
+                        }
+                    } else {
+                        // Disabled, grayed-out Purchase button
+                        ui.add_enabled(
                                 false,
                                 egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
                             )
@@ -906,15 +912,15 @@ impl TokensScreen {
                                     "No credits available for purchase".to_string()
                                 }
                             });
-                        }
                     }
                 }
-                pos += 1;
             }
-            if itb.available_actions.can_set_price && range.contains(&pos) {
-                // Set Price
-                if ui.button("Set Price").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
+            pos += 1;
+        }
+        if itb.available_actions.can_set_price && range.contains(&pos) {
+            // Set Price
+            if ui.button("Set Price").clicked() {
+                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
                                 Screen::SetTokenPriceScreen(
@@ -930,13 +936,9 @@ impl TokensScreen {
                         }
                     };
 
-                    ui.close_menu();
-                }
+                ui.close_kind(egui::UiKind::Menu);
             }
-        });
-
-            });
-
+        }
         action
     }
 
@@ -1015,21 +1017,15 @@ impl TokensScreen {
                                     self.show_token_info_popup = Some(*token_id);
                                 }
 
-                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                    ui.add_space(-1.0);
-
-                                    ui.horizontal(|ui| {
-                                        // Remove button
-                                        if ui
-                                            .button("X")
-                                            .on_hover_text("Remove token from DET")
-                                            .clicked()
-                                        {
-                                            self.confirm_remove_token_popup = true;
-                                            self.token_to_remove = Some(*token_id);
-                                        }
-                                    });
-                                });
+                                // Remove button
+                                if ui
+                                    .button("X")
+                                    .on_hover_text("Remove token from DET")
+                                    .clicked()
+                                {
+                                    self.confirm_remove_token_popup = true;
+                                    self.token_to_remove = Some(*token_id);
+                                }
                             });
                         });
                     }

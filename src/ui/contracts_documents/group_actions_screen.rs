@@ -12,13 +12,14 @@ use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
-use crate::ui::helpers::render_identity_selector;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
@@ -78,6 +79,7 @@ pub struct GroupActionsScreen {
     qualified_identities: Vec<QualifiedIdentity>,
     identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     selected_identity: Option<QualifiedIdentity>,
+    selected_identity_str: String,
 
     // Backend task status
     fetch_group_actions_status: FetchGroupActionsStatus,
@@ -142,6 +144,7 @@ impl GroupActionsScreen {
             qualified_identities,
             identity_token_balances,
             selected_identity: None,
+            selected_identity_str: String::new(),
 
             // Backend task status
             fetch_group_actions_status: FetchGroupActionsStatus::NotStarted,
@@ -353,14 +356,22 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, _identifier, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.group_action_id = Some(action_id);
-                mint_screen.amount_to_mint = amount.to_string();
+                // Convert amount to Amount struct using the token configuration
+                mint_screen.amount = Some(Amount::from_token(
+                    &mint_screen.identity_token_info,
+                    *amount,
+                ));
                 mint_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::MintTokensScreen(mint_screen));
             }
             TokenEvent::Burn(amount, _burn_from, note_opt) => {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
                 burn_screen.group_action_id = Some(action_id);
-                burn_screen.amount_to_burn = amount.to_string();
+                // Convert amount to Amount struct using the token configuration
+                burn_screen.amount = Some(Amount::from_token(
+                    &burn_screen.identity_token_info,
+                    *amount,
+                ));
                 burn_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::BurnTokensScreen(burn_screen));
             }
@@ -418,7 +429,9 @@ impl GroupActionsScreen {
             }
             TokenEvent::ChangePriceForDirectPurchase(schedule, note_opt) => {
                 let mut change_price_screen =
-                    SetTokenPriceScreen::new(identity_token_info, &self.app_context);
+                    SetTokenPriceScreen::new(identity_token_info, &self.app_context)
+                        .with_schedule(schedule.clone());
+
                 change_price_screen.group_action_id = Some(action_id);
                 change_price_screen.token_pricing_schedule = format!("{:?}", schedule);
                 change_price_screen.public_note = note_opt.clone();
@@ -478,6 +491,12 @@ impl ScreenLike for GroupActionsScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
+        // Contracts sub-left panel
+        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
+        );
+
         let central_panel_action = island_central_panel(ctx, |ui| {
             ui.heading("Active Group Actions");
 
@@ -523,8 +542,19 @@ impl ScreenLike for GroupActionsScreen {
             ui.heading("2. Select an identity:");
 
             ui.add_space(10.0);
-            self.selected_identity =
-                render_identity_selector(ui, &self.qualified_identities, &self.selected_identity);
+
+            ui.add(
+                IdentitySelector::new(
+                    "group_actions_identity_selector",
+                    &mut self.selected_identity_str,
+                    &self.qualified_identities,
+                )
+                .selected_identity(&mut self.selected_identity)
+                .expect("Failed to create identity selector")
+                .other_option(false)
+                .width(250.0)
+                .label("Identity:"),
+            );
 
             let mut fetch_clicked = false;
             if self.selected_contract.is_some() && self.selected_identity.is_some() {
@@ -579,15 +609,15 @@ impl ScreenLike for GroupActionsScreen {
                 _ => {}
             }
 
-            if fetch_clicked {
-                if let (Some(contract), Some(identity)) = (
+            if fetch_clicked
+                && let (Some(contract), Some(identity)) = (
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
-                ) {
-                    action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::FetchActiveGroupActions(contract, identity),
-                    )));
-                }
+                )
+            {
+                action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchActiveGroupActions(contract, identity),
+                )));
             }
 
             if let FetchGroupActionsStatus::Complete(group_actions) =

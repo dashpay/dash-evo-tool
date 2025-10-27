@@ -17,7 +17,6 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::ProtocolError;
@@ -29,6 +28,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -249,6 +249,7 @@ pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
+    SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
@@ -452,7 +453,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info, sender).await
+                self.register_identity(registration_info).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
             IdentityTask::RefreshIdentity(qualified_identity) => self
@@ -464,12 +465,14 @@ impl AppContext {
                     .await
             }
             IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
                     .await
             }
-            IdentityTask::TopUpIdentity(top_up_info) => {
-                self.top_up_identity(top_up_info, sender).await
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
+                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                    .await
             }
+            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 self.refresh_loaded_identities_dpns_names(sender).await
             }

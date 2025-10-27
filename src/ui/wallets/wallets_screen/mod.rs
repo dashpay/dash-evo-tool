@@ -2,15 +2,18 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
-use dash_sdk::dpp::dashcore::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -45,6 +48,12 @@ pub struct WalletsBalancesScreen {
     refreshing: bool,
     show_rename_dialog: bool,
     rename_input: String,
+    wallet_password: String,
+    show_password: bool,
+    error_message: Option<String>,
+    remove_wallet_dialog: Option<ConfirmationDialog>,
+    pending_wallet_removal: Option<WalletSeedHash>,
+    pending_wallet_removal_alias: Option<String>,
 }
 
 pub trait DerivationPathHelpers {
@@ -134,6 +143,12 @@ impl WalletsBalancesScreen {
             refreshing: false,
             show_rename_dialog: false,
             rename_input: String::new(),
+            wallet_password: String::new(),
+            show_password: false,
+            error_message: None,
+            remove_wallet_dialog: None,
+            pending_wallet_removal: None,
+            pending_wallet_removal_alias: None,
         }
     }
 
@@ -144,10 +159,17 @@ impl WalletsBalancesScreen {
                 wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
             };
 
-            // Now the immutable borrow of `wallet` is dropped, and we can use `self` mutably
-            if let Err(e) = result {
-                self.display_message(&e, MessageType::Error);
+            match result {
+                Ok(address) => {
+                    let message = format!("Added new receiving address: {}", address);
+                    self.display_message(&message, MessageType::Success);
+                }
+                Err(e) => {
+                    self.display_message(&e, MessageType::Error);
+                }
             }
+        } else {
+            self.display_message("No wallet selected", MessageType::Error);
         }
     }
 
@@ -551,16 +573,132 @@ impl WalletsBalancesScreen {
     }
 
     fn render_bottom_options(&mut self, ui: &mut Ui) {
+        let wallet_is_open = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
+
         if self.selected_filters.contains("Funds") {
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("➕ Add Receiving Address").size(14.0))
-                    .clicked()
-                {
-                    self.add_receiving_address();
+
+            if wallet_is_open {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(RichText::new("➕ Add Receiving Address").size(14.0))
+                        .clicked()
+                    {
+                        self.add_receiving_address();
+                    }
+                });
+            } else {
+                // Show wallet unlock UI for locked wallets when Funds filter is active
+                self.render_wallet_unlock_if_needed(ui);
+            }
+        }
+
+        if self.selected_wallet.is_some() {
+            ui.add_space(16.0);
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            let remove_button = egui::Button::new(
+                RichText::new("🗑 Remove Wallet")
+                    .color(Color32::WHITE)
+                    .size(14.0),
+            )
+            .min_size(egui::vec2(0.0, 28.0))
+            .fill(DashColors::error_color(!dark_mode))
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(4.0);
+
+            if ui.add(remove_button).clicked()
+                && let Some(selected_wallet) = &self.selected_wallet
+            {
+                let wallet = selected_wallet.read().unwrap();
+                let alias = wallet
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                let seed_hash = wallet.seed_hash();
+                drop(wallet);
+
+                self.pending_wallet_removal = Some(seed_hash);
+                self.pending_wallet_removal_alias = Some(alias.clone());
+
+                let message = format!(
+                    "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
+                    alias
+                );
+
+                self.remove_wallet_dialog = Some(
+                    ConfirmationDialog::new("Remove Wallet", message)
+                        .confirm_text(Some("Remove"))
+                        .cancel_text(Some("Cancel"))
+                        .danger_mode(true),
+                );
+            }
+
+            if let Some(dialog) = self.remove_wallet_dialog.as_mut() {
+                let response = dialog.show(ui);
+                if let Some(status) = response.inner.dialog_response {
+                    match status {
+                        ConfirmationStatus::Confirmed => {
+                            self.remove_wallet_dialog = None;
+                            if let Some(seed_hash) = self.pending_wallet_removal.take() {
+                                let alias = self
+                                    .pending_wallet_removal_alias
+                                    .take()
+                                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                                self.handle_wallet_removal(seed_hash, alias);
+                            } else {
+                                self.pending_wallet_removal_alias = None;
+                            }
+                        }
+                        ConfirmationStatus::Canceled => {
+                            self.remove_wallet_dialog = None;
+                            self.pending_wallet_removal = None;
+                            self.pending_wallet_removal_alias = None;
+                        }
+                    }
                 }
-            });
+            }
+        }
+    }
+
+    fn handle_wallet_removal(&mut self, seed_hash: WalletSeedHash, alias: String) {
+        match self.app_context.remove_wallet(&seed_hash) {
+            Ok(()) => {
+                let next_wallet = self
+                    .app_context
+                    .wallets
+                    .read()
+                    .ok()
+                    .and_then(|wallets| wallets.values().next().cloned());
+
+                self.selected_wallet = next_wallet;
+
+                if self.selected_wallet.is_none() {
+                    self.selected_filters.clear();
+                    self.selected_filters.insert("Funds".to_string());
+                }
+
+                self.show_rename_dialog = false;
+                self.rename_input.clear();
+                self.wallet_password.clear();
+                self.show_password = false;
+                self.error_message = None;
+                self.refreshing = false;
+
+                self.display_message(
+                    &format!("Removed wallet \"{}\" successfully", alias),
+                    MessageType::Success,
+                );
+            }
+            Err(err) => {
+                self.display_message(
+                    &format!("Failed to remove wallet: {}", err),
+                    MessageType::Error,
+                );
+            }
         }
     }
 
@@ -725,15 +863,7 @@ impl WalletsBalancesScreen {
     }
 
     fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            // Automatically dismiss the message after 10 seconds
-            if elapsed.num_seconds() >= 10 {
-                self.dismiss_message();
-            }
-        }
+        // Messages no longer auto-expire, they must be dismissed manually
     }
 }
 
@@ -799,8 +929,37 @@ impl ScreenLike for WalletsBalancesScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
+            // Display messages at the top, outside of scroll area
+            let message = self.message.clone();
+            if let Some((message, message_type, _timestamp)) = message {
+                let message_color = match message_type {
+                    MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
+                    MessageType::Info => DashColors::text_primary(dark_mode),
+                    MessageType::Success => egui::Color32::DARK_GREEN,
+                };
+
+                // Display message in a prominent frame
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(message).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.dismiss_message();
+                                }
+                            });
+                        });
+                });
+                ui.add_space(10.0);
+            }
+
             egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
+                .auto_shrink([true; 2])
                 .show(ui, |ui| {
                     if self.app_context.wallets.read().unwrap().is_empty() {
                         self.render_no_wallets_view(ui);
@@ -826,10 +985,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     });
 
                     ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
 
                     if self.selected_wallet.is_some() {
+                        ui.separator();
+                        ui.add_space(10.0);
+
                         // Always show the filter selector
                         ui.vertical(|ui| {
                             ui.heading(
@@ -865,41 +1025,9 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
                         self.render_bottom_options(ui);
-                    } else {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(50.0);
-                            ui.label(
-                                RichText::new("Please select a wallet to view its details")
-                                    .size(16.0)
-                                    .color(Color32::GRAY),
-                            );
-                        });
                     }
                 });
 
-            let message = self.message.clone();
-            if let Some((message, message_type, timestamp)) = message {
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                ui.add_space(25.0); // Same space as refreshing indicator
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    // Calculate remaining seconds
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    // Add the message with auto-dismiss countdown
-                    let full_msg = format!("{} ({}s)", message, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(message_color));
-                });
-                ui.add_space(2.0); // Same space below as refreshing indicator
-            }
             inner_action
         });
 
@@ -984,4 +1112,34 @@ impl ScreenLike for WalletsBalancesScreen {
     fn refresh_on_arrival(&mut self) {}
 
     fn refresh(&mut self) {}
+}
+
+impl ScreenWithWalletUnlock for WalletsBalancesScreen {
+    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
+        &self.selected_wallet
+    }
+
+    fn wallet_password_ref(&self) -> &String {
+        &self.wallet_password
+    }
+
+    fn wallet_password_mut(&mut self) -> &mut String {
+        &mut self.wallet_password
+    }
+
+    fn show_password(&self) -> bool {
+        self.show_password
+    }
+
+    fn show_password_mut(&mut self) -> &mut bool {
+        &mut self.show_password
+    }
+
+    fn set_error_message(&mut self, error_message: Option<String>) {
+        self.error_message = error_message;
+    }
+
+    fn error_message(&self) -> Option<&String> {
+        self.error_message.as_ref()
+    }
 }

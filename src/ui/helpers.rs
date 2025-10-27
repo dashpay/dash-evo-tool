@@ -24,6 +24,10 @@ use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
+/// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
+/// This constant provides a constant padding to be used in such cases to ensure proper alignment.
+pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
+
 /// Helper function to create a styled info icon button
 pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
@@ -52,49 +56,6 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
     }
 
     response.on_hover_text(hover_text)
-}
-
-/// Returns the newly selected identity (if changed), otherwise the existing one.
-pub fn render_identity_selector(
-    ui: &mut Ui,
-    qualified_identities: &[QualifiedIdentity],
-    selected_identity: &Option<QualifiedIdentity>,
-) -> Option<QualifiedIdentity> {
-    let mut new_selected_identity = selected_identity.clone();
-
-    ui.horizontal(|ui| {
-        ui.label("Identity:");
-        ComboBox::from_id_salt("identity_selector")
-            .selected_text(
-                selected_identity
-                    .as_ref()
-                    .map(|qi| {
-                        qi.alias
-                            .as_ref()
-                            .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
-                            .clone()
-                    })
-                    .unwrap_or_else(|| "Choose identity…".into()),
-            )
-            .show_ui(ui, |cb| {
-                for qi in qualified_identities {
-                    let label = qi
-                        .alias
-                        .as_ref()
-                        .unwrap_or(&qi.identity.id().to_string(Encoding::Base58))
-                        .clone();
-
-                    if cb
-                        .selectable_label(selected_identity.as_ref() == Some(qi), label)
-                        .clicked()
-                    {
-                        new_selected_identity = Some(qi.clone());
-                    }
-                }
-            });
-    });
-
-    new_selected_identity
 }
 
 /// Returns the newly selected key (if changed), otherwise the existing one.
@@ -290,10 +251,11 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                             .as_ref()
                             .map(|k| {
                                 format!(
-                                    "Key {} Type {} Security {}",
+                                    "Key {} | {} | {} | {}",
                                     k.id(),
-                                    k.key_type(),
-                                    k.security_level()
+                                    k.purpose(),
+                                    k.security_level(),
+                                    k.key_type()
                                 )
                             })
                             .unwrap_or_else(|| "Select Key…".into()),
@@ -303,23 +265,25 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                             let allowed_purposes = transaction_type.allowed_purposes();
                             let allowed_security_levels = if transaction_type
                                 == TransactionType::DocumentAction
-                                && document_type.is_some()
                             {
-                                // For document actions with a specific document type, use its security requirement
-                                let required_level =
-                                    document_type.unwrap().security_level_requirement();
-                                let allowed_levels =
-                                    SecurityLevel::CRITICAL as u8..=required_level as u8;
-                                let allowed_levels: Vec<SecurityLevel> = [
-                                    SecurityLevel::CRITICAL,
-                                    SecurityLevel::HIGH,
-                                    SecurityLevel::MEDIUM,
-                                ]
-                                .iter()
-                                .cloned()
-                                .filter(|level| allowed_levels.contains(&(*level as u8)))
-                                .collect();
-                                allowed_levels
+                                if let Some(document_type) = document_type {
+                                    // For document actions with a specific document type, use its security requirement
+                                    let required_level = document_type.security_level_requirement();
+                                    let allowed_levels =
+                                        SecurityLevel::CRITICAL as u8..=required_level as u8;
+                                    let allowed_levels: Vec<SecurityLevel> = [
+                                        SecurityLevel::CRITICAL,
+                                        SecurityLevel::HIGH,
+                                        SecurityLevel::MEDIUM,
+                                    ]
+                                    .iter()
+                                    .cloned()
+                                    .filter(|level| allowed_levels.contains(&(*level as u8)))
+                                    .collect();
+                                    allowed_levels
+                                } else {
+                                    transaction_type.allowed_security_levels()
+                                }
                             } else {
                                 transaction_type.allowed_security_levels()
                             };
@@ -344,15 +308,19 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
                                     {
                                         // In dev mode, mark keys that wouldn't normally be allowed
                                         format!(
-                                            "Key {} Security {} [DEV]",
+                                            "Key {} | {} | {} | {} [DEV]",
                                             key.id(),
-                                            key.security_level()
+                                            key.purpose(),
+                                            key.security_level(),
+                                            key.key_type()
                                         )
                                     } else {
                                         format!(
-                                            "Key {} Security {}",
+                                            "Key {} | {} | {} | {}",
                                             key.id(),
-                                            key.security_level()
+                                            key.purpose(),
+                                            key.security_level(),
+                                            key.key_type()
                                         )
                                     };
 

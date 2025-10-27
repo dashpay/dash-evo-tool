@@ -46,7 +46,6 @@ impl NetworkChooserScreen {
         devnet_app_context: Option<&Arc<AppContext>>,
         local_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
-        custom_dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
     ) -> Self {
         let local_network_dashmate_password = if let Ok(config) = Config::load() {
@@ -68,13 +67,14 @@ impl NetworkChooserScreen {
         };
         let developer_mode = current_context.is_developer_mode();
 
-        // Load theme preference from settings
-        let theme_preference = current_context
+        // Load settings including theme preference and dash_qt_path
+        let settings = current_context
             .get_settings()
             .ok()
             .flatten()
-            .map(|(_, _, _, _, _, theme)| theme)
-            .unwrap_or(ThemeMode::System);
+            .unwrap_or_default();
+        let theme_preference = settings.theme_mode;
+        let custom_dash_qt_path = settings.dash_qt_path;
 
         Self {
             mainnet_app_context: mainnet_app_context.clone(),
@@ -122,7 +122,6 @@ impl NetworkChooserScreen {
     /// TODO: doesn't save local network settings like password yet.
     fn save(&self) -> Result<(), String> {
         self.current_app_context()
-            .db
             .update_dash_core_execution_settings(
                 self.custom_dash_qt_path.clone(),
                 self.overwrite_dash_conf,
@@ -227,8 +226,7 @@ impl NetworkChooserScreen {
                                                 .min_size(egui::vec2(120.0, 32.0)),
                                         )
                                         .clicked()
-                                    {
-                                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                        && let Some(path) = rfd::FileDialog::new().pick_file() {
                                             let file_name =
                                                 path.file_name().and_then(|f| f.to_str());
                                             if let Some(file_name) = file_name {
@@ -275,7 +273,6 @@ impl NetworkChooserScreen {
                                                 }
                                             }
                                         }
-                                    }
 
                                     if (self.custom_dash_qt_path.is_some()
                                         || self.custom_dash_qt_error_message.is_some())
@@ -289,7 +286,7 @@ impl NetworkChooserScreen {
                                             )
                                             .clicked()
                                     {
-                                        self.custom_dash_qt_path = None;
+                                        self.custom_dash_qt_path = Some(PathBuf::new()); // Reset to empty to avoid auto-detection
                                         self.custom_dash_qt_error_message = None;
                                         self.save().expect("Expected to save db settings");
                                     }
@@ -564,12 +561,18 @@ impl NetworkChooserScreen {
         }
 
         // Add a button to start the network
+        let start_enabled = if let Some(path) = self.custom_dash_qt_path.as_ref() {
+            !path.as_os_str().is_empty() && path.is_file()
+        } else {
+            false
+        };
+
         if network != Network::Regtest {
-            ui.add_enabled_ui(self.custom_dash_qt_path.is_some(), |ui| {
+            ui.add_enabled_ui(start_enabled, |ui| {
                 if ui
                     .button("Start")
                     .on_disabled_hover_text(
-                        "Configure dash-qt binary using Advanced Settings below",
+                        "Please select path to dash-qt binary in Advanced Settings",
                     )
                     .clicked()
                 {
@@ -597,35 +600,31 @@ impl NetworkChooserScreen {
             );
             if ui.button("Save Password").clicked() {
                 // 1) Reload the config
-                if let Ok(mut config) = Config::load() {
-                    if let Some(local_cfg) = config.config_for_network(Network::Regtest).clone() {
-                        let updated_local_config = local_cfg
-                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
-                        config.update_config_for_network(
-                            Network::Regtest,
-                            updated_local_config.clone(),
-                        );
-                        if let Err(e) = config.save() {
-                            eprintln!("Failed to save config to .env: {e}");
+                if let Ok(mut config) = Config::load()
+                    && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+                {
+                    let updated_local_config = local_cfg
+                        .update_core_rpc_password(self.local_network_dashmate_password.clone());
+                    config
+                        .update_config_for_network(Network::Regtest, updated_local_config.clone());
+                    if let Err(e) = config.save() {
+                        eprintln!("Failed to save config to .env: {e}");
+                    }
+
+                    // 5) Update our local AppContext in memory
+                    if let Some(local_app_context) = &self.local_app_context {
+                        {
+                            // Overwrite the config field with the new password
+                            let mut cfg_lock = local_app_context.config.write().unwrap();
+                            *cfg_lock = updated_local_config;
                         }
 
-                        // 5) Update our local AppContext in memory
-                        if let Some(local_app_context) = &self.local_app_context {
-                            {
-                                // Overwrite the config field with the new password
-                                let mut cfg_lock = local_app_context.config.write().unwrap();
-                                *cfg_lock = updated_local_config;
-                            }
-
-                            // 6) Re-init the client & sdk from the updated config
-                            if let Err(e) =
-                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
-                            {
-                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
-                            } else {
-                                // Trigger SwitchNetworks
-                                app_action = AppAction::SwitchNetwork(Network::Regtest);
-                            }
+                        // 6) Re-init the client & sdk from the updated config
+                        if let Err(e) = Arc::clone(local_app_context).reinit_core_client_and_sdk() {
+                            eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                        } else {
+                            // Trigger SwitchNetworks
+                            app_action = AppAction::SwitchNetwork(Network::Regtest);
                         }
                     }
                 }
@@ -666,12 +665,10 @@ impl ScreenLike for NetworkChooserScreen {
         self.should_reset_collapsing_states = true;
 
         // Reload settings from database to ensure we have the latest values
-        if let Ok(Some((_, _, _, custom_dash_qt_path, overwrite_dash_conf, theme_preference))) =
-            self.current_app_context().get_settings()
-        {
-            self.custom_dash_qt_path = custom_dash_qt_path;
-            self.overwrite_dash_conf = overwrite_dash_conf;
-            self.theme_preference = theme_preference;
+        if let Ok(Some(settings)) = self.current_app_context().get_settings() {
+            self.custom_dash_qt_path = settings.dash_qt_path;
+            self.overwrite_dash_conf = settings.overwrite_dash_conf;
+            self.theme_preference = settings.theme_mode;
         }
     }
 
@@ -728,7 +725,7 @@ impl ScreenLike for NetworkChooserScreen {
 
         action |= island_central_panel(ctx, |ui| {
             egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
+                .auto_shrink([true; 2])
                 .show(ui, |ui| self.render_network_table(ui))
                 .inner
         });

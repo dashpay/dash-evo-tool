@@ -1,9 +1,13 @@
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -25,6 +29,7 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::wallet::Wallet;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -52,7 +57,9 @@ pub struct BurnTokensScreen {
     pub group_action_id: Option<Identifier>,
 
     // The user chooses how many tokens to burn
-    pub amount_to_burn: String,
+    pub amount: Option<Amount>,
+    pub amount_input: Option<AmountInput>,
+    pub max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
     pub public_note: Option<String>,
 
     status: BurnTokensStatus,
@@ -62,7 +69,7 @@ pub struct BurnTokensScreen {
     pub app_context: Arc<AppContext>,
 
     // Confirmation popup
-    show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // For password-based wallet unlocking, if needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -72,6 +79,18 @@ pub struct BurnTokensScreen {
 
 impl BurnTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let token_balance = match app_context.identity_token_balances() {
+            Ok(identity_token_balances) => {
+                let itb = identity_token_balances;
+                let key = IdentityTokenIdentifier {
+                    identity_id: identity_token_info.identity.identity.id(),
+                    token_id: identity_token_info.token_id,
+                };
+                itb.get(&key).map(|itb| itb.balance)
+            }
+            Err(_) => None,
+        };
+
         let possible_key = identity_token_info
             .identity
             .identity
@@ -151,17 +170,17 @@ impl BurnTokensScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        if group.is_some()
+            && let Some((_, group)) = group.clone()
+        {
+            let your_power = group
+                .members()
+                .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                is_unilateral_group_member = true;
             }
         };
 
@@ -179,12 +198,14 @@ impl BurnTokensScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
-            amount_to_burn: String::new(),
+            amount: None,
+            amount_input: None,
+            max_amount: token_balance,
             public_note: None,
             status: BurnTokensStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
-            show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -192,98 +213,101 @@ impl BurnTokensScreen {
     }
 
     /// Renders a text input for the user to specify an amount to burn
-    fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount to Burn:");
-            ui.text_edit_singleline(&mut self.amount_to_burn);
+    fn render_amount_input(&mut self, ui: &mut egui::Ui) {
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            let token_amount = Amount::from_token(&self.identity_token_info, 0);
+            let mut input = AmountInput::new(token_amount).with_label("Amount:");
+
+            if self.max_amount.is_some() {
+                input.set_show_max_button(self.max_amount.is_some());
+                input.set_max_amount(self.max_amount);
+            }
+
+            input
         });
+
+        let amount_response = amount_input.show(ui).inner;
+        // Update the amount based on user input
+        amount_response.update(&mut self.amount);
+        // errors are handled inside AmountInput
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Burn")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let amount_ok = self.amount_to_burn.parse::<u64>().ok();
-                if amount_ok.is_none() {
-                    self.error_message = Some("Please enter a valid integer amount.".into());
-                    self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
-                    self.show_confirmation_popup = false;
-                    return;
-                }
+        let amount = match self.amount.as_ref() {
+            Some(amount) if amount.value() > 0 => amount,
+            _ => {
+                self.error_message = Some("Please enter a valid amount greater than 0.".into());
+                self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
+                self.confirmation_dialog = None;
+                return AppAction::None;
+            }
+        };
 
-                ui.label(format!(
-                    "Are you sure you want to burn {} tokens?",
-                    self.amount_to_burn
-                ));
+        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Burn".to_string(),
+                format!("Are you sure you want to burn {}?", amount),
+            )
+            .danger_mode(true) // Burning tokens is destructive
+        });
 
-                ui.add_space(10.0);
+        match dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => {
+                self.confirmation_dialog = None;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                self.status = BurnTokensStatus::WaitingForResult(now);
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = BurnTokensStatus::WaitingForResult(now);
+                // Grab the data contract for this token from the app context
+                let data_contract =
+                    Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-                    // Grab the data contract for this token from the app context
-                    let data_contract =
-                        Arc::new(self.identity_token_info.data_contract.contract.clone());
+                let group_info = if self.group_action_id.is_some() {
+                    self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                            GroupStateTransitionInfo {
+                                group_contract_position: *pos,
+                                action_id: self.group_action_id.unwrap(),
+                                action_is_proposer: false,
+                            },
+                        )
+                    })
+                } else {
+                    self.group.as_ref().map(|(pos, _)| {
+                        GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+                    })
+                };
 
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
-                    };
-
-                    // Dispatch the actual backend burn action
-                    action = AppAction::BackendTasks(
-                        vec![
-                            BackendTask::TokenTask(Box::new(TokenTask::BurnTokens {
-                                owner_identity: self.identity_token_info.identity.clone(),
-                                data_contract,
-                                token_position: self.identity_token_info.token_position,
-                                signing_key: self.selected_key.clone().expect("Expected a key"),
-                                public_note: if self.group_action_id.is_some() {
-                                    None
-                                } else {
-                                    self.public_note.clone()
-                                },
-                                amount: amount_ok.unwrap(),
-                                group_info,
-                            })),
-                            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                        ],
-                        BackendTasksExecutionMode::Sequential,
-                    );
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
-                }
-            });
-
-        if !is_open {
-            self.show_confirmation_popup = false;
+                // Dispatch the actual backend burn action
+                AppAction::BackendTasks(
+                    vec![
+                        BackendTask::TokenTask(Box::new(TokenTask::BurnTokens {
+                            owner_identity: self.identity_token_info.identity.clone(),
+                            data_contract,
+                            token_position: self.identity_token_info.token_position,
+                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
+                            amount: amount.value(),
+                            group_info,
+                        })),
+                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                    ],
+                    BackendTasksExecutionMode::Sequential,
+                )
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
         }
-        action
     }
 
     /// Renders a simple "Success!" screen after completion
@@ -352,13 +376,12 @@ impl ScreenLike for BurnTokensScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
-            {
-                self.identity_token_info.identity = updated_identity;
-            }
+        {
+            self.identity_token_info.identity = updated_identity;
         }
     }
 
@@ -504,7 +527,13 @@ impl ScreenLike for BurnTokensScreen {
                         "You are signing an existing group Burn so you are not allowed to choose the amount.",
                     );
                     ui.add_space(5.0);
-                    ui.label(format!("Amount: {}", self.amount_to_burn));
+                    ui.label(format!(
+                        "Amount: {}",
+                        self.amount
+                            .as_ref()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default()
+                    ));
                 } else {
                     self.render_amount_input(ui);
                 }
@@ -559,12 +588,26 @@ impl ScreenLike for BurnTokensScreen {
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
-                        self.show_confirmation_popup = true;
+                        // Create confirmation dialog on button click
+                        if self.confirmation_dialog.is_none() {
+                            let amount = match self.amount.as_ref() {
+                                Some(amount) if amount.value() > 0 => amount,
+                                _ => return AppAction::None,
+                            };
+
+                            self.confirmation_dialog = Some(
+                                ConfirmationDialog::new(
+                                    "Confirm Burn".to_string(),
+                                    format!("Are you sure you want to burn {}?", amount),
+                                )
+                                .danger_mode(true),
+                            );
+                        }
                     }
                 }
 
-                // If user pressed "Burn," show a popup
-                if self.show_confirmation_popup {
+                // Show confirmation dialog if it exists
+                if self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 

@@ -2,8 +2,13 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -38,13 +43,16 @@ pub enum TransferCreditsStatus {
 pub struct TransferScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
+    known_identities: Vec<QualifiedIdentity>,
     receiver_identity_id: String,
-    amount: String,
+    amount: Option<Amount>,
+    amount_input: Option<AmountInput>,
     transfer_credits_status: TransferCreditsStatus,
     error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
@@ -52,6 +60,10 @@ pub struct TransferScreen {
 
 impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
+        let known_identities = app_context
+            .load_local_qualified_identities()
+            .expect("Identities not loaded");
+
         let max_amount = identity.identity.balance();
         let identity_clone = identity.identity.clone();
         let selected_key = identity_clone.get_first_public_key_matching(
@@ -66,13 +78,16 @@ impl TransferScreen {
         Self {
             identity,
             selected_key: selected_key.cloned(),
+            known_identities,
             receiver_identity_id: String::new(),
-            amount: String::new(),
+            amount: Some(Amount::new_dash(0.0)),
+            amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
             error_message: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
@@ -92,110 +107,153 @@ impl TransferScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount in Dash:");
+        // Show available balance
+        let balance_in_dash = self.max_amount as f64 / 100_000_000_000.0;
+        ui.label(format!("Available balance: {:.8} DASH", balance_in_dash));
+        ui.add_space(5.0);
 
-            ui.text_edit_singleline(&mut self.amount);
+        // Calculate max amount minus fee for the "Max" button
+        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
+        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
-            if ui.button("Max").clicked() {
-                let amount_in_dash = self.max_amount as f64 / 100_000_000_000.0 - 0.0001; // Subtract a small amount to cover gas fee which is usually around 0.00002 Dash
-                self.amount = format!("{:.8}", amount_in_dash);
-            }
+        let amount_input = self.amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::new_dash(0.0))
+                .with_label("Amount:")
+                .with_max_button(true)
+                .with_max_amount(Some(max_amount_credits))
         });
+
+        // Check if input should be disabled when operation is in progress
+        let enabled = match self.transfer_credits_status {
+            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => false,
+            TransferCreditsStatus::NotStarted | TransferCreditsStatus::ErrorMessage(_) => {
+                amount_input.set_max_amount(Some(max_amount_credits));
+                true
+            }
+        };
+
+        let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
+
+        response.inner.update(&mut self.amount);
+        // errors are handled inside AmountInput
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Receiver Identity Id:");
+        ui.add(
+            IdentitySelector::new(
+                "transfer_recipient_selector",
+                &mut self.receiver_identity_id,
+                &self.known_identities,
+            )
+            .width(300.0)
+            .label("Receiver Identity ID:")
+            .exclude(&[self.identity.identity.id()]),
+        );
+    }
 
-            ui.text_edit_singleline(&mut self.receiver_identity_id);
-        });
+    /// Handle the confirmation action when user clicks OK
+    fn confirmation_ok(&mut self) -> AppAction {
+        self.confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
+
+        // Validate identifier
+        let identifier = match self.validate_receiver_identifier() {
+            Ok(id) => id,
+            Err(error) => {
+                self.set_error_state(error);
+                return AppAction::None;
+            }
+        };
+
+        // Validate selected key
+        let selected_key = match self.selected_key.as_ref() {
+            Some(key) => key,
+            None => {
+                self.set_error_state("No selected key".to_string());
+                return AppAction::None;
+            }
+        };
+
+        // Use the amount directly since it's already an Amount struct
+        let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
+        if credits == 0 {
+            self.error_message = Some("Amount must be greater than 0".to_string());
+            self.transfer_credits_status =
+                TransferCreditsStatus::ErrorMessage("Amount must be greater than 0".to_string());
+            self.confirmation_popup = false;
+            return AppAction::None;
+        }
+
+        // Set waiting state and create backend task
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+
+        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
+            self.identity.clone(),
+            identifier,
+            credits as Credits,
+            Some(selected_key.id()),
+        )))
+    }
+
+    /// Handle the cancel action when user clicks Cancel or closes dialog
+    fn confirmation_cancel(&mut self) -> AppAction {
+        self.confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
+        AppAction::None
+    }
+
+    /// Validate the receiver identity identifier
+    fn validate_receiver_identifier(&self) -> Result<Identifier, String> {
+        if self.receiver_identity_id.is_empty() {
+            return Err("Invalid identifier".to_string());
+        }
+
+        Identifier::from_string_try_encodings(
+            &self.receiver_identity_id,
+            &[Encoding::Base58, Encoding::Hex],
+        )
+        .map_err(|_| "Invalid identifier".to_string())
+    }
+
+    /// Set error state with the given message
+    fn set_error_state(&mut self, error: String) {
+        self.error_message = Some(error.clone());
+        self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(error);
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut app_action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm Transfer")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                let identifier = if self.receiver_identity_id.is_empty() {
-                    self.error_message = Some("Invalid identifier".to_string());
-                    self.transfer_credits_status =
-                        TransferCreditsStatus::ErrorMessage("Invalid identifier".to_string());
-                    self.confirmation_popup = false;
-                    return;
-                } else {
-                    match Identifier::from_string_try_encodings(
-                        &self.receiver_identity_id,
-                        &[Encoding::Base58, Encoding::Hex],
-                    ) {
-                        Ok(identifier) => identifier,
-                        Err(_) => {
-                            self.error_message = Some("Invalid identifier".to_string());
-                            self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(
-                                "Invalid identifier".to_string(),
-                            );
-                            self.confirmation_popup = false;
-                            return;
-                        }
-                    }
-                };
+        // Prepare values before borrowing
+        let Some(amount) = &self.amount else {
+            self.set_error_state("Incorrect or empty amount".to_string());
+            return AppAction::None;
+        };
 
-                let Some(selected_key) = self.selected_key.as_ref() else {
-                    self.error_message = Some("No selected key".to_string());
-                    self.transfer_credits_status =
-                        TransferCreditsStatus::ErrorMessage("No selected key".to_string());
-                    self.confirmation_popup = false;
-                    return;
-                };
+        let receiver_id = self.receiver_identity_id.clone();
 
-                ui.label(format!(
-                    "Are you sure you want to transfer {} Dash to {}",
-                    self.amount, self.receiver_identity_id
-                ));
-                let parts: Vec<&str> = self.amount.split('.').collect();
-                let mut credits: u128 = 0;
+        let msg = format!(
+            "Are you sure you want to transfer {} to {}?",
+            amount, receiver_id
+        );
 
-                // Process the whole number part if it exists.
-                if let Some(whole) = parts.first() {
-                    if let Ok(whole_number) = whole.parse::<u128>() {
-                        credits += whole_number * 100_000_000_000; // Whole Dash amount to credits
-                    }
-                }
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Transfer", msg)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+        });
 
-                // Process the fractional part if it exists.
-                if let Some(fraction) = parts.get(1) {
-                    let fraction_length = fraction.len();
-                    let fraction_number = fraction.parse::<u128>().unwrap_or(0);
-                    // Calculate the multiplier based on the number of digits in the fraction.
-                    let multiplier = 10u128.pow(11 - fraction_length as u32);
-                    credits += fraction_number * multiplier; // Fractional Dash to credits
-                }
+        let response = confirmation_dialog.show(ui);
 
-                if ui.button("Confirm").clicked() {
-                    self.confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
-                    app_action =
-                        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
-                            self.identity.clone(),
-                            identifier,
-                            credits as Credits,
-                            Some(selected_key.id()),
-                        )));
-                }
-                if ui.button("Cancel").clicked() {
-                    self.confirmation_popup = false;
-                }
-            });
-        if !is_open {
-            self.confirmation_popup = false;
+        // Handle the response using the Component pattern
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
+            Some(ConfirmationStatus::Canceled) => self.confirmation_cancel(),
+            None => AppAction::None,
         }
-        app_action
     }
 
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
@@ -369,6 +427,13 @@ impl ScreenLike for TransferScreen {
                 ui.add_space(10.0);
 
                 // Transfer button
+                let ready = self.amount.is_some()
+                    && !self.receiver_identity_id.is_empty()
+                    && self.selected_key.is_some()
+                    && !matches!(
+                        self.transfer_credits_status,
+                        TransferCreditsStatus::WaitingForResult(_),
+                    );
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
@@ -376,7 +441,11 @@ impl ScreenLike for TransferScreen {
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
                     .corner_radius(3.0);
-                if ui.add(button).clicked() {
+                if ui
+                    .add_enabled(ready, button)
+                    .on_disabled_hover_text("Please ensure all fields are filled correctly")
+                    .clicked()
+                {
                     self.confirmation_popup = true;
                 }
 

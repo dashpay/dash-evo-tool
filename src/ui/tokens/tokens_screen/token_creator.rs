@@ -11,12 +11,15 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, RichText, TextEdit, Ui};
+use egui::{ComboBox, Context,  RichText, TextEdit, Ui};
+use crate::ui::theme::DashColors;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
-use crate::ui::components::styled::{StyledCheckbox, ClickableCollapsingHeader};
+use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::Component;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
 
@@ -245,13 +248,15 @@ impl TokensScreen {
                                 }
 
                                 // Row 2: Base Supply
+                                // We put label manually to comply with grid layout;
+                                // errors will be rendered in second column
                                 ui.label("Base Supply*:");
-                                ui.text_edit_singleline(&mut self.base_supply_input);
+                                self.render_base_supply_input(ui);
                                 ui.end_row();
 
                                 // Row 3: Max Supply
                                 ui.label("Max Supply:");
-                                ui.text_edit_singleline(&mut self.max_supply_input);
+                                 self.render_max_supply_input(ui);
                                 ui.end_row();
 
                                 // Row 4: Contract Keywords
@@ -292,104 +297,133 @@ impl TokensScreen {
                         ui.add_space(10.0);
 
                         // 5) Advanced settings toggle
-                        ClickableCollapsingHeader::new("Advanced")
-                            .id_salt("token_creator_advanced")
-                            .default_open(false)
-                            .open(if self.should_reset_collapsing_states { Some(false) } else { None })
-                            .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // +/- button
+                            let button_text = if self.token_creator_advanced_expanded { "−" } else { "+" };
+                            let button_response = ui.add(
+                                egui::Button::new(
+                                    RichText::new(button_text)
+                                        .size(20.0)
+                                        .color(DashColors::DASH_BLUE),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                            );
+                            if button_response.clicked() {
+                                self.token_creator_advanced_expanded = !self.token_creator_advanced_expanded;
+                            }
+                            ui.label("Advanced");
+                        });
+
+                        if self.token_creator_advanced_expanded {
                             ui.add_space(3.0);
 
-                            // Use `Grid` to align labels and text edits
-                            egui::Grid::new("advanced_token_info_grid")
-                                .num_columns(2)
-                                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                                .show(ui, |ui| {
+                            ui.indent("advanced_section", |ui| {
+                                // Use `Grid` to align labels and text edits
+                                egui::Grid::new("advanced_token_info_grid")
+                                    .num_columns(2)
+                                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                                    .show(ui, |ui| {
+                                        // Start as paused
+                                        ui.horizontal(|ui| {
+                                            StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
+                                            crate::ui::helpers::info_icon_button(ui, "When enabled, the token will be created in a paused state, meaning transfers will be disabled by default. All other token features—such as distributions and manual minting—remain fully functional. To allow transfers in the future, the token must be unpaused via an emergency action. It is strongly recommended to enable emergency actions if this option is selected, unless the intention is to permanently disable transfers.");
+                                        });
+                                        ui.end_row();
 
-                                    // Start as paused
-                                    ui.horizontal(|ui| {
-                                        StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
+                                        self.history_row(ui);
+                                        ui.end_row();
 
-                                        crate::ui::helpers::info_icon_button(ui, "When enabled, the token will be created in a paused state, meaning transfers will be disabled by default. All other token features—such as distributions and manual minting—remain fully functional. To allow transfers in the future, the token must be unpaused via an emergency action. It is strongly recommended to enable emergency actions if this option is selected, unless the intention is to permanently disable transfers.");
+                                        // Name should be capitalized
+                                        ui.horizontal(|ui| {
+                                            StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
+                                            crate::ui::helpers::info_icon_button(ui, "This is used only as helper information to client applications that will use token. This informs them on whether to capitalize the token name or not by default.");
+                                        });
+                                        ui.end_row();
+
+                                        // Decimals
+                                        ui.horizontal(|ui| {
+                                            ui.label("Max Decimals:");
+                                            // Restrict input to digits only
+                                            let response = ui.add(
+                                                TextEdit::singleline(&mut self.decimals_input).desired_width(50.0)
+                                            );
+
+                                            // Optionally filter out non-digit input
+                                            if response.changed() {
+                                                self.decimals_input.retain(|c| c.is_ascii_digit());
+                                                self.decimals_input.truncate(2);
+                                            }
+
+                                            let token_name = self.token_names_input
+                                                .first()
+                                                .as_ref()
+                                                .and_then(|(_, name, _, _)| if name.is_empty() { None} else { Some(name.as_str())})
+                                                .unwrap_or("<Token Name>");
+
+                                            let message = if self.decimals_input == "0" {
+                                                format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
+                                            } else {
+                                                format!("Fractional Token (i.e. 0.2 {})", token_name)
+                                            };
+
+                                            ui.label(RichText::new(message).color(Color32::GRAY));
+                                            crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
+                                        });
+                                        ui.end_row();
+
+                                        // Marketplace Trade Mode
+                                        ui.horizontal(|ui| {
+                                            ui.label("Marketplace Trade Mode:");
+                                            ComboBox::from_id_salt("marketplace_trade_mode_selector")
+                                                .selected_text("Not Tradeable")
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut self.marketplace_trade_mode,
+                                                        0,
+                                                        "Not Tradeable",
+                                                    );
+                                                    // Future trade modes can be added here when SDK supports them
+                                                });
+
+                                            crate::ui::helpers::info_icon_button(ui,
+                                                "Currently, all tokens are created as 'Not Tradeable'. \
+                                                Future updates will add more trade mode options.\n\n\
+                                                IMPORTANT: If you want to enable marketplace trading in the future, \
+                                                make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
+                                                section to something other than 'No One'. Otherwise, trading can never be enabled."
+                                            );
+                                        });
+                                        ui.end_row();
                                     });
-                                    ui.end_row();
-
-                                    self.history_row(ui);
-                                    ui.end_row();
-
-                                    // Name should be capitalized
-                                    ui.horizontal(|ui| {
-                                        StyledCheckbox::new(&mut self.should_capitalize_input, "Name should be capitalized").show(ui);
-
-                                        crate::ui::helpers::info_icon_button(ui, "This is used only as helper information to client applications that will use token. This informs them on whether to capitalize the token name or not by default.");
-                                    });
-                                    ui.end_row();
-
-                                    // Decimals
-                                    ui.horizontal(|ui| {
-                                        ui.label("Max Decimals:");
-                                        // Restrict input to digits only
-                                        let response = ui.add(
-                                            TextEdit::singleline(&mut self.decimals_input).desired_width(50.0)
-                                        );
-
-                                        // Optionally filter out non-digit input
-                                        if response.changed() {
-                                            self.decimals_input.retain(|c| c.is_ascii_digit());
-                                            self.decimals_input.truncate(2);
-                                        }
-
-                                        let token_name = self.token_names_input
-                                            .first()
-                                            .as_ref()
-                                            .and_then(|(_, name, _, _)| if name.is_empty() { None} else { Some(name.as_str())})
-                                            .unwrap_or("<Token Name>");
-
-                                        let message = if self.decimals_input == "0" {
-                                            format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
-                                        } else {
-                                            format!("Fractional Token (i.e. 0.2 {})", token_name)
-                                        };
-
-                                        ui.label(RichText::new(message).color(Color32::GRAY));
-
-                                        crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
-                                    });
-                                    ui.end_row();
-
-                                    // Marketplace Trade Mode
-                                    ui.horizontal(|ui| {
-                                        ui.label("Marketplace Trade Mode:");
-                                        ComboBox::from_id_salt("marketplace_trade_mode_selector")
-                                            .selected_text("Not Tradeable")
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut self.marketplace_trade_mode,
-                                                    0,
-                                                    "Not Tradeable",
-                                                );
-                                                // Future trade modes can be added here when SDK supports them
-                                            });
-
-                                        crate::ui::helpers::info_icon_button(ui,
-                                            "Currently, all tokens are created as 'Not Tradeable'. \
-                                            Future updates will add more trade mode options.\n\n\
-                                            IMPORTANT: If you want to enable marketplace trading in the future, \
-                                            make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
-                                            section to something other than 'No One'. Otherwise, trading can never be enabled."
-                                        );
-                                    });
-                                    ui.end_row();
-                                });
-                        });
+                            });
+                        }
 
                         ui.add_space(5.0);
 
-                        ClickableCollapsingHeader::new("Action Rules")
-                            .id_salt("token_creator_action_rules")
-                            .default_open(false)
-                            .open(if self.should_reset_collapsing_states { Some(false) } else { None })
-                            .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // +/- button
+                            let button_text = if self.token_creator_action_rules_expanded { "−" } else { "+" };
+                            let button_response = ui.add(
+                                egui::Button::new(
+                                    RichText::new(button_text)
+                                        .size(20.0)
+                                        .color(DashColors::DASH_BLUE),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                            );
+                            if button_response.clicked() {
+                                self.token_creator_action_rules_expanded = !self.token_creator_action_rules_expanded;
+                            }
+                            ui.label("Action Rules");
+                        });
+
+                        if self.token_creator_action_rules_expanded {
+                            ui.add_space(3.0);
+
                             ui.horizontal(|ui| {
+                                ui.add_space(40.0); // Indentation
                                 ui.label("Preset:");
 
                                 ComboBox::from_id_salt("preset_selector")
@@ -441,24 +475,48 @@ impl TokensScreen {
                                     });
                             });
 
-                            self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules);
-                            self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None);
-                            self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities));
-                            self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None);
-                            self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None);
-                            self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None);
-                            self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None);
-                            self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None);
-                            self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None);
-                            self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None);
+                            ui.add_space(5.0);
+
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0); // Indentation for action rules
+                                ui.vertical(|ui| {
+                                    self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules, &mut self.token_creator_manual_mint_expanded, &mut self.token_creator_new_tokens_destination_expanded, &mut self.token_creator_minting_allow_choosing_expanded);
+                                    self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None, &mut self.token_creator_manual_burn_expanded);
+                                    self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities), &mut self.token_creator_freeze_expanded);
+                                    self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None, &mut self.token_creator_unfreeze_expanded);
+                                    self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None, &mut self.token_creator_destroy_frozen_expanded);
+                                    self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None, &mut self.token_creator_emergency_action_expanded);
+                                    self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None, &mut self.token_creator_max_supply_change_expanded);
+                                    self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None, &mut self.token_creator_conventions_change_expanded);
+                                    self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None, &mut self.token_creator_marketplace_expanded);
+                                    self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None, &mut self.token_creator_direct_purchase_pricing_expanded);
+                                });
+                            });
 
                             // Main control group change is slightly different so do this one manually.
                             ui.add_space(6.0);
-                            ClickableCollapsingHeader::new("Main Control Group Change")
-                                .id_salt("token_creator_main_control_group")
-                                .default_open(false)
-                                .open(if self.should_reset_collapsing_states { Some(false) } else { None })
-                                .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0); // Indentation for main control group change
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        // +/- button
+                                        let button_text = if self.token_creator_main_control_expanded { "−" } else { "+" };
+                                        let button_response = ui.add(
+                                            egui::Button::new(
+                                                RichText::new(button_text)
+                                                    .size(20.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            )
+                                            .fill(Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE),
+                                        );
+                                        if button_response.clicked() {
+                                            self.token_creator_main_control_expanded = !self.token_creator_main_control_expanded;
+                                        }
+                                        ui.label("Main Control Group Change");
+                                    });
+
+                                    if self.token_creator_main_control_expanded {
                                 ui.add_space(3.0);
 
                                 // A) authorized_to_make_change
@@ -516,8 +574,10 @@ impl TokensScreen {
                                         _ => {}
                                     }
                                 });
+                                    }
+                                });
                             });
-                        });
+                        }
 
                         self.render_distributions(context, ui);
                         self.render_groups(ui);
@@ -595,10 +655,30 @@ impl TokensScreen {
                                 }
                             }
                         });
-            });
 
-        // Reset the flag after processing all collapsing headers
+        // Reset the expanded states after processing
         if self.should_reset_collapsing_states {
+            self.token_creator_advanced_expanded = false;
+            self.token_creator_action_rules_expanded = false;
+            self.token_creator_main_control_expanded = false;
+            self.token_creator_distribution_expanded = false;
+            self.token_creator_groups_expanded = false;
+            self.token_creator_document_schemas_expanded = false;
+            // Individual action rules
+            self.token_creator_manual_mint_expanded = false;
+            self.token_creator_manual_burn_expanded = false;
+            self.token_creator_freeze_expanded = false;
+            self.token_creator_unfreeze_expanded = false;
+            self.token_creator_destroy_frozen_expanded = false;
+            self.token_creator_emergency_action_expanded = false;
+            self.token_creator_max_supply_change_expanded = false;
+            self.token_creator_conventions_change_expanded = false;
+            self.token_creator_marketplace_expanded = false;
+            self.token_creator_direct_purchase_pricing_expanded = false;
+            // Nested rules
+            self.token_creator_new_tokens_destination_expanded = false;
+            self.token_creator_minting_allow_choosing_expanded = false;
+            self.token_creator_perpetual_distribution_rules_expanded = false;
             self.should_reset_collapsing_states = false;
         }
 
@@ -631,6 +711,8 @@ impl TokensScreen {
             ui.colored_label(Color32::DARK_RED, err_msg.to_string());
             ui.add_space(10.0);
         }
+
+            }); // Close the ScrollArea from line 40
 
         action
     }
@@ -771,19 +853,18 @@ impl TokensScreen {
             .parse::<u8>()
             .map_err(|_| "Invalid decimal places amount".to_string())?;
         let base_supply = self
-            .base_supply_input
-            .parse::<u64>()
-            .map_err(|_| "Invalid base supply amount".to_string())?;
-        let max_supply = if self.max_supply_input.is_empty() {
-            None
-        } else {
-            // If parse fails, error out
-            Some(
-                self.max_supply_input
-                    .parse::<u64>()
-                    .map_err(|_| "Invalid Max Supply".to_string())?,
-            )
-        };
+            .base_supply_amount
+            .as_ref()
+            .map(|amount| amount.value())
+            .ok_or_else(|| "Please enter a valid base supply amount".to_string())?;
+        let max_supply = self
+            .max_supply_amount
+            .as_ref()
+            .map(|amount| {
+                let value = amount.value();
+                if value > 0 { Some(value) } else { None }
+            })
+            .unwrap_or(None);
 
         let start_paused = self.start_as_paused_input;
         let allow_transfers_to_frozen_identities = self.allow_transfers_to_frozen_identities;
@@ -972,59 +1053,66 @@ impl TokensScreen {
     /// Shows a popup "Are you sure?" for creating the token contract
     fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let mut is_open = true;
 
-        egui::Window::new("Confirm Token Contract Registration")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(
-                    "Are you sure you want to register a new token contract with these settings?\n",
-                );
-                let max_supply_display = if self.max_supply_input.is_empty() {
-                    "None".to_string()
-                } else {
-                    self.max_supply_input.clone()
-                };
-                ui.label(format!(
-                    "Name: {}\nBase Supply: {}\nMax Supply: {}",
-                    self.token_names_input[0].0, self.base_supply_input, max_supply_display,
-                ));
+        // Prepare the confirmation message
+        let mut confirmation_message =
+            "Are you sure you want to register a new token contract with these settings?\n\n"
+                .to_string();
+        let base_supply_display = self
+            .base_supply_amount
+            .as_ref()
+            .map(|amount| amount.to_string_opts(true, false))
+            .unwrap_or_else(|| "0".to_string());
+        let max_supply_display = self
+            .max_supply_amount
+            .as_ref()
+            .filter(|amount| amount.value() > 0)
+            .map(|amount| amount.to_string_opts(true, false))
+            .unwrap_or_else(|| "None".to_string());
 
-                ui.add_space(10.0);
+        confirmation_message.push_str(&format!(
+            "Name: {}\nBase Supply: {}\nMax Supply: {}\n\n",
+            self.token_names_input[0].0, base_supply_display, max_supply_display,
+        ));
 
-                ui.label(format!(
-                    "Estimated cost to register this token is {} Dash",
-                    self.estimate_registration_cost() as f64 / 100_000_000_000.0
-                ));
+        confirmation_message.push_str(&format!(
+            "Estimated cost to register this token is {} Dash",
+            self.estimate_registration_cost() as f64 / 100_000_000_000.0
+        ));
 
-                ui.add_space(10.0);
+        // Check if marketplace is locked to NotTradeable forever
+        let mut is_danger_mode = false;
+        if let Some(args) = &self.cached_build_args {
+            let is_not_tradeable = args.marketplace_trade_mode == 0;
+            let marketplace_rules_locked = matches!(
+                args.marketplace_rules,
+                ChangeControlRules::V0(ChangeControlRulesV0 {
+                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                    admin_action_takers: AuthorizedActionTakers::NoOne,
+                    ..
+                })
+            );
 
-                // Check if marketplace is locked to NotTradeable forever
-                if let Some(args) = &self.cached_build_args {
-                    let is_not_tradeable = args.marketplace_trade_mode == 0;
-                    let marketplace_rules_locked = matches!(
-                        args.marketplace_rules,
-                        ChangeControlRules::V0(ChangeControlRulesV0 {
-                            authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                            admin_action_takers: AuthorizedActionTakers::NoOne,
-                            ..
-                        })
-                    );
+            if is_not_tradeable && marketplace_rules_locked {
+                confirmation_message.push_str("\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!");
+                is_danger_mode = true;
+            }
+        }
 
-                    if is_not_tradeable && marketplace_rules_locked {
-                        ui.colored_label(
-                            Color32::DARK_RED,
-                            "WARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!"
-                        );
-                        ui.add_space(10.0);
-                    }
-                }
+        // Always create a fresh confirmation dialog to ensure current state is reflected
+        let confirmation_dialog = self.token_creator_confirmation_dialog.insert(
+            ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(is_danger_mode),
+        );
 
-                ui.add_space(10.0);
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
 
-                // Confirm
-                if ui.button("Confirm").clicked() {
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
                     let args = match &self.cached_build_args {
                         Some(args) => args.clone(),
                         None => {
@@ -1034,8 +1122,8 @@ impl TokensScreen {
                                 Err(err) => {
                                     self.token_creator_error_message = Some(err);
                                     self.show_token_creator_confirmation_popup = false;
-                                    action = AppAction::None;
-                                    return;
+                                    self.token_creator_confirmation_dialog = None;
+                                    return AppAction::None;
                                 }
                             }
                         }
@@ -1083,17 +1171,15 @@ impl TokensScreen {
                     self.show_token_creator_confirmation_popup = false;
                     let now = Utc::now().timestamp() as u64;
                     self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
-                }
-
-                // Cancel
-                if ui.button("Cancel").clicked() {
                     self.show_token_creator_confirmation_popup = false;
+                    self.token_creator_confirmation_dialog = None;
+                }
+                ConfirmationStatus::Canceled => {
+                    self.show_token_creator_confirmation_popup = false;
+                    self.token_creator_confirmation_dialog = None;
                     action = AppAction::None;
                 }
-            });
-
-        if !is_open {
-            self.show_token_creator_confirmation_popup = false;
+            }
         }
 
         action
@@ -1103,15 +1189,35 @@ impl TokensScreen {
     fn render_document_schemas(&mut self, ui: &mut Ui) {
         ui.add_space(5.0);
 
-        ClickableCollapsingHeader::new("Document Schemas")
-            .id_salt("token_creator_document_schemas")
-            .default_open(false)
-            .open(if self.should_reset_collapsing_states { Some(false) } else { None })
-            .show(ui, |ui| {
-                ui.add_space(3.0);
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if self.token_creator_document_schemas_expanded {
+                "−"
+            } else {
+                "+"
+            };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                self.token_creator_document_schemas_expanded =
+                    !self.token_creator_document_schemas_expanded;
+            }
+            ui.label("Document Schemas");
+        });
 
+        if self.token_creator_document_schemas_expanded {
+            ui.add_space(3.0);
+
+            ui.indent("document_schemas_section", |ui| {
                 // Add link to dashpay.io
-                ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
                     ui.label("Paste JSON document schemas to include in the contract. Easily create document schemas here:");
                     ui.add(egui::Hyperlink::from_label_and_url(
                         RichText::new("dashpay.io")
@@ -1121,38 +1227,39 @@ impl TokensScreen {
                     ));
                 });
 
-                ui.add_space(5.0);
+            ui.add_space(5.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let schemas_response = ui.add_sized(
-                    [ui.available_width(), 120.0],
-                    TextEdit::multiline(&mut self.document_schemas_input)
-                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let schemas_response = ui.add_sized(
+                [ui.available_width(), 120.0],
+                TextEdit::multiline(&mut self.document_schemas_input)
+                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+            );
+
+            if schemas_response.changed() {
+                self.parse_document_schemas();
+            }
+
+            ui.add_space(5.0);
+
+            // Show validation result
+            if let Some(ref error) = self.document_schemas_error {
+                ui.colored_label(
+                    Color32::DARK_RED,
+                    format!("Schema validation error: {}", error),
                 );
-
-                if schemas_response.changed() {
-                    self.parse_document_schemas();
-                }
-
-                ui.add_space(5.0);
-
-                // Show validation result
-                if let Some(ref error) = self.document_schemas_error {
+            } else if self.parsed_document_schemas.is_some() {
+                let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
+                if schema_count > 0 {
                     ui.colored_label(
-                        Color32::DARK_RED,
-                        format!("Schema validation error: {}", error),
+                        Color32::DARK_GREEN,
+                        format!("✓ {} valid document schema(s) parsed", schema_count),
                     );
-                } else if self.parsed_document_schemas.is_some() {
-                    let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
-                    if schema_count > 0 {
-                        ui.colored_label(
-                            Color32::DARK_GREEN,
-                            format!("✓ {} valid document schema(s) parsed", schema_count),
-                        );
-                    }
                 }
+            }
             });
+        }
     }
 
     /// Parse and validate the document schemas JSON input

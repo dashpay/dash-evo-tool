@@ -8,7 +8,6 @@ use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
-use dash_sdk::dpp::dashcore::bip32::ChildNumber;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -20,6 +19,7 @@ use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
@@ -223,6 +223,13 @@ pub struct QualifiedIdentity {
     pub wallet_index: Option<u32>,
     pub top_ups: BTreeMap<u32, u64>,
     pub status: IdentityStatus,
+    pub network: Network,
+}
+
+impl AsRef<QualifiedIdentity> for QualifiedIdentity {
+    fn as_ref(&self) -> &QualifiedIdentity {
+        self
+    }
 }
 
 impl PartialEq for QualifiedIdentity {
@@ -280,6 +287,7 @@ impl Decode for QualifiedIdentity {
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Unknown, // Loaded from the database, not encoded
+            network: Network::Dash,          // Loaded from the database, not encoded
         })
     }
 }
@@ -302,6 +310,7 @@ impl Signer for QualifiedIdentity {
                     .cloned()
                     .collect::<Vec<_>>()
                     .as_slice(),
+                self.network,
             )
             .map_err(ProtocolError::Generic)?
             .ok_or(ProtocolError::Generic(format!(
@@ -608,23 +617,5 @@ impl QualifiedIdentity {
             .next();
 
         Ok(wallet_info)
-    }
-}
-impl From<Identity> for QualifiedIdentity {
-    fn from(value: Identity) -> Self {
-        QualifiedIdentity {
-            identity: value,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Unknown,
-        }
     }
 }

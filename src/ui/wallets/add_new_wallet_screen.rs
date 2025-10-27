@@ -10,10 +10,10 @@ use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use bip39::{Language, Mnemonic};
-use dash_sdk::dashcore_rpc::dashcore::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::bip32::{ExtendedPrivKey, ExtendedPubKey};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use eframe::emath::Align;
 use egui::{Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
@@ -99,7 +99,6 @@ impl AddNewWalletScreen {
                     let (encrypted_message, salt, nonce) =
                         encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
                     self.app_context
-                        .db
                         .update_main_password(&salt, &nonce, &encrypted_message)
                         .map_err(|e| e.to_string())?;
                 }

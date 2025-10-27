@@ -9,6 +9,8 @@ use std::{path::PathBuf, str::FromStr};
 
 impl Database {
     /// Inserts or updates the settings in the database. This method ensures that only one row exists.
+    ///
+    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
     pub fn insert_or_update_settings(
         &self,
         network: Network,
@@ -27,6 +29,9 @@ impl Database {
         Ok(())
     }
 
+    /// Updates the main password information in the settings table.
+    ///
+    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
     pub fn update_main_password(
         &self,
         salt: &[u8],
@@ -45,7 +50,9 @@ impl Database {
 
         Ok(())
     }
-
+    /// Updates the Dash Core execution settings in the settings table.
+    ///
+    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
     pub fn update_dash_core_execution_settings(
         &self,
         custom_dash_qt_path: Option<PathBuf>,
@@ -112,7 +119,9 @@ impl Database {
 
         Ok(())
     }
-
+    /// Updates the theme preference in the settings table.
+    ///
+    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
     pub fn update_theme_preference(&self, theme_preference: ThemeMode) -> Result<()> {
         let theme_str = match theme_preference {
             ThemeMode::Light => "Light",
@@ -144,6 +153,8 @@ impl Database {
     }
 
     /// Retrieves the settings from the database.
+    ///
+    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
     #[allow(clippy::type_complexity)]
     pub fn get_settings(
         &self,

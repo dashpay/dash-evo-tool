@@ -881,8 +881,9 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
+///
+/// For certain releases like developer previews, we may want to only increment the platform version for non-mainnet.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
-    // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
         Network::Dash => &PLATFORM_V10,
         Network::Testnet => &PLATFORM_V10,

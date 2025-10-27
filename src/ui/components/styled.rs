@@ -10,6 +10,7 @@ use egui::{
 };
 
 // Re-export commonly used components
+pub use super::clickable_collapsing_header::ClickableCollapsingHeader;
 pub use super::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 
 /// Styled button variants

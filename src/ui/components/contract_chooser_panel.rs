@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
+use crate::ui::components::styled::ClickableCollapsingHeader;
 use crate::ui::contracts_documents::contracts_documents_screen::DOCUMENT_PRIVATE_FIELDS;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;

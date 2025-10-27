@@ -1,4 +1,5 @@
 pub mod amount_input;
+pub mod clickable_collapsing_header;
 pub mod component_trait;
 pub mod confirmation_dialog;
 pub mod contract_chooser_panel;

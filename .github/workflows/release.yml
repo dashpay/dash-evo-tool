@@ -53,6 +53,18 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Configure Windows long paths and Cargo homes
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --global core.longpaths true
+          New-Item -ItemType Directory -Path C:\cargo -Force | Out-Null
+          New-Item -ItemType Directory -Path C:\rustup -Force | Out-Null
+          echo "CARGO_HOME=C:\cargo" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "RUSTUP_HOME=C:\rustup" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:

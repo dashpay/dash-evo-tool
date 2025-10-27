@@ -1645,13 +1645,13 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "dapi-grpc-macros 2.1.0-rc.1",
+ "dapi-grpc-macros 2.1.0",
  "futures-core",
  "getrandom 0.2.16",
- "platform-version 2.1.0-rc.1",
+ "platform-version 2.1.0",
  "prost 0.14.1",
  "serde",
  "serde_bytes",
@@ -1674,8 +1674,8 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc-macros"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "heck",
  "quote",
@@ -1733,11 +1733,11 @@ dependencies = [
 
 [[package]]
 name = "dash-context-provider"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "dpp 2.1.0-rc.1",
- "drive 2.1.0-rc.1",
+ "dpp 2.1.0",
+ "drive 2.1.0",
  "hex",
  "serde",
  "serde_json",
@@ -1759,7 +1759,7 @@ dependencies = [
  "chrono-humanize",
  "crossbeam-channel",
  "dark-light",
- "dash-sdk 2.1.0-rc.1",
+ "dash-sdk 2.1.0",
  "derive_more 2.0.1",
  "directories",
  "dotenvy",
@@ -1854,8 +1854,8 @@ dependencies = [
 
 [[package]]
 name = "dash-sdk"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1863,21 +1863,21 @@ dependencies = [
  "bip37-bloom-filter",
  "chrono",
  "ciborium",
- "dapi-grpc 2.1.0-rc.1",
- "dapi-grpc-macros 2.1.0-rc.1",
+ "dapi-grpc 2.1.0",
+ "dapi-grpc-macros 2.1.0",
  "dash-context-provider",
  "derive_more 1.0.0",
  "dotenvy",
- "dpp 2.1.0-rc.1",
- "drive 2.1.0-rc.1",
- "drive-proof-verifier 2.1.0-rc.1",
+ "dpp 2.1.0",
+ "drive 2.1.0",
+ "drive-proof-verifier 2.1.0",
  "envy",
  "futures",
  "hex",
  "http",
  "js-sys",
  "lru",
- "rs-dapi-client 2.1.0-rc.1",
+ "rs-dapi-client 2.1.0",
  "rustls-pemfile",
  "serde",
  "serde_json",
@@ -2048,11 +2048,11 @@ dependencies = [
 
 [[package]]
 name = "dashpay-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -2078,21 +2078,21 @@ dependencies = [
 
 [[package]]
 name = "data-contracts"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "dashpay-contract 2.1.0-rc.1",
- "dpns-contract 2.1.0-rc.1",
- "feature-flags-contract 2.1.0-rc.1",
- "keyword-search-contract 2.1.0-rc.1",
- "masternode-reward-shares-contract 2.1.0-rc.1",
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "dashpay-contract 2.1.0",
+ "dpns-contract 2.1.0",
+ "feature-flags-contract 2.1.0",
+ "keyword-search-contract 2.1.0",
+ "masternode-reward-shares-contract 2.1.0",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
- "token-history-contract 2.1.0-rc.1",
- "wallet-utils-contract 2.1.0-rc.1",
- "withdrawals-contract 2.1.0-rc.1",
+ "token-history-contract 2.1.0",
+ "wallet-utils-contract 2.1.0",
+ "withdrawals-contract 2.1.0",
 ]
 
 [[package]]
@@ -2339,11 +2339,11 @@ dependencies = [
 
 [[package]]
 name = "dpns-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -2393,8 +2393,8 @@ dependencies = [
 
 [[package]]
 name = "dpp"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2408,7 +2408,7 @@ dependencies = [
  "ciborium",
  "dashcore 0.40.0",
  "dashcore-rpc 0.40.0",
- "data-contracts 2.1.0-rc.1",
+ "data-contracts 2.1.0",
  "derive_more 1.0.0",
  "env_logger",
  "getrandom 0.2.16",
@@ -2421,11 +2421,11 @@ dependencies = [
  "nohash-hasher",
  "num_enum 0.7.5",
  "once_cell",
- "platform-serialization 2.1.0-rc.1",
- "platform-serialization-derive 2.1.0-rc.1",
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
- "platform-versioning 2.1.0-rc.1",
+ "platform-serialization 2.1.0",
+ "platform-serialization-derive 2.1.0",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
+ "platform-versioning 2.1.0",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -2464,13 +2464,13 @@ dependencies = [
 
 [[package]]
 name = "drive"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "byteorder",
  "derive_more 1.0.0",
- "dpp 2.1.0-rc.1",
+ "dpp 2.1.0",
  "grovedb",
  "grovedb-costs",
  "grovedb-epoch-based-storage-flags",
@@ -2480,7 +2480,7 @@ dependencies = [
  "indexmap 2.12.0",
  "integer-encoding",
  "nohash-hasher",
- "platform-version 2.1.0-rc.1",
+ "platform-version 2.1.0",
  "serde",
  "sqlparser",
  "thiserror 2.0.17",
@@ -2510,19 +2510,19 @@ dependencies = [
 
 [[package]]
 name = "drive-proof-verifier"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "dapi-grpc 2.1.0-rc.1",
+ "dapi-grpc 2.1.0",
  "dash-context-provider",
  "derive_more 1.0.0",
- "dpp 2.1.0-rc.1",
- "drive 2.1.0-rc.1",
+ "dpp 2.1.0",
+ "drive 2.1.0",
  "hex",
  "indexmap 2.12.0",
- "platform-serialization 2.1.0-rc.1",
- "platform-serialization-derive 2.1.0-rc.1",
+ "platform-serialization 2.1.0",
+ "platform-serialization-derive 2.1.0",
  "serde",
  "serde_json",
  "tenderdash-abci 1.5.0-dev.2",
@@ -3090,11 +3090,11 @@ dependencies = [
 
 [[package]]
 name = "feature-flags-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -4452,11 +4452,11 @@ dependencies = [
 
 [[package]]
 name = "keyword-search-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -4672,11 +4672,11 @@ dependencies = [
 
 [[package]]
 name = "masternode-reward-shares-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -5713,11 +5713,11 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "platform-version 2.1.0-rc.1",
+ "platform-version 2.1.0",
 ]
 
 [[package]]
@@ -5733,8 +5733,8 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization-derive"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5764,8 +5764,8 @@ dependencies = [
 
 [[package]]
 name = "platform-value"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "base64 0.22.1",
  "bincode 2.0.0-rc.3",
@@ -5773,8 +5773,8 @@ dependencies = [
  "ciborium",
  "hex",
  "indexmap 2.12.0",
- "platform-serialization 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-serialization 2.1.0",
+ "platform-version 2.1.0",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -5796,8 +5796,8 @@ dependencies = [
 
 [[package]]
 name = "platform-version"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "grovedb-version",
@@ -5818,8 +5818,8 @@ dependencies = [
 
 [[package]]
 name = "platform-versioning"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6454,12 +6454,12 @@ dependencies = [
 
 [[package]]
 name = "rs-dapi-client"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "backon",
  "chrono",
- "dapi-grpc 2.1.0-rc.1",
+ "dapi-grpc 2.1.0",
  "futures",
  "getrandom 0.2.16",
  "gloo-timers",
@@ -7558,11 +7558,11 @@ dependencies = [
 
 [[package]]
 name = "token-history-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -8311,11 +8311,11 @@ dependencies = [
 
 [[package]]
 name = "wallet-utils-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -9540,12 +9540,12 @@ dependencies = [
 
 [[package]]
 name = "withdrawals-contract"
-version = "2.1.0-rc.1"
-source = "git+https://www.github.com/dashpay/platform?rev=68f77c085643edb9a46afd4ff51c9d20b4ce2912#68f77c085643edb9a46afd4ff51c9d20b4ce2912"
+version = "2.1.0"
+source = "git+https://www.github.com/dashpay/platform?rev=29f7492ed353d9cf2e09d0d4e6741d772e210d6b#29f7492ed353d9cf2e09d0d4e6741d772e210d6b"
 dependencies = [
  "num_enum 0.5.11",
- "platform-value 2.1.0-rc.1",
- "platform-version 2.1.0-rc.1",
+ "platform-value 2.1.0",
+ "platform-version 2.1.0",
  "serde",
  "serde_json",
  "serde_repr",

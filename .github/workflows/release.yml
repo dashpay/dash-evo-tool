@@ -42,8 +42,8 @@ jobs:
             target: "aarch64-apple-darwin"
             platform: "arm64-mac"
           - name: "Windows"
-            runs-on: "ubuntu-22.04"
-            target: "x86_64-pc-windows-gnu"
+            runs-on: "windows-latest"
+            target: "x86_64-pc-windows-msvc"
             platform: "windows"
             ext: ".exe"
 
@@ -66,6 +66,7 @@ jobs:
 
 
       - name: Setup prerequisites
+        shell: bash
         run: |
           mkdir -p dash-evo-tool/
 
@@ -98,6 +99,18 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
+      - name: Install protoc (Windows MSVC)
+        if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-win64.zip'
+          Invoke-WebRequest -Uri $url -OutFile protoc.zip
+          Expand-Archive -Path protoc.zip -DestinationPath "$env:RUNNER_TEMP\protoc" -Force
+          Remove-Item protoc.zip
+          # Add protoc to PATH for subsequent steps
+          echo "$env:RUNNER_TEMP\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Install protoc (Mac x64)
         if: ${{ matrix.target == 'x86_64-apple-darwin' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-x86_64.zip && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-x86_64.zip && uname -a
@@ -115,6 +128,7 @@ jobs:
         run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
 
       - name: Build project
+        shell: bash
         run: |
           set -euo pipefail
           echo "::group::Cargo build output (${{ matrix.target }})"
@@ -130,6 +144,7 @@ jobs:
 
       - name: Summarize build errors
         if: failure()
+        shell: bash
         run: |
           echo "::group::Detected error lines"
           # Try to extract the most relevant error lines from the log
@@ -146,9 +161,18 @@ jobs:
           name: build-log-${{ matrix.platform }}
           path: build-${{ matrix.platform }}.log
 
-      - name: Package release
+      - name: Package release (Linux/macOS)
+        if: ${{ runner.os != 'Windows' }}
         run: |
           zip -r dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool/
+
+      - name: Package release (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path "dash-evo-tool-${{ matrix.platform }}.zip") { Remove-Item "dash-evo-tool-${{ matrix.platform }}.zip" -Force }
+          Compress-Archive -Path "dash-evo-tool/*" -DestinationPath "dash-evo-tool-${{ matrix.platform }}.zip" -Force
 
       - name: Attest
         uses: actions/attest-build-provenance@v1

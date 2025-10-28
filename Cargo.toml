@@ -18,7 +18,9 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"], rev = "d6f9d9e74b885fbac27948bce6bae60b0cbd7135" }
+dash-sdk = { git = "https://www.github.com/dashpay/platform", tag = "v2.1.2", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"] }
+grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "5313ba9df590f114e11934e281f1e8c8bc462794" }
+rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"
 serde_json = "1.0.140"
@@ -37,6 +39,7 @@ envy = "0.4.2"
 chrono = "0.4.41"
 chrono-humanize = "0.2.3"
 sha2 = "0.10.9"
+ed25519-dalek = "2.1"
 arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
@@ -68,9 +71,11 @@ native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
 [dev-dependencies]
-
 tempfile = { version = "3.20.0" }
 egui_kittest = { version = "0.32.0", features = ["eframe"] }
 
 [lints.clippy]
 uninlined_format_args = "allow"
+
+[patch.crates-io]
+elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }

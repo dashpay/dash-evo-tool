@@ -2018,7 +2018,7 @@ impl ScreenLike for DPNSScreen {
             }
         }
 
-        // Contracts area chooser (DPNS / DashPay / Contracts)
+        // Contracts area chooser (DPNS / Dashpay / Contracts)
         action |= add_contracts_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // DPNS subscreen chooser

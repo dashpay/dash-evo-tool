@@ -55,8 +55,8 @@ impl AppContext {
             sender
                 .send(TaskResult::Success(Box::new(
                     BackendTaskSuccessResult::Message(format!(
-                        "Searching for identity using key at index {}...",
-                        key_index
+                        "Searching for identity at index {} using key at index {}...",
+                        identity_index, key_index
                     )),
                 )))
                 .await

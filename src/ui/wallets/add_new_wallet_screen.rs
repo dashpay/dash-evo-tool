@@ -4,6 +4,7 @@ use crate::ui::ScreenLike;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
@@ -433,7 +434,7 @@ impl ScreenLike for AddNewWalletScreen {
                     // Centered "Save Wallet" button at the bottom
                     ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
                         let save_button = egui::Button::new(
-                            RichText::new("Save Wallet").strong().size(30.0),
+                            RichText::new("Save Wallet").strong().size(30.0).color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
                         )
                             .min_size(Vec2::new(300.0, 60.0))
                             .corner_radius(10.0)

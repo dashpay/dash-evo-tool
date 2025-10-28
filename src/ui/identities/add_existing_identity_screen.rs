@@ -141,7 +141,6 @@ impl AddExistingIdentityScreen {
             if ui.button("Fill Random Masternode").clicked() {
                 self.fill_random_masternode();
             }
-            ui.add_space(10.0);
         }
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
@@ -227,6 +226,7 @@ impl AddExistingIdentityScreen {
                             }
                         });
 
+                    ui.add_space(10.0);
                     if let Some(selected_wallet) = &self.selected_wallet {
                         let wallet_still_loaded = wallets_snapshot
                             .iter()
@@ -237,10 +237,6 @@ impl AddExistingIdentityScreen {
                                 self.render_wallet_unlock_if_needed(ui);
                             if needed_unlock && !just_unlocked {
                                 should_return_early = true;
-                                ui.colored_label(
-                                    Color32::DARK_RED,
-                                    "Press return/enter after typing the password.",
-                                );
                             } else if just_unlocked {
                                 ui.colored_label(
                                     Color32::GREEN,
@@ -267,8 +263,6 @@ impl AddExistingIdentityScreen {
         if should_return_early {
             return action;
         }
-
-        ui.add_space(10.0);
 
         egui::Grid::new("add_existing_identity_grid")
             .num_columns(2)

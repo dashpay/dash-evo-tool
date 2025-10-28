@@ -67,6 +67,8 @@ pub trait ScreenWithWalletUnlock {
                 let mut local_error_message = self.error_message().cloned(); // Local variable for error message
                 let wallet_password_mut = self.wallet_password_mut(); // Mutable reference to the password
 
+                let mut attempt_unlock = false;
+
                 ui.horizontal(|ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                     let password_input = ui.add(
@@ -79,36 +81,46 @@ pub trait ScreenWithWalletUnlock {
                             )),
                     );
 
-                    // Checkbox to toggle password visibility
-                    StyledCheckbox::new(&mut local_show_password, "Show Password").show(ui);
-
                     if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
-                        // Use the password from wallet_password_mut
-                        let wallet_password_ref = &*wallet_password_mut;
+                        attempt_unlock = true;
+                    }
 
-                        let unlock_result = wallet.wallet_seed.open(wallet_password_ref);
+                    ui.add_space(5.0);
 
-                        match unlock_result {
-                            Ok(_) => {
-                                local_error_message = None;
-                                unlocked = true;
-                            }
-                            Err(_) => {
-                                if let Some(hint) = wallet.password_hint() {
-                                    local_error_message = Some(format!(
-                                        "Incorrect Password, password hint is {}",
-                                        hint
-                                    ));
-                                } else {
-                                    local_error_message = Some("Incorrect Password".to_string());
-                                }
+                    // Checkbox to toggle password visibility
+                    StyledCheckbox::new(&mut local_show_password, "Show Password").show(ui);
+                });
+
+                ui.add_space(5.0);
+
+                if ui.button("Unlock").clicked() {
+                    attempt_unlock = true;
+                }
+
+                if attempt_unlock {
+                    // Use the password from wallet_password_mut
+                    let wallet_password_ref = &*wallet_password_mut;
+
+                    let unlock_result = wallet.wallet_seed.open(wallet_password_ref);
+
+                    match unlock_result {
+                        Ok(_) => {
+                            local_error_message = None;
+                            unlocked = true;
+                        }
+                        Err(_) => {
+                            if let Some(hint) = wallet.password_hint() {
+                                local_error_message =
+                                    Some(format!("Incorrect Password, password hint is {}", hint));
+                            } else {
+                                local_error_message = Some("Incorrect Password".to_string());
                             }
                         }
-                        // Clear the password field after submission
-                        wallet_password_mut.zeroize();
                     }
-                });
+                    // Clear the password field after submission
+                    wallet_password_mut.zeroize();
+                }
 
                 // Update `show_password` after the closure
                 *self.show_password_mut() = local_show_password;

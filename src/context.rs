@@ -31,8 +31,7 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v8::PLATFORM_V8;
-use dash_sdk::dpp::version::v9::PLATFORM_V9;
+use dash_sdk::dpp::version::v10::PLATFORM_V10;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use egui::Context;
@@ -157,7 +156,9 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
-        let animate = match config.developer_mode.unwrap_or(false) {
+        let developer_mode_enabled = config.developer_mode.unwrap_or(false);
+
+        let animate = match developer_mode_enabled {
             true => {
                 tracing::debug!("developer_mode is enabled, disabling animations");
                 AtomicBool::new(false)
@@ -167,7 +168,7 @@ impl AppContext {
 
         let app_context = AppContext {
             network,
-            developer_mode: AtomicBool::new(config.developer_mode.unwrap_or(false)),
+            developer_mode: AtomicBool::new(developer_mode_enabled),
             devnet_name: None,
             db,
             sdk: sdk.into(),
@@ -883,10 +884,10 @@ impl AppContext {
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
-        Network::Dash => &PLATFORM_V8,
-        Network::Testnet => &PLATFORM_V9,
-        Network::Devnet => &PLATFORM_V9,
-        Network::Regtest => &PLATFORM_V9,
+        Network::Dash => &PLATFORM_V10,
+        Network::Testnet => &PLATFORM_V10,
+        Network::Devnet => &PLATFORM_V10,
+        Network::Regtest => &PLATFORM_V10,
         _ => panic!("unsupported network"),
     }
 }

@@ -12,6 +12,7 @@ use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -31,8 +32,6 @@ use egui::ahash::HashMap;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::sync::{Arc, RwLock};
-
-const MAX_IDENTITY_INDEX_SEARCH: u32 = 30;
 
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
@@ -434,7 +433,7 @@ impl AppContext {
             }
         }
 
-        for candidate_index in 0..=MAX_IDENTITY_INDEX_SEARCH {
+        for candidate_index in 0..MAX_IDENTITY_INDEX {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
                     self.network,

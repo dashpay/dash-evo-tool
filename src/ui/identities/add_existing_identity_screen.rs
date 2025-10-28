@@ -271,7 +271,7 @@ impl AddExistingIdentityScreen {
             ui.horizontal(|ui| {
                 let checkbox_response = ui.checkbox(
                     &mut self.identity_associated_with_wallet,
-                    "Identity may be associated with a loaded wallet",
+                    "Try to automatically derive keys from unlocked loaded wallets",
                 );
                 let response = crate::ui::helpers::info_icon_button(
                     ui,
@@ -340,8 +340,8 @@ impl AddExistingIdentityScreen {
                                 self.render_wallet_unlock_if_needed(ui);
                             if needed_unlock && !just_unlocked {
                                 ui.colored_label(
-                                    Color32::YELLOW,
-                                    "Unlock this wallet to allow Dash Evo Tool to derive the keys.",
+                                    Color32::DARK_RED,
+                                    "Press return/enter after typing the password.",
                                 );
                             } else if just_unlocked {
                                 ui.colored_label(

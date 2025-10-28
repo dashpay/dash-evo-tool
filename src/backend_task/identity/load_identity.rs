@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::sync::{Arc, RwLock};
 
-const MAX_IDENTITY_INDEX_SEARCH: u32 = 200;
+const MAX_IDENTITY_INDEX_SEARCH: u32 = 30;
 
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;

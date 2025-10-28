@@ -258,7 +258,7 @@ impl AddExistingIdentityScreen {
                 } else {
                     ui.colored_label(
                         Color32::GRAY,
-                        "No wallets are currently loaded. Unlock or import one to scan for keys.",
+                        "No wallets are currently loaded. Import one to scan for keys.",
                     );
                 }
             }
@@ -463,7 +463,7 @@ impl AddExistingIdentityScreen {
         if wallets_len == 0 {
             ui.colored_label(
                 Color32::GRAY,
-                "No wallets available. Import or create a wallet to search by derivation path.",
+                "No wallets available. Import a wallet to search by derivation path.",
             );
             return action;
         }

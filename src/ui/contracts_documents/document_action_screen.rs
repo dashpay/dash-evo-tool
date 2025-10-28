@@ -1507,11 +1507,11 @@ impl ScreenLike for DocumentActionScreen {
     }
 
     fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
-        if message.contains("Document deleted successfully")
-            || message.contains("Document replaced successfully")
-            || message.contains("Document transferred successfully")
-            || message.contains("Document purchased successfully")
-            || message.contains("Document price set successfully")
+        if message.contains("deleted successfully")
+            || message.contains("replaced successfully")
+            || message.contains("transferred successfully")
+            || message.contains("purchased successfully")
+            || message.contains("price set successfully")
         {
             self.broadcast_status = BroadcastStatus::Broadcasted;
         } else {

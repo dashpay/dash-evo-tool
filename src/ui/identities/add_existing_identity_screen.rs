@@ -512,7 +512,9 @@ impl AddExistingIdentityScreen {
 
         let identity_index_label = match self.wallet_search_mode {
             WalletIdentitySearchMode::SpecificIndex => "Identity index:",
-            WalletIdentitySearchMode::UpToIndex => "Highest identity index to search (inclusive):",
+            WalletIdentitySearchMode::UpToIndex => {
+                "Highest identity index to search (inclusive, max 29):"
+            }
         };
 
         ui.horizontal(|ui| {

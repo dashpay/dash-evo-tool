@@ -972,7 +972,6 @@ impl Wallet {
                     .expect("failed to compute sighash")
             })
             .collect();
-        drop(cache);
 
         let secp = Secp256k1::new();
         let mut utxo_lookup = utxos.clone();

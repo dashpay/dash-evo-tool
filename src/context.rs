@@ -362,15 +362,14 @@ impl AppContext {
                 .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
             tracing::debug!(wallet = %hex::encode(seed_hash), confirmed = balance.confirmed, unconfirmed = balance.unconfirmed, total = balance.total, "SPV balance snapshot");
 
-            if let Some(wref) = wallets_guard.get(seed_hash) {
-                if let Ok(mut wallet) = wref.write() {
+            if let Some(wref) = wallets_guard.get(seed_hash)
+                && let Ok(mut wallet) = wref.write() {
                     wallet.update_spv_balances(
                         balance.confirmed,
                         balance.unconfirmed,
                         balance.total,
                     );
                 }
-            }
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
             let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> =

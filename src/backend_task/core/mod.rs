@@ -12,6 +12,7 @@ use dash_sdk::dpp::dashcore::{
     Address, Block, ChainLock, InstantLock, Network, OutPoint, Transaction, TxOut,
 };
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,10 @@ pub enum CoreTask {
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
     StartDashQT(Network, PathBuf, bool),
+    SendWalletPayment {
+        wallet: Arc<RwLock<Wallet>>,
+        request: WalletPaymentRequest,
+    },
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -36,8 +41,20 @@ impl PartialEq for CoreTask {
                     CoreTask::StartDashQT(_, _, _),
                     CoreTask::StartDashQT(_, _, _)
                 )
+                | (
+                    CoreTask::SendWalletPayment { .. },
+                    CoreTask::SendWalletPayment { .. },
+                )
         )
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPaymentRequest {
+    pub to_address: String,
+    pub amount_duffs: u64,
+    pub subtract_fee_from_amount: bool,
+    pub memo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +134,9 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
+            CoreTask::SendWalletPayment { wallet, request } => {
+                self.send_wallet_payment(wallet, request)
+            }
         }
     }
 
@@ -158,5 +178,57 @@ impl AppContext {
         } else {
             Err(format!("{} config not found", network))
         }
+    }
+
+    fn send_wallet_payment(
+        &self,
+        wallet: Arc<RwLock<Wallet>>,
+        request: WalletPaymentRequest,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        if request.amount_duffs == 0 {
+            return Err("Amount must be greater than zero".to_string());
+        }
+
+        let recipient = Address::from_str(&request.to_address)
+            .map_err(|e| format!("Invalid address: {e}"))?
+            .assume_checked();
+
+        if recipient.network() != &self.network {
+            return Err(format!(
+                "Recipient address uses {} but wallet network is {}",
+                recipient.network(),
+                self.network
+            ));
+        }
+
+        const DEFAULT_TX_FEE: u64 = 1_000;
+
+        let tx = {
+            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            if !wallet_guard.is_open() {
+                return Err("Wallet must be unlocked".to_string());
+            }
+            wallet_guard.build_standard_payment_transaction(
+                self.network,
+                &recipient,
+                request.amount_duffs,
+                DEFAULT_TX_FEE,
+                request.subtract_fee_from_amount,
+                Some(self),
+            )?
+        };
+
+        let txid = self
+            .core_client
+            .read()
+            .expect("Core client lock was poisoned")
+            .send_raw_transaction(&tx)
+            .map_err(|e| format!("Failed to broadcast transaction: {e}"))?;
+
+        Ok(BackendTaskSuccessResult::WalletPayment {
+            txid: txid.to_string(),
+            address: request.to_address,
+            amount: request.amount_duffs,
+        })
     }
 }

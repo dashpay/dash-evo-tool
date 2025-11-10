@@ -6,6 +6,7 @@ use crate::{
     model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
     ui::{Screen, identities::keys::add_key_screen::AddKeyScreen},
 };
+use arboard::Clipboard;
 use dash_sdk::{
     dpp::{
         data_contract::{
@@ -57,6 +58,13 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
     }
 
     response.on_hover_text(hover_text)
+}
+
+pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Returns the newly selected key (if changed), otherwise the existing one.

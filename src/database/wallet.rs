@@ -279,6 +279,9 @@ impl Database {
                     identities: HashMap::new(),
                     utxos: HashMap::new(),
                     is_main,
+                    confirmed_balance: 0,
+                    unconfirmed_balance: 0,
+                    total_balance: 0,
                 },
             );
 

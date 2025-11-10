@@ -1,7 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
-use crate::ui::wallets::wallets_screen::DerivationPathHelpers;
+use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::{Arc, RwLock};

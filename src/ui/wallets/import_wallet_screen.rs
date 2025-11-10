@@ -109,6 +109,9 @@ impl ImportWalletScreen {
                 identities: Default::default(),
                 utxos: Default::default(),
                 is_main: true,
+                confirmed_balance: 0,
+                unconfirmed_balance: 0,
+                total_balance: 0,
             };
 
             self.app_context

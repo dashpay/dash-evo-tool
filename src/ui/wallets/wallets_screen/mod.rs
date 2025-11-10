@@ -1,21 +1,27 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
-use crate::backend_task::core::CoreTask;
+use crate::backend_task::core::{CoreTask, WalletPaymentRequest};
 use crate::context::AppContext;
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{DerivationPathHelpers, Wallet, WalletSeedHash};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::helpers::copy_text_to_clipboard;
+use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::DashColors;
+use crate::ui::wallets::account_summary::{AccountSummary, collect_account_summaries};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
-use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
-use egui::{Color32, Frame, Margin, RichText};
+use eframe::epaint::TextureHandle;
+use egui::load::SizedTexture;
+use egui::{Color32, Frame, Margin, RichText, TextureOptions};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -54,67 +60,8 @@ pub struct WalletsBalancesScreen {
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
-}
-
-pub trait DerivationPathHelpers {
-    fn is_bip44(&self, network: Network) -> bool;
-    fn is_bip44_external(&self, network: Network) -> bool;
-    fn is_bip44_change(&self, network: Network) -> bool;
-    fn is_asset_lock_funding(&self, network: Network) -> bool;
-}
-impl DerivationPathHelpers for DerivationPath {
-    fn is_bip44(&self, network: Network) -> bool {
-        // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
-        let coin_type = match network {
-            Network::Dash => 5,
-            _ => 1,
-        };
-        let components = self.as_ref();
-        components.len() == 5
-            && components[0] == ChildNumber::Hardened { index: 44 }
-            && components[1] == ChildNumber::Hardened { index: coin_type }
-    }
-
-    fn is_bip44_external(&self, network: Network) -> bool {
-        // BIP44 external paths have the form m/44'/coin_type'/account'/0/...
-        let coin_type = match network {
-            Network::Dash => 5,
-            _ => 1,
-        };
-        let components = self.as_ref();
-        components.len() == 5
-            && components[0] == ChildNumber::Hardened { index: 44 }
-            && components[1] == ChildNumber::Hardened { index: coin_type }
-            && components[3] == ChildNumber::Normal { index: 0 }
-    }
-
-    fn is_bip44_change(&self, network: Network) -> bool {
-        // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
-        let coin_type = match network {
-            Network::Dash => 5,
-            _ => 1,
-        };
-        let components = self.as_ref();
-        components.len() >= 5
-            && components[0] == ChildNumber::Hardened { index: 44 }
-            && components[1] == ChildNumber::Hardened { index: coin_type }
-            && components[3] == ChildNumber::Normal { index: 1 }
-    }
-
-    fn is_asset_lock_funding(&self, network: Network) -> bool {
-        // BIP44 change paths have the form m/44'/coin_type'/account'/1/...
-        let coin_type = match network {
-            Network::Dash => 5,
-            _ => 1,
-        };
-        // Asset lock funding paths have the form m/9'/coin_type'/5'/1'/x
-        let components = self.as_ref();
-        components.len() == 5
-            && components[0] == ChildNumber::Hardened { index: 9 }
-            && components[1] == ChildNumber::Hardened { index: coin_type }
-            && components[2] == ChildNumber::Hardened { index: 5 }
-            && components[3] == ChildNumber::Hardened { index: 1 }
-    }
+    send_dialog: SendDialogState,
+    receive_dialog: ReceiveDialogState,
 }
 
 // Define a struct to hold the address data
@@ -126,6 +73,24 @@ struct AddressData {
     address_type: String,
     index: u32,
     derivation_path: DerivationPath,
+}
+
+#[derive(Default)]
+struct SendDialogState {
+    is_open: bool,
+    address: String,
+    amount: String,
+    subtract_fee: bool,
+    memo: String,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct ReceiveDialogState {
+    is_open: bool,
+    address: Option<String>,
+    qr_texture: Option<TextureHandle>,
+    status: Option<String>,
 }
 
 impl WalletsBalancesScreen {
@@ -149,6 +114,8 @@ impl WalletsBalancesScreen {
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
+            send_dialog: SendDialogState::default(),
+            receive_dialog: ReceiveDialogState::default(),
         }
     }
 
@@ -358,10 +325,9 @@ impl WalletsBalancesScreen {
                     ui.separator();
 
                     let wallet = selected_wallet.read().unwrap();
-                    let total_balance = wallet.max_balance();
-                    let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH
+                    let total_balance = wallet.confirmed_balance_duffs();
                     ui.label(
-                        RichText::new(format!("Balance: {:.8} DASH", dash_balance))
+                        RichText::new(format!("Balance: {}", Self::format_dash(total_balance)))
                             .strong()
                             .color(DashColors::success_color(dark_mode)),
                     );
@@ -889,6 +855,350 @@ impl WalletsBalancesScreen {
     fn check_message_expiration(&mut self) {
         // Messages no longer auto-expire, they must be dismissed manually
     }
+
+    fn format_dash(amount: u64) -> String {
+        let dash = amount as f64 / 100_000_000.0;
+        if dash >= 1.0 {
+            format!("{:.4} DASH", dash)
+        } else {
+            let trimmed = format!("{:.8}", dash)
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string();
+            format!("{} DASH", trimmed)
+        }
+    }
+
+    fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("Enter an amount".to_string());
+        }
+        let value = trimmed
+            .parse::<f64>()
+            .map_err(|_| "Invalid amount".to_string())?;
+        if !value.is_finite() || value <= 0.0 {
+            return Err("Amount must be greater than zero".to_string());
+        }
+        let duffs = (value * 100_000_000.0).round();
+        if duffs <= 0.0 || duffs > u64::MAX as f64 {
+            return Err("Amount is out of range".to_string());
+        }
+        Ok(duffs as u64)
+    }
+
+    fn platform_balance_duffs(wallet: &Wallet) -> u64 {
+        wallet
+            .identities
+            .values()
+            .map(|identity| identity.balance())
+            .sum()
+    }
+
+    fn render_wallet_overview(&self, ui: &mut Ui, wallet: &Wallet) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let total = wallet.total_balance_duffs();
+        let confirmed = wallet.confirmed_balance_duffs();
+        let unconfirmed = wallet.unconfirmed_balance_duffs();
+        let platform = Self::platform_balance_duffs(wallet);
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Network: {}", self.app_context.network))
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    if self.refreshing {
+                        ui.spinner();
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.heading(RichText::new(Self::format_dash(total)).size(28.0));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Confirmed: {}", Self::format_dash(confirmed)))
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    if unconfirmed > 0 {
+                        ui.label(
+                            RichText::new(format!("Pending: {}", Self::format_dash(unconfirmed)))
+                                .color(Color32::from_rgb(255, 200, 0)),
+                        );
+                    }
+                    if platform > 0 {
+                        ui.label(
+                            RichText::new(format!("Platform: {}", Self::format_dash(platform)))
+                                .color(Color32::from_rgb(0, 170, 255)),
+                        );
+                    }
+                });
+            });
+    }
+
+    fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new("Send").color(Color32::WHITE).strong())
+                .clicked()
+            {
+                if self.selected_wallet.is_some() {
+                    self.send_dialog.is_open = true;
+                } else {
+                    self.display_message("Select a wallet first", MessageType::Error);
+                }
+            }
+
+            if ui
+                .button(RichText::new("Receive").color(Color32::WHITE))
+                .clicked()
+            {
+                self.open_receive_dialog(ctx);
+            }
+        });
+    }
+
+    fn render_accounts_section(&mut self, ui: &mut Ui, summaries: Vec<AccountSummary>) {
+        ui.add_space(14.0);
+        ui.heading("Accounts");
+        ui.add_space(6.0);
+
+        if summaries.is_empty() {
+            ui.label("No account activity yet.");
+            return;
+        }
+
+        for summary in summaries {
+            Frame::group(ui.style())
+                .fill(ui.visuals().extreme_bg_color)
+                .inner_margin(Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&summary.label)
+                                .strong()
+                                .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode))
+                                .size(16.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(Self::format_dash(summary.confirmed_balance))
+                                    .strong(),
+                            );
+                        });
+                    });
+
+                    ui.label(format!(
+                        "Addresses: {} ({} receive / {} change)",
+                        summary.total_addresses,
+                        summary.external_addresses,
+                        summary.internal_addresses
+                    ));
+
+                    if let Some(next) = &summary.next_receive_hint {
+                        ui.horizontal(|ui| {
+                            ui.monospace(format!("Next: {}", next));
+                            if ui.small_button("Copy").clicked() {
+                                if let Err(err) = copy_text_to_clipboard(next) {
+                                    self.display_message(&err, MessageType::Error);
+                                } else {
+                                    self.display_message("Address copied", MessageType::Success);
+                                }
+                            }
+                        });
+                    }
+                });
+
+            ui.add_space(6.0);
+        }
+    }
+
+    fn render_transactions_section(&self, ui: &mut Ui) {
+        ui.add_space(10.0);
+        ui.heading("Transactions");
+        ui.label("Transaction history will appear here once SPV exposes it.");
+    }
+
+    fn render_send_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.send_dialog.is_open {
+            return AppAction::None;
+        }
+
+        let mut action = AppAction::None;
+        let mut open = self.send_dialog.is_open;
+        egui::Window::new("Send Dash")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Recipient Address");
+                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text("y..."));
+
+                ui.label("Amount (DASH)");
+                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.amount).hint_text("0.01"));
+
+                ui.checkbox(
+                    &mut self.send_dialog.subtract_fee,
+                    "Subtract fee from amount",
+                );
+
+                ui.label("Memo (optional)");
+                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.memo));
+
+                if let Some(error) = &self.send_dialog.error {
+                    ui.colored_label(Color32::DARK_RED, error);
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Send").clicked() {
+                        match self.prepare_send_action() {
+                            Ok(app_action) => {
+                                action = app_action;
+                                self.send_dialog = SendDialogState::default();
+                            }
+                            Err(err) => self.send_dialog.error = Some(err),
+                        }
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        self.send_dialog = SendDialogState::default();
+                    }
+                });
+            });
+
+        self.send_dialog.is_open = open;
+        action
+    }
+
+    fn render_receive_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.receive_dialog.is_open {
+            return AppAction::None;
+        }
+
+        let mut open = self.receive_dialog.is_open;
+        egui::Window::new("Receive Dash")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if let Some(texture) = &self.receive_dialog.qr_texture {
+                    ui.image(SizedTexture::new(texture.id(), egui::vec2(220.0, 220.0)));
+                }
+
+                if let Some(address) = &self.receive_dialog.address {
+                    ui.add_space(6.0);
+                    ui.monospace(address);
+                    if ui.button("Copy Address").clicked() {
+                        if let Err(err) = copy_text_to_clipboard(address) {
+                            self.receive_dialog.status = Some(err);
+                        } else {
+                            self.receive_dialog.status = Some("Address copied".to_string());
+                        }
+                    }
+                }
+
+                if let Some(status) = &self.receive_dialog.status {
+                    ui.label(status);
+                }
+
+                if ui.button("Close").clicked() {
+                    self.receive_dialog = ReceiveDialogState::default();
+                }
+            });
+
+        self.receive_dialog.is_open = open;
+        if !self.receive_dialog.is_open {
+            self.receive_dialog = ReceiveDialogState::default();
+        }
+        AppAction::None
+    }
+
+    fn prepare_send_action(&mut self) -> Result<AppAction, String> {
+        let wallet = self
+            .selected_wallet
+            .as_ref()
+            .ok_or_else(|| "Select a wallet first".to_string())?;
+
+        let amount = Self::parse_amount_to_duffs(&self.send_dialog.amount)?;
+
+        {
+            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            if amount > wallet_guard.confirmed_balance_duffs() {
+                return Err("Insufficient confirmed balance".to_string());
+            }
+        }
+
+        if self.send_dialog.address.trim().is_empty() {
+            return Err("Enter a recipient address".to_string());
+        }
+
+        let memo = self.send_dialog.memo.trim();
+        let request = WalletPaymentRequest {
+            to_address: self.send_dialog.address.trim().to_string(),
+            amount_duffs: amount,
+            subtract_fee_from_amount: self.send_dialog.subtract_fee,
+            memo: if memo.is_empty() {
+                None
+            } else {
+                Some(memo.to_string())
+            },
+        };
+
+        Ok(AppAction::BackendTask(BackendTask::CoreTask(
+            CoreTask::SendWalletPayment {
+                wallet: wallet.clone(),
+                request,
+            },
+        )))
+    }
+
+    fn open_receive_dialog(&mut self, ctx: &Context) {
+        let Some(wallet) = self.selected_wallet.clone() else {
+            self.receive_dialog.status = Some("Select a wallet first".to_string());
+            self.receive_dialog.is_open = true;
+            return;
+        };
+
+        match self.prepare_receive_dialog(ctx, &wallet) {
+            Ok(()) => self.receive_dialog.status = None,
+            Err(err) => self.receive_dialog.status = Some(err),
+        }
+
+        self.receive_dialog.is_open = true;
+    }
+
+    fn prepare_receive_dialog(
+        &mut self,
+        ctx: &Context,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) -> Result<(), String> {
+        let address = {
+            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            wallet_guard.receive_address(
+                self.app_context.network,
+                false,
+                Some(&self.app_context),
+            )?
+        };
+
+        let address_str = address.to_string();
+        let qr_image = generate_qr_code_image(&address_str).map_err(|e| e.to_string())?;
+        let texture = ctx.load_texture(
+            format!("wallet_receive_{}", address_str),
+            qr_image,
+            TextureOptions::LINEAR,
+        );
+
+        self.receive_dialog.address = Some(address_str);
+        self.receive_dialog.qr_texture = Some(texture);
+        Ok(())
+    }
 }
 
 impl ScreenLike for WalletsBalancesScreen {
@@ -1010,21 +1320,27 @@ impl ScreenLike for WalletsBalancesScreen {
 
                     ui.add_space(10.0);
 
-                    if self.selected_wallet.is_some() {
+                    if let Some(wallet_arc) = &self.selected_wallet {
+                        let summaries = {
+                            let wallet = wallet_arc.read().unwrap();
+                            self.render_wallet_overview(ui, &wallet);
+                            collect_account_summaries(&wallet, self.app_context.network)
+                        };
+
+                        self.render_action_buttons(ui, ctx);
+                        self.render_accounts_section(ui, summaries);
+                        self.render_transactions_section(ui);
+
                         ui.separator();
                         ui.add_space(10.0);
 
-                        // Always show the filter selector
                         ui.vertical(|ui| {
                             ui.heading(
                                 RichText::new("Addresses")
                                     .color(DashColors::text_primary(dark_mode)),
                             );
                             ui.add_space(10.0);
-
-                            // Filter section
                             self.render_filter_selector(ui);
-
                             ui.add_space(5.0);
                             ui.label(
                                 RichText::new("Tip: Hold Shift to select multiple filters")
@@ -1033,6 +1349,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     .italics(),
                             );
                         });
+
                         ui.add_space(10.0);
 
                         if !(self.selected_filters.contains("Unused Asset Locks")
@@ -1043,7 +1360,6 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         if self.selected_filters.contains("Unused Asset Locks") {
                             ui.add_space(15.0);
-                            // Render the asset locks section
                             inner_action |= self.render_wallet_asset_locks(ui);
                         }
 
@@ -1054,6 +1370,9 @@ impl ScreenLike for WalletsBalancesScreen {
 
             inner_action
         });
+
+        action |= self.render_send_dialog(ctx);
+        action |= self.render_receive_dialog(ctx);
 
         // Rename dialog
         if self.show_rename_dialog {
@@ -1127,10 +1446,22 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn display_task_result(
         &mut self,
-        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+        backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        // Nothing
-        // If we don't include this, messages from the ZMQ listener will keep popping up
+        if let crate::ui::BackendTaskSuccessResult::WalletPayment {
+            txid,
+            address,
+            amount,
+        } = backend_task_success_result
+        {
+            let msg = format!(
+                "Sent {} to {}\nTxID: {}",
+                Self::format_dash(amount),
+                address,
+                txid
+            );
+            self.display_message(&msg, MessageType::Success);
+        }
     }
 
     fn refresh_on_arrival(&mut self) {}

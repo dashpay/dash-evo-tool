@@ -2,12 +2,17 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPubKey, KeyDerivationType};
-
-use dash_sdk::dpp::dashcore::{
-    Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
+use dash_sdk::dpp::key_wallet::bip32::{
+    ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
 };
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
+
+use dash_sdk::dpp::dashcore::secp256k1::Message;
+use dash_sdk::dpp::dashcore::sighash::SighashCache;
+use dash_sdk::dpp::dashcore::{
+    Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf, Transaction, TxIn,
+    TxOut,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
@@ -59,6 +64,73 @@ impl TryFrom<u32> for DerivationPathReference {
                 value
             )),
         }
+    }
+}
+
+/// Helper methods for working with derivation paths we care about when presenting wallet data.
+pub trait DerivationPathHelpers {
+    fn is_bip44(&self, network: Network) -> bool;
+    fn is_bip44_external(&self, network: Network) -> bool;
+    fn is_bip44_change(&self, network: Network) -> bool;
+    fn is_asset_lock_funding(&self, network: Network) -> bool;
+    fn bip44_account_index(&self) -> Option<u32>;
+    fn bip44_address_index(&self) -> Option<u32>;
+}
+
+impl DerivationPathHelpers for DerivationPath {
+    fn is_bip44(&self, network: Network) -> bool {
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        let components = self.as_ref();
+        components.len() >= 4
+            && components[0] == ChildNumber::Hardened { index: 44 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+    }
+
+    fn is_bip44_external(&self, network: Network) -> bool {
+        if !self.is_bip44(network) {
+            return false;
+        }
+        let components = self.as_ref();
+        components.len() >= 5 && components[3] == ChildNumber::Normal { index: 0 }
+    }
+
+    fn is_bip44_change(&self, network: Network) -> bool {
+        if !self.is_bip44(network) {
+            return false;
+        }
+        let components = self.as_ref();
+        components.len() >= 5 && components[3] == ChildNumber::Normal { index: 1 }
+    }
+
+    fn is_asset_lock_funding(&self, network: Network) -> bool {
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        let components = self.as_ref();
+        components.len() == 5
+            && components[0] == ChildNumber::Hardened { index: 9 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+            && components[2] == ChildNumber::Hardened { index: 5 }
+            && components[3] == ChildNumber::Hardened { index: 1 }
+    }
+
+    fn bip44_account_index(&self) -> Option<u32> {
+        self.as_ref().get(2).and_then(|child| match child {
+            ChildNumber::Hardened { index } => Some(*index),
+            _ => None,
+        })
+    }
+
+    fn bip44_address_index(&self) -> Option<u32> {
+        self.as_ref().last().and_then(|child| match child {
+            ChildNumber::Normal { index } => Some(*index),
+            ChildNumber::Hardened { index } => Some(*index),
+            ChildNumber::Normal256 { .. } | ChildNumber::Hardened256 { .. } => None,
+        })
     }
 }
 
@@ -140,6 +212,9 @@ pub struct Wallet {
     pub identities: HashMap<u32, Identity>,
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
     pub is_main: bool,
+    pub confirmed_balance: u64,
+    pub unconfirmed_balance: u64,
+    pub total_balance: u64,
 }
 
 pub type WalletSeedHash = [u8; 32];
@@ -256,7 +331,7 @@ impl Wallet {
         matches!(self.wallet_seed, WalletSeed::Open(_))
     }
     pub fn has_balance(&self) -> bool {
-        self.max_balance() > 0
+        self.confirmed_balance_duffs() > 0 || self.unconfirmed_balance > 0
     }
 
     pub fn has_unused_asset_lock(&self) -> bool {
@@ -268,6 +343,32 @@ impl Wallet {
             .values()
             .flat_map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
             .sum::<Duffs>()
+    }
+
+    pub fn confirmed_balance_duffs(&self) -> u64 {
+        if self.total_balance > 0 || self.confirmed_balance > 0 || self.unconfirmed_balance > 0 {
+            self.confirmed_balance
+        } else {
+            self.max_balance()
+        }
+    }
+
+    pub fn unconfirmed_balance_duffs(&self) -> u64 {
+        self.unconfirmed_balance
+    }
+
+    pub fn total_balance_duffs(&self) -> u64 {
+        if self.total_balance > 0 {
+            self.total_balance
+        } else {
+            self.max_balance()
+        }
+    }
+
+    pub fn update_spv_balances(&mut self, confirmed: u64, unconfirmed: u64, total: u64) {
+        self.confirmed_balance = confirmed;
+        self.unconfirmed_balance = unconfirmed;
+        self.total_balance = total;
     }
 
     fn seed_bytes(&self) -> Result<&[u8; 64], String> {
@@ -767,6 +868,139 @@ impl Wallet {
             Address::p2pkh(&receive_public_key, network),
             derivation_path,
         ))
+    }
+
+    pub fn derive_bip44_address(
+        &self,
+        network: Network,
+        change: bool,
+        address_index: u32,
+    ) -> Result<Address, String> {
+        let secp = Secp256k1::new();
+        let path_extension = [
+            ChildNumber::Normal {
+                index: change as u32,
+            },
+            ChildNumber::Normal {
+                index: address_index,
+            },
+        ];
+        let public_key = self
+            .master_bip44_ecdsa_extended_public_key
+            .derive_pub(&secp, &path_extension)
+            .map_err(|e| e.to_string())?
+            .to_pub();
+        Ok(Address::p2pkh(&public_key, network))
+    }
+
+    pub fn build_standard_payment_transaction(
+        &mut self,
+        network: Network,
+        recipient: &Address,
+        amount: u64,
+        fee: u64,
+        subtract_fee_from_amount: bool,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<Transaction, String> {
+        if recipient.network() != &network {
+            return Err(format!(
+                "Recipient address network ({}) does not match wallet network ({})",
+                recipient.network(),
+                network
+            ));
+        }
+
+        let (utxos, change_option) = self
+            .take_unspent_utxos_for(amount, fee, subtract_fee_from_amount)
+            .ok_or_else(|| "Insufficient funds".to_string())?;
+
+        let send_value = if change_option.is_none() && subtract_fee_from_amount {
+            let total_input: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
+            total_input
+                .checked_sub(fee)
+                .ok_or_else(|| "Fee exceeds available amount".to_string())?
+        } else {
+            amount
+        };
+
+        if send_value == 0 {
+            return Err("Amount is zero after subtracting fee".to_string());
+        }
+
+        let mut outputs = vec![TxOut {
+            value: send_value,
+            script_pubkey: recipient.script_pubkey(),
+        }];
+
+        if let Some(change) = change_option {
+            let change_address = self.change_address(network, register_addresses)?;
+            outputs.push(TxOut {
+                value: change,
+                script_pubkey: change_address.script_pubkey(),
+            });
+        }
+
+        let mut tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: utxos
+                .keys()
+                .map(|outpoint| TxIn {
+                    previous_output: *outpoint,
+                    ..Default::default()
+                })
+                .collect(),
+            output: outputs,
+            special_transaction_payload: None,
+        };
+
+        let sighash_flag = 1u32;
+        let cache = SighashCache::new(&tx);
+        let sighashes: Vec<_> = tx
+            .input
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                let script_pubkey = utxos
+                    .get(&input.previous_output)
+                    .expect("missing utxo when computing sighash")
+                    .0
+                    .script_pubkey
+                    .clone();
+                cache
+                    .legacy_signature_hash(i, &script_pubkey, sighash_flag)
+                    .expect("failed to compute sighash")
+            })
+            .collect();
+        drop(cache);
+
+        let secp = Secp256k1::new();
+        let mut utxo_lookup = utxos.clone();
+
+        tx.input
+            .iter_mut()
+            .zip(sighashes.into_iter())
+            .try_for_each(|(input, sighash)| {
+                let (_, input_address) = utxo_lookup
+                    .remove(&input.previous_output)
+                    .expect("utxo missing when signing");
+                let private_key = self
+                    .private_key_for_address(&input_address, network)?
+                    .ok_or_else(|| format!("Address {} not managed by wallet", input_address))?;
+                let message = Message::from_digest(sighash.into());
+                let sig = secp.sign_ecdsa(&message, &private_key.inner);
+                let mut serialized_sig = sig.serialize_der().to_vec();
+                let mut script_sig = vec![serialized_sig.len() as u8 + 1];
+                script_sig.append(&mut serialized_sig);
+                script_sig.push(1);
+                let mut serialized_pub_key = private_key.public_key(&secp).serialize();
+                script_sig.push(serialized_pub_key.len() as u8);
+                script_sig.append(&mut serialized_pub_key);
+                input.script_sig = ScriptBuf::from_bytes(script_sig);
+                Ok::<(), String>(())
+            })?;
+
+        Ok(tx)
     }
 
     pub fn update_address_balance(

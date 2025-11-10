@@ -79,6 +79,11 @@ pub enum BackendTaskSuccessResult {
     Refresh,
     Message(String), // TODO: Remove this and only use proper result types.
     // Right now we are matching the strings from this in the UI which is unreliable.
+    WalletPayment {
+        txid: String,
+        address: String,
+        amount: u64,
+    },
 
     // Specific results
     #[allow(dead_code)] // May be used for individual document operations

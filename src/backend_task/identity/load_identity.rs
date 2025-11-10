@@ -4,26 +4,37 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
+use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
+use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use egui::ahash::HashMap;
 use std::collections::BTreeMap;
+use std::convert::TryInto;
+use std::sync::{Arc, RwLock};
+
+type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
+type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 
 impl AppContext {
     pub(super) async fn load_identity(
@@ -39,6 +50,8 @@ impl AppContext {
             owner_private_key_input,
             payout_address_private_key_input,
             keys_input,
+            derive_keys_from_wallets,
+            selected_wallet_seed_hash,
         } = input;
 
         // Verify the voting private key
@@ -68,6 +81,17 @@ impl AppContext {
         let mut encrypted_private_keys = BTreeMap::new();
 
         let wallets = self.wallets.read().unwrap().clone();
+
+        if identity_type == IdentityType::User
+            && derive_keys_from_wallets
+            && let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
+                &identity,
+                &wallets,
+                selected_wallet_seed_hash,
+            )?
+        {
+            encrypted_private_keys.extend(wallet_private_keys);
+        }
 
         if identity_type != IdentityType::User
             && let Some(owner_private_key_bytes) = owner_private_key_bytes
@@ -198,44 +222,50 @@ impl AppContext {
                 .unzip();
 
             for (&key_id, public_key) in identity.public_keys().iter() {
+                let key_map_key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id);
                 let qualified_key =
                     QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                         public_key.clone(),
                         self.network,
                         &wallets.values().collect::<Vec<_>>(),
                     );
-
-                if let Some(wallet_derivation_path) =
-                    qualified_key.in_wallet_at_derivation_path.clone()
-                {
-                    encrypted_private_keys.insert(
-                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
-                        (
-                            qualified_key,
-                            PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
-                        ),
-                    );
-                } else if let Some(private_key_bytes) =
+                if let Some(private_key_bytes) =
                     public_key_lookup.get(public_key.data().0.as_slice())
                 {
                     let private_data = match public_key.security_level() {
                         SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
                         _ => PrivateKeyData::Clear(*private_key_bytes),
                     };
-                    encrypted_private_keys.insert(
-                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
-                        (qualified_key, private_data),
-                    );
-                } else if let Some(private_key_bytes) =
+                    encrypted_private_keys
+                        .insert(key_map_key, (qualified_key.clone(), private_data));
+                    continue;
+                }
+
+                if let Some(private_key_bytes) =
                     public_key_hash_lookup.get(public_key.data().0.as_slice())
                 {
                     let private_data = match public_key.security_level() {
                         SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
                         _ => PrivateKeyData::Clear(*private_key_bytes),
                     };
+                    encrypted_private_keys
+                        .insert(key_map_key, (qualified_key.clone(), private_data));
+                    continue;
+                }
+
+                if encrypted_private_keys.contains_key(&key_map_key) {
+                    continue;
+                }
+
+                if let Some(wallet_derivation_path) =
+                    qualified_key.in_wallet_at_derivation_path.clone()
+                {
                     encrypted_private_keys.insert(
-                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
-                        (qualified_key, private_data),
+                        key_map_key,
+                        (
+                            qualified_key,
+                            PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
+                        ),
                     );
                 }
             }
@@ -317,8 +347,218 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
             .map_err(|e| format!("Database error: {}", e))?;
 
+        if let Some((wallet_seed_hash, identity_index)) = wallet_info
+            && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
+        {
+            let mut wallet = wallet_arc.write().unwrap();
+            wallet
+                .identities
+                .insert(identity_index, qualified_identity.identity.clone());
+        }
+
         Ok(BackendTaskSuccessResult::Message(
             "Successfully loaded identity".to_string(),
         ))
+    }
+
+    fn match_user_identity_keys_with_wallet(
+        &self,
+        identity: &Identity,
+        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+        wallet_filter: Option<WalletSeedHash>,
+    ) -> Result<WalletMatchResult, String> {
+        let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
+        let top_bound = highest_identity_key_id.saturating_add(6).max(1);
+
+        for (&wallet_seed_hash, wallet_arc) in wallets.iter() {
+            if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
+                continue;
+            }
+            let mut wallet = wallet_arc.write().unwrap();
+            if !wallet.is_open() {
+                continue;
+            }
+
+            if let Some((identity_index, wallet_private_keys)) = self
+                .attempt_match_identity_with_wallet(
+                    identity,
+                    &mut wallet,
+                    wallet_seed_hash,
+                    top_bound,
+                )?
+            {
+                drop(wallet);
+                return Ok(Some((
+                    wallet_seed_hash,
+                    identity_index,
+                    wallet_private_keys,
+                )));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn attempt_match_identity_with_wallet(
+        &self,
+        identity: &Identity,
+        wallet: &mut Wallet,
+        wallet_seed_hash: WalletSeedHash,
+        top_bound: u32,
+    ) -> Result<Option<(u32, WalletKeyMap)>, String> {
+        let identity_id = identity.id();
+
+        if let Some((&identity_index, _)) = wallet
+            .identities
+            .iter()
+            .find(|(_, existing)| existing.id() == identity_id)
+        {
+            let (public_key_map, public_key_hash_map) = wallet
+                .identity_authentication_ecdsa_public_keys_data_map(
+                    self.network,
+                    identity_index,
+                    0..top_bound,
+                    Some(self),
+                )?;
+            let wallet_private_keys = self.build_wallet_private_key_map(
+                identity,
+                wallet_seed_hash,
+                identity_index,
+                &public_key_map,
+                &public_key_hash_map,
+            );
+
+            if !wallet_private_keys.is_empty() {
+                return Ok(Some((identity_index, wallet_private_keys)));
+            }
+        }
+
+        for candidate_index in 0..MAX_IDENTITY_INDEX {
+            let (public_key_map, public_key_hash_map) = wallet
+                .identity_authentication_ecdsa_public_keys_data_map(
+                    self.network,
+                    candidate_index,
+                    0..top_bound,
+                    None,
+                )?;
+
+            if !Self::identity_matches_wallet_key_material(
+                identity,
+                &public_key_map,
+                &public_key_hash_map,
+            ) {
+                continue;
+            }
+
+            let (public_key_map, public_key_hash_map) = wallet
+                .identity_authentication_ecdsa_public_keys_data_map(
+                    self.network,
+                    candidate_index,
+                    0..top_bound,
+                    Some(self),
+                )?;
+
+            let wallet_private_keys = self.build_wallet_private_key_map(
+                identity,
+                wallet_seed_hash,
+                candidate_index,
+                &public_key_map,
+                &public_key_hash_map,
+            );
+
+            if wallet_private_keys.is_empty() {
+                continue;
+            }
+
+            return Ok(Some((candidate_index, wallet_private_keys)));
+        }
+
+        Ok(None)
+    }
+
+    fn identity_matches_wallet_key_material(
+        identity: &Identity,
+        public_key_map: &BTreeMap<Vec<u8>, u32>,
+        public_key_hash_map: &BTreeMap<[u8; 20], u32>,
+    ) -> bool {
+        identity
+            .public_keys()
+            .values()
+            .any(|public_key| match public_key.key_type() {
+                KeyType::ECDSA_SECP256K1 => {
+                    if public_key_map.contains_key(public_key.data().as_slice()) {
+                        true
+                    } else if let Ok(hash) = <[u8; 20]>::try_from(public_key.data().as_slice()) {
+                        public_key_hash_map.contains_key(&hash)
+                    } else {
+                        false
+                    }
+                }
+                KeyType::ECDSA_HASH160 => {
+                    if let Ok(hash) = <[u8; 20]>::try_from(public_key.data().as_slice()) {
+                        public_key_hash_map.contains_key(&hash)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            })
+    }
+
+    fn build_wallet_private_key_map(
+        &self,
+        identity: &Identity,
+        wallet_seed_hash: WalletSeedHash,
+        identity_index: u32,
+        public_key_map: &BTreeMap<Vec<u8>, u32>,
+        public_key_hash_map: &BTreeMap<[u8; 20], u32>,
+    ) -> WalletKeyMap {
+        identity
+            .public_keys()
+            .values()
+            .filter_map(|public_key| {
+                let index =
+                    match public_key.key_type() {
+                        KeyType::ECDSA_SECP256K1 => public_key_map
+                            .get(public_key.data().as_slice())
+                            .copied()
+                            .or_else(|| {
+                                public_key.data().as_slice().try_into().ok().and_then(
+                                    |hash: [u8; 20]| public_key_hash_map.get(&hash).copied(),
+                                )
+                            }),
+                        KeyType::ECDSA_HASH160 => public_key
+                            .data()
+                            .as_slice()
+                            .try_into()
+                            .ok()
+                            .and_then(|hash: [u8; 20]| public_key_hash_map.get(&hash).copied()),
+                        _ => None,
+                    }?;
+
+                let derivation_path = DerivationPath::identity_authentication_path(
+                    self.network,
+                    KeyDerivationType::ECDSA,
+                    identity_index,
+                    index,
+                );
+
+                let wallet_derivation_path = WalletDerivationPath {
+                    wallet_seed_hash,
+                    derivation_path,
+                };
+
+                Some((
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()),
+                    (
+                        QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                            public_key.clone(),
+                            Some(wallet_derivation_path.clone()),
+                        ),
+                        PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
+                    ),
+                ))
+            })
+            .collect()
     }
 }

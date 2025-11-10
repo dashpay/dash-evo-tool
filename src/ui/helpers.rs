@@ -728,6 +728,7 @@ pub fn show_success_screen(
                 action = button.1;
             }
         }
+        ui.add_space(100.0);
     });
     action
 }

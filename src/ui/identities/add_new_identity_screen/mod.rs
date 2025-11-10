@@ -34,6 +34,8 @@ use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
+pub const MAX_IDENTITY_INDEX: u32 = 30;
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {
     NoSelection,
@@ -240,8 +242,8 @@ impl AddNewIdentityScreen {
                 ComboBox::from_id_salt("identity_index")
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
-                        // Provide up to 30 entries for selection (0 to 29)
-                        for i in 0..30 {
+                        // Provide up to 30 entries for selection
+                        for i in 0..MAX_IDENTITY_INDEX {
                             let is_used = used_indices.contains(&i);
                             let label = if is_used {
                                 format!("{} (used)", i)

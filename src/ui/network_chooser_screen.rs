@@ -437,7 +437,7 @@ impl NetworkChooserScreen {
                         }
                     } else {
                         // For Core mode, just show status since it can switch networks freely
-                        ui.colored_label(DashColors::DASH_BLUE, "✓ Connected");
+                        ui.colored_label(DashColors::DASH_BLUE, "Connected");
                     }
                 } else {
                     let connect_button =
@@ -843,7 +843,7 @@ impl NetworkChooserScreen {
 
                             // Validating headers progress (formerly masternode lists)
                             ui.label(
-                                egui::RichText::new("Validating Headers:")
+                                egui::RichText::new("Masternode Lists:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
                             let validating_progress =
@@ -906,7 +906,7 @@ impl NetworkChooserScreen {
                             let validating_progress =
                                 self.calculate_validating_headers_progress(snapshot);
                             ui.label(
-                                egui::RichText::new("Validating Headers:")
+                                egui::RichText::new("Masternode Lists:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
                             ui.add(egui::ProgressBar::new(validating_progress).show_percentage());
@@ -1149,7 +1149,7 @@ impl NetworkChooserScreen {
             }
             SyncStage::ValidatingHeaders { batch_size } => {
                 format!(
-                    "Validating headers (batch {batch_size}) | Height {}",
+                    "Masternode lists (batch {batch_size}) | Height {}",
                     progress.sync_progress.masternode_height
                 )
             }

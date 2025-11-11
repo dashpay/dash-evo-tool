@@ -1,5 +1,5 @@
 use dash_sdk::platform::Identifier;
-use rusqlite::params;
+use rusqlite::{Connection, params};
 
 #[derive(Debug, Clone)]
 pub struct ContactPrivateInfo {
@@ -11,7 +11,7 @@ pub struct ContactPrivateInfo {
 }
 
 impl crate::database::Database {
-    pub fn init_contacts_tables(&self) -> rusqlite::Result<()> {
+    pub fn init_contacts_tables(&self, conn: &Connection) -> rusqlite::Result<()> {
         let sql = "
             CREATE TABLE IF NOT EXISTS contact_private_info (
                 owner_identity_id BLOB NOT NULL,
@@ -24,7 +24,7 @@ impl crate::database::Database {
                 PRIMARY KEY (owner_identity_id, contact_identity_id)
             );
         ";
-        self.execute(sql, [])?;
+        conn.execute(sql, [])?;
         Ok(())
     }
 

@@ -392,9 +392,9 @@ impl Database {
         self.initialize_token_order_table(&conn)?;
         self.initialize_identity_token_balances_table(&conn)?;
 
-        // Initialize contacts table
-        self.init_contacts_tables()?;
-        self.init_dashpay_tables()?;
+        // Initialize contacts and DashPay tables while holding the same connection lock
+        self.init_contacts_tables(&conn)?;
+        self.init_dashpay_tables_in_tx(&conn)?;
 
         Ok(())
     }

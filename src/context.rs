@@ -520,7 +520,7 @@ impl AppContext {
                     transaction: record.transaction.clone(),
                     timestamp: record.timestamp,
                     height: record.height,
-                    block_hash: record.block_hash.clone(),
+                    block_hash: record.block_hash,
                     net_amount: record.net_amount,
                     fee: record.fee,
                     label: record.label.clone(),

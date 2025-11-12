@@ -89,7 +89,6 @@ pub struct AccountSummary {
     pub total_addresses: usize,
     pub external_addresses: usize,
     pub internal_addresses: usize,
-    pub next_receive_hint: Option<String>,
 }
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -104,7 +103,6 @@ struct AccountSummaryBuilder {
     total_addresses: usize,
     external_addresses: usize,
     internal_addresses: usize,
-    max_external_index: Option<u32>,
 }
 
 impl AccountSummaryBuilder {
@@ -115,7 +113,6 @@ impl AccountSummaryBuilder {
             total_addresses: 0,
             external_addresses: 0,
             internal_addresses: 0,
-            max_external_index: None,
         }
     }
 
@@ -125,28 +122,12 @@ impl AccountSummaryBuilder {
 
         if path.is_bip44_external(network) {
             self.external_addresses += 1;
-            if let Some(idx) = path.bip44_address_index() {
-                self.max_external_index = Some(
-                    self.max_external_index
-                        .map_or(idx, |current| current.max(idx)),
-                );
-            }
         } else if path.is_bip44_change(network) {
             self.internal_addresses += 1;
         }
     }
 
-    fn build(self, wallet: &Wallet, network: Network) -> AccountSummary {
-        let next_receive_hint = if matches!(self.key.category, AccountCategory::Bip44) {
-            let next_index = self.max_external_index.map(|idx| idx + 1).unwrap_or(0);
-            wallet
-                .derive_bip44_address(network, false, next_index)
-                .ok()
-                .map(|address| address.to_string())
-        } else {
-            None
-        };
-
+    fn build(self) -> AccountSummary {
         let label = self.key.category.label(self.key.index);
 
         AccountSummary {
@@ -157,7 +138,6 @@ impl AccountSummaryBuilder {
             total_addresses: self.total_addresses,
             external_addresses: self.external_addresses,
             internal_addresses: self.internal_addresses,
-            next_receive_hint,
         }
     }
 }
@@ -189,7 +169,7 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
 
     let mut summaries: Vec<_> = builders
         .into_values()
-        .map(|builder| builder.build(wallet, network))
+        .map(|builder| builder.build())
         .collect();
 
     summaries.sort_by(|a, b| {

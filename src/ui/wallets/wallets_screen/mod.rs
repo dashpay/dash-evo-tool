@@ -22,7 +22,6 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::dashcore::Txid;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -236,13 +235,11 @@ impl WalletsBalancesScreen {
             .as_ref()
             .and_then(|wallet| {
                 wallet.read().ok().map(|guard| {
-                    format!(
-                        "{}",
-                        guard
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    )
+                    guard
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| "Unnamed Wallet".to_string())
+                        .to_string()
                 })
             })
             .unwrap_or_else(|| "Select a wallet".to_string());
@@ -284,13 +281,12 @@ impl WalletsBalancesScreen {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     self.render_remove_wallet_button(ui);
                     ui.add_space(8.0);
-                    if let Some(wallet_arc) = &self.selected_wallet {
-                        if ui.button("Rename").clicked() {
-                            if let Ok(wallet) = wallet_arc.read() {
-                                self.show_rename_dialog = true;
-                                self.rename_input = wallet.alias.clone().unwrap_or_default();
-                            }
-                        }
+                    if let Some(wallet_arc) = &self.selected_wallet
+                        && ui.button("Rename").clicked()
+                        && let Ok(wallet) = wallet_arc.read()
+                    {
+                        self.show_rename_dialog = true;
+                        self.rename_input = wallet.alias.clone().unwrap_or_default();
                     }
                 });
             },
@@ -308,7 +304,7 @@ impl WalletsBalancesScreen {
             wallet
                 .known_addresses
                 .iter()
-                .filter_map(|(address, derivation_path)| {
+                .map(|(address, derivation_path)| {
                     let utxo_info = wallet.utxos.get(address);
 
                     let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
@@ -346,7 +342,7 @@ impl WalletsBalancesScreen {
                         .unwrap_or(DerivationPathReference::Unknown);
                     let (account_category, account_index) =
                         Self::categorize_path(derivation_path, path_reference);
-                    Some(AddressData {
+                    AddressData {
                         address: address.clone(),
                         balance: wallet
                             .address_balances
@@ -360,7 +356,7 @@ impl WalletsBalancesScreen {
                         derivation_path: derivation_path.clone(),
                         account_category,
                         account_index,
-                    })
+                    }
                 })
                 .collect::<Vec<AddressData>>()
         }; // The borrow of `wallet` ends here
@@ -851,15 +847,6 @@ impl WalletsBalancesScreen {
         DateTime::<Utc>::from_timestamp(ts as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "Unknown".to_string())
-    }
-
-    fn shorten_txid(txid: &Txid) -> String {
-        let full = txid.to_string();
-        if full.len() <= 16 {
-            full
-        } else {
-            format!("{}…{}", &full[..8], &full[full.len() - 8..])
-        }
     }
 
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
@@ -1359,13 +1346,12 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        if let Some((cat, idx)) = &self.selected_account {
-            if summaries
+        if let Some((cat, idx)) = &self.selected_account
+            && summaries
                 .iter()
                 .any(|summary| &summary.category == cat && summary.index == *idx)
-            {
-                return;
-            }
+        {
+            return;
         }
 
         if let Some(first) = summaries.first() {
@@ -1428,15 +1414,15 @@ impl ScreenLike for WalletsBalancesScreen {
             ),
         ];
 
-        if !self.refreshing {
-            if let Some(wallet_arc) = self.selected_wallet.clone() {
-                right_buttons.push((
-                    "Refresh",
-                    DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
-                        CoreTask::RefreshWalletInfo(wallet_arc),
-                    ))),
-                ));
-            }
+        if !self.refreshing
+            && let Some(wallet_arc) = self.selected_wallet.clone()
+        {
+            right_buttons.push((
+                "Refresh",
+                DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
+                    CoreTask::RefreshWalletInfo(wallet_arc),
+                ))),
+            ));
         }
         let mut action = add_top_panel(
             ctx,

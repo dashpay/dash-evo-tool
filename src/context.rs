@@ -10,7 +10,7 @@ use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::WatchOnlyWalletAttachment;
 use crate::spv::{CoreBackendMode, SpvManager};
@@ -508,6 +508,34 @@ impl AppContext {
                     // Update wallet and DB through model helper
                     let _ = w.update_address_balance(&addr, sum, self);
                 }
+            }
+
+            let history = wm
+                .wallet_transaction_history(wallet_id)
+                .map_err(|e| format!("wallet_transaction_history failed: {e}"))?;
+            let wallet_transactions: Vec<WalletTransaction> = history
+                .into_iter()
+                .map(|record| WalletTransaction {
+                    txid: record.txid,
+                    transaction: record.transaction.clone(),
+                    timestamp: record.timestamp,
+                    height: record.height,
+                    block_hash: record.block_hash.clone(),
+                    net_amount: record.net_amount,
+                    fee: record.fee,
+                    label: record.label.clone(),
+                    is_ours: record.is_ours,
+                })
+                .collect();
+
+            self.db
+                .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)
+                .map_err(|e| e.to_string())?;
+
+            if let Some(wref) = wallets_guard.get(seed_hash)
+                && let Ok(mut wallet) = wref.write()
+            {
+                wallet.set_transactions(wallet_transactions.clone());
             }
         }
 

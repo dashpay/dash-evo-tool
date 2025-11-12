@@ -2,16 +2,16 @@ use crate::database::Database;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
-    Wallet, WalletSeed,
+    Wallet, WalletSeed, WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
-use dash_sdk::dpp::dashcore::consensus::deserialize;
+use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
-    self, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
+    self, BlockHash, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -19,7 +19,7 @@ use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAss
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
@@ -209,6 +209,99 @@ impl Database {
         }
     }
 
+    pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_transactions (
+                seed_hash BLOB NOT NULL,
+                txid BLOB NOT NULL,
+                network TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                height INTEGER,
+                block_hash BLOB,
+                net_amount INTEGER NOT NULL,
+                fee INTEGER,
+                label TEXT,
+                is_ours INTEGER NOT NULL,
+                raw_transaction BLOB NOT NULL,
+                PRIMARY KEY (seed_hash, txid, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_network_ts
+             ON wallet_transactions (network, timestamp DESC)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    /// Replace all persisted transactions for a wallet+network with the provided set.
+    pub fn replace_wallet_transactions(
+        &self,
+        seed_hash: &[u8; 32],
+        network: &Network,
+        transactions: &[WalletTransaction],
+    ) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let network_str = network.to_string();
+
+        tx.execute(
+            "DELETE FROM wallet_transactions WHERE seed_hash = ?1 AND network = ?2",
+            params![seed_hash, &network_str],
+        )?;
+
+        if transactions.is_empty() {
+            tx.commit()?;
+            return Ok(());
+        }
+
+        {
+            let mut insert_stmt = tx.prepare(
+                "INSERT INTO wallet_transactions (
+                    seed_hash,
+                    txid,
+                    network,
+                    timestamp,
+                    height,
+                    block_hash,
+                    net_amount,
+                    fee,
+                    label,
+                    is_ours,
+                    raw_transaction
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
+
+            for transaction in transactions {
+                let tx_bytes = serialize(&transaction.transaction);
+                let block_hash_bytes: Option<Vec<u8>> = transaction
+                    .block_hash
+                    .as_ref()
+                    .map(|hash| hash.as_raw_hash().as_byte_array().to_vec());
+                let fee = transaction.fee.map(|f| f as i64);
+                insert_stmt.execute(params![
+                    seed_hash,
+                    <dash_sdk::dpp::dashcore::Txid as AsRef<[u8]>>::as_ref(&transaction.txid),
+                    &network_str,
+                    transaction.timestamp as i64,
+                    transaction.height.map(|h| h as i64),
+                    block_hash_bytes.as_deref(),
+                    transaction.net_amount,
+                    fee,
+                    transaction.label.as_deref(),
+                    transaction.is_ours,
+                    tx_bytes,
+                ])?;
+            }
+        }
+
+        tx.commit()
+    }
+
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
@@ -278,6 +371,7 @@ impl Database {
                     alias,
                     identities: HashMap::new(),
                     utxos: HashMap::new(),
+                    transactions: Vec::new(),
                     is_main,
                     confirmed_balance: 0,
                     unconfirmed_balance: 0,
@@ -480,6 +574,58 @@ impl Database {
                 wallet
                     .unused_asset_locks
                     .push((tx, address, amount, islock, proof));
+            }
+        }
+
+        tracing::trace!("step 7: load wallet transactions for each wallet");
+        let mut tx_stmt = conn.prepare(
+            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction
+             FROM wallet_transactions WHERE network = ? ORDER BY timestamp DESC",
+        )?;
+
+        let tx_rows = tx_stmt.query_map([network_str.clone()], |row| {
+            let seed_hash: Vec<u8> = row.get(0)?;
+            let txid_bytes: Vec<u8> = row.get(1)?;
+            let timestamp: i64 = row.get(2)?;
+            let height: Option<i64> = row.get(3)?;
+            let block_hash_bytes: Option<Vec<u8>> = row.get(4)?;
+            let net_amount: i64 = row.get(5)?;
+            let fee: Option<i64> = row.get(6)?;
+            let label: Option<String> = row.get(7)?;
+            let is_ours: bool = row.get(8)?;
+            let raw_transaction: Vec<u8> = row.get(9)?;
+
+            let seed_hash_array: [u8; 32] =
+                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let txid = Txid::from_slice(&txid_bytes).expect("Invalid txid bytes");
+            let transaction: Transaction =
+                deserialize(&raw_transaction).expect("Failed to deserialize transaction");
+            let block_hash = block_hash_bytes
+                .as_ref()
+                .map(|bytes| BlockHash::from_slice(bytes).expect("Invalid block hash"));
+            let fee = fee.map(|f| f as u64);
+            let height = height.map(|h| h as u32);
+
+            Ok((
+                seed_hash_array,
+                WalletTransaction {
+                    txid,
+                    transaction,
+                    timestamp: timestamp as u64,
+                    height,
+                    block_hash,
+                    net_amount,
+                    fee,
+                    label,
+                    is_ours,
+                },
+            ))
+        })?;
+
+        for row in tx_rows {
+            let (seed_hash, transaction) = row?;
+            if let Some(wallet) = wallets_map.get_mut(&seed_hash) {
+                wallet.transactions.push(transaction);
             }
         }
 

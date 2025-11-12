@@ -4,7 +4,7 @@ use crate::backend_task::core::{CoreTask, WalletPaymentRequest};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::{
-    DerivationPathHelpers, DerivationPathReference, Wallet, WalletSeedHash,
+    DerivationPathHelpers, DerivationPathReference, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -22,6 +22,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use dash_sdk::dpp::dashcore::Txid;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -377,6 +378,7 @@ impl WalletsBalancesScreen {
 
         // Render the table
         TableBuilder::new(ui)
+            .id_salt("addresses_table")
             .striped(false)
             .resizable(true)
             .vscroll(false)
@@ -814,6 +816,52 @@ impl WalletsBalancesScreen {
         Amount::dash_from_duffs(amount_duffs).to_string()
     }
 
+    fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
+        if tx.is_incoming() {
+            "Received"
+        } else if tx.is_outgoing() {
+            "Sent"
+        } else {
+            "Internal"
+        }
+    }
+
+    fn transaction_amount_display(tx: &WalletTransaction, dark_mode: bool) -> (String, Color32) {
+        let amount = Self::format_dash(tx.amount_abs());
+        if tx.is_incoming() {
+            (format!("+{}", amount), DashColors::SUCCESS)
+        } else if tx.is_outgoing() {
+            (format!("-{}", amount), DashColors::ERROR)
+        } else {
+            (amount, DashColors::text_primary(dark_mode))
+        }
+    }
+
+    fn format_transaction_status(tx: &WalletTransaction) -> String {
+        if tx.is_confirmed() {
+            tx.height
+                .map(|h| format!("Confirmed @{}", h))
+                .unwrap_or_else(|| "Confirmed".to_string())
+        } else {
+            "Pending".to_string()
+        }
+    }
+
+    fn format_transaction_timestamp(ts: u64) -> String {
+        DateTime::<Utc>::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+
+    fn shorten_txid(txid: &Txid) -> String {
+        let full = txid.to_string();
+        if full.len() <= 16 {
+            full
+        } else {
+            format!("{}…{}", &full[..8], &full[full.len() - 8..])
+        }
+    }
+
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
         let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
         amount.dash_to_duffs()
@@ -958,7 +1006,111 @@ impl WalletsBalancesScreen {
     fn render_transactions_section(&self, ui: &mut Ui) {
         ui.add_space(10.0);
         ui.heading("Transactions");
-        ui.label("Transaction history will appear here once SPV exposes it.");
+        let Some(wallet_arc) = self.selected_wallet.as_ref() else {
+            ui.label("Select a wallet to view its transaction history.");
+            return;
+        };
+
+        let wallet_guard = wallet_arc.read().unwrap();
+        if wallet_guard.transactions.is_empty() {
+            ui.label("No transactions yet from SPV. Keep your wallet online to sync history.");
+            return;
+        }
+
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let mut order: Vec<usize> = (0..wallet_guard.transactions.len()).collect();
+        order.sort_by(|&a, &b| {
+            wallet_guard.transactions[b]
+                .timestamp
+                .cmp(&wallet_guard.transactions[a].timestamp)
+                .then_with(|| {
+                    wallet_guard.transactions[b]
+                        .txid
+                        .cmp(&wallet_guard.transactions[a].txid)
+                })
+        });
+
+        let row_height = 26.0;
+        TableBuilder::new(ui)
+            .id_salt("transactions_table")
+            .striped(true)
+            .column(Column::initial(150.0)) // Date
+            .column(Column::initial(80.0)) // Type
+            .column(Column::initial(120.0)) // Amount
+            .column(Column::initial(150.0)) // Status
+            .column(Column::remainder()) // TxID
+            .header(row_height, |mut header| {
+                header.col(|ui| {
+                    ui.label(
+                        RichText::new("Date")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                });
+                header.col(|ui| {
+                    ui.label(
+                        RichText::new("Type")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                });
+                header.col(|ui| {
+                    ui.label(
+                        RichText::new("Amount")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                });
+                header.col(|ui| {
+                    ui.label(
+                        RichText::new("Status")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                });
+                header.col(|ui| {
+                    ui.label(
+                        RichText::new("TxID")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                });
+            })
+            .body(|mut body| {
+                for idx in order {
+                    let tx = &wallet_guard.transactions[idx];
+                    body.row(row_height, |mut row| {
+                        row.col(|ui| {
+                            ui.label(Self::format_transaction_timestamp(tx.timestamp));
+                        });
+                        row.col(|ui| {
+                            ui.label(Self::transaction_direction_label(tx));
+                        });
+                        row.col(|ui| {
+                            let (amount_text, amount_color) =
+                                Self::transaction_amount_display(tx, dark_mode);
+                            ui.label(RichText::new(amount_text).color(amount_color).strong());
+                        });
+                        row.col(|ui| {
+                            ui.label(Self::format_transaction_status(tx));
+                        });
+                        row.col(|ui| {
+                            let full_txid = tx.txid.to_string();
+                            ui.horizontal(|ui| {
+                                let response = ui.label(RichText::new(&full_txid).monospace());
+                                response.on_hover_text(&full_txid);
+                                if ui
+                                    .small_button("Copy")
+                                    .on_hover_text("Copy transaction ID")
+                                    .clicked()
+                                {
+                                    let _ = copy_text_to_clipboard(&full_txid);
+                                }
+                            });
+                        });
+                    });
+                }
+            });
     }
 
     fn render_wallet_detail_panel(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {

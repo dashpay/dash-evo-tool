@@ -145,6 +145,7 @@ impl AddNewWalletScreen {
                 alias: Some(self.alias_input.clone()),
                 identities: Default::default(),
                 utxos: Default::default(),
+                transactions: Vec::new(),
                 is_main: true,
                 confirmed_balance: 0,
                 unconfirmed_balance: 0,

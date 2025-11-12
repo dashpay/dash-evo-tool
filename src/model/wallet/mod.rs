@@ -10,8 +10,8 @@ use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::dashcore::secp256k1::Message;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::{
-    Address, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf, Transaction, TxIn,
-    TxOut,
+    Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf,
+    Transaction, TxIn, TxOut, Txid,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -211,10 +211,42 @@ pub struct Wallet {
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
+    pub transactions: Vec<WalletTransaction>,
     pub is_main: bool,
     pub confirmed_balance: u64,
     pub unconfirmed_balance: u64,
     pub total_balance: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WalletTransaction {
+    pub txid: Txid,
+    pub transaction: Transaction,
+    pub timestamp: u64,
+    pub height: Option<u32>,
+    pub block_hash: Option<BlockHash>,
+    pub net_amount: i64,
+    pub fee: Option<u64>,
+    pub label: Option<String>,
+    pub is_ours: bool,
+}
+
+impl WalletTransaction {
+    pub fn is_incoming(&self) -> bool {
+        self.net_amount > 0
+    }
+
+    pub fn is_outgoing(&self) -> bool {
+        self.net_amount < 0
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        self.height.is_some()
+    }
+
+    pub fn amount_abs(&self) -> u64 {
+        self.net_amount.unsigned_abs()
+    }
 }
 
 pub type WalletSeedHash = [u8; 32];
@@ -369,6 +401,10 @@ impl Wallet {
         self.confirmed_balance = confirmed;
         self.unconfirmed_balance = unconfirmed;
         self.total_balance = total;
+    }
+
+    pub fn set_transactions(&mut self, transactions: Vec<WalletTransaction>) {
+        self.transactions = transactions;
     }
 
     fn seed_bytes(&self) -> Result<&[u8; 64], String> {

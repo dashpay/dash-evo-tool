@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 12;
+pub const DEFAULT_DB_VERSION: u16 = 14;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            14 => {
+                self.initialize_wallet_transactions_table(tx)?;
+            }
             13 => {
                 // Add DashPay tables in version 12
                 self.init_dashpay_tables_in_tx(tx)?;
@@ -286,6 +289,9 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
             [],
         )?;
+
+        // Create wallet transactions table for SPV history
+        self.initialize_wallet_transactions_table(&conn)?;
 
         // Create asset lock transaction table
         conn.execute(

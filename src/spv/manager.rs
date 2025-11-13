@@ -451,11 +451,66 @@ impl SpvManager {
             map.insert(seed_hash, wallet_id);
         }
 
+        // for registration in attachment.identity_registrations {
+        //     let Some(wallet_id) = map.get(&registration.seed_hash).cloned() else {
+        //         tracing::warn!(seed = %hex::encode(registration.seed_hash), "Missing wallet_id for identity registration batch" );
+        //         continue;
+        //     };
+
+        //     for entry in registration.entries {
+        //         if entry.addresses.is_empty() {
+        //             continue;
+        //         }
+
+        //         if let Err(err) =
+        //             Self::ensure_account_exists(&mut wm, &wallet_id, net_wallet, entry.account_type)
+        //         {
+        //             tracing::error!(seed = %hex::encode(registration.seed_hash), account = ?entry.account_type, "Failed to ensure account exists: {err}");
+        //             continue;
+        //         }
+
+        //         match wm.register_known_addresses(
+        //             &wallet_id,
+        //             net_wallet,
+        //             entry.account_type,
+        //             entry.addresses.clone(),
+        //         ) {
+        //             Ok(added) => {
+        //                 if added > 0 {
+        //                     tracing::info!(seed = %hex::encode(registration.seed_hash), account = ?entry.account_type, added, "Registered identity addresses for watch-only SPV");
+        //                 }
+        //             }
+        //             Err(e) => {
+        //                 tracing::error!(seed = %hex::encode(registration.seed_hash), account = ?entry.account_type, error = ?e, "register_known_addresses failed");
+        //             }
+        //         }
+        //     }
+        // }
+
         // Optional: log monitored addresses count for debugging
         let addr_count = wm.monitored_addresses(attachment.network).len();
         tracing::info!(addresses = addr_count, network = ?attachment.network, "SPV now watching addresses");
 
         Ok(())
+    }
+
+    fn _ensure_account_exists(
+        wm: &mut WalletManager<ManagedWalletInfo>,
+        wallet_id: &WalletId,
+        network: key_wallet::Network,
+        account_type: AccountType,
+    ) -> Result<(), String> {
+        if let Err(e) = wm.create_account(wallet_id, account_type, network, None) {
+            match e {
+                WalletError::AccountCreation(msg) if msg.contains("already exists") => Ok(()),
+                WalletError::AccountCreation(msg) if msg.contains("Account already exists") => {
+                    Ok(())
+                }
+                other => Err(format!("create_account failed: {other}")),
+            }
+        } else {
+            Ok(())
+        }
     }
 
     async fn run_spv_loop(

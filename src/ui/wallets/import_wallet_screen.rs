@@ -126,10 +126,12 @@ impl ImportWalletScreen {
                     }
                 })?;
 
+            let wallet_arc = Arc::new(RwLock::new(wallet));
+
             // Acquire a write lock and add the new wallet
             let mut should_attach_spv = false;
             if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
+                wallets.insert(wallet_arc.read().unwrap().seed_hash(), wallet_arc.clone());
                 self.app_context.has_wallet.store(true, Ordering::Relaxed);
                 // Mark for SPV attach outside the lock to avoid re-entrancy deadlocks
                 if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
@@ -138,6 +140,8 @@ impl ImportWalletScreen {
             } else {
                 eprintln!("Failed to acquire write lock on wallets");
             }
+
+            self.app_context.bootstrap_wallet_addresses(&wallet_arc);
 
             // Perform SPV attachment after releasing the wallets lock
             if should_attach_spv {

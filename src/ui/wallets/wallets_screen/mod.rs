@@ -1106,7 +1106,7 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         };
 
-        let (alias, seed_hash, _wallet_is_main) = {
+        let (alias, _seed_hash, _wallet_is_main) = {
             let wallet = wallet_arc.read().unwrap();
             (
                 wallet
@@ -1139,7 +1139,9 @@ impl WalletsBalancesScreen {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if self.refreshing {
-                                        ui.spinner();
+                                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE))
+                                    } else {
+                                        ui.add(egui::Label::new(""))
                                     }
                                 },
                             );
@@ -1150,9 +1152,6 @@ impl WalletsBalancesScreen {
                             self.render_wallet_overview(ui, &wallet);
                             collect_account_summaries(&wallet, self.app_context.network)
                         };
-
-                        let hash = seed_hash.encode_hex::<String>();
-                        ui.label(format!("ID: {}", hash));
 
                         self.ensure_account_selection(&summaries);
                         self.render_action_buttons(ui, ctx);

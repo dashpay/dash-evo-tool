@@ -2,18 +2,20 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
+use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 
-use dash_sdk::dpp::dashcore::secp256k1::Message;
+use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::{
     Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf,
     Transaction, TxIn, TxOut, Txid,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::cmp;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
@@ -137,13 +139,24 @@ impl DerivationPathHelpers for DerivationPath {
 use crate::context::AppContext;
 use bitflags::bitflags;
 use dash_sdk::dashcore_rpc::RpcApi;
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
 use zeroize::Zeroize;
+
+const BOOTSTRAP_BIP44_EXTERNAL_COUNT: u32 = 32;
+const BOOTSTRAP_BIP44_CHANGE_COUNT: u32 = 16;
+const BOOTSTRAP_BIP32_ACCOUNT_COUNT: u32 = 1;
+const BOOTSTRAP_BIP32_ADDRESS_COUNT: u32 = 16;
+const BOOTSTRAP_COINJOIN_ACCOUNT_COUNT: u32 = 1;
+const BOOTSTRAP_COINJOIN_ADDRESS_COUNT: u32 = 16;
+const BOOTSTRAP_IDENTITY_REGISTRATION_FALLBACK: u32 = 8;
+const BOOTSTRAP_IDENTITY_INVITATION_COUNT: u32 = 8;
+const BOOTSTRAP_IDENTITY_TOPUP_PER_REGISTRATION: u32 = 4;
+const BOOTSTRAP_IDENTITY_TOPUP_NOT_BOUND_COUNT: u32 = 8;
+const BOOTSTRAP_PROVIDER_ADDRESS_COUNT: u32 = 4;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -401,6 +414,35 @@ impl Wallet {
         self.confirmed_balance = confirmed;
         self.unconfirmed_balance = unconfirmed;
         self.total_balance = total;
+    }
+
+    pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
+        if !self.is_open() {
+            tracing::debug!("Skipping address bootstrap for locked wallet");
+            return;
+        }
+
+        let network = app_context.network;
+
+        if let Err(err) = self.bootstrap_bip44_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap BIP44 addresses: {}", err);
+        }
+
+        if let Err(err) = self.bootstrap_bip32_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap BIP32 addresses: {}", err);
+        }
+
+        if let Err(err) = self.bootstrap_coinjoin_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap CoinJoin addresses: {}", err);
+        }
+
+        if let Err(err) = self.bootstrap_identity_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap identity addresses: {}", err);
+        }
+
+        if let Err(err) = self.bootstrap_provider_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap provider addresses: {}", err);
+        }
     }
 
     pub fn set_transactions(&mut self, transactions: Vec<WalletTransaction>) {
@@ -783,12 +825,297 @@ impl Wallet {
             },
         );
 
+        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc
+            && let Ok(client) = app_context.core_client.read()
+        {
+            let _ = client.import_address(&address, None, Some(false));
+        }
+
         tracing::trace!(
             address = ?&address,
             network = &address.network().to_string(),
             "registered new address"
         );
         Ok(())
+    }
+
+    fn bootstrap_bip44_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let coin_type = Self::coin_type(network);
+        let secp = Secp256k1::new();
+        for (change_flag, max) in [
+            (false, BOOTSTRAP_BIP44_EXTERNAL_COUNT),
+            (true, BOOTSTRAP_BIP44_CHANGE_COUNT),
+        ] {
+            for index in 0..max {
+                let child_path = [
+                    ChildNumber::Normal {
+                        index: change_flag as u32,
+                    },
+                    ChildNumber::Normal { index },
+                ];
+                let derived = self
+                    .master_bip44_ecdsa_extended_public_key
+                    .derive_pub(&secp, &child_path)
+                    .map_err(|e| e.to_string())?;
+                let dash_public_key = PublicKey::from_slice(&derived.public_key.serialize())
+                    .map_err(|e| e.to_string())?;
+                let derivation_path = DerivationPath::from(vec![
+                    ChildNumber::Hardened { index: 44 },
+                    ChildNumber::Hardened { index: coin_type },
+                    ChildNumber::Hardened { index: 0 },
+                    ChildNumber::Normal {
+                        index: change_flag as u32,
+                    },
+                    ChildNumber::Normal { index },
+                ]);
+                self.register_address_from_public_key(
+                    &dash_public_key,
+                    &derivation_path,
+                    DerivationPathType::CLEAR_FUNDS,
+                    DerivationPathReference::BIP44,
+                    app_context,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bootstrap_bip32_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        for account in 0..BOOTSTRAP_BIP32_ACCOUNT_COUNT {
+            for index in 0..BOOTSTRAP_BIP32_ADDRESS_COUNT {
+                let derivation_path = DerivationPath::from(vec![
+                    ChildNumber::Hardened { index: account },
+                    ChildNumber::Normal { index },
+                ]);
+                let extended_private_key = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
+                    .map_err(|e| e.to_string())?;
+                let private_key = extended_private_key.to_priv();
+                self.register_address_from_private_key(
+                    &private_key,
+                    &derivation_path,
+                    DerivationPathType::CLEAR_FUNDS,
+                    DerivationPathReference::BIP32,
+                    app_context,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bootstrap_coinjoin_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        for account in 0..BOOTSTRAP_COINJOIN_ACCOUNT_COUNT {
+            let base_path = DerivationPath::coinjoin_path(network, account);
+            for index in 0..BOOTSTRAP_COINJOIN_ADDRESS_COUNT {
+                let mut components = base_path.as_ref().to_vec();
+                components.push(ChildNumber::Normal { index });
+                let derivation_path = DerivationPath::from(components);
+                let extended_private_key = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
+                    .map_err(|e| e.to_string())?;
+                let private_key = extended_private_key.to_priv();
+                self.register_address_from_private_key(
+                    &private_key,
+                    &derivation_path,
+                    DerivationPathType::ANONYMOUS_FUNDS,
+                    DerivationPathReference::ProviderFunds,
+                    app_context,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bootstrap_identity_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let registration_indices = self.identity_registration_indices();
+        self.bootstrap_identity_registration_addresses(
+            network,
+            app_context,
+            &registration_indices,
+        )?;
+        self.bootstrap_identity_invitation_addresses(network, app_context)?;
+        self.bootstrap_identity_topup_addresses(network, app_context, &registration_indices)?;
+        Ok(())
+    }
+
+    fn bootstrap_identity_registration_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+        registration_indices: &BTreeSet<u32>,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        for &index in registration_indices {
+            let derivation_path = DerivationPath::identity_registration_path(network, index);
+            let extended_private_key = derivation_path
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
+                .map_err(|e| e.to_string())?;
+            let private_key = extended_private_key.to_priv();
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                app_context,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn bootstrap_identity_invitation_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        for index in 0..BOOTSTRAP_IDENTITY_INVITATION_COUNT {
+            let derivation_path = DerivationPath::identity_invitation_path(network, index);
+            let extended_private_key = derivation_path
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
+                .map_err(|e| e.to_string())?;
+            let private_key = extended_private_key.to_priv();
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::BlockchainIdentityCreditInvitationFunding,
+                app_context,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn bootstrap_identity_topup_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+        registration_indices: &BTreeSet<u32>,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        for &registration_index in registration_indices {
+            for top_up_index in 0..BOOTSTRAP_IDENTITY_TOPUP_PER_REGISTRATION {
+                let derivation_path =
+                    DerivationPath::identity_top_up_path(network, registration_index, top_up_index);
+                let extended_private_key = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
+                    .map_err(|e| e.to_string())?;
+                let private_key = extended_private_key.to_priv();
+                self.register_address_from_private_key(
+                    &private_key,
+                    &derivation_path,
+                    DerivationPathType::CREDIT_FUNDING,
+                    DerivationPathReference::BlockchainIdentityCreditTopupFunding,
+                    app_context,
+                )?;
+            }
+        }
+        self.bootstrap_identity_topup_not_bound_addresses(network, app_context, &seed)
+    }
+
+    fn bootstrap_identity_topup_not_bound_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+        seed: &[u8; 64],
+    ) -> Result<(), String> {
+        let base_path = AccountType::IdentityTopUpNotBoundToIdentity
+            .derivation_path(network)
+            .map_err(|e| e.to_string())?;
+        for index in 0..BOOTSTRAP_IDENTITY_TOPUP_NOT_BOUND_COUNT {
+            let mut components = base_path.as_ref().to_vec();
+            components.push(ChildNumber::Normal { index });
+            let derivation_path = DerivationPath::from(components);
+            let extended_private_key = derivation_path
+                .derive_priv_ecdsa_for_master_seed(seed, network)
+                .map_err(|e| e.to_string())?;
+            let private_key = extended_private_key.to_priv();
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::BlockchainIdentityCreditTopupFunding,
+                app_context,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn identity_registration_indices(&self) -> BTreeSet<u32> {
+        let mut indices: BTreeSet<u32> = self.identities.keys().copied().collect();
+        let fallback_limit = BOOTSTRAP_IDENTITY_REGISTRATION_FALLBACK;
+        let max_existing = indices.iter().copied().max().unwrap_or(0);
+        let target = cmp::max(max_existing.saturating_add(2), fallback_limit);
+        indices.extend(0..target);
+        indices
+    }
+
+    fn bootstrap_provider_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        self.bootstrap_provider_account(network, app_context, AccountType::ProviderVotingKeys)?;
+        self.bootstrap_provider_account(network, app_context, AccountType::ProviderOwnerKeys)?;
+        Ok(())
+    }
+
+    fn bootstrap_provider_account(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+        account_type: AccountType,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        let base_path = account_type
+            .derivation_path(network)
+            .map_err(|e| e.to_string())?;
+        let key_wallet_reference = account_type.derivation_path_reference();
+        let path_reference = DerivationPathReference::try_from(key_wallet_reference as u32)
+            .unwrap_or(DerivationPathReference::Unknown);
+        for provider_index in 0..BOOTSTRAP_PROVIDER_ADDRESS_COUNT {
+            let mut components = base_path.as_ref().to_vec();
+            components.push(ChildNumber::Hardened {
+                index: provider_index,
+            });
+            let derivation_path = DerivationPath::from(components);
+            let extended_private_key = derivation_path
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
+                .map_err(|e| e.to_string())?;
+            let private_key = extended_private_key.to_priv();
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CLEAR_FUNDS,
+                path_reference,
+                app_context,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn coin_type(network: Network) -> u32 {
+        match network {
+            Network::Dash => 5,
+            _ => 1,
+        }
     }
 
     pub fn identity_top_up_ecdsa_private_key(

@@ -245,6 +245,8 @@ impl AppContext {
             sdk_lock.set_context_provider(provider);
         }
 
+        app_context.bootstrap_loaded_wallets();
+
         Some(app_context)
     }
 
@@ -300,6 +302,26 @@ impl AppContext {
         self.spv_attach_current_wallets();
         self.spv_setup_reconcile_listener();
         Ok(())
+    }
+
+    pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
+        if let Ok(mut guard) = wallet.write()
+            && guard.known_addresses.is_empty()
+        {
+            tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
+            guard.bootstrap_known_addresses(self);
+        }
+    }
+
+    pub fn bootstrap_loaded_wallets(self: &Arc<Self>) {
+        let wallets: Vec<_> = {
+            let guard = self.wallets.read().unwrap();
+            guard.values().cloned().collect()
+        };
+
+        for wallet in wallets {
+            self.bootstrap_wallet_addresses(&wallet);
+        }
     }
 
     pub fn spv_attach_current_wallets(&self) {

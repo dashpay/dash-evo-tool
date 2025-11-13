@@ -1,6 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::{Arc, RwLock};
@@ -15,26 +15,24 @@ impl AppContext {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             wallet_guard
                 .known_addresses
-                .iter()
-                .filter_map(|(address, derivation_path)| {
-                    if derivation_path.is_bip44(self.network) {
-                        Some(address.clone())
-                    } else {
-                        None
-                    }
-                })
+                .keys()
+                .cloned()
                 .collect::<Vec<_>>()
         };
 
         // Step 2: Iterate over each address and update balances
+        let client = self
+            .core_client
+            .read()
+            .expect("Core client lock was poisoned");
+
         for address in &addresses {
+            if let Err(e) = client.import_address(address, None, Some(false)) {
+                tracing::debug!(?e, address = %address, "import_address failed during refresh");
+            }
+
             // Fetch balance for the address from Dash Core
-            match self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned")
-                .get_received_by_address(address, None)
-            {
+            match client.get_received_by_address(address, None) {
                 Ok(new_balance) => {
                     // Update the wallet's address_balances and database
                     {
@@ -43,7 +41,11 @@ impl AppContext {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error fetching balance for address {}: {}", address, e);
+                    tracing::debug!(
+                        ?e,
+                        address = %address,
+                        "Error fetching balance for address during refresh"
+                    );
                 }
             }
         }

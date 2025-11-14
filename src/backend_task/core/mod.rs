@@ -127,15 +127,25 @@ impl AppContext {
                     local_chainlock,
                 )))
             }
-            CoreTask::RefreshWalletInfo(wallet) => self
-                .refresh_wallet_info(wallet)
-                .map_err(|e| format!("Error refreshing wallet: {}", e)),
+            CoreTask::RefreshWalletInfo(wallet) => {
+                if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+                    self.reconcile_spv_wallets()
+                        .await
+                        .map_err(|e| format!("Error refreshing wallet via SPV: {}", e))?;
+                    Ok(BackendTaskSuccessResult::Message(
+                        "Wallet refreshed from SPV".to_string(),
+                    ))
+                } else {
+                    self.refresh_wallet_info(wallet)
+                        .map_err(|e| format!("Error refreshing wallet: {}", e))
+                }
+            }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::SendWalletPayment { wallet, request } => {
-                self.send_wallet_payment(wallet, request)
+                self.send_wallet_payment(wallet, request).await
             }
         }
     }
@@ -180,11 +190,17 @@ impl AppContext {
         }
     }
 
-    fn send_wallet_payment(
+    async fn send_wallet_payment(
         &self,
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
     ) -> Result<BackendTaskSuccessResult, String> {
+        if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+            self.reconcile_spv_wallets()
+                .await
+                .map_err(|e| format!("Unable to sync wallet before send: {}", e))?;
+        }
+
         if request.amount_duffs == 0 {
             return Err("Amount must be greater than zero".to_string());
         }

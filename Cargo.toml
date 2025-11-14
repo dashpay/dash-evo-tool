@@ -81,3 +81,6 @@ uninlined_format_args = "allow"
 
 [patch.crates-io]
 elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }
+
+[patch."https://www.github.com/dashpay/platform"]
+dash-sdk = { path = "/Users/pauldelucia/Documents/Dash/platform/packages/rs-sdk" }

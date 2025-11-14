@@ -1,11 +1,13 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, WalletPaymentRequest};
+use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::{
     DerivationPathHelpers, DerivationPathReference, Wallet, WalletSeedHash, WalletTransaction,
 };
+use crate::spv::CoreBackendMode;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -29,7 +31,6 @@ use eframe::epaint::TextureHandle;
 use egui::load::SizedTexture;
 use egui::{Color32, Frame, Margin, RichText, TextureOptions};
 use egui_extras::{Column, TableBuilder};
-use hex::ToHex;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,6 +98,7 @@ struct ReceiveDialogState {
     is_open: bool,
     address: Option<String>,
     qr_texture: Option<TextureHandle>,
+    qr_address: Option<String>,
     status: Option<String>,
 }
 
@@ -866,7 +868,7 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let total = wallet.total_balance_duffs();
         let confirmed = wallet.confirmed_balance_duffs();
-        let unconfirmed = wallet.unconfirmed_balance_duffs();
+        let _unconfirmed = wallet.unconfirmed_balance_duffs();
         let platform = Self::platform_balance_duffs(wallet);
 
         ui.horizontal(|ui| {
@@ -875,11 +877,7 @@ impl WalletsBalancesScreen {
                 Self::format_dash(total)
             )));
             ui.label(
-                RichText::new(format!("(Confirmed: {}", Self::format_dash(confirmed)))
-                    .color(DashColors::text_secondary(dark_mode)),
-            );
-            ui.label(
-                RichText::new(format!("| Pending: {})", Self::format_dash(unconfirmed)))
+                RichText::new(format!("(Confirmed: {})", Self::format_dash(confirmed)))
                     .color(DashColors::text_secondary(dark_mode)),
             );
         });
@@ -889,7 +887,8 @@ impl WalletsBalancesScreen {
         );
     }
 
-    fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) {
+    fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
+        let mut action = AppAction::None;
         ui.add_space(10.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.horizontal(|ui| {
@@ -912,9 +911,10 @@ impl WalletsBalancesScreen {
                 .button(RichText::new("Receive").color(DashColors::text_primary(dark_mode)))
                 .clicked()
             {
-                self.open_receive_dialog(ctx);
+                action |= self.open_receive_dialog(ctx);
             }
         });
+        action
     }
 
     fn render_accounts_section(&mut self, ui: &mut Ui, summaries: &[AccountSummary]) {
@@ -971,6 +971,14 @@ impl WalletsBalancesScreen {
                             );
                         });
                     });
+
+                    if let Some(description) = summary.category.description() {
+                        ui.label(
+                            RichText::new(description)
+                                .color(DashColors::text_secondary(dark_mode))
+                                .italics(),
+                        );
+                    }
 
                     ui.label(format!(
                         "Addresses: {} ({} receive / {} change)",
@@ -1154,7 +1162,7 @@ impl WalletsBalancesScreen {
                         };
 
                         self.ensure_account_selection(&summaries);
-                        self.render_action_buttons(ui, ctx);
+                        action |= self.render_action_buttons(ui, ctx);
                         ui.add_space(10.0);
                         ui.separator();
                         self.render_transactions_section(ui);
@@ -1223,10 +1231,6 @@ impl WalletsBalancesScreen {
                             Err(err) => self.send_dialog.error = Some(err),
                         }
                     }
-
-                    if ui.button("Cancel").clicked() {
-                        self.send_dialog = SendDialogState::default();
-                    }
                 });
             });
 
@@ -1239,6 +1243,27 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         }
 
+        if let Some(address) = self.receive_dialog.address.clone() {
+            let needs_texture = self.receive_dialog.qr_texture.is_none()
+                || self.receive_dialog.qr_address.as_deref() != Some(&address);
+            if needs_texture {
+                match generate_qr_code_image(&address) {
+                    Ok(image) => {
+                        let texture = ctx.load_texture(
+                            format!("wallet_receive_{}", address),
+                            image,
+                            TextureOptions::LINEAR,
+                        );
+                        self.receive_dialog.qr_texture = Some(texture);
+                        self.receive_dialog.qr_address = Some(address);
+                    }
+                    Err(err) => {
+                        self.receive_dialog.status = Some(err.to_string());
+                    }
+                }
+            }
+        }
+
         let mut open = self.receive_dialog.is_open;
         egui::Window::new("Receive Dash")
             .collapsible(false)
@@ -1247,6 +1272,8 @@ impl WalletsBalancesScreen {
             .show(ctx, |ui| {
                 if let Some(texture) = &self.receive_dialog.qr_texture {
                     ui.image(SizedTexture::new(texture.id(), egui::vec2(220.0, 220.0)));
+                } else if self.receive_dialog.address.is_some() {
+                    ui.label("Preparing QR code...");
                 }
 
                 if let Some(address) = &self.receive_dialog.address {
@@ -1312,19 +1339,43 @@ impl WalletsBalancesScreen {
         )))
     }
 
-    fn open_receive_dialog(&mut self, ctx: &Context) {
+    fn open_receive_dialog(&mut self, _ctx: &Context) -> AppAction {
         let Some(wallet) = self.selected_wallet.clone() else {
             self.receive_dialog.status = Some("Select a wallet first".to_string());
+            self.receive_dialog.address = None;
+            self.receive_dialog.qr_texture = None;
+            self.receive_dialog.qr_address = None;
             self.receive_dialog.is_open = true;
-            return;
+            return AppAction::None;
         };
 
-        match self.prepare_receive_dialog(ctx, &wallet) {
+        self.receive_dialog.is_open = true;
+
+        if self.app_context.core_backend_mode() == CoreBackendMode::Spv {
+            let seed_hash = match wallet.read() {
+                Ok(guard) => guard.seed_hash(),
+                Err(err) => {
+                    self.receive_dialog.status = Some(err.to_string());
+                    return AppAction::None;
+                }
+            };
+
+            self.receive_dialog.address = None;
+            self.receive_dialog.qr_texture = None;
+            self.receive_dialog.qr_address = None;
+            self.receive_dialog.status = Some("Requesting new address...".to_string());
+
+            return AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress { seed_hash },
+            ));
+        }
+
+        match self.prepare_receive_dialog(&wallet) {
             Ok(()) => self.receive_dialog.status = None,
             Err(err) => self.receive_dialog.status = Some(err),
         }
 
-        self.receive_dialog.is_open = true;
+        AppAction::None
     }
 
     fn categorize_path(
@@ -1371,11 +1422,7 @@ impl WalletsBalancesScreen {
         Ok(private_key.to_wif())
     }
 
-    fn prepare_receive_dialog(
-        &mut self,
-        ctx: &Context,
-        wallet: &Arc<RwLock<Wallet>>,
-    ) -> Result<(), String> {
+    fn prepare_receive_dialog(&mut self, wallet: &Arc<RwLock<Wallet>>) -> Result<(), String> {
         let address = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
             wallet_guard.receive_address(
@@ -1386,15 +1433,9 @@ impl WalletsBalancesScreen {
         };
 
         let address_str = address.to_string();
-        let qr_image = generate_qr_code_image(&address_str).map_err(|e| e.to_string())?;
-        let texture = ctx.load_texture(
-            format!("wallet_receive_{}", address_str),
-            qr_image,
-            TextureOptions::LINEAR,
-        );
-
         self.receive_dialog.address = Some(address_str);
-        self.receive_dialog.qr_texture = Some(texture);
+        self.receive_dialog.qr_texture = None;
+        self.receive_dialog.qr_address = None;
         Ok(())
     }
 }
@@ -1414,6 +1455,7 @@ impl ScreenLike for WalletsBalancesScreen {
         ];
 
         if !self.refreshing
+            && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
             && let Some(wallet_arc) = self.selected_wallet.clone()
         {
             right_buttons.push((
@@ -1558,6 +1600,7 @@ impl ScreenLike for WalletsBalancesScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message.contains("Successfully refreshed wallet")
             || message.contains("Error refreshing wallet")
+            || message.contains("Wallet refreshed from SPV")
         {
             self.refreshing = false;
         }
@@ -1581,6 +1624,22 @@ impl ScreenLike for WalletsBalancesScreen {
                 txid
             );
             self.display_message(&msg, MessageType::Success);
+            return;
+        }
+
+        if let crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } =
+            backend_task_success_result
+        {
+            if let Some(selected) = &self.selected_wallet
+                && let Ok(wallet) = selected.read()
+            {
+                if wallet.seed_hash() == seed_hash {
+                    self.receive_dialog.address = Some(address.clone());
+                    self.receive_dialog.qr_texture = None;
+                    self.receive_dialog.qr_address = None;
+                    self.receive_dialog.status = None;
+                }
+            }
         }
     }
 
@@ -1616,5 +1675,9 @@ impl ScreenWithWalletUnlock for WalletsBalancesScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
     }
 }

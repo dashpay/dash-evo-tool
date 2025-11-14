@@ -1,5 +1,6 @@
 use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
+use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dash_spv::network::MultiPeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
@@ -7,14 +8,16 @@ use dash_sdk::dash_spv::types::{
     DetailedSyncProgress, SpvEvent, SyncProgress, SyncStage, ValidationMode,
 };
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient};
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::managed_account_operations::ManagedAccountOperations;
+use dash_sdk::dpp::dashcore::{Address, Network};
+use dash_sdk::dpp::key_wallet;
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
+    ManagedWalletInfo, transaction_building::AccountTypePreference,
+    wallet_info_interface::WalletInfoInterface,
+};
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
 // use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey; // not needed directly here
-use crate::spv::wallet_bridge::{WatchOnlyAccount, WatchOnlyWalletAttachment};
-use dash_sdk::dpp::key_wallet;
-use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;
@@ -24,6 +27,7 @@ use std::time::SystemTime;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroize;
 
 /// Preferred backend for Core-level operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,6 +118,12 @@ pub struct SpvManager {
     reconcile_tx: Mutex<Option<mpsc::Sender<()>>>,
     // Cancellation token for clean shutdown
     stop_token: Mutex<Option<CancellationToken>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpvDerivedAddress {
+    pub address: Address,
+    pub derivation_path: DerivationPath,
 }
 
 impl SpvManager {
@@ -376,141 +386,136 @@ impl SpvManager {
         }
     }
 
-    /// Attach watch-only accounts (e.g., BIP44 account 0 xpubs) from DET into the SPV wallet manager.
-    /// This stores a mapping locally and attempts to prepare the SPV wallet manager state when possible.
-    pub async fn attach_watch_only_accounts(
+    pub async fn load_wallet_from_seed(
         &self,
-        attachment: WatchOnlyWalletAttachment,
-    ) -> Result<(), String> {
-        // Map dashcore::Network to key_wallet::Network (they are identical variants).
-        fn to_wallet_network(n: Network) -> key_wallet::Network {
-            match n {
-                Network::Dash => key_wallet::Network::Dash,
-                Network::Testnet => key_wallet::Network::Testnet,
-                Network::Devnet => key_wallet::Network::Devnet,
-                Network::Regtest => key_wallet::Network::Regtest,
-                other => {
-                    // Fallback: treat unknown as Dash (shouldn't happen for standard nets)
-                    tracing::warn!(
-                        ?other,
-                        "Unknown dashcore::Network; defaulting to Dash for wallet network mapping"
-                    );
-                    key_wallet::Network::Dash
-                }
-            }
-        }
+        seed_hash: WalletSeedHash,
+        mut seed_bytes: [u8; 64],
+    ) -> Result<WalletId, String> {
+        let wallet_network = Self::wallet_network(self.network);
 
-        let net_wallet = to_wallet_network(attachment.network);
+        let existing_wallet_id = {
+            let map = self.det_wallets.read().map_err(|e| e.to_string())?;
+            map.get(&seed_hash).copied()
+        };
 
         let mut wm = self.wallet.write().await;
-        let mut map = self.det_wallets.write().map_err(|e| e.to_string())?;
 
-        for WatchOnlyAccount {
-            seed_hash,
-            xpub,
-            account_index,
-        } in attachment.accounts
-        {
-            let xpub_str = xpub.to_string();
-
-            // 1) Ensure a watch-only wallet exists for this xpub
-            let wallet_id = match wm.import_wallet_from_xpub(&xpub_str, net_wallet, false) {
-                Ok(id) => id,
-                Err(WalletError::WalletExists(id)) => id,
-                Err(e) => {
-                    tracing::error!(?e, seed = %hex::encode(seed_hash), "import_wallet_from_xpub failed");
-                    return Err(format!("import_wallet_from_xpub failed: {e}"));
-                }
-            };
-
-            // 2) Ensure BIP44 account exists on the Wallet (backed by xpub)
-            let acct_type = AccountType::Standard {
-                index: account_index,
-                standard_account_type: StandardAccountType::BIP44Account,
-            };
-            if let Err(e) = wm.create_account(&wallet_id, acct_type, net_wallet, Some(xpub)) {
-                match e {
-                    WalletError::AccountCreation(msg) if msg.contains("already exists") => {
-                        // Ignore duplicates
-                    }
-                    other => {
-                        tracing::error!(?other, seed = %hex::encode(seed_hash), "create_account failed");
-                        return Err(format!("create_account failed: {other}"));
-                    }
+        if let Some(wallet_id) = existing_wallet_id {
+            if let Some(wallet) = wm.get_wallet(&wallet_id) {
+                if wallet.can_sign() {
+                    seed_bytes.zeroize();
+                    return Ok(wallet_id);
                 }
             }
 
-            // 3) Add ManagedAccount so filters have monitored addresses (idempotent)
-            if let Some(info) = wm.get_wallet_info_mut(&wallet_id) {
-                let _ = info.add_managed_account_from_xpub(acct_type, net_wallet, xpub);
+            if let Err(err) = wm.remove_wallet(&wallet_id) {
+                tracing::warn!(wallet = %hex::encode(wallet_id), ?err, "Failed to remove existing SPV wallet before upgrade");
             } else {
-                return Err(format!("wallet_info not found for wallet_id {wallet_id:?}"));
+                tracing::info!(wallet = %hex::encode(wallet_id), "Upgrading SPV wallet from watch-only to full access");
             }
-
-            // Store mapping of DET seed_hash to WalletId
-            map.insert(seed_hash, wallet_id);
         }
 
-        // for registration in attachment.identity_registrations {
-        //     let Some(wallet_id) = map.get(&registration.seed_hash).cloned() else {
-        //         tracing::warn!(seed = %hex::encode(registration.seed_hash), "Missing wallet_id for identity registration batch" );
-        //         continue;
-        //     };
+        let xprv = ExtendedPrivKey::new_master(self.network, &seed_bytes).map_err(|e| {
+            seed_bytes.zeroize();
+            format!("ExtendedPrivKey::new_master failed: {e}")
+        })?;
+        seed_bytes.zeroize();
+        let xprv_str = xprv.to_string();
 
-        //     for entry in registration.entries {
-        //         if entry.addresses.is_empty() {
-        //             continue;
-        //         }
+        let account_options = Self::default_account_creation_options();
 
-        //         if let Err(err) =
-        //             Self::ensure_account_exists(&mut wm, &wallet_id, net_wallet, entry.account_type)
-        //         {
-        //             tracing::error!(seed = %hex::encode(registration.seed_hash), account = ?entry.account_type, "Failed to ensure account exists: {err}");
-        //             continue;
-        //         }
+        let wallet_id = match wm.import_wallet_from_extended_priv_key(
+            &xprv_str,
+            wallet_network,
+            account_options,
+        ) {
+            Ok(id) => id,
+            Err(WalletError::WalletExists(id)) => id,
+            Err(err) => {
+                return Err(format!(
+                    "import_wallet_from_extended_priv_key failed: {err}"
+                ));
+            }
+        };
 
-        //         match wm.register_known_addresses(
-        //             &wallet_id,
-        //             net_wallet,
-        //             entry.account_type,
-        //             entry.addresses.clone(),
-        //         ) {
-        //             Ok(added) => {
-        //                 if added > 0 {
-        //                     tracing::info!(seed = %hex::encode(registration.seed_hash), account = ?entry.account_type, added, "Registered identity addresses for watch-only SPV");
-        //                 }
-        //             }
-        //             Err(e) => {
-        //                 tracing::error!(seed = %hex::encode(registration.seed_hash), account = ?entry.account_type, error = ?e, "register_known_addresses failed");
-        //             }
-        //         }
-        //     }
-        // }
+        drop(wm);
 
-        // Optional: log monitored addresses count for debugging
-        let addr_count = wm.monitored_addresses(attachment.network).len();
-        tracing::info!(addresses = addr_count, network = ?attachment.network, "SPV now watching addresses");
+        let mut map = self.det_wallets.write().map_err(|e| e.to_string())?;
+        map.insert(seed_hash, wallet_id);
 
-        Ok(())
+        Ok(wallet_id)
     }
 
-    fn _ensure_account_exists(
-        wm: &mut WalletManager<ManagedWalletInfo>,
-        wallet_id: &WalletId,
-        network: key_wallet::Network,
-        account_type: AccountType,
-    ) -> Result<(), String> {
-        if let Err(e) = wm.create_account(wallet_id, account_type, network, None) {
-            match e {
-                WalletError::AccountCreation(msg) if msg.contains("already exists") => Ok(()),
-                WalletError::AccountCreation(msg) if msg.contains("Account already exists") => {
-                    Ok(())
-                }
-                other => Err(format!("create_account failed: {other}")),
+    pub async fn next_bip44_receive_address(
+        &self,
+        seed_hash: WalletSeedHash,
+        account_index: u32,
+    ) -> Result<SpvDerivedAddress, String> {
+        let wallet_id = {
+            let map = self.det_wallets.read().map_err(|e| e.to_string())?;
+            map.get(&seed_hash)
+                .copied()
+                .ok_or_else(|| "Wallet seed not loaded into SPV".to_string())?
+        };
+
+        let mut wm = self.wallet.write().await;
+        let network = Self::wallet_network(self.network);
+
+        let result = wm
+            .get_receive_address(
+                &wallet_id,
+                network,
+                account_index,
+                AccountTypePreference::BIP44,
+                true,
+            )
+            .map_err(|e| format!("get_receive_address failed: {e}"))?;
+
+        let address = result
+            .address
+            .ok_or_else(|| "Wallet manager did not return an address".to_string())?;
+
+        let derivation_path = {
+            let info = wm
+                .get_wallet_info(&wallet_id)
+                .ok_or_else(|| "wallet info missing".to_string())?;
+            let collection = info
+                .accounts(network)
+                .ok_or_else(|| "Account collection not found".to_string())?;
+            let account = collection
+                .standard_bip44_accounts
+                .get(&account_index)
+                .ok_or_else(|| "BIP44 account missing".to_string())?;
+            let metadata = account
+                .get_address_info(&address)
+                .ok_or_else(|| "Address metadata unavailable".to_string())?;
+            metadata.path
+        };
+
+        Ok(SpvDerivedAddress {
+            address,
+            derivation_path,
+        })
+    }
+
+    fn wallet_network(network: Network) -> key_wallet::Network {
+        match network {
+            Network::Dash => key_wallet::Network::Dash,
+            Network::Testnet => key_wallet::Network::Testnet,
+            Network::Devnet => key_wallet::Network::Devnet,
+            Network::Regtest => key_wallet::Network::Regtest,
+            other => {
+                tracing::warn!(
+                    ?other,
+                    "Unknown dashcore::Network; defaulting to Dash for wallet mapping"
+                );
+                key_wallet::Network::Dash
             }
-        } else {
-            Ok(())
         }
+    }
+
+    fn default_account_creation_options() -> WalletAccountCreationOptions {
+        WalletAccountCreationOptions::Default
     }
 
     async fn run_spv_loop(

@@ -532,4 +532,8 @@ impl ScreenWithWalletUnlock for TransferScreen {
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
     }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
+    }
 }

@@ -7,11 +7,13 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
+use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
 use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
@@ -50,6 +52,7 @@ pub mod register_contract;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
+pub mod wallet;
 
 // TODO: Refactor how we handle errors and messages, and remove it from here
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
@@ -68,6 +71,7 @@ pub enum BackendTask {
     MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
     GroveSTARKTask(GroveSTARKTask),
+    WalletTask(WalletTask),
     None,
 }
 
@@ -143,6 +147,10 @@ pub enum BackendTaskSuccessResult {
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
+    GeneratedReceiveAddress {
+        seed_hash: WalletSeedHash,
+        address: String,
+    },
 
     // MNList-specific results
     MnListFetchedDiff {
@@ -243,7 +251,19 @@ impl AppContext {
             BackendTask::GroveSTARKTask(grovestark_task) => {
                 grovestark::run_grovestark_task(grovestark_task, &sdk).await
             }
+            BackendTask::WalletTask(wallet_task) => self.run_wallet_task(wallet_task).await,
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
+        }
+    }
+
+    async fn run_wallet_task(
+        self: &Arc<Self>,
+        task: WalletTask,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        match task {
+            WalletTask::GenerateReceiveAddress { seed_hash } => {
+                self.generate_receive_address(seed_hash).await
+            }
         }
     }
 }

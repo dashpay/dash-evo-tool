@@ -449,7 +449,7 @@ impl Wallet {
         self.transactions = transactions;
     }
 
-    fn seed_bytes(&self) -> Result<&[u8; 64], String> {
+    pub(crate) fn seed_bytes(&self) -> Result<&[u8; 64], String> {
         match &self.wallet_seed {
             WalletSeed::Open(opened) => Ok(&opened.seed),
             WalletSeed::Closed(_) => Err("Wallet is closed, please decrypt it first".to_string()),

@@ -2997,6 +2997,10 @@ impl ScreenWithWalletUnlock for TokensScreen {
     fn error_message(&self) -> Option<&String> {
         self.token_creator_error_message.as_ref()
     }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
+    }
 }
 
 #[cfg(test)]

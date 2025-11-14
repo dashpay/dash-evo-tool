@@ -575,4 +575,8 @@ impl ScreenWithWalletUnlock for TransferTokensScreen {
             None
         }
     }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
+    }
 }

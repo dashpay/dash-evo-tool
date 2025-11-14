@@ -1,3 +1,4 @@
+use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::styled::StyledCheckbox;
 use eframe::epaint::Color32;
@@ -17,6 +18,8 @@ pub trait ScreenWithWalletUnlock {
     fn set_error_message(&mut self, error_message: Option<String>);
 
     fn error_message(&self) -> Option<&String>;
+
+    fn app_context(&self) -> Arc<AppContext>;
 
     fn should_ask_for_password(&mut self) -> bool {
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
@@ -43,6 +46,8 @@ pub trait ScreenWithWalletUnlock {
     }
 
     fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
+        let mut unlocked_wallet: Option<Arc<RwLock<Wallet>>> = None;
+
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
             let mut wallet = wallet_guard.write().unwrap();
 
@@ -58,8 +63,6 @@ pub trait ScreenWithWalletUnlock {
                 }
 
                 ui.add_space(5.0);
-
-                let mut unlocked = false;
 
                 // Capture necessary values before the closure
                 let show_password = self.show_password();
@@ -107,7 +110,7 @@ pub trait ScreenWithWalletUnlock {
                     match unlock_result {
                         Ok(_) => {
                             local_error_message = None;
-                            unlocked = true;
+                            unlocked_wallet = Some(wallet_guard.clone());
                         }
                         Err(_) => {
                             if let Some(hint) = wallet.password_hint() {
@@ -133,10 +136,15 @@ pub trait ScreenWithWalletUnlock {
                     ui.add_space(5.0);
                     ui.colored_label(Color32::RED, error_message);
                 }
-
-                return unlocked;
             }
         }
+
+        if let Some(wallet_arc) = unlocked_wallet {
+            let app_context = self.app_context();
+            app_context.handle_wallet_unlocked(&wallet_arc);
+            return true;
+        }
+
         false
     }
 }

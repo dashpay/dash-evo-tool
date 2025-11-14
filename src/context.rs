@@ -1,4 +1,5 @@
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
@@ -10,9 +11,11 @@ use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
-use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
+use crate::model::wallet::{
+    AddressInfo as WalletAddressInfo, DerivationPathReference, DerivationPathType, Wallet,
+    WalletSeedHash, WalletTransaction,
+};
 use crate::sdk_wrapper::initialize_sdk;
-use crate::spv::WatchOnlyWalletAttachment;
 use crate::spv::{CoreBackendMode, SpvManager};
 use crate::ui::RootScreenType;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
@@ -29,7 +32,12 @@ use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
+use dash_sdk::dpp::key_wallet::account::AccountType;
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
+    ManagedWalletInfo, wallet_info_interface::WalletInfoInterface,
+};
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -299,7 +307,6 @@ impl AppContext {
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
         self.spv_manager.start()?;
-        self.spv_attach_current_wallets();
         self.spv_setup_reconcile_listener();
         Ok(())
     }
@@ -313,6 +320,36 @@ impl AppContext {
         }
     }
 
+    pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+        if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
+            self.queue_spv_wallet_load(seed_hash, seed_bytes);
+        }
+    }
+
+    fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
+        let guard = wallet.read().ok()?;
+        if !guard.is_open() {
+            return None;
+        }
+        let seed_bytes = match guard.seed_bytes() {
+            Ok(bytes) => *bytes,
+            Err(err) => {
+                tracing::warn!(error = %err, wallet = %hex::encode(guard.seed_hash()), "Unable to snapshot wallet seed for SPV load");
+                return None;
+            }
+        };
+        Some((guard.seed_hash(), seed_bytes))
+    }
+
+    fn queue_spv_wallet_load(self: &Arc<Self>, seed_hash: WalletSeedHash, seed_bytes: [u8; 64]) {
+        let spv = Arc::clone(&self.spv_manager);
+        self.subtasks.spawn_sync(async move {
+            if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
+                tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
+            }
+        });
+    }
+
     pub fn bootstrap_loaded_wallets(self: &Arc<Self>) {
         let wallets: Vec<_> = {
             let guard = self.wallets.read().unwrap();
@@ -321,24 +358,194 @@ impl AppContext {
 
         for wallet in wallets {
             self.bootstrap_wallet_addresses(&wallet);
+            self.handle_wallet_unlocked(&wallet);
         }
     }
 
-    pub fn spv_attach_current_wallets(&self) {
-        // Build attachment from current wallets and schedule attach.
-        let spv = Arc::clone(&self.spv_manager);
-        let network = self.network;
-        let wallets_snapshot = {
+    pub(crate) async fn generate_receive_address(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let wallet_arc = {
             let wallets = self.wallets.read().unwrap();
-            wallets.clone()
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or_else(|| "Wallet not found".to_string())?
         };
-        let attachment = WatchOnlyWalletAttachment::from_wallets(network, &wallets_snapshot);
-        let subtasks = self.subtasks.clone();
-        subtasks.spawn_sync(async move {
-            if let Err(e) = spv.attach_watch_only_accounts(attachment).await {
-                tracing::warn!("Failed to attach watch-only wallets to SPV: {}", e);
+
+        let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
+            let derived = self
+                .spv_manager
+                .next_bip44_receive_address(seed_hash, 0)
+                .await?;
+
+            let _ = self.register_spv_address(
+                &wallet_arc,
+                derived.address.clone(),
+                derived.derivation_path.clone(),
+                DerivationPathType::CLEAR_FUNDS,
+                DerivationPathReference::BIP44,
+            )?;
+
+            derived.address.to_string()
+        } else {
+            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            wallet
+                .receive_address(self.network, false, Some(self))?
+                .to_string()
+        };
+
+        Ok(BackendTaskSuccessResult::GeneratedReceiveAddress {
+            seed_hash,
+            address: address_string,
+        })
+    }
+
+    fn register_spv_address(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+        address: Address,
+        derivation_path: DerivationPath,
+        path_type: DerivationPathType,
+        path_reference: DerivationPathReference,
+    ) -> Result<bool, String> {
+        let mut guard = wallet.write().map_err(|e| e.to_string())?;
+        if guard.known_addresses.contains_key(&address) {
+            return Ok(false);
+        }
+
+        let (path_reference, path_type) =
+            self.classify_derivation_metadata(&derivation_path, path_reference, path_type);
+
+        let seed_hash = guard.seed_hash();
+
+        self.db
+            .add_address_if_not_exists(
+                &seed_hash,
+                &address,
+                &self.network,
+                &derivation_path,
+                path_reference,
+                path_type,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+
+        guard
+            .known_addresses
+            .insert(address.clone(), derivation_path.clone());
+        guard.watched_addresses.insert(
+            derivation_path,
+            WalletAddressInfo {
+                address,
+                path_type,
+                path_reference,
+            },
+        );
+
+        Ok(true)
+    }
+
+    fn wallet_network_key(&self) -> WalletNetwork {
+        match self.network {
+            Network::Dash => WalletNetwork::Dash,
+            Network::Testnet => WalletNetwork::Testnet,
+            Network::Devnet => WalletNetwork::Devnet,
+            Network::Regtest => WalletNetwork::Regtest,
+            _ => WalletNetwork::Dash,
+        }
+    }
+
+    fn sync_spv_account_addresses(
+        &self,
+        wallet_info: &ManagedWalletInfo,
+        wallet_arc: &Arc<RwLock<Wallet>>,
+    ) {
+        let net = self.wallet_network_key();
+        let Some(collection) = wallet_info.accounts(net) else {
+            return;
+        };
+
+        let mut inserted = 0u32;
+        for account in collection.all_accounts() {
+            let account_type = account.account_type.to_account_type();
+            if matches!(account_type, AccountType::Standard { .. }) {
+                continue;
             }
-        });
+            let Some((path_reference, path_type)) = Self::spv_account_metadata(&account_type)
+            else {
+                continue;
+            };
+
+            for address in account.account_type.all_addresses() {
+                if let Some(info) = account.get_address_info(&address) {
+                    if let Ok(true) = self.register_spv_address(
+                        wallet_arc,
+                        address.clone(),
+                        info.path.clone(),
+                        path_type,
+                        path_reference,
+                    ) {
+                        inserted += 1;
+                    }
+                }
+            }
+        }
+
+        if inserted > 0 {
+            tracing::debug!(added = inserted, "Registered SPV-managed addresses");
+        }
+    }
+
+    fn spv_account_metadata(
+        account_type: &AccountType,
+    ) -> Option<(DerivationPathReference, DerivationPathType)> {
+        match account_type {
+            AccountType::IdentityRegistration => Some((
+                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                DerivationPathType::CREDIT_FUNDING,
+            )),
+            AccountType::IdentityInvitation => Some((
+                DerivationPathReference::BlockchainIdentityCreditInvitationFunding,
+                DerivationPathType::CREDIT_FUNDING,
+            )),
+            AccountType::IdentityTopUp { .. } | AccountType::IdentityTopUpNotBoundToIdentity => {
+                Some((
+                    DerivationPathReference::BlockchainIdentityCreditTopupFunding,
+                    DerivationPathType::CREDIT_FUNDING,
+                ))
+            }
+            AccountType::Standard { .. } => Some((
+                DerivationPathReference::BIP44,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            _ => None,
+        }
+    }
+
+    fn classify_derivation_metadata(
+        &self,
+        derivation_path: &DerivationPath,
+        default_ref: DerivationPathReference,
+        default_type: DerivationPathType,
+    ) -> (DerivationPathReference, DerivationPathType) {
+        let components = derivation_path.as_ref();
+        if components.len() >= 5
+            && matches!(components[0], ChildNumber::Hardened { index: 9 })
+            && matches!(components[2], ChildNumber::Hardened { index: 5 })
+            && matches!(components[3], ChildNumber::Hardened { .. })
+        {
+            let hardened_leaf = matches!(components.last(), Some(ChildNumber::Hardened { .. }));
+            if !hardened_leaf {
+                return (
+                    DerivationPathReference::BlockchainIdentities,
+                    DerivationPathType::SINGLE_USER_AUTHENTICATION,
+                );
+            }
+        }
+
+        (default_ref, default_type)
     }
 
     /// Subscribe to SPV reconcile signals and debounce updates.
@@ -384,20 +591,25 @@ impl AppContext {
                 .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
             tracing::debug!(wallet = %hex::encode(seed_hash), confirmed = balance.confirmed, unconfirmed = balance.unconfirmed, total = balance.total, "SPV balance snapshot");
 
-            if let Some(wref) = wallets_guard.get(seed_hash)
-                && let Ok(mut wallet) = wref.write()
-            {
+            let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
+                continue;
+            };
+
+            let Some(wallet_arc) = wallets_guard.get(seed_hash).cloned() else {
+                continue;
+            };
+
+            self.sync_spv_account_addresses(wallet_info, &wallet_arc);
+
+            if let Ok(mut wallet) = wallet_arc.write() {
                 wallet.update_spv_balances(balance.confirmed, balance.unconfirmed, balance.total);
             }
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
-            let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> =
-                if let Some(wref) = wallets_guard.get(seed_hash) {
-                    let w = wref.read().unwrap();
-                    w.known_addresses.keys().cloned().collect()
-                } else {
-                    continue;
-                };
+            let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> = {
+                let w = wallet_arc.read().unwrap();
+                w.known_addresses.keys().cloned().collect()
+            };
 
             // Clear existing UTXOs for these addresses in this network
             for addr in &known_addresses {
@@ -432,76 +644,37 @@ impl AppContext {
 
                 // If address unknown to DET, try to register using SPV metadata
                 if !known_addresses.contains(&address) {
-                    if let Some(info) = wm.get_wallet_info(wallet_id) {
-                        // Map network for accounts lookup if required by API
-                        let net = match self.network {
-                            dash_sdk::dpp::dashcore::Network::Dash => {
-                                dash_sdk::dpp::key_wallet::Network::Dash
-                            }
-                            dash_sdk::dpp::dashcore::Network::Testnet => {
-                                dash_sdk::dpp::key_wallet::Network::Testnet
-                            }
-                            dash_sdk::dpp::dashcore::Network::Devnet => {
-                                dash_sdk::dpp::key_wallet::Network::Devnet
-                            }
-                            dash_sdk::dpp::dashcore::Network::Regtest => {
-                                dash_sdk::dpp::key_wallet::Network::Regtest
-                            }
-                            _ => dash_sdk::dpp::key_wallet::Network::Dash,
-                        };
-                        if let Some(collection) = info.accounts(net) {
-                            let mut registered = false;
-                            for acc in collection.all_accounts() {
-                                if let Some(ai) = acc.get_address_info(&address) {
-                                    use crate::model::wallet::{
-                                        DerivationPathReference, DerivationPathType,
-                                    };
+                    let net = self.wallet_network_key();
+                    if let Some(collection) = wallet_info.accounts(net) {
+                        let mut registered = false;
+                        for acc in collection.all_accounts() {
+                            if let Some(ai) = acc.get_address_info(&address) {
+                                let account_type = acc.account_type.to_account_type();
+                                let (path_reference, path_type) =
+                                    Self::spv_account_metadata(&account_type).unwrap_or((
+                                        DerivationPathReference::BIP44,
+                                        DerivationPathType::CLEAR_FUNDS,
+                                    ));
 
-                                    let path_reference = DerivationPathReference::BIP44;
-                                    let path_type = DerivationPathType::CLEAR_FUNDS; // minimal classification
-
-                                    // Insert into DB (idempotent) and update in-memory wallet model
-                                    if let Some(wref) = wallets_guard.get(seed_hash)
-                                        && let Ok(mut w) = wref.write()
-                                    {
-                                        let _ = self.db.add_address_if_not_exists(
-                                            seed_hash,
-                                            &address,
-                                            &self.network,
-                                            &ai.path,
-                                            path_reference,
-                                            path_type,
-                                            None,
-                                        );
-                                        // Update in-memory maps
-                                        use crate::model::wallet::AddressInfo as WalletAddressInfo;
-                                        w.known_addresses.insert(address.clone(), ai.path.clone());
-                                        w.watched_addresses.insert(
-                                            ai.path.clone(),
-                                            WalletAddressInfo {
-                                                address: address.clone(),
-                                                path_type,
-                                                path_reference,
-                                            },
-                                        );
+                                if let Ok(inserted) = self.register_spv_address(
+                                    &wallet_arc,
+                                    address.clone(),
+                                    ai.path.clone(),
+                                    path_type,
+                                    path_reference,
+                                ) {
+                                    if inserted {
                                         known_addresses.insert(address.clone());
-                                        registered = true;
                                     }
-                                    if registered {
-                                        break;
-                                    }
+                                    registered = true;
                                 }
+                                break;
                             }
-                            if !registered {
-                                // SPV has no derivation metadata for this address under this wallet; skip it.
-                                continue;
-                            }
-                        } else {
-                            // No accounts collection; skip registration
+                        }
+                        if !registered {
                             continue;
                         }
                     } else {
-                        // No wallet info available; skip registration
                         continue;
                     }
                 }

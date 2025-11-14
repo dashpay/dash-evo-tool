@@ -11,6 +11,7 @@ pub enum AccountCategory {
     Bip32,
     CoinJoin,
     IdentityRegistration,
+    IdentitySystem,
     IdentityTopup,
     IdentityInvitation,
     ProviderVoting,
@@ -25,8 +26,8 @@ impl AccountCategory {
         match reference {
             DerivationPathReference::BIP44 => AccountCategory::Bip44,
             DerivationPathReference::BIP32 => AccountCategory::Bip32,
-            DerivationPathReference::BlockchainIdentities
-            | DerivationPathReference::BlockchainIdentityCreditRegistrationFunding => {
+            DerivationPathReference::BlockchainIdentities => AccountCategory::IdentitySystem,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding => {
                 AccountCategory::IdentityRegistration
             }
             DerivationPathReference::BlockchainIdentityCreditInvitationFunding => {
@@ -53,6 +54,7 @@ impl AccountCategory {
             AccountCategory::Bip32 => format!("BIP32 Account {:?}", index.unwrap_or(0)),
             AccountCategory::CoinJoin => "CoinJoin".to_string(),
             AccountCategory::IdentityRegistration => "Identity Registration".to_string(),
+            AccountCategory::IdentitySystem => "Identity System".to_string(),
             AccountCategory::IdentityTopup => "Identity Top-up".to_string(),
             AccountCategory::IdentityInvitation => "Identity Invitation".to_string(),
             AccountCategory::ProviderVoting => "Provider Voting".to_string(),
@@ -69,13 +71,53 @@ impl AccountCategory {
             AccountCategory::Bip32 => 1,
             AccountCategory::CoinJoin => 2,
             AccountCategory::IdentityRegistration => 3,
-            AccountCategory::IdentityTopup => 4,
-            AccountCategory::IdentityInvitation => 5,
-            AccountCategory::ProviderOwner => 6,
-            AccountCategory::ProviderVoting => 7,
-            AccountCategory::ProviderOperator => 8,
-            AccountCategory::ProviderPlatform => 9,
-            AccountCategory::Other(_) => 10,
+            AccountCategory::IdentitySystem => 4,
+            AccountCategory::IdentityTopup => 5,
+            AccountCategory::IdentityInvitation => 6,
+            AccountCategory::ProviderOwner => 7,
+            AccountCategory::ProviderVoting => 8,
+            AccountCategory::ProviderOperator => 9,
+            AccountCategory::ProviderPlatform => 10,
+            AccountCategory::Other(_) => 11,
+        }
+    }
+
+    pub fn description(&self) -> Option<&'static str> {
+        match self {
+            AccountCategory::Bip44 => {
+                Some("Standard BIP44 account (m/44'/5'/… ) used for normal wallet funds.")
+            }
+            AccountCategory::Bip32 => {
+                Some("Legacy BIP32 branch reserved for custom derivations or advanced tools.")
+            }
+            AccountCategory::CoinJoin => {
+                Some("CoinJoin mixing account. Funds here are earmarked for privacy transactions.")
+            }
+            AccountCategory::IdentityRegistration => Some(
+                "Credit funding addresses used to register new identities (DIP‑9). Each identity consumes one hardened address here.",
+            ),
+            AccountCategory::IdentitySystem => Some(
+                "Identity authentication/system addresses. They back the identity keys stored on Platform and usually hold zero balance.",
+            ),
+            AccountCategory::IdentityTopup => Some(
+                "Credit funding addresses used when topping up an existing identity's balance.",
+            ),
+            AccountCategory::IdentityInvitation => Some(
+                "Invitation credit funding addresses. Use these when sponsoring a new identity.",
+            ),
+            AccountCategory::ProviderVoting => Some(
+                "Voting key branch for masternodes (Dash Platform / Core DIP‑3 voting key outputs).",
+            ),
+            AccountCategory::ProviderOwner => {
+                Some("Masternode owner key branch (collateral ownership outputs).")
+            }
+            AccountCategory::ProviderOperator => {
+                Some("Operator key branch for masternode BLS operator keys.")
+            }
+            AccountCategory::ProviderPlatform => {
+                Some("Platform service key branch used by masternode platform nodes.")
+            }
+            AccountCategory::Other(_) => None,
         }
     }
 }

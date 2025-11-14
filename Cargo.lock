@@ -10455,3 +10455,7 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
 ]
+
+[[patch.unused]]
+name = "dash-sdk"
+version = "2.1.1"

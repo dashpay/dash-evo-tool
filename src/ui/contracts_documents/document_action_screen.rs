@@ -1698,4 +1698,8 @@ impl ScreenWithWalletUnlock for DocumentActionScreen {
     fn error_message(&self) -> Option<&String> {
         self.wallet_failure.as_ref()
     }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
+    }
 }

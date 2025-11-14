@@ -8,7 +8,7 @@ use dash_sdk::dash_spv::types::{
     DetailedSyncProgress, SpvEvent, SyncProgress, SyncStage, ValidationMode,
 };
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient};
-use dash_sdk::dpp::dashcore::{Address, Network};
+use dash_sdk::dpp::dashcore::{Address, Network, Transaction};
 use dash_sdk::dpp::key_wallet;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
@@ -330,6 +330,48 @@ impl SpvManager {
             .read()
             .map(|m| m.clone())
             .unwrap_or_default()
+    }
+
+    pub fn wallet_id_for_seed(&self, seed_hash: WalletSeedHash) -> Option<WalletId> {
+        self.det_wallets
+            .read()
+            .ok()
+            .and_then(|map| map.get(&seed_hash).copied())
+    }
+
+    pub async fn unload_wallet(&self, seed_hash: WalletSeedHash) -> Result<(), String> {
+        let wallet_id = {
+            let map = self.det_wallets.read().map_err(|e| e.to_string())?;
+            map.get(&seed_hash).copied()
+        };
+
+        let Some(wallet_id) = wallet_id else {
+            return Ok(());
+        };
+
+        let mut wm = self.wallet.write().await;
+        match wm.remove_wallet(&wallet_id) {
+            Ok((_wallet, _info)) => {
+                drop(wm);
+                let mut map = self.det_wallets.write().map_err(|e| e.to_string())?;
+                map.remove(&seed_hash);
+                Ok(())
+            }
+            Err(WalletError::WalletNotFound(_)) => Ok(()),
+            Err(err) => Err(format!("Failed to unload SPV wallet: {err}")),
+        }
+    }
+
+    pub async fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), String> {
+        let guard = self.client.read().await;
+        let client = guard
+            .as_ref()
+            .ok_or_else(|| "SPV client not initialized".to_string())?;
+
+        client
+            .broadcast_transaction(tx)
+            .await
+            .map_err(|e| format!("Failed to broadcast via SPV: {e}"))
     }
 
     /// Create a reconciliation signal channel for external listeners.

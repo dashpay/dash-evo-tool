@@ -326,6 +326,17 @@ impl AppContext {
         }
     }
 
+    pub fn handle_wallet_locked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+        let seed_hash = match wallet.read() {
+            Ok(guard) => guard.seed_hash(),
+            Err(err) => {
+                tracing::warn!(error = %err, "Unable to read wallet during lock handling");
+                return;
+            }
+        };
+        self.queue_spv_wallet_unload(seed_hash);
+    }
+
     fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
         let guard = wallet.read().ok()?;
         if !guard.is_open() {
@@ -346,6 +357,15 @@ impl AppContext {
         self.subtasks.spawn_sync(async move {
             if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
                 tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
+            }
+        });
+    }
+
+    fn queue_spv_wallet_unload(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+        let spv = Arc::clone(&self.spv_manager);
+        self.subtasks.spawn_sync(async move {
+            if let Err(error) = spv.unload_wallet(seed_hash).await {
+                tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to unload SPV wallet");
             }
         });
     }
@@ -447,7 +467,7 @@ impl AppContext {
         Ok(true)
     }
 
-    fn wallet_network_key(&self) -> WalletNetwork {
+    pub(crate) fn wallet_network_key(&self) -> WalletNetwork {
         match self.network {
             Network::Dash => WalletNetwork::Dash,
             Network::Testnet => WalletNetwork::Testnet,

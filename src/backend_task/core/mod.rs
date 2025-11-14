@@ -6,14 +6,25 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::spv::CoreBackendMode;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
+use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::{
-    Address, Block, ChainLock, InstantLock, Network, OutPoint, Transaction, TxOut,
+    Address, Block, ChainLock, InstantLock, Network, OutPoint, PrivateKey, Transaction, TxOut,
 };
+use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
+
+const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
 
 #[derive(Debug, Clone)]
 pub enum CoreTask {
@@ -195,27 +206,20 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
     ) -> Result<BackendTaskSuccessResult, String> {
-        if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-            self.reconcile_spv_wallets()
-                .await
-                .map_err(|e| format!("Unable to sync wallet before send: {}", e))?;
+        match self.core_backend_mode() {
+            CoreBackendMode::Spv => self.send_wallet_payment_via_spv(wallet, request).await,
+            CoreBackendMode::Rpc => self.send_wallet_payment_via_rpc(wallet, request).await,
         }
+    }
+}
 
-        if request.amount_duffs == 0 {
-            return Err("Amount must be greater than zero".to_string());
-        }
-
-        let recipient = Address::from_str(&request.to_address)
-            .map_err(|e| format!("Invalid address: {e}"))?
-            .assume_checked();
-
-        if recipient.network() != &self.network {
-            return Err(format!(
-                "Recipient address uses {} but wallet network is {}",
-                recipient.network(),
-                self.network
-            ));
-        }
+impl AppContext {
+    async fn send_wallet_payment_via_rpc(
+        &self,
+        wallet: Arc<RwLock<Wallet>>,
+        request: WalletPaymentRequest,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let recipient = self.parse_send_recipient(&request)?;
 
         const DEFAULT_TX_FEE: u64 = 1_000;
 
@@ -246,5 +250,267 @@ impl AppContext {
             address: request.to_address,
             amount: request.amount_duffs,
         })
+    }
+
+    async fn send_wallet_payment_via_spv(
+        &self,
+        wallet: Arc<RwLock<Wallet>>,
+        request: WalletPaymentRequest,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        self.reconcile_spv_wallets()
+            .await
+            .map_err(|e| format!("Unable to sync wallet before send: {}", e))?;
+
+        let recipient = self.parse_send_recipient(&request)?;
+        let seed_hash = {
+            let guard = wallet.read().map_err(|e| e.to_string())?;
+            if !guard.is_open() {
+                return Err("Wallet must be unlocked".to_string());
+            }
+            guard.seed_hash()
+        };
+
+        let wallet_id = self
+            .spv_manager
+            .wallet_id_for_seed(seed_hash)
+            .ok_or_else(|| "Wallet not loaded into SPV".to_string())?;
+
+        let (tx, effective_amount, recipient_script) = {
+            let wm_arc = self.spv_manager.wallet();
+            let mut wm = wm_arc.write().await;
+            let unsigned =
+                self.build_spv_unsigned_transaction(&mut wm, &wallet_id, &recipient, &request)?;
+            let signed = self.sign_spv_transaction(&mut wm, &wallet_id, unsigned.0)?;
+            (signed, unsigned.1, recipient.script_pubkey())
+        };
+
+        self.spv_manager
+            .broadcast_transaction(&tx)
+            .await
+            .map_err(|e| format!("Broadcast failed: {e}"))?;
+
+        self.reconcile_spv_wallets()
+            .await
+            .map_err(|e| format!("Failed to refresh wallet after send: {}", e))?;
+
+        let sent_amount =
+            Self::sum_outputs_to_script(&tx, &recipient_script).unwrap_or(effective_amount);
+
+        Ok(BackendTaskSuccessResult::WalletPayment {
+            txid: tx.txid().to_string(),
+            address: request.to_address,
+            amount: sent_amount,
+        })
+    }
+
+    fn parse_send_recipient(&self, request: &WalletPaymentRequest) -> Result<Address, String> {
+        if request.amount_duffs == 0 {
+            return Err("Amount must be greater than zero".to_string());
+        }
+
+        let recipient = Address::from_str(&request.to_address)
+            .map_err(|e| format!("Invalid address: {e}"))?
+            .assume_checked();
+
+        if recipient.network() != &self.network {
+            return Err(format!(
+                "Recipient address uses {} but wallet network is {}",
+                recipient.network(),
+                self.network
+            ));
+        }
+
+        Ok(recipient)
+    }
+
+    fn build_spv_unsigned_transaction(
+        &self,
+        wm: &mut WalletManager<ManagedWalletInfo>,
+        wallet_id: &WalletId,
+        recipient: &Address,
+        request: &WalletPaymentRequest,
+    ) -> Result<(Transaction, u64), String> {
+        const FALLBACK_STEP: u64 = 100;
+
+        let network = self.wallet_network_key();
+        let current_height = wm.current_height(network);
+        let mut attempt_amount = request.amount_duffs;
+        let mut attempted_fallback = false;
+
+        loop {
+            match wm.create_unsigned_payment_transaction(
+                wallet_id,
+                network,
+                DEFAULT_BIP44_ACCOUNT_INDEX,
+                Some(AccountTypePreference::BIP44),
+                vec![(recipient.clone(), attempt_amount)],
+                FeeLevel::Normal,
+                current_height,
+            ) {
+                Ok(tx) => return Ok((tx, attempt_amount)),
+                Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
+                    let next_amount = if !attempted_fallback {
+                        attempted_fallback = true;
+                        self.estimate_fallback_amount(
+                            wm,
+                            wallet_id,
+                            network,
+                            DEFAULT_BIP44_ACCOUNT_INDEX,
+                            current_height,
+                        )?
+                    } else {
+                        attempt_amount.saturating_sub(FALLBACK_STEP)
+                    };
+
+                    if next_amount == 0 || next_amount == attempt_amount {
+                        return Err("Insufficient funds".to_string());
+                    }
+                    attempt_amount = next_amount;
+                }
+                Err(err) => {
+                    return Err(format!("Failed to build transaction: {err}"));
+                }
+            }
+        }
+    }
+
+    fn estimate_fallback_amount(
+        &self,
+        wm: &mut WalletManager<ManagedWalletInfo>,
+        wallet_id: &WalletId,
+        network: WalletNetwork,
+        account_index: u32,
+        current_height: u32,
+    ) -> Result<u64, String> {
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or_else(|| "Wallet info unavailable".to_string())?;
+        let collection = managed_info
+            .accounts(network)
+            .ok_or_else(|| "Account collection not found".to_string())?;
+        let account = collection
+            .standard_bip44_accounts
+            .get(&account_index)
+            .ok_or_else(|| "BIP44 account missing".to_string())?;
+
+        let mut spendable_total = 0u64;
+        let mut spendable_inputs = 0usize;
+        for utxo in account.utxos.values() {
+            if utxo.is_spendable(current_height) {
+                spendable_total = spendable_total.saturating_add(utxo.value());
+                spendable_inputs += 1;
+            }
+        }
+
+        if spendable_total == 0 || spendable_inputs == 0 {
+            return Err("No spendable funds available".to_string());
+        }
+
+        let estimated_size = Self::estimate_p2pkh_tx_size(spendable_inputs, 1);
+        let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+        Ok(spendable_total.saturating_sub(fee))
+    }
+
+    fn sign_spv_transaction(
+        &self,
+        wm: &mut WalletManager<ManagedWalletInfo>,
+        wallet_id: &WalletId,
+        tx: Transaction,
+    ) -> Result<Transaction, String> {
+        let network = self.wallet_network_key();
+
+        let wallet = wm
+            .get_wallet(wallet_id)
+            .ok_or_else(|| "Wallet object not found".to_string())?;
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or_else(|| "Wallet info unavailable".to_string())?;
+        let accounts = managed_info
+            .accounts(network)
+            .ok_or_else(|| "Account collection not found".to_string())?;
+        let account = accounts
+            .standard_bip44_accounts
+            .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
+            .ok_or_else(|| "BIP44 account missing".to_string())?;
+
+        let secp = Secp256k1::new();
+        let mut tx_signed = tx;
+        let cache = SighashCache::new(&tx_signed);
+
+        let signing_data = tx_signed
+            .input
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                let utxo = account
+                    .utxos
+                    .get(&input.previous_output)
+                    .ok_or_else(|| "Missing UTXO for signing".to_string())?;
+                let sighash = cache
+                    .legacy_signature_hash(index, &utxo.txout.script_pubkey, 1)
+                    .map_err(|e| format!("Failed to compute signature hash: {e}"))?;
+                Ok((sighash, utxo.address.clone()))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        for (input, (sighash, address)) in tx_signed.input.iter_mut().zip(signing_data.into_iter())
+        {
+            let message = Message::from_digest(sighash.into());
+
+            let addr_info = account
+                .get_address_info(&address)
+                .ok_or_else(|| "Address metadata missing".to_string())?;
+            let secret_key = wallet
+                .derive_private_key(network, &addr_info.path)
+                .map_err(|e| format!("Failed to derive private key: {e}"))?;
+            let private_key = PrivateKey {
+                compressed: true,
+                network: self.network,
+                inner: secret_key,
+            };
+
+            let sig = secp.sign_ecdsa(&message, &private_key.inner);
+            let mut serialized_sig = sig.serialize_der().to_vec();
+            let mut script_sig = vec![serialized_sig.len() as u8 + 1];
+            script_sig.append(&mut serialized_sig);
+            script_sig.push(1);
+            let mut serialized_pub_key = private_key.public_key(&secp).to_bytes();
+            script_sig.push(serialized_pub_key.len() as u8);
+            script_sig.append(&mut serialized_pub_key);
+            input.script_sig = dash_sdk::dpp::dashcore::ScriptBuf::from_bytes(script_sig);
+        }
+
+        Ok(tx_signed)
+    }
+
+    fn sum_outputs_to_script(
+        tx: &Transaction,
+        script: &dash_sdk::dpp::dashcore::ScriptBuf,
+    ) -> Option<u64> {
+        let mut total = 0u64;
+        for output in &tx.output {
+            if &output.script_pubkey == script {
+                total = total.saturating_add(output.value);
+            }
+        }
+        if total == 0 { None } else { Some(total) }
+    }
+
+    fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
+        fn varint_size(value: usize) -> usize {
+            match value {
+                0..=0xfc => 1,
+                0xfd..=0xffff => 3,
+                0x1_0000..=0xffff_ffff => 5,
+                _ => 9,
+            }
+        }
+
+        let mut size = 8; // version/type/lock_time
+        size += varint_size(inputs);
+        size += varint_size(outputs);
+        size += inputs * 148;
+        size += outputs * 34;
+        size
     }
 }

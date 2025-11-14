@@ -283,6 +283,23 @@ impl WalletsBalancesScreen {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     self.render_remove_wallet_button(ui);
                     ui.add_space(8.0);
+                    let mut should_lock_wallet = false;
+                    if let Some(wallet_arc) = &self.selected_wallet
+                        && let Ok(wallet) = wallet_arc.read()
+                        && wallet.uses_password
+                    {
+                        if wallet.is_open() {
+                            if ui.button("Lock").clicked() {
+                                should_lock_wallet = true;
+                            }
+                        } else {
+                            ui.add_enabled(false, egui::Button::new("Locked"));
+                        }
+                    }
+                    if should_lock_wallet {
+                        self.lock_selected_wallet();
+                    }
+                    ui.add_space(8.0);
                     if let Some(wallet_arc) = &self.selected_wallet
                         && ui.button("Rename").clicked()
                         && let Ok(wallet) = wallet_arc.read()
@@ -1437,6 +1454,37 @@ impl WalletsBalancesScreen {
         self.receive_dialog.qr_texture = None;
         self.receive_dialog.qr_address = None;
         Ok(())
+    }
+
+    fn lock_selected_wallet(&mut self) {
+        let Some(wallet_arc) = self.selected_wallet.clone() else {
+            return;
+        };
+
+        let locked = {
+            let mut wallet = match wallet_arc.write() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    self.display_message(
+                        &format!("Failed to lock wallet: {}", err),
+                        MessageType::Error,
+                    );
+                    return;
+                }
+            };
+
+            if !wallet.is_open() {
+                return;
+            }
+
+            wallet.wallet_seed.close();
+            true
+        };
+
+        if locked {
+            self.app_context.handle_wallet_locked(&wallet_arc);
+            self.display_message("Wallet locked", MessageType::Info);
+        }
     }
 }
 

@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://www.github.com/dashpay/platform", tag = "v2.1.2", features = ["core_key_wallet", "core_key_wallet_manager", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client", "core_spv"] }
+dash-sdk = { path = "/Users/pauldelucia/Documents/Dash/platform/packages/rs-sdk", features = ["core_key_wallet", "core_key_wallet_manager", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client", "core_spv"] }
 grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "5313ba9df590f114e11934e281f1e8c8bc462794" }
 rayon = "1.8"
 thiserror = "2.0.12"
@@ -81,6 +81,3 @@ uninlined_format_args = "allow"
 
 [patch.crates-io]
 elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }
-
-[patch."https://www.github.com/dashpay/platform"]
-dash-sdk = { path = "/Users/pauldelucia/Documents/Dash/platform/packages/rs-sdk" }

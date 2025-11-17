@@ -11,12 +11,12 @@ use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::wallets::add_new_wallet_screen::{
     DASH_BIP44_ACCOUNT_0_PATH_MAINNET, DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
 };
-use bip39::Mnemonic;
+use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
-use egui::{Color32, ComboBox, Direction, Grid, Layout, RichText, Stroke, Ui, Vec2};
+use egui::{Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -116,7 +116,7 @@ impl ImportWalletScreen {
                 .store_wallet(&wallet, &self.app_context.network)
                 .map_err(|e| {
                     if e.to_string().contains("UNIQUE constraint failed: wallet.seed_hash") {
-                        "This wallet has already been imported for another network. Each wallet can only be imported once per network. If you want to use this wallet on a different network, please switch networks first.".to_string()
+                        "This wallet has already been imported for another network. Each wallet can only be imported once.".to_string()
                     } else {
                         e.to_string()
                     }
@@ -245,6 +245,35 @@ impl ScreenLike for ImportWalletScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
+            if let Some(error_msg) = self
+                .error
+                .clone()
+                .filter(|msg| !msg.contains("Invalid seed phrase"))
+            {
+                let message_color = Color32::from_rgb(255, 100, 100);
+                let mut dismiss_requested = false;
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&error_msg).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    dismiss_requested = true;
+                                }
+                            });
+                        });
+                });
+                if dismiss_requested {
+                    self.error = None;
+                }
+                ui.add_space(10.0);
+            }
+
             // Add the scroll area to make the content scrollable both vertically and horizontally
             egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
@@ -257,9 +286,23 @@ impl ScreenLike for ImportWalletScreen {
                     ui.heading("1. Select the seed phrase length and enter all words.");
                     self.render_seed_phrase_input(ui);
 
-                    // Check seed phrase validity whenever all words are filled
-                    if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                        match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                    let normalized_words: Vec<String> = self
+                        .seed_phrase_words
+                        .iter()
+                        .map(|word| word.trim().to_lowercase())
+                        .collect();
+                    let all_words_filled = normalized_words.iter().all(|word| !word.is_empty());
+                    let all_words_valid = all_words_filled
+                        && normalized_words.iter().all(|word| {
+                            Language::English
+                                .word_list()
+                                .binary_search(&word.as_str())
+                                .is_ok()
+                        });
+
+                    // Check seed phrase validity whenever all words are valid BIP39 words
+                    if all_words_valid {
+                        match Mnemonic::parse_normalized(normalized_words.join(" ").as_str()) {
                             Ok(mnemonic) => {
                                 self.seed_phrase = Some(mnemonic);
                                 // Clear any existing seed phrase error
@@ -282,12 +325,18 @@ impl ScreenLike for ImportWalletScreen {
                             }
                     }
 
-                    // Display error message if seed phrase is invalid
-                    if let Some(ref error_msg) = self.error
-                        && error_msg.contains("Invalid seed phrase") {
-                            ui.add_space(10.0);
-                            ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
-                        }
+                    ui.add_space(10.0);
+
+                    if !all_words_valid {
+                        ui.colored_label(
+                            Color32::from_gray(180),
+                            "Waiting for a valid seed phrase...",
+                        );
+                    } else if let Some(ref error_msg) = self.error
+                        && error_msg.contains("Invalid seed phrase")
+                    {
+                        ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
+                    }
 
                     if self.seed_phrase.is_none() {
                         return;

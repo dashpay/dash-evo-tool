@@ -11,7 +11,7 @@ use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::wallets::add_new_wallet_screen::{
     DASH_BIP44_ACCOUNT_0_PATH_MAINNET, DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
 };
-use bip39::Mnemonic;
+use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
@@ -286,9 +286,23 @@ impl ScreenLike for ImportWalletScreen {
                     ui.heading("1. Select the seed phrase length and enter all words.");
                     self.render_seed_phrase_input(ui);
 
-                    // Check seed phrase validity whenever all words are filled
-                    if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                        match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                    let normalized_words: Vec<String> = self
+                        .seed_phrase_words
+                        .iter()
+                        .map(|word| word.trim().to_lowercase())
+                        .collect();
+                    let all_words_filled = normalized_words.iter().all(|word| !word.is_empty());
+                    let all_words_valid = all_words_filled
+                        && normalized_words.iter().all(|word| {
+                            Language::English
+                                .word_list()
+                                .binary_search(&word.as_str())
+                                .is_ok()
+                        });
+
+                    // Check seed phrase validity whenever all words are valid BIP39 words
+                    if all_words_valid {
+                        match Mnemonic::parse_normalized(normalized_words.join(" ").as_str()) {
                             Ok(mnemonic) => {
                                 self.seed_phrase = Some(mnemonic);
                                 // Clear any existing seed phrase error
@@ -311,12 +325,18 @@ impl ScreenLike for ImportWalletScreen {
                             }
                     }
 
-                    // Display error message if seed phrase is invalid
-                    if let Some(ref error_msg) = self.error
-                        && error_msg.contains("Invalid seed phrase") {
-                            ui.add_space(10.0);
-                            ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
-                        }
+                    ui.add_space(10.0);
+
+                    if !all_words_valid {
+                        ui.colored_label(
+                            Color32::from_gray(180),
+                            "Waiting for a valid seed phrase...",
+                        );
+                    } else if let Some(ref error_msg) = self.error
+                        && error_msg.contains("Invalid seed phrase")
+                    {
+                        ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
+                    }
 
                     if self.seed_phrase.is_none() {
                         return;

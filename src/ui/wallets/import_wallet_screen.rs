@@ -116,7 +116,7 @@ impl ImportWalletScreen {
                 .store_wallet(&wallet, &self.app_context.network)
                 .map_err(|e| {
                     if e.to_string().contains("UNIQUE constraint failed: wallet.seed_hash") {
-                        "This wallet has already been imported for another network. Each wallet can only be imported once per network.".to_string()
+                        "This wallet has already been imported for another network. Each wallet can only be imported once.".to_string()
                     } else {
                         e.to_string()
                     }

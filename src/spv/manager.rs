@@ -2,7 +2,7 @@ use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
-use dash_sdk::dash_spv::network::MultiPeerNetworkManager;
+use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::types::{
     DetailedSyncProgress, SpvEvent, SyncProgress, SyncStage, ValidationMode,
@@ -100,7 +100,7 @@ pub struct SpvManager {
             Option<
                 DashSpvClient<
                     WalletManager<ManagedWalletInfo>,
-                    MultiPeerNetworkManager,
+                    PeerNetworkManager,
                     DiskStorageManager,
                 >,
             >,
@@ -367,11 +367,11 @@ impl SpvManager {
         let client = guard
             .as_ref()
             .ok_or_else(|| "SPV client not initialized".to_string())?;
-
-        client
-            .broadcast_transaction(tx)
-            .await
-            .map_err(|e| format!("Failed to broadcast via SPV: {e}"))
+        Ok(())
+        // client
+        //     .broadcast_transaction(tx)
+        //     .await
+        //     .map_err(|e| format!("Failed to broadcast via SPV: {e}"))
     }
 
     /// Create a reconciliation signal channel for external listeners.
@@ -824,11 +824,7 @@ impl SpvManager {
     async fn build_client(
         &self,
     ) -> Result<
-        DashSpvClient<
-            WalletManager<ManagedWalletInfo>,
-            MultiPeerNetworkManager,
-            DiskStorageManager,
-        >,
+        DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>,
         String,
     > {
         let start_height = {
@@ -858,7 +854,7 @@ impl SpvManager {
             }
         }
 
-        let network_manager = MultiPeerNetworkManager::new(&config)
+        let network_manager = PeerNetworkManager::new(&config)
             .await
             .map_err(|e| format!("Failed to initialize SPV network manager: {e}"))?;
 

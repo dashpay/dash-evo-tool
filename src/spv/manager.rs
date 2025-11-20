@@ -421,6 +421,7 @@ impl SpvManager {
 
             attempts = attempts.saturating_add(1);
             if attempts > 500 {
+                // We are failing to get a read lock to access the quorum data.
                 return Err("SPV client busy; try again".to_string());
             }
             // Short backoff to yield to the writer; keep small to avoid stalling proof verification.

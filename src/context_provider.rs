@@ -2,6 +2,7 @@ use crate::app_dir::core_cookie_path;
 use crate::config::NetworkConfig;
 use crate::context::AppContext;
 use crate::database::Database;
+use async_trait::async_trait;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -68,6 +69,7 @@ impl Provider {
     }
 }
 
+#[async_trait]
 impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
@@ -116,7 +118,7 @@ impl ContextProvider for Provider {
             .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))
     }
 
-    fn get_quorum_public_key(
+    async fn get_quorum_public_key(
         &self,
         quorum_type: u32,
         quorum_hash: [u8; 32], // quorum hash is 32 bytes

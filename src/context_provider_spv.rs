@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
+use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::version::PlatformVersion;
@@ -34,6 +35,7 @@ impl SpvProvider {
     }
 }
 
+#[async_trait]
 impl ContextProvider for SpvProvider {
     fn get_data_contract(
         &self,
@@ -80,23 +82,26 @@ impl ContextProvider for SpvProvider {
             .map_err(|e| ContextProviderError::Generic(e.to_string()))
     }
 
-    fn get_quorum_public_key(
+    async fn get_quorum_public_key(
         &self,
         quorum_type: u32,
         quorum_hash: [u8; 32],
         core_chain_locked_height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
-        let app_ctx = app_ctx_guard
-            .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
+        let spv_manager = {
+            let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+            let app_ctx = app_ctx_guard
+                .as_ref()
+                .ok_or(ContextProviderError::Config("no app context".to_string()))?;
+
+            app_ctx.spv_manager().clone()
+        }; // Guard is dropped here
 
         // Ask SPV manager for the public key corresponding to (type, hash)
-        match app_ctx.spv_manager().get_quorum_public_key(
-            quorum_type,
-            quorum_hash,
-            core_chain_locked_height,
-        ) {
+        match spv_manager
+            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
+            .await
+        {
             Ok(key) => Ok(key),
             Err(e) => Err(ContextProviderError::Generic(format!(
                 "SPV quorum key lookup failed: {}",

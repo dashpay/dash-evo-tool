@@ -2,6 +2,7 @@ use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
+use dash_sdk::dash_spv::client::QuorumLookup;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::types::{
@@ -86,26 +87,23 @@ pub struct SpvStatusSnapshot {
     pub last_updated: Option<SystemTime>,
 }
 
+/// Type alias for the SPV client with our specific configuration
+type SpvClient =
+    DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>;
+
 /// Manages SPV client lifecycle and exposes status updates.
 /// Uses dash-spv's built-in state management while maintaining a dedicated runtime for performance.
+///
+/// The client itself is owned by the background runtime thread and accessed through
+/// its internally-shared components (wallet, storage, etc.) rather than through additional locking.
 pub struct SpvManager {
     network: Network,
     data_dir: PathBuf,
     config: Arc<RwLock<NetworkConfig>>,
     subtasks: Arc<TaskManager>,
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
-    #[allow(clippy::type_complexity)]
-    client: Arc<
-        AsyncRwLock<
-            Option<
-                DashSpvClient<
-                    WalletManager<ManagedWalletInfo>,
-                    PeerNetworkManager,
-                    DiskStorageManager,
-                >,
-            >,
-        >,
-    >,
+    // Storage manager for direct access to SPV data (shared component from client)
+    storage: Arc<Mutex<Option<Arc<tokio::sync::Mutex<DiskStorageManager>>>>>,
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
@@ -118,6 +116,26 @@ pub struct SpvManager {
     reconcile_tx: Mutex<Option<mpsc::Sender<()>>>,
     // Cancellation token for clean shutdown
     stop_token: Mutex<Option<CancellationToken>>,
+    // Channel to send requests to the SPV runtime thread
+    request_tx: Mutex<Option<mpsc::Sender<SpvRequest>>>,
+}
+
+/// Requests that can be sent to the SPV runtime thread
+///
+/// Note: These requests are handled in the same async context where the client lives,
+/// allowing direct access to client methods without additional locking overhead.
+enum SpvRequest {
+    BroadcastTransaction {
+        #[allow(dead_code)]
+        tx: Transaction,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    GetQuorumPublicKey {
+        quorum_type: u32,
+        quorum_hash: [u8; 32],
+        core_chain_locked_height: u32,
+        response_tx: tokio::sync::oneshot::Sender<Result<[u8; 48], String>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +161,7 @@ impl SpvManager {
             config,
             subtasks,
             wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new())),
-            client: Arc::new(AsyncRwLock::new(None)),
+            storage: Arc::new(Mutex::new(None)),
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
@@ -153,6 +171,7 @@ impl SpvManager {
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
             stop_token: Mutex::new(None),
+            request_tx: Mutex::new(None),
         });
 
         Ok(manager)
@@ -160,7 +179,6 @@ impl SpvManager {
 
     /// Async status method for getting full details including progress
     pub async fn status_async(&self) -> SpvStatusSnapshot {
-        let _client_guard = self.client.read().await;
         let status = *self.status.read().expect("SPV status lock poisoned");
         let last_error = self
             .last_error
@@ -363,15 +381,26 @@ impl SpvManager {
     }
 
     pub async fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), String> {
-        let guard = self.client.read().await;
-        let client = guard
-            .as_ref()
-            .ok_or_else(|| "SPV client not initialized".to_string())?;
-        Ok(())
-        // client
-        //     .broadcast_transaction(tx)
-        //     .await
-        //     .map_err(|e| format!("Failed to broadcast via SPV: {e}"))
+        let request_tx = self
+            .request_tx
+            .lock()
+            .expect("request_tx poisoned")
+            .clone()
+            .ok_or_else(|| "SPV client not running".to_string())?;
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        request_tx
+            .send(SpvRequest::BroadcastTransaction {
+                tx: tx.clone(),
+                response_tx,
+            })
+            .await
+            .map_err(|_| "SPV runtime channel closed".to_string())?;
+
+        response_rx
+            .await
+            .map_err(|_| "SPV request cancelled".to_string())?
     }
 
     /// Create a reconciliation signal channel for external listeners.
@@ -385,48 +414,57 @@ impl SpvManager {
 
     /// Attempt to resolve a quorum public key via the SPV client's masternode/quorum state.
     ///
-    /// Note: This is a blocking, best-effort lookup. If SPV state is unavailable,
-    /// or the key is not known yet, an error is returned for the caller to handle.
-    pub fn get_quorum_public_key(
+    /// Note: This is an async method that communicates with the SPV runtime thread.
+    /// If SPV state is unavailable or the key is not known yet, an error is returned for the caller to handle.
+    pub async fn get_quorum_public_key(
         &self,
         quorum_type: u32,
         quorum_hash: [u8; 32],
         core_chain_locked_height: u32,
     ) -> Result<[u8; 48], String> {
-        // Try repeatedly to grab a non-blocking read guard.
-        // We avoid blocking_read to prevent panicking inside Tokio runtime threads.
-        let mut attempts = 0u32;
-        loop {
-            if let Ok(guard) = self.client.try_read() {
-                if let Some(client) = guard.as_ref() {
-                    if let Some(q) = client.get_quorum_at_height(
-                        core_chain_locked_height,
-                        quorum_type as u8,
-                        &quorum_hash,
-                    ) {
-                        let pk48: [u8; 48] = *q.quorum_entry.quorum_public_key.as_ref();
-                        return Ok(pk48);
-                    } else {
-                        return Err(format!(
-                            "Quorum not found at height {} for llmq_type={} hash=0x{}",
-                            core_chain_locked_height,
-                            quorum_type,
-                            hex::encode(quorum_hash)
-                        ));
-                    }
-                } else {
-                    return Err("SPV client not initialized".to_string());
-                }
-            }
+        tracing::debug!(
+            "get_quorum_public_key called: type={}, hash={}, height={}",
+            quorum_type,
+            hex::encode(quorum_hash),
+            core_chain_locked_height
+        );
 
-            attempts = attempts.saturating_add(1);
-            if attempts > 500 {
-                // We are failing to get a read lock to access the quorum data.
-                return Err("SPV client busy; try again".to_string());
-            }
-            // Short backoff to yield to the writer; keep small to avoid stalling proof verification.
-            std::thread::sleep(std::time::Duration::from_millis(4));
-        }
+        let request_tx = self
+            .request_tx
+            .lock()
+            .expect("request_tx poisoned")
+            .clone()
+            .ok_or_else(|| {
+                tracing::error!("SPV client not running - request_tx is None");
+                "SPV client not running".to_string()
+            })?;
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        tracing::debug!("Sending quorum request to SPV runtime");
+        // Send the request
+        request_tx
+            .send(SpvRequest::GetQuorumPublicKey {
+                quorum_type,
+                quorum_hash,
+                core_chain_locked_height,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                tracing::error!("Failed to send quorum request");
+                "SPV runtime channel closed".to_string()
+            })?;
+
+        tracing::debug!("Waiting for quorum response from SPV runtime");
+        // Wait for response
+        let result = response_rx.await.map_err(|_| {
+            tracing::error!("SPV request cancelled - response channel dropped");
+            "SPV request cancelled".to_string()
+        })?;
+
+        tracing::debug!("Received quorum response: {:?}", result.is_ok());
+        result
     }
 
     pub async fn load_wallet_from_seed(
@@ -573,6 +611,13 @@ impl SpvManager {
             .await
             .map_err(|e| format!("SPV start failed: {e}"))?;
 
+        // Store the shared storage reference for later access
+        {
+            let storage = client.storage();
+            let mut storage_guard = self.storage.lock().expect("storage lock poisoned");
+            *storage_guard = Some(storage);
+        }
+
         // Set up progress handler
         if let Some(progress_rx) = client.take_progress_receiver() {
             self.spawn_progress_handler(progress_rx);
@@ -583,132 +628,202 @@ impl SpvManager {
             self.spawn_event_handler(event_rx);
         }
 
-        *self.client.write().await = Some(client);
+        // Set up request handler with access to shared components
+        let (request_tx, request_rx) = mpsc::channel(32);
+        {
+            let mut guard = self.request_tx.lock().expect("request_tx poisoned");
+            *guard = Some(request_tx);
+        }
+
+        // Extract shared components from the client before starting monitoring
+        // These return &Arc<T>, so we clone the Arc for the handler
+        let quorum_lookup = client.quorum_lookup().clone();
+
+        // Spawn request handler in a separate task with access to shared components
+        self.spawn_request_handler(request_rx, quorum_lookup, stop_token.clone());
+
         *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Syncing;
 
-        // Run sync and monitor
-        self.run_sync_and_monitor(stop_token, global_cancel).await
+        // Run sync and monitor with the client owned in this scope
+        self.run_sync_and_monitor(client, stop_token, global_cancel)
+            .await
     }
 
     async fn run_sync_and_monitor(
         self: Arc<Self>,
+        mut client: SpvClient,
         stop_token: CancellationToken,
         global_cancel: CancellationToken,
     ) -> Result<(), String> {
-        let client_guard = self.client.read().await;
-        if let Some(client) = client_guard.as_ref() {
-            // Wait for at least one peer to connect
-            let mut waited_ms: u64 = 0;
-            loop {
-                // Check for cancellation
-                if stop_token.is_cancelled() || global_cancel.is_cancelled() {
-                    drop(client_guard);
-                    let mut client_guard = self.client.write().await;
-                    if let Some(mut client) = client_guard.take() {
-                        let _ = client.stop().await;
-                    }
-                    *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
-                    return Ok(());
-                }
-
-                let peers = client.get_peer_count().await;
-                if peers > 0 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                waited_ms = waited_ms.saturating_add(200);
-                if waited_ms % 5000 == 0 {
-                    tracing::info!("SPV waiting for peers... {}s elapsed", waited_ms / 1000);
-                }
+        // Wait for at least one peer to connect
+        let mut waited_ms: u64 = 0;
+        loop {
+            // Check for cancellation
+            if stop_token.is_cancelled() || global_cancel.is_cancelled() {
+                let _ = client.stop().await;
+                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                return Ok(());
             }
 
-            // Need to get a mutable reference for sync_to_tip
-            drop(client_guard);
-            let mut client_guard = self.client.write().await;
-            if let Some(client) = client_guard.as_mut() {
-                // Sync to tip
-                match client.sync_to_tip().await {
-                    Ok(progress) => {
-                        tracing::info!("Initial sync progress snapshot: {:?}", progress);
-                        {
-                            let mut stored_sync = self
-                                .sync_progress_state
-                                .write()
-                                .expect("SPV sync_progress lock poisoned");
-                            *stored_sync = Some(progress.clone());
-                        }
-                        {
-                            let mut updated_at = self
-                                .progress_updated_at
-                                .write()
-                                .expect("SPV progress_updated lock poisoned");
-                            *updated_at = Some(SystemTime::now());
-                        }
-                        // Stay in Syncing mode until detailed progress reports completion.
-                        *self.status.write().expect("SPV status lock poisoned") =
-                            SpvStatus::Syncing;
-                    }
-                    Err(err) => {
-                        tracing::error!("Initial sync failed: {}", err);
-                        let _ = client.stop().await;
-                        *self
-                            .last_error
-                            .write()
-                            .expect("SPV last_error lock poisoned") =
-                            Some(format!("Initial sync failed: {err}"));
-                        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
-                        return Err(format!("Initial sync failed: {err}"));
-                    }
-                }
-
-                // Monitor network (this blocks until stopped or error)
-                enum MonitorOutcome {
-                    Completed(Result<(), dash_sdk::dash_spv::SpvError>),
-                    StopRequested,
-                    GlobalCancelled,
-                }
-
-                let outcome = {
-                    let monitor_future = client.monitor_network();
-                    tokio::pin!(monitor_future);
-
-                    tokio::select! {
-                        result = &mut monitor_future => MonitorOutcome::Completed(result),
-                        _ = stop_token.cancelled() => MonitorOutcome::StopRequested,
-                        _ = global_cancel.cancelled() => MonitorOutcome::GlobalCancelled,
-                    }
-                };
-
-                match outcome {
-                    MonitorOutcome::Completed(Ok(())) => {
-                        let _ = client.stop().await;
-                        *self.status.write().expect("SPV status lock poisoned") =
-                            SpvStatus::Stopped;
-                        Ok(())
-                    }
-                    MonitorOutcome::Completed(Err(err)) => {
-                        let _ = client.stop().await;
-                        let message = format!("monitor_network failed: {err}");
-                        *self
-                            .last_error
-                            .write()
-                            .expect("SPV last_error lock poisoned") = Some(message.clone());
-                        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
-                        Err(message)
-                    }
-                    MonitorOutcome::StopRequested | MonitorOutcome::GlobalCancelled => {
-                        let _ = client.stop().await;
-                        *self.status.write().expect("SPV status lock poisoned") =
-                            SpvStatus::Stopped;
-                        Ok(())
-                    }
-                }
-            } else {
-                Err("Client not available".to_string())
+            let peers = client.get_peer_count().await;
+            if peers > 0 {
+                break;
             }
-        } else {
-            Err("Client not initialized".to_string())
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            waited_ms = waited_ms.saturating_add(200);
+            if waited_ms % 5000 == 0 {
+                tracing::info!("SPV waiting for peers... {}s elapsed", waited_ms / 1000);
+            }
         }
+
+        // Sync to tip
+        match client.sync_to_tip().await {
+            Ok(progress) => {
+                tracing::info!("Initial sync progress snapshot: {:?}", progress);
+                {
+                    let mut stored_sync = self
+                        .sync_progress_state
+                        .write()
+                        .expect("SPV sync_progress lock poisoned");
+                    *stored_sync = Some(progress.clone());
+                }
+                {
+                    let mut updated_at = self
+                        .progress_updated_at
+                        .write()
+                        .expect("SPV progress_updated lock poisoned");
+                    *updated_at = Some(SystemTime::now());
+                }
+                // Stay in Syncing mode until detailed progress reports completion.
+                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Syncing;
+            }
+            Err(err) => {
+                tracing::error!("Initial sync failed: {}", err);
+                let _ = client.stop().await;
+                *self
+                    .last_error
+                    .write()
+                    .expect("SPV last_error lock poisoned") =
+                    Some(format!("Initial sync failed: {err}"));
+                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
+                return Err(format!("Initial sync failed: {err}"));
+            }
+        }
+
+        // Monitor network continuously - this is designed to run once and keep running
+        // Requests are handled separately using shared components from the client
+        enum Outcome {
+            MonitorCompleted(Result<(), dash_sdk::dash_spv::SpvError>),
+            StopRequested,
+            GlobalCancelled,
+        }
+
+        let outcome = {
+            let monitor_future = client.monitor_network();
+            tokio::pin!(monitor_future);
+
+            tokio::select! {
+                result = &mut monitor_future => Outcome::MonitorCompleted(result),
+                _ = stop_token.cancelled() => Outcome::StopRequested,
+                _ = global_cancel.cancelled() => Outcome::GlobalCancelled,
+            }
+        }; // monitor_future is dropped here, releasing the mutable borrow
+
+        // Stop the client after monitoring completes or is cancelled
+        let _ = client.stop().await;
+
+        match outcome {
+            Outcome::MonitorCompleted(Ok(())) => {
+                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                Ok(())
+            }
+            Outcome::MonitorCompleted(Err(err)) => {
+                let message = format!("monitor_network failed: {err}");
+                *self
+                    .last_error
+                    .write()
+                    .expect("SPV last_error lock poisoned") = Some(message.clone());
+                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
+                Err(message)
+            }
+            Outcome::StopRequested | Outcome::GlobalCancelled => {
+                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                Ok(())
+            }
+        }
+    }
+
+    fn spawn_request_handler(
+        &self,
+        mut request_rx: mpsc::Receiver<SpvRequest>,
+        quorum_lookup: Arc<QuorumLookup>,
+        cancel: CancellationToken,
+    ) {
+        tracing::info!("SPV request handler started");
+        self.subtasks.spawn_sync(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("SPV request handler cancelled");
+                        break;
+                    }
+                    request = request_rx.recv() => {
+                        match request {
+                            Some(SpvRequest::BroadcastTransaction { response_tx, .. }) => {
+                                tracing::debug!("Received BroadcastTransaction request");
+                                // Note: broadcast_transaction would need access to the client
+                                // For now, just return not implemented
+                                let _ = response_tx.send(Err("Broadcast not yet implemented".to_string()));
+                            }
+                            Some(SpvRequest::GetQuorumPublicKey {
+                                quorum_type,
+                                quorum_hash,
+                                core_chain_locked_height,
+                                response_tx,
+                            }) => {
+                                tracing::info!(
+                                    "Request handler received GetQuorumPublicKey: type={}, hash={}, height={}",
+                                    quorum_type,
+                                    hex::encode(quorum_hash),
+                                    core_chain_locked_height
+                                );
+                                // Access quorum data through the shared QuorumLookup component
+                                tracing::debug!("Calling quorum_lookup.get_quorum_at_height");
+                                let result = if let Some(q) = quorum_lookup.get_quorum_at_height(
+                                    core_chain_locked_height,
+                                    quorum_type as u8,
+                                    &quorum_hash,
+                                ).await {
+                                    tracing::info!("Quorum found successfully");
+                                    let pk48: [u8; 48] = *q.quorum_entry.quorum_public_key.as_ref();
+                                    Ok(pk48)
+                                } else {
+                                    tracing::warn!(
+                                        "Quorum not found at height {} for llmq_type={} hash=0x{}",
+                                        core_chain_locked_height,
+                                        quorum_type,
+                                        hex::encode(quorum_hash)
+                                    );
+                                    Err(format!(
+                                        "Quorum not found at height {} for llmq_type={} hash=0x{}",
+                                        core_chain_locked_height,
+                                        quorum_type,
+                                        hex::encode(quorum_hash)
+                                    ))
+                                };
+                                tracing::debug!("Sending response back: {:?}", result.is_ok());
+                                let _ = response_tx.send(result);
+                            }
+                            None => {
+                                tracing::warn!("SPV request channel closed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            tracing::info!("SPV request handler exiting");
+        });
     }
 
     fn spawn_progress_handler(

@@ -2,7 +2,6 @@ use crate::app_dir::core_cookie_path;
 use crate::config::NetworkConfig;
 use crate::context::AppContext;
 use crate::database::Database;
-use async_trait::async_trait;
 use dash_sdk::core::LowLevelDashCoreClient as CoreClient;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -11,6 +10,8 @@ use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
 use rusqlite::Result;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Provider {
@@ -69,7 +70,6 @@ impl Provider {
     }
 }
 
-#[async_trait]
 impl ContextProvider for Provider {
     fn get_data_contract(
         &self,
@@ -118,15 +118,31 @@ impl ContextProvider for Provider {
             .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))
     }
 
-    async fn get_quorum_public_key(
+    fn get_quorum_public_key_async(
         &self,
         quorum_type: u32,
-        quorum_hash: [u8; 32], // quorum hash is 32 bytes
+        quorum_hash: [u8; 32],
         _core_chain_locked_height: u32,
-    ) -> std::result::Result<[u8; 48], dash_sdk::error::ContextProviderError> {
-        let key = self.core.get_quorum_public_key(quorum_type, quorum_hash)?;
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<[u8; 48], ContextProviderError>> + Send + 'static>> {
+        let core_client = self.core.clone();
+        Box::pin(async move {
+            let key = core_client.get_quorum_public_key(quorum_type, quorum_hash)?;
+            Ok(key)
+        })
+    }
 
-        Ok(key)
+    fn get_quorum_public_key(
+        &self,
+        quorum_type: u32,
+        quorum_hash: [u8; 32],
+        core_chain_locked_height: u32,
+    ) -> std::result::Result<[u8; 48], ContextProviderError> {
+        dash_sdk::sync::block_on(self.get_quorum_public_key_async(
+            quorum_type,
+            quorum_hash,
+            core_chain_locked_height,
+        ))
+        .map_err(|e| ContextProviderError::Generic(format!("block_on failed: {}", e)))?
     }
 
     fn get_platform_activation_height(

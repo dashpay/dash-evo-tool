@@ -7,7 +7,6 @@ default-run = "dash-evo-tool"
 rust-version = "1.89"
 
 [dependencies]
-async-trait = "0.1"
 tokio-util = { version = "0.7.15" }
 bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
 derive_more = "2.0.1"

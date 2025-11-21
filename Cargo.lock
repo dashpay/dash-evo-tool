@@ -1860,7 +1860,6 @@ dependencies = [
  "aes-gcm",
  "arboard",
  "argon2",
- "async-trait",
  "base64 0.22.1",
  "bincode 2.0.0-rc.3",
  "bip39",

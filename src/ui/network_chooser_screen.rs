@@ -5,8 +5,11 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::{StyledCard, StyledCheckbox, island_central_panel};
+use crate::ui::components::styled::{
+    ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
+};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
@@ -19,6 +22,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone)]
+enum SpvClearMessage {
+    Success(String),
+    Error(String),
+}
 
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
@@ -41,6 +50,8 @@ pub struct NetworkChooserScreen {
     should_reset_collapsing_states: bool,
     backend_modes: HashMap<Network, CoreBackendMode>,
     filter_headers_stage_start: Option<u32>,
+    spv_clear_dialog: Option<ConfirmationDialog>,
+    spv_clear_message: Option<SpvClearMessage>,
 }
 
 impl NetworkChooserScreen {
@@ -123,6 +134,8 @@ impl NetworkChooserScreen {
             should_reset_collapsing_states: true, // Start with collapsed state
             backend_modes,
             filter_headers_stage_start: None,
+            spv_clear_dialog: None,
+            spv_clear_message: None,
         }
     }
 
@@ -474,15 +487,23 @@ impl NetworkChooserScreen {
                 }
             });
 
-            // SPV sync progress (only show when SPV is selected and syncing)
-            if current_backend_mode == CoreBackendMode::Spv
-                && let Some(snap) = snapshot
-                && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting) {
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
+            if current_backend_mode == CoreBackendMode::Spv {
+                if let Some(snap) = snapshot.as_ref()
+                    && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
+                {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
-                self.render_spv_sync_progress(ui, &snap);
+                    self.render_spv_sync_progress(ui, snap);
+                }
+
+                if let Some(snap) = snapshot.as_ref() {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    app_action |= self.render_spv_maintenance_controls(ui, snap);
+                }
             }
         });
 
@@ -941,6 +962,115 @@ impl NetworkChooserScreen {
                         }
                     });
             });
+    }
+
+    fn render_spv_maintenance_controls(
+        &mut self,
+        ui: &mut Ui,
+        snapshot: &SpvStatusSnapshot,
+    ) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        ui.label(
+            egui::RichText::new("SPV Maintenance")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("Clear cached headers and filter data for this network.")
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(8.0);
+
+        let clear_button =
+            egui::Button::new(egui::RichText::new("Clear SPV Data").color(DashColors::WHITE))
+                .fill(DashColors::ERROR)
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(Shape::RADIUS_MD)
+                .min_size(egui::vec2(0.0, 36.0));
+
+        let is_active = snapshot.status.is_active();
+        let mut button_response = ui.add_enabled(!is_active, clear_button);
+        if is_active {
+            button_response =
+                button_response.on_disabled_hover_text("Stop the SPV client before clearing data");
+        }
+
+        if button_response.clicked() {
+            let network_label = self.current_network_label();
+            let message = format!(
+                "This will delete cached SPV data for {}. The next connection will trigger a full resync.",
+                network_label
+            );
+            self.spv_clear_dialog = Some(
+                ConfirmationDialog::new("Clear SPV Data", message)
+                    .confirm_text(Some("Clear Data"))
+                    .cancel_text(Some("Keep Data"))
+                    .danger_mode(true),
+            );
+            self.spv_clear_message = None;
+        }
+
+        if let Some(feedback) = &self.spv_clear_message {
+            ui.add_space(8.0);
+            match feedback {
+                SpvClearMessage::Success(msg) => {
+                    ui.colored_label(DashColors::SUCCESS, msg);
+                }
+                SpvClearMessage::Error(msg) => {
+                    ui.colored_label(DashColors::ERROR, msg);
+                }
+            }
+        }
+
+        if self.spv_clear_dialog.is_some() {
+            action |= self.show_spv_clear_confirmation(ui);
+        }
+
+        action
+    }
+
+    fn show_spv_clear_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        if let Some(dialog) = self.spv_clear_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.spv_clear_dialog = None;
+                match result {
+                    ConfirmationStatus::Confirmed => {
+                        match self.current_app_context().clear_spv_data() {
+                            Ok(_) => {
+                                self.spv_clear_message = Some(SpvClearMessage::Success(format!(
+                                    "Cleared SPV data for {}. Reconnect to start a new sync.",
+                                    self.current_network_label()
+                                )));
+                            }
+                            Err(err) => {
+                                self.spv_clear_message = Some(SpvClearMessage::Error(format!(
+                                    "Failed to clear SPV data: {}",
+                                    err
+                                )));
+                            }
+                        }
+                    }
+                    ConfirmationStatus::Canceled => {
+                        // No-op
+                    }
+                }
+            }
+        }
+        AppAction::None
+    }
+
+    fn current_network_label(&self) -> &'static str {
+        match self.current_network {
+            Network::Dash => "Mainnet",
+            Network::Testnet => "Testnet",
+            Network::Devnet => "Devnet",
+            Network::Regtest => "Local",
+            _ => "this network",
+        }
     }
 
     fn calculate_headers_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {

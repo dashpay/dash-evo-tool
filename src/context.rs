@@ -305,6 +305,10 @@ impl AppContext {
         &self.spv_manager
     }
 
+    pub fn clear_spv_data(&self) -> Result<(), String> {
+        self.spv_manager.clear_data_dir()
+    }
+
     pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
         self.spv_manager.start()?;
         self.spv_setup_reconcile_listener();

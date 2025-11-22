@@ -412,6 +412,72 @@ impl SpvManager {
         rx
     }
 
+    /// Remove all cached SPV data on disk for the current network.
+    ///
+    /// This requires the SPV runtime to be stopped first; otherwise the
+    /// on-disk files could be re-created immediately by the running client.
+    pub fn clear_data_dir(&self) -> Result<(), String> {
+        let status = *self.status.read().expect("SPV status lock poisoned");
+        if status.is_active() {
+            return Err("Stop the SPV client before clearing its data".to_string());
+        }
+
+        {
+            let mut storage_guard = self.storage.lock().expect("storage lock poisoned");
+            *storage_guard = None;
+        }
+
+        {
+            let mut request_guard = self.request_tx.lock().expect("request_tx poisoned");
+            *request_guard = None;
+        }
+
+        {
+            let mut wallet_map = self.det_wallets.write().map_err(|e| e.to_string())?;
+            wallet_map.clear();
+        }
+
+        *self
+            .sync_progress_state
+            .write()
+            .expect("SPV sync_progress lock poisoned") = None;
+        *self
+            .detailed_progress_state
+            .write()
+            .expect("SPV detailed_progress lock poisoned") = None;
+        *self
+            .progress_updated_at
+            .write()
+            .expect("SPV progress_updated lock poisoned") = None;
+        *self
+            .started_at
+            .write()
+            .expect("SPV started_at lock poisoned") = None;
+        *self
+            .last_error
+            .write()
+            .expect("SPV last_error lock poisoned") = None;
+        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Idle;
+
+        if self.data_dir.exists() {
+            fs::remove_dir_all(&self.data_dir).map_err(|e| {
+                format!(
+                    "Failed to clear SPV data directory {}: {e}",
+                    self.data_dir.display()
+                )
+            })?;
+        }
+
+        fs::create_dir_all(&self.data_dir).map_err(|e| {
+            format!(
+                "Failed to re-create SPV data directory {}: {e}",
+                self.data_dir.display()
+            )
+        })?;
+
+        Ok(())
+    }
+
     /// Attempt to resolve a quorum public key via the SPV client's masternode/quorum state.
     ///
     /// Note: This is an async method that communicates with the SPV runtime thread.

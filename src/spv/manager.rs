@@ -326,16 +326,17 @@ impl SpvManager {
     }
 
     pub fn stop(&self) {
-        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopping;
-
-        // Signal the runtime to stop
-        if let Some(token) = self
+        let maybe_token = self
             .stop_token
             .lock()
             .expect("SPV stop_token lock poisoned")
-            .as_ref()
-        {
+            .clone();
+
+        if let Some(token) = maybe_token {
+            *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopping;
             token.cancel();
+        } else {
+            *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
         }
     }
 

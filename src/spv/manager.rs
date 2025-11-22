@@ -127,7 +127,7 @@ pub struct SpvManager {
 enum SpvRequest {
     BroadcastTransaction {
         #[allow(dead_code)]
-        tx: Transaction,
+        tx: Box<Transaction>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     GetQuorumPublicKey {
@@ -392,7 +392,7 @@ impl SpvManager {
 
         request_tx
             .send(SpvRequest::BroadcastTransaction {
-                tx: tx.clone(),
+                tx: Box::new(tx.clone()),
                 response_tx,
             })
             .await
@@ -483,10 +483,11 @@ impl SpvManager {
 
         if let Some(wallet_id) = existing_wallet_id {
             if let Some(wallet) = wm.get_wallet(&wallet_id)
-                && wallet.can_sign() {
-                    seed_bytes.zeroize();
-                    return Ok(wallet_id);
-                }
+                && wallet.can_sign()
+            {
+                seed_bytes.zeroize();
+                return Ok(wallet_id);
+            }
 
             if let Err(err) = wm.remove_wallet(&wallet_id) {
                 tracing::warn!(wallet = %hex::encode(wallet_id), ?err, "Failed to remove existing SPV wallet before upgrade");

@@ -506,9 +506,10 @@ impl AppContext {
                         info.path.clone(),
                         path_type,
                         path_reference,
-                    ) {
-                        inserted += 1;
-                    }
+                    )
+                {
+                    inserted += 1;
+                }
             }
         }
 

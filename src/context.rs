@@ -499,8 +499,8 @@ impl AppContext {
             };
 
             for address in account.account_type.all_addresses() {
-                if let Some(info) = account.get_address_info(&address) {
-                    if let Ok(true) = self.register_spv_address(
+                if let Some(info) = account.get_address_info(&address)
+                    && let Ok(true) = self.register_spv_address(
                         wallet_arc,
                         address.clone(),
                         info.path.clone(),
@@ -509,7 +509,6 @@ impl AppContext {
                     ) {
                         inserted += 1;
                     }
-                }
             }
         }
 

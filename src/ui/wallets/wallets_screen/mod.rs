@@ -1677,18 +1677,14 @@ impl ScreenLike for WalletsBalancesScreen {
 
         if let crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } =
             backend_task_success_result
-        {
-            if let Some(selected) = &self.selected_wallet
+            && let Some(selected) = &self.selected_wallet
                 && let Ok(wallet) = selected.read()
-            {
-                if wallet.seed_hash() == seed_hash {
+                && wallet.seed_hash() == seed_hash {
                     self.receive_dialog.address = Some(address.clone());
                     self.receive_dialog.qr_texture = None;
                     self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
                 }
-            }
-        }
     }
 
     fn refresh_on_arrival(&mut self) {}

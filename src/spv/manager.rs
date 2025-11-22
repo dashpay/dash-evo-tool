@@ -482,12 +482,11 @@ impl SpvManager {
         let mut wm = self.wallet.write().await;
 
         if let Some(wallet_id) = existing_wallet_id {
-            if let Some(wallet) = wm.get_wallet(&wallet_id) {
-                if wallet.can_sign() {
+            if let Some(wallet) = wm.get_wallet(&wallet_id)
+                && wallet.can_sign() {
                     seed_bytes.zeroize();
                     return Ok(wallet_id);
                 }
-            }
 
             if let Err(err) = wm.remove_wallet(&wallet_id) {
                 tracing::warn!(wallet = %hex::encode(wallet_id), ?err, "Failed to remove existing SPV wallet before upgrade");

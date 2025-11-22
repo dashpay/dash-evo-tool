@@ -33,10 +33,10 @@ pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
 /// Helper function to create a styled info icon button
 pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
     let icon = RichText::new("ⓘ").size(14.0).color(Color32::LIGHT_BLUE);
-    let response = ui
+    
+    ui
         .add(egui::Label::new(icon).sense(egui::Sense::hover()))
-        .on_hover_text(hover_text);
-    response
+        .on_hover_text(hover_text)
 }
 
 pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {

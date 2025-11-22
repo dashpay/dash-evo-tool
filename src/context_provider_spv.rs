@@ -87,7 +87,8 @@ impl ContextProvider for SpvProvider {
         quorum_type: u32,
         quorum_hash: [u8; 32],
         core_chain_locked_height: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<[u8; 48], ContextProviderError>> + Send + 'static>> {
+    ) -> Pin<Box<dyn Future<Output = Result<[u8; 48], ContextProviderError>> + Send + 'static>>
+    {
         let spv_manager = {
             let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
             let app_ctx = match app_ctx_guard.as_ref() {
@@ -95,7 +96,7 @@ impl ContextProvider for SpvProvider {
                 None => {
                     return Box::pin(async {
                         Err(ContextProviderError::Config("no app context".to_string()))
-                    })
+                    });
                 }
             };
             app_ctx.spv_manager().clone()

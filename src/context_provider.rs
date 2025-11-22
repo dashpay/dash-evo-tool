@@ -123,7 +123,13 @@ impl ContextProvider for Provider {
         quorum_type: u32,
         quorum_hash: [u8; 32],
         _core_chain_locked_height: u32,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<[u8; 48], ContextProviderError>> + Send + 'static>> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = std::result::Result<[u8; 48], ContextProviderError>>
+                + Send
+                + 'static,
+        >,
+    > {
         let core_client = self.core.clone();
         Box::pin(async move {
             let key = core_client.get_quorum_public_key(quorum_type, quorum_hash)?;

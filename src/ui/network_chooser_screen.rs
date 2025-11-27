@@ -1013,16 +1013,28 @@ impl NetworkChooserScreen {
             self.spv_clear_message = None;
         }
 
-        if let Some(feedback) = &self.spv_clear_message {
+        if let Some(feedback) = self.spv_clear_message.clone() {
             ui.add_space(8.0);
-            match feedback {
-                SpvClearMessage::Success(msg) => {
-                    ui.colored_label(DashColors::SUCCESS, msg);
-                }
-                SpvClearMessage::Error(msg) => {
-                    ui.colored_label(DashColors::ERROR, msg);
-                }
-            }
+
+            let (message, color) = match &feedback {
+                SpvClearMessage::Success(msg) => (msg.as_str(), DashColors::SUCCESS),
+                SpvClearMessage::Error(msg) => (msg.as_str(), DashColors::ERROR),
+            };
+
+            egui::Frame::new()
+                .fill(color.gamma_multiply(0.08))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .stroke(egui::Stroke::new(1.0, color))
+                .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(message).color(color));
+                        ui.add_space(8.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.spv_clear_message = None;
+                        }
+                    });
+                });
         }
 
         if self.spv_clear_dialog.is_some() {

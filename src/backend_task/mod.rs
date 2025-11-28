@@ -85,8 +85,9 @@ pub enum BackendTaskSuccessResult {
     // Right now we are matching the strings from this in the UI which is unreliable.
     WalletPayment {
         txid: String,
-        address: String,
-        amount: u64,
+        /// List of (address, amount) pairs for each recipient
+        recipients: Vec<(String, u64)>,
+        total_amount: u64,
     },
 
     // Specific results

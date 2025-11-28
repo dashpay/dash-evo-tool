@@ -60,10 +60,16 @@ impl PartialEq for CoreTask {
     }
 }
 
+/// A single recipient in a payment request
+#[derive(Debug, Clone)]
+pub struct PaymentRecipient {
+    pub address: String,
+    pub amount_duffs: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct WalletPaymentRequest {
-    pub to_address: String,
-    pub amount_duffs: u64,
+    pub recipients: Vec<PaymentRecipient>,
     pub subtract_fee_from_amount: bool,
     pub memo: Option<String>,
 }
@@ -219,7 +225,7 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let recipient = self.parse_send_recipient(&request)?;
+        let parsed_recipients = self.parse_recipients(&request)?;
 
         const DEFAULT_TX_FEE: u64 = 1_000;
 
@@ -228,10 +234,9 @@ impl AppContext {
             if !wallet_guard.is_open() {
                 return Err("Wallet must be unlocked".to_string());
             }
-            wallet_guard.build_standard_payment_transaction(
+            wallet_guard.build_multi_recipient_payment_transaction(
                 self.network,
-                &recipient,
-                request.amount_duffs,
+                &parsed_recipients,
                 DEFAULT_TX_FEE,
                 request.subtract_fee_from_amount,
                 Some(self),
@@ -245,10 +250,17 @@ impl AppContext {
             .send_raw_transaction(&tx)
             .map_err(|e| format!("Failed to broadcast transaction: {e}"))?;
 
+        let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
+        let recipients_result: Vec<(String, u64)> = request
+            .recipients
+            .iter()
+            .map(|r| (r.address.clone(), r.amount_duffs))
+            .collect();
+
         Ok(BackendTaskSuccessResult::WalletPayment {
             txid: txid.to_string(),
-            address: request.to_address,
-            amount: request.amount_duffs,
+            recipients: recipients_result,
+            total_amount,
         })
     }
 
@@ -261,7 +273,7 @@ impl AppContext {
             .await
             .map_err(|e| format!("Unable to sync wallet before send: {}", e))?;
 
-        let recipient = self.parse_send_recipient(&request)?;
+        let parsed_recipients = self.parse_recipients(&request)?;
         let seed_hash = {
             let guard = wallet.read().map_err(|e| e.to_string())?;
             if !guard.is_open() {
@@ -275,13 +287,16 @@ impl AppContext {
             .wallet_id_for_seed(seed_hash)
             .ok_or_else(|| "Wallet not loaded into SPV".to_string())?;
 
-        let (tx, effective_amount, recipient_script) = {
+        let tx = {
             let wm_arc = self.spv_manager.wallet();
             let mut wm = wm_arc.write().await;
-            let unsigned =
-                self.build_spv_unsigned_transaction(&mut wm, &wallet_id, &recipient, &request)?;
-            let signed = self.sign_spv_transaction(&mut wm, &wallet_id, unsigned.0)?;
-            (signed, unsigned.1, recipient.script_pubkey())
+            let unsigned = self.build_spv_unsigned_transaction_multi(
+                &mut wm,
+                &wallet_id,
+                &parsed_recipients,
+                &request,
+            )?;
+            self.sign_spv_transaction(&mut wm, &wallet_id, unsigned)?
         };
 
         self.spv_manager
@@ -293,79 +308,115 @@ impl AppContext {
             .await
             .map_err(|e| format!("Failed to refresh wallet after send: {}", e))?;
 
-        let sent_amount =
-            Self::sum_outputs_to_script(&tx, &recipient_script).unwrap_or(effective_amount);
+        // Calculate actual amounts sent from the transaction outputs
+        let recipients_result: Vec<(String, u64)> = request
+            .recipients
+            .iter()
+            .zip(parsed_recipients.iter())
+            .map(|(req, (addr, _))| {
+                let actual_amount = Self::sum_outputs_to_script(&tx, &addr.script_pubkey())
+                    .unwrap_or(req.amount_duffs);
+                (req.address.clone(), actual_amount)
+            })
+            .collect();
+
+        let total_amount: u64 = recipients_result.iter().map(|(_, amt)| *amt).sum();
 
         Ok(BackendTaskSuccessResult::WalletPayment {
             txid: tx.txid().to_string(),
-            address: request.to_address,
-            amount: sent_amount,
+            recipients: recipients_result,
+            total_amount,
         })
     }
 
-    fn parse_send_recipient(&self, request: &WalletPaymentRequest) -> Result<Address, String> {
-        if request.amount_duffs == 0 {
-            return Err("Amount must be greater than zero".to_string());
+    fn parse_recipients(
+        &self,
+        request: &WalletPaymentRequest,
+    ) -> Result<Vec<(Address, u64)>, String> {
+        if request.recipients.is_empty() {
+            return Err("No recipients specified".to_string());
         }
 
-        let recipient = Address::from_str(&request.to_address)
-            .map_err(|e| format!("Invalid address: {e}"))?
-            .assume_checked();
+        let mut parsed = Vec::with_capacity(request.recipients.len());
+        for recipient in &request.recipients {
+            if recipient.amount_duffs == 0 {
+                return Err(format!(
+                    "Amount must be greater than zero for address {}",
+                    recipient.address
+                ));
+            }
 
-        if recipient.network() != &self.network {
-            return Err(format!(
-                "Recipient address uses {} but wallet network is {}",
-                recipient.network(),
-                self.network
-            ));
+            let addr = Address::from_str(&recipient.address)
+                .map_err(|e| format!("Invalid address {}: {e}", recipient.address))?
+                .assume_checked();
+
+            if addr.network() != &self.network {
+                return Err(format!(
+                    "Recipient address {} uses {} but wallet network is {}",
+                    recipient.address,
+                    addr.network(),
+                    self.network
+                ));
+            }
+
+            parsed.push((addr, recipient.amount_duffs));
         }
 
-        Ok(recipient)
+        Ok(parsed)
     }
 
-    fn build_spv_unsigned_transaction(
+    fn build_spv_unsigned_transaction_multi(
         &self,
         wm: &mut WalletManager<ManagedWalletInfo>,
         wallet_id: &WalletId,
-        recipient: &Address,
+        recipients: &[(Address, u64)],
         request: &WalletPaymentRequest,
-    ) -> Result<(Transaction, u64), String> {
+    ) -> Result<Transaction, String> {
         const FALLBACK_STEP: u64 = 100;
 
         let network = self.wallet_network_key();
         let current_height = wm.current_height(network);
-        let mut attempt_amount = request.amount_duffs;
+        let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
+        let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
         loop {
+            let scaled_recipients: Vec<(Address, u64)> = recipients
+                .iter()
+                .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
+                .collect();
+
             match wm.create_unsigned_payment_transaction(
                 wallet_id,
                 network,
                 DEFAULT_BIP44_ACCOUNT_INDEX,
                 Some(AccountTypePreference::BIP44),
-                vec![(recipient.clone(), attempt_amount)],
+                scaled_recipients,
                 FeeLevel::Normal,
                 current_height,
             ) {
-                Ok(tx) => return Ok((tx, attempt_amount)),
+                Ok(tx) => return Ok(tx),
                 Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
-                    let next_amount = if !attempted_fallback {
+                    let next_scale = if !attempted_fallback {
                         attempted_fallback = true;
-                        self.estimate_fallback_amount(
+                        let fallback_amount = self.estimate_fallback_amount(
                             wm,
                             wallet_id,
                             network,
                             DEFAULT_BIP44_ACCOUNT_INDEX,
                             current_height,
-                        )?
+                        )?;
+                        fallback_amount as f64 / total_amount as f64
                     } else {
-                        attempt_amount.saturating_sub(FALLBACK_STEP)
+                        let current_total = (total_amount as f64 * scale_factor) as u64;
+                        let reduced = current_total.saturating_sub(FALLBACK_STEP);
+                        reduced as f64 / total_amount as f64
                     };
 
-                    if next_amount == 0 || next_amount == attempt_amount {
+                    if next_scale <= 0.0 || (next_scale - scale_factor).abs() < 0.0001 {
                         return Err("Insufficient funds".to_string());
                     }
-                    attempt_amount = next_amount;
+                    scale_factor = next_scale;
                 }
                 Err(err) => {
                     return Err(format!("Failed to build transaction: {err}"));

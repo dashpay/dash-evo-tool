@@ -5,6 +5,8 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::wallet::Wallet;
+use std::sync::RwLock;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
     DocumentActionScreen, DocumentActionType,
@@ -37,6 +39,7 @@ use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
+use crate::ui::wallets::send_screen::WalletSendScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
@@ -218,7 +221,7 @@ impl From<RootScreenType> for ScreenType {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum ScreenType {
     #[default]
     Identities,
@@ -229,6 +232,7 @@ pub enum ScreenType {
     WalletsBalances,
     ImportWallet,
     AddNewWallet,
+    WalletSendScreen(Arc<RwLock<Wallet>>),
     AddExistingIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
@@ -296,6 +300,103 @@ pub enum ScreenType {
     DashPayContactInfoEditor(QualifiedIdentity, Identifier),
     DashPayQRGenerator,
     DashPayProfileSearch,
+}
+
+impl PartialEq for ScreenType {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare variants, ignoring Arc<RwLock<Wallet>> contents for WalletSendScreen
+        match (self, other) {
+            (ScreenType::WalletSendScreen(_), ScreenType::WalletSendScreen(_)) => true,
+            (ScreenType::Identities, ScreenType::Identities) => true,
+            (ScreenType::DPNSActiveContests, ScreenType::DPNSActiveContests) => true,
+            (ScreenType::DPNSPastContests, ScreenType::DPNSPastContests) => true,
+            (ScreenType::DPNSMyUsernames, ScreenType::DPNSMyUsernames) => true,
+            (ScreenType::AddNewIdentity, ScreenType::AddNewIdentity) => true,
+            (ScreenType::WalletsBalances, ScreenType::WalletsBalances) => true,
+            (ScreenType::ImportWallet, ScreenType::ImportWallet) => true,
+            (ScreenType::AddNewWallet, ScreenType::AddNewWallet) => true,
+            (ScreenType::AddExistingIdentity, ScreenType::AddExistingIdentity) => true,
+            (ScreenType::TransitionVisualizer, ScreenType::TransitionVisualizer) => true,
+            (ScreenType::WithdrawalScreen(a), ScreenType::WithdrawalScreen(b)) => a == b,
+            (ScreenType::TransferScreen(a), ScreenType::TransferScreen(b)) => a == b,
+            (ScreenType::AddKeyScreen(a), ScreenType::AddKeyScreen(b)) => a == b,
+            (ScreenType::KeyInfo(a1, a2, a3), ScreenType::KeyInfo(b1, b2, b3)) => {
+                a1 == b1 && a2 == b2 && a3 == b3
+            }
+            (ScreenType::Keys(a), ScreenType::Keys(b)) => a == b,
+            (ScreenType::DocumentQuery, ScreenType::DocumentQuery) => true,
+            (ScreenType::NetworkChooser, ScreenType::NetworkChooser) => true,
+            (ScreenType::RegisterDpnsName, ScreenType::RegisterDpnsName) => true,
+            (ScreenType::RegisterContract, ScreenType::RegisterContract) => true,
+            (ScreenType::UpdateContract, ScreenType::UpdateContract) => true,
+            (ScreenType::ProofLog, ScreenType::ProofLog) => true,
+            (ScreenType::MasternodeListDiff, ScreenType::MasternodeListDiff) => true,
+            (ScreenType::TopUpIdentity(a), ScreenType::TopUpIdentity(b)) => a == b,
+            (ScreenType::ScheduledVotes, ScreenType::ScheduledVotes) => true,
+            (ScreenType::AddContracts, ScreenType::AddContracts) => true,
+            (ScreenType::ProofVisualizer, ScreenType::ProofVisualizer) => true,
+            (ScreenType::DocumentsVisualizer, ScreenType::DocumentsVisualizer) => true,
+            (ScreenType::ContractsVisualizer, ScreenType::ContractsVisualizer) => true,
+            (ScreenType::PlatformInfo, ScreenType::PlatformInfo) => true,
+            (ScreenType::GroveSTARK, ScreenType::GroveSTARK) => true,
+            (ScreenType::Dashpay, ScreenType::Dashpay) => true,
+            (ScreenType::CreateDocument, ScreenType::CreateDocument) => true,
+            (ScreenType::DeleteDocument, ScreenType::DeleteDocument) => true,
+            (ScreenType::ReplaceDocument, ScreenType::ReplaceDocument) => true,
+            (ScreenType::TransferDocument, ScreenType::TransferDocument) => true,
+            (ScreenType::PurchaseDocument, ScreenType::PurchaseDocument) => true,
+            (ScreenType::SetDocumentPrice, ScreenType::SetDocumentPrice) => true,
+            (ScreenType::GroupActions, ScreenType::GroupActions) => true,
+            // Token Screens
+            (ScreenType::TokenBalances, ScreenType::TokenBalances) => true,
+            (ScreenType::TokenSearch, ScreenType::TokenSearch) => true,
+            (ScreenType::TokenCreator, ScreenType::TokenCreator) => true,
+            (ScreenType::AddTokenById, ScreenType::AddTokenById) => true,
+            (ScreenType::TransferTokensScreen(a), ScreenType::TransferTokensScreen(b)) => a == b,
+            (ScreenType::MintTokensScreen(a), ScreenType::MintTokensScreen(b)) => a == b,
+            (ScreenType::BurnTokensScreen(a), ScreenType::BurnTokensScreen(b)) => a == b,
+            (ScreenType::DestroyFrozenFundsScreen(a), ScreenType::DestroyFrozenFundsScreen(b)) => {
+                a == b
+            }
+            (ScreenType::FreezeTokensScreen(a), ScreenType::FreezeTokensScreen(b)) => a == b,
+            (ScreenType::UnfreezeTokensScreen(a), ScreenType::UnfreezeTokensScreen(b)) => a == b,
+            (ScreenType::PauseTokensScreen(a), ScreenType::PauseTokensScreen(b)) => a == b,
+            (ScreenType::ResumeTokensScreen(a), ScreenType::ResumeTokensScreen(b)) => a == b,
+            (ScreenType::ClaimTokensScreen(a), ScreenType::ClaimTokensScreen(b)) => a == b,
+            (ScreenType::ViewTokenClaimsScreen(a), ScreenType::ViewTokenClaimsScreen(b)) => a == b,
+            (ScreenType::UpdateTokenConfigScreen(a), ScreenType::UpdateTokenConfigScreen(b)) => {
+                a == b
+            }
+            (ScreenType::PurchaseTokenScreen(a), ScreenType::PurchaseTokenScreen(b)) => a == b,
+            (ScreenType::SetTokenPriceScreen(a), ScreenType::SetTokenPriceScreen(b)) => a == b,
+            // DashPay Screens
+            (ScreenType::DashPayContacts, ScreenType::DashPayContacts) => true,
+            (ScreenType::DashPayRequests, ScreenType::DashPayRequests) => true,
+            (ScreenType::DashPayProfile, ScreenType::DashPayProfile) => true,
+            (ScreenType::DashPayPayments, ScreenType::DashPayPayments) => true,
+            (ScreenType::DashPayAddContact, ScreenType::DashPayAddContact) => true,
+            (ScreenType::DashPayAddContactWithId(a), ScreenType::DashPayAddContactWithId(b)) => {
+                a == b
+            }
+            (ScreenType::DashPayContactDetails(a1, a2), ScreenType::DashPayContactDetails(b1, b2)) => {
+                a1 == b1 && a2 == b2
+            }
+            (
+                ScreenType::DashPayContactProfileViewer(a1, a2),
+                ScreenType::DashPayContactProfileViewer(b1, b2),
+            ) => a1 == b1 && a2 == b2,
+            (ScreenType::DashPaySendPayment(a1, a2), ScreenType::DashPaySendPayment(b1, b2)) => {
+                a1 == b1 && a2 == b2
+            }
+            (
+                ScreenType::DashPayContactInfoEditor(a1, a2),
+                ScreenType::DashPayContactInfoEditor(b1, b2),
+            ) => a1 == b1 && a2 == b2,
+            (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
+            (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
+            _ => false,
+        }
+    }
 }
 
 impl ScreenType {
@@ -366,6 +467,9 @@ impl ScreenType {
             }
             ScreenType::ImportWallet => {
                 Screen::ImportWalletScreen(ImportWalletScreen::new(app_context))
+            }
+            ScreenType::WalletSendScreen(wallet) => {
+                Screen::WalletSendScreen(WalletSendScreen::new(app_context, wallet.clone()))
             }
             ScreenType::ProofLog => Screen::ProofLogScreen(ProofLogScreen::new(app_context)),
             ScreenType::ScheduledVotes => {
@@ -566,6 +670,7 @@ pub enum Screen {
     ContractVisualizerScreen(ContractVisualizerScreen),
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
+    WalletSendScreen(WalletSendScreen),
     AddContractsScreen(AddContractsScreen),
     ProofVisualizerScreen(ProofVisualizerScreen),
     MasternodeListDiffScreen(MasternodeListDiffScreen),
@@ -628,6 +733,7 @@ impl Screen {
                 screen.update_selected_wallet_for_network();
             }
             Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
+            Screen::WalletSendScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
@@ -764,6 +870,9 @@ impl Screen {
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
+            Screen::WalletSendScreen(screen) => {
+                ScreenType::WalletSendScreen(screen.selected_wallet.clone().unwrap())
+            }
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
@@ -885,6 +994,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => screen.refresh(),
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh(),
+            Screen::WalletSendScreen(screen) => screen.refresh(),
             Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
@@ -946,6 +1056,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
+            Screen::WalletSendScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
@@ -1007,6 +1118,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => screen.ui(ctx),
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
             Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
+            Screen::WalletSendScreen(screen) => screen.ui(ctx),
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
@@ -1076,6 +1188,7 @@ impl ScreenLike for Screen {
             }
             Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
             Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
+            Screen::WalletSendScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
@@ -1200,6 +1313,9 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::WalletSendScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
             Screen::ProofLogScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
@@ -1316,6 +1432,7 @@ impl ScreenLike for Screen {
             Screen::TransitionVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),
             Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
+            Screen::WalletSendScreen(screen) => screen.pop_on_success(),
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),

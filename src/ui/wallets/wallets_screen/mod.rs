@@ -1,6 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
-use crate::backend_task::core::{CoreTask, WalletPaymentRequest};
+use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
@@ -917,8 +917,11 @@ impl WalletsBalancesScreen {
                 )
                 .clicked()
             {
-                if self.selected_wallet.is_some() {
-                    self.send_dialog.is_open = true;
+                if let Some(wallet) = &self.selected_wallet {
+                    action = AppAction::AddScreen(
+                        crate::ui::ScreenType::WalletSendScreen(wallet.clone())
+                            .create_screen(&self.app_context),
+                    );
                 } else {
                     self.display_message("Select a wallet first", MessageType::Error);
                 }
@@ -1338,8 +1341,10 @@ impl WalletsBalancesScreen {
 
         let memo = self.send_dialog.memo.trim();
         let request = WalletPaymentRequest {
-            to_address: self.send_dialog.address.trim().to_string(),
-            amount_duffs: amount,
+            recipients: vec![PaymentRecipient {
+                address: self.send_dialog.address.trim().to_string(),
+                amount_duffs: amount,
+            }],
             subtract_fee_from_amount: self.send_dialog.subtract_fee,
             memo: if memo.is_empty() {
                 None
@@ -1661,16 +1666,26 @@ impl ScreenLike for WalletsBalancesScreen {
     ) {
         if let crate::ui::BackendTaskSuccessResult::WalletPayment {
             txid,
-            address,
-            amount,
+            recipients,
+            total_amount,
         } = backend_task_success_result
         {
-            let msg = format!(
-                "Sent {} to {}\nTxID: {}",
-                Self::format_dash(amount),
-                address,
-                txid
-            );
+            let msg = if recipients.len() == 1 {
+                let (address, amount) = &recipients[0];
+                format!(
+                    "Sent {} to {}\nTxID: {}",
+                    Self::format_dash(*amount),
+                    address,
+                    txid
+                )
+            } else {
+                format!(
+                    "Sent {} total to {} recipients\nTxID: {}",
+                    Self::format_dash(total_amount),
+                    recipients.len(),
+                    txid
+                )
+            };
             self.display_message(&msg, MessageType::Success);
             return;
         }

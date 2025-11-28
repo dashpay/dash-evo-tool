@@ -789,7 +789,7 @@ impl SpvManager {
 
         let outcome = {
             let monitor_cancel = CancellationToken::new();
-            let monitor_future = client.run(command_receiver, monitor_cancel.clone());
+            let monitor_future = client.monitor_network(command_receiver, monitor_cancel.clone());
             tokio::pin!(monitor_future);
 
             tokio::select! {
@@ -1085,7 +1085,7 @@ impl SpvManager {
             if let Some(peer) = self.primary_peer_socket() {
                 config.add_peer(peer);
             }
-        } else if self.network == Network::Testnet {
+        } else if self.network == Network::Testnet || self.network == Network::Dash {
             // For testnet testing, connect only to local Dash Core at 127.0.0.1:19999
             if let Ok(mut it) = "127.0.0.1:19999".to_socket_addrs()
                 && let Some(peer) = it.next()

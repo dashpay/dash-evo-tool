@@ -1365,6 +1365,144 @@ impl Wallet {
         Ok(tx)
     }
 
+    /// Build a transaction with multiple recipients
+    pub fn build_multi_recipient_payment_transaction(
+        &mut self,
+        network: Network,
+        recipients: &[(Address, u64)],
+        fee: u64,
+        subtract_fee_from_amount: bool,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<Transaction, String> {
+        if recipients.is_empty() {
+            return Err("No recipients specified".to_string());
+        }
+
+        // Validate all recipients are on the correct network
+        for (recipient, _) in recipients {
+            if recipient.network() != &network {
+                return Err(format!(
+                    "Recipient address network ({}) does not match wallet network ({})",
+                    recipient.network(),
+                    network
+                ));
+            }
+        }
+
+        // Calculate total amount needed
+        let total_amount: u64 = recipients.iter().map(|(_, amount)| *amount).sum();
+
+        let (utxos, change_option) = self
+            .take_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
+            .ok_or_else(|| "Insufficient funds".to_string())?;
+
+        // Build outputs for each recipient
+        let mut outputs: Vec<TxOut> = if change_option.is_none() && subtract_fee_from_amount {
+            // If we're subtracting fee and using all funds, we need to reduce recipient amounts proportionally
+            let total_input: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
+            let available_after_fee = total_input
+                .checked_sub(fee)
+                .ok_or_else(|| "Fee exceeds available amount".to_string())?;
+
+            // Distribute the reduction proportionally across recipients
+            let reduction_ratio = available_after_fee as f64 / total_amount as f64;
+
+            recipients
+                .iter()
+                .map(|(recipient, amount)| {
+                    let adjusted_amount = (*amount as f64 * reduction_ratio) as u64;
+                    TxOut {
+                        value: adjusted_amount,
+                        script_pubkey: recipient.script_pubkey(),
+                    }
+                })
+                .collect()
+        } else {
+            recipients
+                .iter()
+                .map(|(recipient, amount)| TxOut {
+                    value: *amount,
+                    script_pubkey: recipient.script_pubkey(),
+                })
+                .collect()
+        };
+
+        // Check that no output is zero
+        if outputs.iter().any(|o| o.value == 0) {
+            return Err("One or more amounts are zero after subtracting fee".to_string());
+        }
+
+        // Add change output if needed
+        if let Some(change) = change_option {
+            let change_address = self.change_address(network, register_addresses)?;
+            outputs.push(TxOut {
+                value: change,
+                script_pubkey: change_address.script_pubkey(),
+            });
+        }
+
+        let mut tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: utxos
+                .keys()
+                .map(|outpoint| TxIn {
+                    previous_output: *outpoint,
+                    ..Default::default()
+                })
+                .collect(),
+            output: outputs,
+            special_transaction_payload: None,
+        };
+
+        let sighash_flag = 1u32;
+        let cache = SighashCache::new(&tx);
+        let sighashes: Vec<_> = tx
+            .input
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                let script_pubkey = utxos
+                    .get(&input.previous_output)
+                    .expect("missing utxo when computing sighash")
+                    .0
+                    .script_pubkey
+                    .clone();
+                cache
+                    .legacy_signature_hash(i, &script_pubkey, sighash_flag)
+                    .expect("failed to compute sighash")
+            })
+            .collect();
+
+        let secp = Secp256k1::new();
+        let mut utxo_lookup = utxos.clone();
+
+        tx.input
+            .iter_mut()
+            .zip(sighashes.into_iter())
+            .try_for_each(|(input, sighash)| {
+                let (_, input_address) = utxo_lookup
+                    .remove(&input.previous_output)
+                    .expect("utxo missing when signing");
+                let private_key = self
+                    .private_key_for_address(&input_address, network)?
+                    .ok_or_else(|| format!("Address {} not managed by wallet", input_address))?;
+                let message = Message::from_digest(sighash.into());
+                let sig = secp.sign_ecdsa(&message, &private_key.inner);
+                let mut serialized_sig = sig.serialize_der().to_vec();
+                let mut script_sig = vec![serialized_sig.len() as u8 + 1];
+                script_sig.append(&mut serialized_sig);
+                script_sig.push(1);
+                let mut serialized_pub_key = private_key.public_key(&secp).serialize();
+                script_sig.push(serialized_pub_key.len() as u8);
+                script_sig.append(&mut serialized_pub_key);
+                input.script_sig = ScriptBuf::from_bytes(script_sig);
+                Ok::<(), String>(())
+            })?;
+
+        Ok(tx)
+    }
+
     pub fn update_address_balance(
         &mut self,
         address: &Address,

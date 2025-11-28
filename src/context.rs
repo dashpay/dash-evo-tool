@@ -309,6 +309,19 @@ impl AppContext {
         self.spv_manager.clear_data_dir()
     }
 
+    pub fn clear_network_database(&self) -> Result<(), String> {
+        self.db
+            .clear_network_data(self.network)
+            .map_err(|e| e.to_string())?;
+
+        if let Ok(mut wallets) = self.wallets.write() {
+            wallets.clear();
+            self.has_wallet.store(false, Ordering::Relaxed);
+        }
+
+        Ok(())
+    }
+
     pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
         self.spv_manager.start()?;
         self.spv_setup_reconcile_listener();

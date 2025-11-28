@@ -29,6 +29,12 @@ enum SpvClearMessage {
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+enum DatabaseClearMessage {
+    Success(String),
+    Error(String),
+}
+
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
@@ -52,6 +58,8 @@ pub struct NetworkChooserScreen {
     filter_headers_stage_start: Option<u32>,
     spv_clear_dialog: Option<ConfirmationDialog>,
     spv_clear_message: Option<SpvClearMessage>,
+    db_clear_dialog: Option<ConfirmationDialog>,
+    db_clear_message: Option<DatabaseClearMessage>,
 }
 
 impl NetworkChooserScreen {
@@ -136,6 +144,8 @@ impl NetworkChooserScreen {
             filter_headers_stage_start: None,
             spv_clear_dialog: None,
             spv_clear_message: None,
+            db_clear_dialog: None,
+            db_clear_message: None,
         }
     }
 
@@ -790,6 +800,72 @@ impl NetworkChooserScreen {
                             .italics(),
                     );
                 });
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                ui.label(
+                    egui::RichText::new("Database Maintenance")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Remove all local data for the current network (wallets, contacts, identities, tokens, etc.).")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                let button_label = format!("Clear {} Database", self.current_network_label());
+                let clear_button = egui::Button::new(
+                    egui::RichText::new(button_label).color(DashColors::WHITE),
+                )
+                .fill(DashColors::ERROR)
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(Shape::RADIUS_MD)
+                .min_size(egui::vec2(0.0, 36.0));
+
+                if ui.add(clear_button).clicked() {
+                    let message = format!(
+                        "This permanently deletes all local database entries for {}. This includes wallets, tokens, contacts, and cached identity data. This cannot be undone.",
+                        self.current_network_label()
+                    );
+                    self.db_clear_dialog = Some(
+                        ConfirmationDialog::new("Clear Database", message)
+                            .confirm_text(Some("Delete Data"))
+                            .cancel_text(Some("Cancel"))
+                            .danger_mode(true),
+                    );
+                    self.db_clear_message = None;
+                }
+
+                if let Some(feedback) = self.db_clear_message.clone() {
+                    ui.add_space(8.0);
+                    let (message, color) = match &feedback {
+                        DatabaseClearMessage::Success(msg) => (msg.as_str(), DashColors::SUCCESS),
+                        DatabaseClearMessage::Error(msg) => (msg.as_str(), DashColors::ERROR),
+                    };
+
+                    egui::Frame::new()
+                        .fill(color.gamma_multiply(0.08))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .stroke(egui::Stroke::new(1.0, color))
+                        .corner_radius(Shape::RADIUS_MD)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(message).color(color));
+                                ui.add_space(8.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.db_clear_message = None;
+                                }
+                            });
+                        });
+                }
+
+                if self.db_clear_dialog.is_some() {
+                    app_action |= self.show_database_clear_confirmation(ui);
+                }
             });
         });
 
@@ -1025,7 +1101,7 @@ impl NetworkChooserScreen {
                 .fill(color.gamma_multiply(0.08))
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .stroke(egui::Stroke::new(1.0, color))
-                .rounding(egui::Rounding::same(Shape::RADIUS_MD))
+                .corner_radius(Shape::RADIUS_MD)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(message).color(color));
@@ -1061,6 +1137,39 @@ impl NetworkChooserScreen {
                             Err(err) => {
                                 self.spv_clear_message = Some(SpvClearMessage::Error(format!(
                                     "Failed to clear SPV data: {}",
+                                    err
+                                )));
+                            }
+                        }
+                    }
+                    ConfirmationStatus::Canceled => {
+                        // No-op
+                    }
+                }
+            }
+        }
+        AppAction::None
+    }
+
+    fn show_database_clear_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        if let Some(dialog) = self.db_clear_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.db_clear_dialog = None;
+                match result {
+                    ConfirmationStatus::Confirmed => {
+                        match self.current_app_context().clear_network_database() {
+                            Ok(_) => {
+                                self.db_clear_message =
+                                    Some(DatabaseClearMessage::Success(format!(
+                                        "Cleared {} database. Restart or resync to rebuild state.",
+                                        self.current_network_label()
+                                    )));
+                                return AppAction::Refresh;
+                            }
+                            Err(err) => {
+                                self.db_clear_message = Some(DatabaseClearMessage::Error(format!(
+                                    "Failed to clear database: {}",
                                     err
                                 )));
                             }

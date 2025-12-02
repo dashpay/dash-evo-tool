@@ -878,18 +878,7 @@ impl SpvManager {
                                     }
                                 };
 
-                                let llmq_type = match LLMQType::try_from(quorum_type_u8) {
-                                    Ok(value) => value,
-                                    Err(e) => {
-                                        let message = format!(
-                                            "Invalid quorum type {}: {}",
-                                            quorum_type, e
-                                        );
-                                        tracing::warn!(message);
-                                        let _ = response_tx.send(Err(message));
-                                        continue;
-                                    }
-                                };
+                                let llmq_type = LLMQType::from(quorum_type_u8);
 
                                 let quorum_hash_value = match <QuorumHash as dash_sdk::dash_spv::Hash>::from_slice(&quorum_hash) {
                                     Ok(value) => value,

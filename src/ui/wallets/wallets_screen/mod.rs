@@ -350,6 +350,8 @@ impl WalletsBalancesScreen {
                             "Change".to_string()
                         } else if derivation_path.is_asset_lock_funding(self.app_context.network) {
                             "Identity Creation".to_string()
+                        } else if derivation_path.is_platform_payment(self.app_context.network) {
+                            "Platform".to_string()
                         } else {
                             "System".to_string()
                         };

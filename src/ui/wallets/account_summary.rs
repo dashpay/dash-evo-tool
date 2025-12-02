@@ -18,6 +18,8 @@ pub enum AccountCategory {
     ProviderOwner,
     ProviderOperator,
     ProviderPlatform,
+    /// DIP-17: Platform Payment Addresses (D/d prefix)
+    PlatformPayment,
     Other(DerivationPathReference),
 }
 
@@ -40,7 +42,10 @@ impl AccountCategory {
             DerivationPathReference::ProviderOwnerKeys => AccountCategory::ProviderOwner,
             DerivationPathReference::ProviderOperatorKeys => AccountCategory::ProviderOperator,
             DerivationPathReference::ProviderPlatformNodeKeys => AccountCategory::ProviderPlatform,
-            DerivationPathReference::ProviderFunds => AccountCategory::CoinJoin,
+            DerivationPathReference::ProviderFunds | DerivationPathReference::CoinJoin => {
+                AccountCategory::CoinJoin
+            }
+            DerivationPathReference::PlatformPayment => AccountCategory::PlatformPayment,
             _ => AccountCategory::Other(reference),
         }
     }
@@ -61,6 +66,7 @@ impl AccountCategory {
             AccountCategory::ProviderOwner => "Provider Owner".to_string(),
             AccountCategory::ProviderOperator => "Provider Operator".to_string(),
             AccountCategory::ProviderPlatform => "Provider Platform".to_string(),
+            AccountCategory::PlatformPayment => "Platform Account".to_string(),
             AccountCategory::Other(reference) => format!("{:?}", reference),
         }
     }
@@ -68,17 +74,18 @@ impl AccountCategory {
     fn sort_key(&self) -> u8 {
         match self {
             AccountCategory::Bip44 => 0,
-            AccountCategory::Bip32 => 1,
-            AccountCategory::CoinJoin => 2,
-            AccountCategory::IdentityRegistration => 3,
-            AccountCategory::IdentitySystem => 4,
-            AccountCategory::IdentityTopup => 5,
-            AccountCategory::IdentityInvitation => 6,
-            AccountCategory::ProviderOwner => 7,
-            AccountCategory::ProviderVoting => 8,
-            AccountCategory::ProviderOperator => 9,
-            AccountCategory::ProviderPlatform => 10,
-            AccountCategory::Other(_) => 11,
+            AccountCategory::PlatformPayment => 1,
+            AccountCategory::Bip32 => 2,
+            AccountCategory::CoinJoin => 3,
+            AccountCategory::IdentityRegistration => 4,
+            AccountCategory::IdentitySystem => 5,
+            AccountCategory::IdentityTopup => 6,
+            AccountCategory::IdentityInvitation => 7,
+            AccountCategory::ProviderOwner => 8,
+            AccountCategory::ProviderVoting => 9,
+            AccountCategory::ProviderOperator => 10,
+            AccountCategory::ProviderPlatform => 11,
+            AccountCategory::Other(_) => 12,
         }
     }
 
@@ -117,6 +124,9 @@ impl AccountCategory {
             AccountCategory::ProviderPlatform => {
                 Some("Platform service key branch used by masternode platform nodes.")
             }
+            AccountCategory::PlatformPayment => Some(
+                "DIP-17 Platform payment addresses (D/d prefix). Hold Dash Credits on Platform, independent of identities.",
+            ),
             AccountCategory::Other(_) => None,
         }
     }

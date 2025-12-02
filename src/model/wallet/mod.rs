@@ -37,6 +37,9 @@ pub enum DerivationPathReference {
     BlockchainIdentityCreditTopupFunding = 12,
     BlockchainIdentityCreditInvitationFunding = 13,
     ProviderPlatformNodeKeys = 14,
+    CoinJoin = 15,
+    /// DIP-17: Platform Payment Addresses
+    PlatformPayment = 16,
     Root = 255,
 }
 
@@ -60,6 +63,8 @@ impl TryFrom<u32> for DerivationPathReference {
             12 => Ok(DerivationPathReference::BlockchainIdentityCreditTopupFunding),
             13 => Ok(DerivationPathReference::BlockchainIdentityCreditInvitationFunding),
             14 => Ok(DerivationPathReference::ProviderPlatformNodeKeys),
+            15 => Ok(DerivationPathReference::CoinJoin),
+            16 => Ok(DerivationPathReference::PlatformPayment),
             255 => Ok(DerivationPathReference::Root),
             value => Err(format!(
                 "value {} not convertable to a DerivationPathReference",
@@ -75,8 +80,11 @@ pub trait DerivationPathHelpers {
     fn is_bip44_external(&self, network: Network) -> bool;
     fn is_bip44_change(&self, network: Network) -> bool;
     fn is_asset_lock_funding(&self, network: Network) -> bool;
+    fn is_platform_payment(&self, network: Network) -> bool;
     fn bip44_account_index(&self) -> Option<u32>;
     fn bip44_address_index(&self) -> Option<u32>;
+    fn platform_payment_path(network: Network, account: u32, key_class: u32, index: u32)
+        -> DerivationPath;
 }
 
 impl DerivationPathHelpers for DerivationPath {
@@ -134,6 +142,41 @@ impl DerivationPathHelpers for DerivationPath {
             ChildNumber::Normal256 { .. } | ChildNumber::Hardened256 { .. } => None,
         })
     }
+
+    /// Check if this path is a DIP-17 Platform payment path: m/9'/coin_type'/17'/account'/key_class'/index
+    fn is_platform_payment(&self, network: Network) -> bool {
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        let components = self.as_ref();
+        // DIP-17: m/9'/coin_type'/17'/account'/key_class'/index
+        components.len() == 6
+            && components[0] == ChildNumber::Hardened { index: 9 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+            && components[2] == ChildNumber::Hardened { index: 17 }
+    }
+
+    /// Create a DIP-17 Platform payment derivation path: m/9'/coin_type'/17'/account'/key_class'/index
+    fn platform_payment_path(
+        network: Network,
+        account: u32,
+        key_class: u32,
+        index: u32,
+    ) -> DerivationPath {
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+        DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 9 },
+            ChildNumber::Hardened { index: coin_type },
+            ChildNumber::Hardened { index: 17 },
+            ChildNumber::Hardened { index: account },
+            ChildNumber::Hardened { index: key_class },
+            ChildNumber::Normal { index },
+        ])
+    }
 }
 
 use crate::context::AppContext;
@@ -157,6 +200,8 @@ const BOOTSTRAP_IDENTITY_INVITATION_COUNT: u32 = 8;
 const BOOTSTRAP_IDENTITY_TOPUP_PER_REGISTRATION: u32 = 4;
 const BOOTSTRAP_IDENTITY_TOPUP_NOT_BOUND_COUNT: u32 = 8;
 const BOOTSTRAP_PROVIDER_ADDRESS_COUNT: u32 = 4;
+/// DIP-17: Number of Platform payment addresses to bootstrap per key class
+const BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT: u32 = 20;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -442,6 +487,10 @@ impl Wallet {
 
         if let Err(err) = self.bootstrap_provider_addresses(network, app_context) {
             tracing::warn!("Failed to bootstrap provider addresses: {}", err);
+        }
+
+        if let Err(err) = self.bootstrap_platform_payment_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap Platform payment addresses: {}", err);
         }
     }
 
@@ -1108,6 +1157,87 @@ impl Wallet {
                 app_context,
             )?;
         }
+        Ok(())
+    }
+
+    /// Bootstrap DIP-17 Platform payment addresses (D/d prefix)
+    /// These addresses are for receiving Dash Credits on Platform, independent of identities.
+    fn bootstrap_platform_payment_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        // Default account 0', default key_class 0' (as per DIP-17)
+        let account = 0u32;
+        let key_class = 0u32;
+
+        for index in 0..BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT {
+            let derivation_path =
+                DerivationPath::platform_payment_path(network, account, key_class, index);
+            let extended_private_key = derivation_path
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
+                .map_err(|e| e.to_string())?;
+            let private_key = extended_private_key.to_priv();
+
+            // Use platform_p2pkh to create the proper D/d prefixed address
+            let secp = Secp256k1::new();
+            let public_key = private_key.public_key(&secp);
+            let platform_address = Address::platform_p2pkh(&public_key, network);
+
+            // Register the Platform address
+            self.register_platform_address(
+                platform_address,
+                &derivation_path,
+                DerivationPathType::CLEAR_FUNDS,
+                DerivationPathReference::PlatformPayment,
+                app_context,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Register a Platform payment address (DIP-17/18).
+    /// Platform addresses use different version bytes and are NOT valid on Core chain.
+    fn register_platform_address(
+        &mut self,
+        address: Address,
+        derivation_path: &DerivationPath,
+        path_type: DerivationPathType,
+        path_reference: DerivationPathReference,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        // Store the address in known_addresses and watched_addresses
+        // Note: We don't import to Core wallet since Platform addresses are not valid there
+        app_context
+            .db
+            .add_address_if_not_exists(
+                &self.seed_hash(),
+                &address,
+                &app_context.network,
+                derivation_path,
+                path_reference,
+                path_type,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+
+        self.known_addresses
+            .insert(address.clone(), derivation_path.clone());
+        self.watched_addresses.insert(
+            derivation_path.clone(),
+            AddressInfo {
+                address: address.clone(),
+                path_type,
+                path_reference,
+            },
+        );
+
+        tracing::trace!(
+            address = ?&address,
+            network = &app_context.network.to_string(),
+            "registered new Platform payment address"
+        );
         Ok(())
     }
 

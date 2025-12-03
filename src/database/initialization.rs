@@ -266,6 +266,21 @@ impl Database {
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
 
+        // Create Platform address balances table (DIP-17)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS platform_address_balances (
+                seed_hash BLOB NOT NULL,
+                address TEXT NOT NULL,
+                balance INTEGER NOT NULL DEFAULT 0,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                network TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (seed_hash, address, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
         // Create the utxos table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS utxos (

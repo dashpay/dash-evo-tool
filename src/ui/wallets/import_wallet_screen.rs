@@ -113,6 +113,7 @@ impl ImportWalletScreen {
                 confirmed_balance: 0,
                 unconfirmed_balance: 0,
                 total_balance: 0,
+                platform_address_info: Default::default(),
             };
 
             self.app_context

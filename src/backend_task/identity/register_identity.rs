@@ -361,10 +361,9 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
     ) -> Result<Identity, String> {
         match identity
-            .put_to_platform_and_wait_for_response(
+            .send_to_platform_and_wait_for_response(
                 sdk,
-                asset_lock_proof.clone(),
-                asset_lock_proof_private_key,
+                (asset_lock_proof.clone(), *asset_lock_proof_private_key),
                 &qualified_identity,
                 None,
             )
@@ -374,10 +373,9 @@ impl AppContext {
             Err(e) => {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     identity
-                        .put_to_platform_and_wait_for_response(
+                        .send_to_platform_and_wait_for_response(
                             sdk,
-                            asset_lock_proof.clone(),
-                            asset_lock_proof_private_key,
+                            (asset_lock_proof.clone(), *asset_lock_proof_private_key),
                             &qualified_identity,
                             None,
                         )

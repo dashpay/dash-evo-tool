@@ -24,7 +24,7 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
@@ -254,9 +254,25 @@ pub enum IdentityTask {
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
+    /// Top up an identity from Platform addresses (DIP-17)
+    TopUpIdentityFromPlatformAddresses {
+        identity: QualifiedIdentity,
+        /// Platform addresses and amounts to use for top-up
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        /// Wallet seed hash for signing
+        wallet_seed_hash: WalletSeedHash,
+    },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
+    /// Transfer credits from identity to Platform addresses (DIP-17)
+    TransferToAddresses {
+        identity: QualifiedIdentity,
+        /// Platform addresses and amounts to receive credits
+        outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        /// Key ID to use for signing (if any)
+        key_id: Option<KeyID>,
+    },
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
@@ -475,9 +491,108 @@ impl AppContext {
                     .await
             }
             IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity,
+                inputs,
+                wallet_seed_hash,
+            } => {
+                self.top_up_identity_from_platform_addresses(sdk, identity, inputs, wallet_seed_hash)
+                    .await
+            }
+            IdentityTask::TransferToAddresses {
+                identity,
+                outputs,
+                key_id,
+            } => {
+                self.transfer_to_addresses(sdk, identity, outputs, key_id)
+                    .await
+            }
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 self.refresh_loaded_identities_dpns_names(sender).await
             }
         }
+    }
+
+    /// Top up an identity using credits from Platform addresses
+    async fn top_up_identity_from_platform_addresses(
+        &self,
+        sdk: &Sdk,
+        qualified_identity: QualifiedIdentity,
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        wallet_seed_hash: WalletSeedHash,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
+
+        // Get the wallet for signing - clone it to avoid holding guard across await
+        let wallet_clone = {
+            let wallet = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&wallet_seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+
+            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+
+            // Ensure wallet is open
+            if !wallet_guard.is_open() {
+                return Err("Wallet must be unlocked to sign Platform transactions".to_string());
+            }
+
+            wallet_guard.clone()
+        };
+
+        // Get the identity
+        let identity = qualified_identity.identity.clone();
+
+        // Execute the top-up
+        let new_balance = identity
+            .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
+            .await
+            .map_err(|e| format!("Failed to top up identity from Platform addresses: {}", e))?;
+
+        // Update the identity balance in memory
+        let mut updated_identity = qualified_identity.clone();
+        updated_identity.identity.set_balance(new_balance);
+
+        // Store the updated identity
+        self.insert_local_qualified_identity(&updated_identity, &None)
+            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+
+        Ok(BackendTaskSuccessResult::ToppedUpIdentity(updated_identity))
+    }
+
+    /// Transfer credits from an identity to Platform addresses
+    async fn transfer_to_addresses(
+        &self,
+        sdk: &Sdk,
+        qualified_identity: QualifiedIdentity,
+        outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        _key_id: Option<KeyID>,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
+
+        // Get the identity
+        let identity = qualified_identity.identity.clone();
+
+        // Execute the transfer - qualified_identity is consumed here as the signer
+        let (new_balance, _address_infos) = identity
+            .transfer_credits_to_addresses(sdk, outputs, None, qualified_identity.clone(), None)
+            .await
+            .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
+
+        // Update the identity balance in memory
+        let mut updated_identity = qualified_identity;
+        updated_identity.identity.set_balance(new_balance);
+
+        // Store the updated identity
+        self.insert_local_qualified_identity(&updated_identity, &None)
+            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+
+        Ok(BackendTaskSuccessResult::Message(format!(
+            "Transferred credits to Platform addresses. New balance: {}",
+            new_balance
+        )))
     }
 }

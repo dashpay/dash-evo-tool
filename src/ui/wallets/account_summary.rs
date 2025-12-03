@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use dash_sdk::dashcore_rpc::dashcore::Network;
+use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, Wallet};
@@ -138,6 +139,8 @@ pub struct AccountSummary {
     pub label: String,
     pub index: Option<u32>,
     pub confirmed_balance: u64,
+    /// Platform credits balance for Platform Payment addresses (DIP-17)
+    pub platform_credits: Credits,
     pub total_addresses: usize,
     pub external_addresses: usize,
     pub internal_addresses: usize,
@@ -152,6 +155,7 @@ struct AccountKey {
 struct AccountSummaryBuilder {
     key: AccountKey,
     confirmed_balance: u64,
+    platform_credits: Credits,
     total_addresses: usize,
     external_addresses: usize,
     internal_addresses: usize,
@@ -162,14 +166,22 @@ impl AccountSummaryBuilder {
         Self {
             key: AccountKey { category, index },
             confirmed_balance: 0,
+            platform_credits: 0,
             total_addresses: 0,
             external_addresses: 0,
             internal_addresses: 0,
         }
     }
 
-    fn add_address(&mut self, path: &DerivationPath, balance: u64, network: Network) {
+    fn add_address(
+        &mut self,
+        path: &DerivationPath,
+        balance: u64,
+        platform_credits: Credits,
+        network: Network,
+    ) {
         self.confirmed_balance += balance;
+        self.platform_credits += platform_credits;
         self.total_addresses += 1;
 
         if path.is_bip44_external(network) {
@@ -187,6 +199,7 @@ impl AccountSummaryBuilder {
             label,
             index: self.key.index,
             confirmed_balance: self.confirmed_balance,
+            platform_credits: self.platform_credits,
             total_addresses: self.total_addresses,
             external_addresses: self.external_addresses,
             internal_addresses: self.internal_addresses,
@@ -210,13 +223,20 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
             .cloned()
             .unwrap_or_default();
 
+        // Get Platform credits balance for Platform Payment addresses
+        let platform_credits = wallet
+            .platform_address_info
+            .get(&info.address)
+            .map(|info| info.balance)
+            .unwrap_or_default();
+
         builders
             .entry(AccountKey {
                 category: category.clone(),
                 index,
             })
             .or_insert_with(|| AccountSummaryBuilder::new(category, index))
-            .add_address(path, balance, network);
+            .add_address(path, balance, platform_credits, network);
     }
 
     let mut summaries: Vec<_> = builders

@@ -439,6 +439,142 @@ impl AppContext {
         })
     }
 
+    /// Fetch Platform address balances and nonces from Platform
+    pub(crate) async fn fetch_platform_address_balances(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::platform::FetchMany;
+        use dash_sdk::query_types::AddressInfo as SdkAddressInfo;
+        use std::collections::BTreeSet;
+
+        let wallet_arc = {
+            let wallets = self.wallets.read().unwrap();
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or_else(|| "Wallet not found".to_string())?
+        };
+
+        // Get all Platform addresses from the wallet
+        let platform_addresses: Vec<(Address, PlatformAddress)> = {
+            let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
+            wallet.platform_addresses(self.network)
+        };
+
+        if platform_addresses.is_empty() {
+            return Ok(BackendTaskSuccessResult::PlatformAddressBalances {
+                seed_hash,
+                balances: std::collections::BTreeMap::new(),
+            });
+        }
+
+        // Create a set of PlatformAddresses for the query
+        let address_set: BTreeSet<PlatformAddress> = platform_addresses
+            .iter()
+            .map(|(_, pa)| *pa)
+            .collect();
+
+        // Fetch from Platform using the SDK
+        let sdk = {
+            let guard = self.sdk.read().map_err(|e| e.to_string())?;
+            guard.clone()
+        };
+        let address_infos = SdkAddressInfo::fetch_many(&sdk, address_set)
+            .await
+            .map_err(|e| format!("Failed to fetch Platform address info: {}", e))?;
+
+        // Update wallet and database with the fetched balances
+        let mut balances = std::collections::BTreeMap::new();
+        {
+            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let wallet_seed_hash = wallet.seed_hash();
+
+            for (core_addr, platform_addr) in &platform_addresses {
+                // address_infos.get() returns Option<&Option<AddressInfo>>
+                // Flatten to get the actual AddressInfo if it exists
+                if let Some(Some(info)) = address_infos.get(platform_addr) {
+                    // Update in-memory wallet state
+                    wallet.set_platform_address_info(
+                        core_addr.clone(),
+                        info.balance,
+                        info.nonce,
+                    );
+
+                    // Update database
+                    if let Err(e) = self.db.set_platform_address_info(
+                        &wallet_seed_hash,
+                        core_addr,
+                        info.balance,
+                        info.nonce,
+                        &self.network,
+                    ) {
+                        tracing::warn!(
+                            "Failed to store Platform address info in database: {}",
+                            e
+                        );
+                    }
+
+                    balances.insert(core_addr.to_string(), (info.balance, info.nonce));
+                } else {
+                    // Address not found on Platform (never funded) - set to 0
+                    balances.insert(core_addr.to_string(), (0, 0));
+                }
+            }
+        }
+
+        Ok(BackendTaskSuccessResult::PlatformAddressBalances {
+            seed_hash,
+            balances,
+        })
+    }
+
+    /// Transfer credits between Platform addresses
+    pub(crate) async fn transfer_platform_credits(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        inputs: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            dash_sdk::dpp::balances::credits::Credits,
+        >,
+        outputs: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            dash_sdk::dpp::balances::credits::Credits,
+        >,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use dash_sdk::platform::transition::transfer_address_funds::TransferAddressFunds;
+
+        // Clone wallet and SDK before the async operation to avoid holding guards across await
+        let (wallet, sdk) = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+            (wallet, sdk)
+        };
+
+        // Simple fee strategy: deduct from first input
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+
+        // Use the SDK to transfer
+        let _result = sdk
+            .transfer_address_funds(inputs, outputs, fee_strategy, &wallet, None)
+            .await
+            .map_err(|e| format!("Failed to transfer Platform credits: {}", e))?;
+
+        // Trigger a balance refresh
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash })
+    }
+
     fn register_spv_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,

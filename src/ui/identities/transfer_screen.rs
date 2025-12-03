@@ -14,6 +14,9 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
+use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -23,6 +26,7 @@ use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, RichText};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +35,14 @@ use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 
 use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
+
+/// Transfer destination type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransferDestinationType {
+    #[default]
+    Identity,
+    PlatformAddress,
+}
 
 #[derive(PartialEq)]
 pub enum TransferCreditsStatus {
@@ -56,6 +68,9 @@ pub struct TransferScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
+    // Platform address transfer fields (DIP-17)
+    destination_type: TransferDestinationType,
+    platform_address_input: String,
 }
 
 impl TransferScreen {
@@ -91,6 +106,8 @@ impl TransferScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
+            destination_type: TransferDestinationType::Identity,
+            platform_address_input: String::new(),
         }
     }
 
@@ -149,6 +166,141 @@ impl TransferScreen {
             .label("Receiver Identity ID:")
             .exclude(&[self.identity.identity.id()]),
         );
+    }
+
+    fn render_destination_type_selector(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Transfer to:");
+            ui.add_space(10.0);
+
+            // Identity button
+            let identity_selected = self.destination_type == TransferDestinationType::Identity;
+            let identity_button = egui::Button::new(
+                RichText::new("Identity")
+                    .color(if identity_selected {
+                        Color32::WHITE
+                    } else {
+                        Color32::GRAY
+                    })
+                    .strong(),
+            )
+            .fill(if identity_selected {
+                Color32::from_rgb(0, 128, 255)
+            } else {
+                Color32::from_rgb(60, 60, 60)
+            })
+            .min_size(egui::vec2(100.0, 28.0));
+
+            if ui.add(identity_button).clicked() {
+                self.destination_type = TransferDestinationType::Identity;
+            }
+
+            ui.add_space(5.0);
+
+            // Platform Address button
+            let platform_selected = self.destination_type == TransferDestinationType::PlatformAddress;
+            let platform_button = egui::Button::new(
+                RichText::new("Platform Address")
+                    .color(if platform_selected {
+                        Color32::WHITE
+                    } else {
+                        Color32::GRAY
+                    })
+                    .strong(),
+            )
+            .fill(if platform_selected {
+                Color32::from_rgb(0, 128, 255)
+            } else {
+                Color32::from_rgb(60, 60, 60)
+            })
+            .min_size(egui::vec2(140.0, 28.0));
+
+            if ui.add(platform_button).clicked() {
+                self.destination_type = TransferDestinationType::PlatformAddress;
+            }
+        });
+    }
+
+    fn render_platform_address_input(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Platform Address:");
+            ui.add_space(5.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.platform_address_input)
+                    .hint_text("Enter Platform address (y...)")
+                    .desired_width(400.0),
+            );
+        });
+    }
+
+    /// Validate and parse the Platform address
+    fn validate_platform_address(&self) -> Result<PlatformAddress, String> {
+        if self.platform_address_input.is_empty() {
+            return Err("Platform address is required".to_string());
+        }
+
+        let unchecked_addr: Address<NetworkUnchecked> = self
+            .platform_address_input
+            .trim()
+            .parse()
+            .map_err(|e| format!("Invalid address format: {}", e))?;
+
+        let address = unchecked_addr
+            .require_network(self.app_context.network)
+            .map_err(|e| format!("Address network mismatch: {}", e))?;
+
+        PlatformAddress::try_from(address)
+            .map_err(|e| format!("Invalid Platform address: {}", e))
+    }
+
+    /// Handle the confirmation action for Platform address transfer
+    fn confirmation_ok_platform_address(&mut self) -> AppAction {
+        self.confirmation_popup = false;
+        self.confirmation_dialog = None;
+
+        // Validate Platform address
+        let platform_address = match self.validate_platform_address() {
+            Ok(addr) => addr,
+            Err(error) => {
+                self.set_error_state(error);
+                return AppAction::None;
+            }
+        };
+
+        // Validate selected key
+        let selected_key = match self.selected_key.as_ref() {
+            Some(key) => key,
+            None => {
+                self.set_error_state("No selected key".to_string());
+                return AppAction::None;
+            }
+        };
+
+        // Get the amount
+        let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
+        if credits == 0 {
+            self.error_message = Some("Amount must be greater than 0".to_string());
+            self.transfer_credits_status =
+                TransferCreditsStatus::ErrorMessage("Amount must be greater than 0".to_string());
+            return AppAction::None;
+        }
+
+        // Set waiting state
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+
+        // Build outputs
+        let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
+        outputs.insert(platform_address, credits as Credits);
+
+        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TransferToAddresses {
+            identity: self.identity.clone(),
+            outputs,
+            key_id: Some(selected_key.id()),
+        }))
     }
 
     /// Handle the confirmation action when user clicks OK
@@ -251,6 +403,37 @@ impl TransferScreen {
         // Handle the response using the Component pattern
         match response.inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
+            Some(ConfirmationStatus::Canceled) => self.confirmation_cancel(),
+            None => AppAction::None,
+        }
+    }
+
+    fn show_platform_address_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        // Prepare values before borrowing
+        let Some(amount) = &self.amount else {
+            self.set_error_state("Incorrect or empty amount".to_string());
+            return AppAction::None;
+        };
+
+        let platform_address = self.platform_address_input.clone();
+
+        let msg = format!(
+            "Are you sure you want to transfer {} to Platform address {}?",
+            amount, platform_address
+        );
+
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm Transfer to Platform Address", msg)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+        });
+
+        let response = confirmation_dialog.show(ui);
+
+        // Handle the response using the Component pattern
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok_platform_address(),
             Some(ConfirmationStatus::Canceled) => self.confirmation_cancel(),
             None => AppAction::None,
         }
@@ -419,21 +602,42 @@ impl ScreenLike for TransferScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Input the ID of the identity to transfer to
-                ui.heading("3. ID of the identity to transfer to");
+                // Destination type selector
+                ui.heading("3. Select transfer destination type");
                 ui.add_space(5.0);
-                self.render_to_identity_input(ui);
+                self.render_destination_type_selector(ui);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Input the destination based on type
+                match self.destination_type {
+                    TransferDestinationType::Identity => {
+                        ui.heading("4. ID of the identity to transfer to");
+                        ui.add_space(5.0);
+                        self.render_to_identity_input(ui);
+                    }
+                    TransferDestinationType::PlatformAddress => {
+                        ui.heading("4. Platform address to transfer to");
+                        ui.add_space(5.0);
+                        self.render_platform_address_input(ui);
+                    }
+                }
 
                 ui.add_space(10.0);
 
-                // Transfer button
+                // Transfer button - check readiness based on destination type
                 let ready = self.amount.is_some()
-                    && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
                     && !matches!(
                         self.transfer_credits_status,
                         TransferCreditsStatus::WaitingForResult(_),
-                    );
+                    )
+                    && match self.destination_type {
+                        TransferDestinationType::Identity => !self.receiver_identity_id.is_empty(),
+                        TransferDestinationType::PlatformAddress => !self.platform_address_input.is_empty(),
+                    };
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
@@ -450,7 +654,10 @@ impl ScreenLike for TransferScreen {
                 }
 
                 if self.confirmation_popup {
-                    inner_action |= self.show_confirmation_popup(ui);
+                    inner_action |= match self.destination_type {
+                        TransferDestinationType::Identity => self.show_confirmation_popup(ui),
+                        TransferDestinationType::PlatformAddress => self.show_platform_address_confirmation_popup(ui),
+                    };
                 }
 
                 // Handle transfer status messages

@@ -376,6 +376,7 @@ impl Database {
                     confirmed_balance: 0,
                     unconfirmed_balance: 0,
                     total_balance: 0,
+                    platform_address_info: BTreeMap::new(),
                 },
             );
 
@@ -672,6 +673,110 @@ impl Database {
 
         // Convert the BTreeMap into a Vec of Wallets.
         Ok(wallets_map.into_values().collect())
+    }
+
+    /// Store or update Platform address balance and nonce
+    pub fn set_platform_address_info(
+        &self,
+        seed_hash: &[u8; 32],
+        address: &Address,
+        balance: u64,
+        nonce: u32,
+        network: &Network,
+    ) -> rusqlite::Result<()> {
+        let network_str = network.to_string();
+        let address_str = address.to_string();
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        self.execute(
+            "INSERT OR REPLACE INTO platform_address_balances
+             (seed_hash, address, balance, nonce, network, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![seed_hash, address_str, balance as i64, nonce as i64, network_str, updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// Get Platform address balance and nonce for a specific address
+    pub fn get_platform_address_info(
+        &self,
+        seed_hash: &[u8; 32],
+        address: &Address,
+        network: &Network,
+    ) -> rusqlite::Result<Option<(u64, u32)>> {
+        let conn = self.conn.lock().unwrap();
+        let network_str = network.to_string();
+        let address_str = address.to_string();
+
+        let mut stmt = conn.prepare(
+            "SELECT balance, nonce FROM platform_address_balances
+             WHERE seed_hash = ? AND address = ? AND network = ?",
+        )?;
+
+        let result = stmt.query_row(
+            params![seed_hash, address_str, network_str],
+            |row| {
+                let balance: i64 = row.get(0)?;
+                let nonce: i64 = row.get(1)?;
+                Ok((balance as u64, nonce as u32))
+            },
+        );
+
+        match result {
+            Ok(info) => Ok(Some(info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get all Platform address balances for a wallet
+    pub fn get_all_platform_address_info(
+        &self,
+        seed_hash: &[u8; 32],
+        network: &Network,
+    ) -> rusqlite::Result<Vec<(Address, u64, u32)>> {
+        let conn = self.conn.lock().unwrap();
+        let network_str = network.to_string();
+
+        let mut stmt = conn.prepare(
+            "SELECT address, balance, nonce FROM platform_address_balances
+             WHERE seed_hash = ? AND network = ?",
+        )?;
+
+        let rows = stmt.query_map(params![seed_hash, network_str], |row| {
+            let address_str: String = row.get(0)?;
+            let balance: i64 = row.get(1)?;
+            let nonce: i64 = row.get(2)?;
+            Ok((address_str, balance as u64, nonce as u32))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (address_str, balance, nonce) = row?;
+            if let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str) {
+                let address = address.assume_checked();
+                results.push((address, balance, nonce));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Delete Platform address balances for a wallet (used when removing wallet)
+    pub fn delete_platform_address_info(
+        &self,
+        seed_hash: &[u8; 32],
+        network: &Network,
+    ) -> rusqlite::Result<()> {
+        let network_str = network.to_string();
+        self.execute(
+            "DELETE FROM platform_address_balances WHERE seed_hash = ? AND network = ?",
+            params![seed_hash, network_str],
+        )?;
+        Ok(())
     }
 }
 

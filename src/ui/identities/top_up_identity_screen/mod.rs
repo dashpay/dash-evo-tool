@@ -1,3 +1,4 @@
+mod by_platform_address;
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod by_wallet_qr_code;
@@ -19,7 +20,8 @@ use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::{Credits, Duffs};
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -48,6 +50,9 @@ pub struct TopUpIdentityScreen {
     wallet_password: String,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
+    // Platform address fields (DIP-17)
+    selected_platform_address: Option<(Address, PlatformAddress, Credits)>,
+    platform_top_up_amount: String,
 }
 
 impl TopUpIdentityScreen {
@@ -68,6 +73,8 @@ impl TopUpIdentityScreen {
             wallet_password: "".to_string(),
             show_pop_up_info: None,
             app_context: app_context.clone(),
+            selected_platform_address: None,
+            platform_top_up_amount: String::new(),
         }
     }
 
@@ -181,9 +188,9 @@ impl TopUpIdentityScreen {
         let mut step = self.step.write().unwrap();
         *step = match funding_method {
             FundingMethod::AddressWithQRCode => WalletFundedScreenStep::WaitingOnFunds,
-            FundingMethod::UseUnusedAssetLock | FundingMethod::UseWalletBalance => {
-                WalletFundedScreenStep::ReadyToCreate
-            }
+            FundingMethod::UseUnusedAssetLock
+            | FundingMethod::UseWalletBalance
+            | FundingMethod::UsePlatformAddress => WalletFundedScreenStep::ReadyToCreate,
             FundingMethod::NoSelection => WalletFundedScreenStep::ChooseFundingMethod,
         };
     }
@@ -192,11 +199,12 @@ impl TopUpIdentityScreen {
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap();
 
-        // Check if any wallet has unused asset locks or balance
-        let (has_any_unused_asset_lock, has_any_balance) = {
+        // Check if any wallet has unused asset locks, balance, or Platform address balance
+        let (has_any_unused_asset_lock, has_any_balance, has_any_platform_balance) = {
             let wallets = self.app_context.wallets.read().unwrap();
             let mut has_unused_asset_lock = false;
             let mut has_balance = false;
+            let mut has_platform_balance = false;
 
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
@@ -206,12 +214,15 @@ impl TopUpIdentityScreen {
                 if wallet.has_balance() {
                     has_balance = true;
                 }
-                if has_unused_asset_lock && has_balance {
+                if wallet.total_platform_balance() > 0 {
+                    has_platform_balance = true;
+                }
+                if has_unused_asset_lock && has_balance && has_platform_balance {
                     break; // No need to check further
                 }
             }
 
-            (has_unused_asset_lock, has_balance)
+            (has_unused_asset_lock, has_balance, has_platform_balance)
         };
 
         ComboBox::from_id_salt("funding_method")
@@ -243,6 +254,20 @@ impl TopUpIdentityScreen {
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
                             "Use Wallet Balance",
+                        )
+                        .changed()
+                    {
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
+                });
+
+                ui.add_enabled_ui(has_any_platform_balance, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UsePlatformAddress,
+                            "Use Platform Address",
                         )
                         .changed()
                     {
@@ -537,6 +562,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 if funding_method == FundingMethod::UseWalletBalance
                     || funding_method == FundingMethod::UseUnusedAssetLock
                     || funding_method == FundingMethod::AddressWithQRCode
+                    || funding_method == FundingMethod::UsePlatformAddress
                 {
                     ui.horizontal(|ui| {
                         ui.heading(format!(
@@ -579,6 +605,9 @@ impl ScreenLike for TopUpIdentityScreen {
                     }
                     FundingMethod::AddressWithQRCode => {
                         inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
+                    }
+                    FundingMethod::UsePlatformAddress => {
+                        inner_action |= self.render_ui_by_platform_address(ui, step_number);
                     }
                 }
             });

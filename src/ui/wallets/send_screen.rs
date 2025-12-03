@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::context::AppContext;
@@ -11,8 +12,13 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
+use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::Credits;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 /// Represents which mode the user is sending from
@@ -56,6 +62,11 @@ pub struct WalletSendScreen {
     recipients: Vec<SendRecipient>,
     next_recipient_id: usize,
 
+    // Platform mode fields
+    platform_source_address: Option<(Address, PlatformAddress, Credits)>,
+    platform_destination_address: String,
+    platform_amount: String,
+
     // Common options
     subtract_fee: bool,
     memo: String,
@@ -80,6 +91,9 @@ impl WalletSendScreen {
             send_mode: SendMode::Core,
             recipients: vec![SendRecipient::new(0)],
             next_recipient_id: 1,
+            platform_source_address: None,
+            platform_destination_address: String::new(),
+            platform_amount: String::new(),
             subtract_fee: false,
             memo: String::new(),
             sending: false,
@@ -490,37 +504,333 @@ impl WalletSendScreen {
         action
     }
 
-    fn render_platform_stub(&self, ui: &mut Ui) {
+    /// Get the list of Platform addresses with balances for the selected wallet
+    fn get_platform_addresses(&self) -> Vec<(Address, PlatformAddress, Credits)> {
+        let Some(wallet_arc) = &self.selected_wallet else {
+            return vec![];
+        };
+        let Ok(wallet) = wallet_arc.read() else {
+            return vec![];
+        };
+
+        let network = self.app_context.network;
+        wallet
+            .platform_addresses(network)
+            .into_iter()
+            .map(|(core_addr, platform_addr)| {
+                let balance = wallet
+                    .platform_address_info
+                    .get(&core_addr)
+                    .map(|info| info.balance)
+                    .unwrap_or(0);
+                (core_addr, platform_addr, balance)
+            })
+            .filter(|(_, _, balance)| *balance > 0)
+            .collect()
+    }
+
+    /// Format credits as DASH equivalent
+    fn format_credits(credits: Credits) -> String {
+        // Credits are in a specific unit; 1 DASH = 100_000_000 duffs, 1 duff = 1000 credits
+        let dash_equivalent = credits as f64 / 1000.0 / 100_000_000.0;
+        format!("{:.8} DASH", dash_equivalent)
+    }
+
+    /// Parse amount string to credits
+    fn parse_amount_to_credits(input: &str) -> Result<Credits, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("Amount is required".to_string());
+        }
+
+        // Parse as DASH and convert to credits
+        let dash_amount: f64 = trimmed
+            .parse()
+            .map_err(|_| "Invalid amount format".to_string())?;
+
+        if dash_amount <= 0.0 {
+            return Err("Amount must be positive".to_string());
+        }
+
+        // Convert DASH to credits: 1 DASH = 100_000_000 duffs, 1 duff = 1000 credits
+        let credits = (dash_amount * 100_000_000.0 * 1000.0) as Credits;
+        Ok(credits)
+    }
+
+    fn validate_and_send_platform(&mut self) -> Result<AppAction, String> {
+        let wallet = self
+            .selected_wallet
+            .as_ref()
+            .ok_or_else(|| "No wallet selected".to_string())?;
+
+        // Check wallet is open
+        let seed_hash = {
+            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            if !wallet_guard.is_open() {
+                return Err("Wallet must be unlocked first".to_string());
+            }
+            wallet_guard.seed_hash()
+        };
+
+        // Validate source address
+        let (_source_core_addr, source_platform_addr, source_balance) = self
+            .platform_source_address
+            .clone()
+            .ok_or_else(|| "Please select a source address".to_string())?;
+
+        // Parse destination address
+        let dest_addr_str = self.platform_destination_address.trim();
+        if dest_addr_str.is_empty() {
+            return Err("Destination address is required".to_string());
+        }
+
+        // Parse as a Dash address first, then convert to PlatformAddress
+        let unchecked_addr: Address<NetworkUnchecked> = dest_addr_str
+            .parse()
+            .map_err(|e| format!("Invalid address format: {}", e))?;
+
+        let dest_address = unchecked_addr
+            .require_network(self.app_context.network)
+            .map_err(|e| format!("Address network mismatch: {}", e))?;
+
+        let dest_platform_addr = PlatformAddress::try_from(dest_address)
+            .map_err(|e| format!("Invalid Platform address: {}", e))?;
+
+        // Parse amount
+        let amount = Self::parse_amount_to_credits(&self.platform_amount)?;
+
+        if amount > source_balance {
+            return Err(format!(
+                "Insufficient balance. Available: {}, Requested: {}",
+                Self::format_credits(source_balance),
+                Self::format_credits(amount)
+            ));
+        }
+
+        // Build inputs and outputs
+        let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
+        inputs.insert(source_platform_addr, amount);
+
+        let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
+        outputs.insert(dest_platform_addr, amount);
+
+        self.sending = true;
+
+        Ok(AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::TransferPlatformCredits {
+                seed_hash,
+                inputs,
+                outputs,
+            },
+        )))
+    }
+
+    fn render_platform_send(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        ui.add_space(30.0);
+        // Wallet info
+        self.render_wallet_info(ui);
 
-        ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("Platform Sending")
-                    .color(DashColors::text_primary(dark_mode))
-                    .strong()
-                    .size(20.0),
-            );
+        ui.add_space(10.0);
 
-            ui.add_space(15.0);
+        // Wallet unlock if needed
+        let wallet_is_open = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-            ui.label(
-                RichText::new("Platform sending is coming soon!")
-                    .color(DashColors::text_secondary(dark_mode))
-                    .size(14.0),
-            );
-
+        if !wallet_is_open {
+            self.render_wallet_unlock_if_needed(ui);
             ui.add_space(10.0);
+        }
 
-            ui.label(
-                RichText::new(
-                    "This feature will allow you to send Dash credits between Platform identities.",
-                )
-                .color(DashColors::text_secondary(dark_mode))
-                .size(12.0),
-            );
+        // Platform addresses list
+        let platform_addresses = self.get_platform_addresses();
+
+        ui.add_space(15.0);
+        ui.label(
+            RichText::new("Source Platform Address")
+                .color(DashColors::text_primary(dark_mode))
+                .strong()
+                .size(16.0),
+        );
+        ui.add_space(5.0);
+
+        if platform_addresses.is_empty() {
+            Frame::group(ui.style())
+                .fill(DashColors::surface(dark_mode))
+                .inner_margin(Margin::symmetric(12, 10))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("No Platform addresses with balance found.")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .italics(),
+                    );
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new("Fund a Platform address first to send credits.")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0),
+                    );
+                });
+        } else {
+            Frame::group(ui.style())
+                .fill(DashColors::surface(dark_mode))
+                .inner_margin(Margin::symmetric(12, 10))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    for (core_addr, platform_addr, balance) in &platform_addresses {
+                        let is_selected = self
+                            .platform_source_address
+                            .as_ref()
+                            .map(|(_, p, _)| p == platform_addr)
+                            .unwrap_or(false);
+
+                        let response = ui
+                            .selectable_label(
+                                is_selected,
+                                format!(
+                                    "{} - {}",
+                                    platform_addr,
+                                    Self::format_credits(*balance)
+                                ),
+                            );
+
+                        if response.clicked() {
+                            self.platform_source_address =
+                                Some((core_addr.clone(), *platform_addr, *balance));
+                        }
+                    }
+                });
+        }
+
+        ui.add_space(15.0);
+
+        // Destination address
+        ui.label(
+            RichText::new("Destination Platform Address")
+                .color(DashColors::text_primary(dark_mode))
+                .strong()
+                .size(16.0),
+        );
+        ui.add_space(5.0);
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 10))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Address:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.add_space(5.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.platform_destination_address)
+                            .hint_text("Enter Platform address (D... or d...)")
+                            .desired_width(500.0),
+                    );
+                });
+            });
+
+        ui.add_space(15.0);
+
+        // Amount
+        ui.label(
+            RichText::new("Amount")
+                .color(DashColors::text_primary(dark_mode))
+                .strong()
+                .size(16.0),
+        );
+        ui.add_space(5.0);
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 10))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Amount (DASH):")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.add_space(5.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.platform_amount)
+                            .hint_text("0.01")
+                            .desired_width(150.0),
+                    );
+
+                    if let Some((_, _, balance)) = &self.platform_source_address {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new(format!("Available: {}", Self::format_credits(*balance)))
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(12.0),
+                        );
+
+                        ui.add_space(5.0);
+                        if ui.small_button("Max").clicked() {
+                            // Set to max (minus a small buffer for fees)
+                            let max_dash = *balance as f64 / 1000.0 / 100_000_000.0;
+                            self.platform_amount = format!("{:.8}", max_dash);
+                        }
+                    }
+                });
+            });
+
+        // Send button
+        ui.add_space(20.0);
+
+        ui.horizontal(|ui| {
+            // Back button
+            if ui.button("Cancel").clicked() {
+                action = AppAction::PopScreen;
+            }
+
+            ui.add_space(20.0);
+
+            // Send button
+            let can_send = wallet_is_open
+                && !self.sending
+                && self.platform_source_address.is_some()
+                && !self.platform_destination_address.is_empty()
+                && !self.platform_amount.is_empty();
+
+            let send_button = egui::Button::new(
+                RichText::new(if self.sending {
+                    "Sending..."
+                } else {
+                    "Send Credits"
+                })
+                .color(Color32::WHITE)
+                .strong(),
+            )
+            .fill(if can_send {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::DASH_BLUE.gamma_multiply(0.5)
+            })
+            .min_size(egui::vec2(120.0, 36.0));
+
+            if ui.add_enabled(can_send, send_button).clicked() {
+                match self.validate_and_send_platform() {
+                    Ok(send_action) => {
+                        action = send_action;
+                    }
+                    Err(e) => {
+                        self.display_message(&e, MessageType::Error);
+                    }
+                }
+            }
         });
+
+        action
     }
 
     fn render_core_send(&mut self, ui: &mut Ui) -> AppAction {
@@ -633,13 +943,7 @@ impl ScreenLike for WalletSendScreen {
                             inner_action |= self.render_core_send(ui);
                         }
                         SendMode::Platform => {
-                            self.render_platform_stub(ui);
-
-                            // Still show cancel button for platform mode
-                            ui.add_space(20.0);
-                            if ui.button("Cancel").clicked() {
-                                inner_action = AppAction::PopScreen;
-                            }
+                            inner_action |= self.render_platform_send(ui);
                         }
                     }
                 });
@@ -664,41 +968,56 @@ impl ScreenLike for WalletSendScreen {
     ) {
         self.sending = false;
 
-        if let crate::backend_task::BackendTaskSuccessResult::WalletPayment {
-            txid,
-            recipients,
-            total_amount,
-        } = backend_task_success_result
-        {
-            let msg = if recipients.len() == 1 {
-                let (address, amount) = &recipients[0];
-                format!(
-                    "Sent {} to {}\nTxID: {}",
-                    Self::format_dash(*amount),
-                    address,
-                    txid
-                )
-            } else {
-                let recipient_list: String = recipients
-                    .iter()
-                    .map(|(addr, amt)| format!("  {} to {}", Self::format_dash(*amt), addr))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!(
-                    "Sent {} total to {} recipients:\n{}\nTxID: {}",
-                    Self::format_dash(total_amount),
-                    recipients.len(),
-                    recipient_list,
-                    txid
-                )
-            };
-            self.display_message(&msg, MessageType::Success);
+        match backend_task_success_result {
+            crate::backend_task::BackendTaskSuccessResult::WalletPayment {
+                txid,
+                recipients,
+                total_amount,
+            } => {
+                let msg = if recipients.len() == 1 {
+                    let (address, amount) = &recipients[0];
+                    format!(
+                        "Sent {} to {}\nTxID: {}",
+                        Self::format_dash(*amount),
+                        address,
+                        txid
+                    )
+                } else {
+                    let recipient_list: String = recipients
+                        .iter()
+                        .map(|(addr, amt)| format!("  {} to {}", Self::format_dash(*amt), addr))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!(
+                        "Sent {} total to {} recipients:\n{}\nTxID: {}",
+                        Self::format_dash(total_amount),
+                        recipients.len(),
+                        recipient_list,
+                        txid
+                    )
+                };
+                self.display_message(&msg, MessageType::Success);
 
-            // Clear the form after successful send
-            self.recipients = vec![SendRecipient::new(0)];
-            self.next_recipient_id = 1;
-            self.memo.clear();
-            self.subtract_fee = false;
+                // Clear the form after successful send
+                self.recipients = vec![SendRecipient::new(0)];
+                self.next_recipient_id = 1;
+                self.memo.clear();
+                self.subtract_fee = false;
+            }
+            crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred { .. } => {
+                self.display_message(
+                    "Platform credits transferred successfully!",
+                    MessageType::Success,
+                );
+
+                // Clear the Platform form
+                self.platform_source_address = None;
+                self.platform_destination_address.clear();
+                self.platform_amount.clear();
+            }
+            _ => {
+                self.display_message("Operation completed", MessageType::Success);
+            }
         }
     }
 

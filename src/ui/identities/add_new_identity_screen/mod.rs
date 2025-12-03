@@ -42,6 +42,8 @@ pub enum FundingMethod {
     UseUnusedAssetLock,
     UseWalletBalance,
     AddressWithQRCode,
+    /// Use Platform Address credits (DIP-17)
+    UsePlatformAddress,
 }
 
 impl fmt::Display for FundingMethod {
@@ -51,6 +53,7 @@ impl fmt::Display for FundingMethod {
             FundingMethod::AddressWithQRCode => "Address with QR Code",
             FundingMethod::UseWalletBalance => "Use Wallet Balance",
             FundingMethod::UseUnusedAssetLock => "Use Unused Asset Lock (recommended)",
+            FundingMethod::UsePlatformAddress => "Use Platform Address",
         };
         write!(f, "{}", output)
     }
@@ -1095,6 +1098,10 @@ impl ScreenLike for AddNewIdentityScreen {
                     },
                     FundingMethod::AddressWithQRCode => {
                         inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
+                    },
+                    FundingMethod::UsePlatformAddress => {
+                        // Not yet implemented for identity creation
+                        ui.label("Platform Address funding for identity creation is not yet available.");
                     },
                 }
             });

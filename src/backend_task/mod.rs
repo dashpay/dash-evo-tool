@@ -152,6 +152,16 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         address: String,
     },
+    /// Platform address balances fetched from Platform
+    PlatformAddressBalances {
+        seed_hash: WalletSeedHash,
+        /// Map of address string to (balance, nonce)
+        balances: BTreeMap<String, (u64, u32)>,
+    },
+    /// Platform credits transferred between addresses
+    PlatformCreditsTransferred {
+        seed_hash: WalletSeedHash,
+    },
 
     // MNList-specific results
     MnListFetchedDiff {
@@ -264,6 +274,17 @@ impl AppContext {
         match task {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await
+            }
+            WalletTask::FetchPlatformAddressBalances { seed_hash } => {
+                self.fetch_platform_address_balances(seed_hash).await
+            }
+            WalletTask::TransferPlatformCredits {
+                seed_hash,
+                inputs,
+                outputs,
+            } => {
+                self.transfer_platform_credits(seed_hash, inputs, outputs)
+                    .await
             }
         }
     }

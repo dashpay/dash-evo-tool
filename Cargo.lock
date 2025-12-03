@@ -1757,12 +1757,12 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "dapi-grpc-macros 2.2.0-dev.1",
+ "dapi-grpc-macros 2.2.0-dev.2",
  "futures-core",
  "getrandom 0.2.16",
- "platform-version 2.2.0-dev.1",
+ "platform-version 2.2.0-dev.2",
  "prost 0.14.1",
  "serde",
  "serde_bytes",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc-macros"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "heck",
  "quote",
@@ -1843,10 +1843,10 @@ dependencies = [
 
 [[package]]
 name = "dash-context-provider"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "dpp 2.2.0-dev.1",
- "drive 2.2.0-dev.1",
+ "dpp 2.2.0-dev.2",
+ "drive 2.2.0-dev.2",
  "hex",
  "serde",
  "serde_json",
@@ -1869,7 +1869,7 @@ dependencies = [
  "chrono-humanize",
  "crossbeam-channel",
  "dark-light",
- "dash-sdk 2.2.0-dev.1",
+ "dash-sdk 2.2.0-dev.2",
  "derive_more 2.0.1",
  "directories",
  "dotenvy",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "dash-sdk"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1972,21 +1972,21 @@ dependencies = [
  "bip37-bloom-filter",
  "chrono",
  "ciborium",
- "dapi-grpc 2.2.0-dev.1",
- "dapi-grpc-macros 2.2.0-dev.1",
+ "dapi-grpc 2.2.0-dev.2",
+ "dapi-grpc-macros 2.2.0-dev.2",
  "dash-context-provider",
  "derive_more 1.0.0",
  "dotenvy",
- "dpp 2.2.0-dev.1",
- "drive 2.2.0-dev.1",
- "drive-proof-verifier 2.2.0-dev.1",
+ "dpp 2.2.0-dev.2",
+ "drive 2.2.0-dev.2",
+ "drive-proof-verifier 2.2.0-dev.2",
  "envy",
  "futures",
  "hex",
  "http",
  "js-sys",
  "lru",
- "rs-dapi-client 2.2.0-dev.1",
+ "rs-dapi-client 2.2.0-dev.2",
  "rustls-pemfile",
  "serde",
  "serde_json",
@@ -2180,10 +2180,10 @@ dependencies = [
 
 [[package]]
 name = "dashpay-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -2209,20 +2209,20 @@ dependencies = [
 
 [[package]]
 name = "data-contracts"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "dashpay-contract 2.2.0-dev.1",
- "dpns-contract 2.2.0-dev.1",
- "feature-flags-contract 2.2.0-dev.1",
- "keyword-search-contract 2.2.0-dev.1",
- "masternode-reward-shares-contract 2.2.0-dev.1",
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "dashpay-contract 2.2.0-dev.2",
+ "dpns-contract 2.2.0-dev.2",
+ "feature-flags-contract 2.2.0-dev.2",
+ "keyword-search-contract 2.2.0-dev.2",
+ "masternode-reward-shares-contract 2.2.0-dev.2",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
- "token-history-contract 2.2.0-dev.1",
- "wallet-utils-contract 2.2.0-dev.1",
- "withdrawals-contract 2.2.0-dev.1",
+ "token-history-contract 2.2.0-dev.2",
+ "wallet-utils-contract 2.2.0-dev.2",
+ "withdrawals-contract 2.2.0-dev.2",
 ]
 
 [[package]]
@@ -2475,10 +2475,10 @@ dependencies = [
 
 [[package]]
 name = "dpns-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "dpp"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2543,7 +2543,7 @@ dependencies = [
  "dash-spv",
  "dashcore 0.40.0",
  "dashcore-rpc 0.40.0",
- "data-contracts 2.2.0-dev.1",
+ "data-contracts 2.2.0-dev.2",
  "derive_more 1.0.0",
  "env_logger",
  "getrandom 0.2.16",
@@ -2557,11 +2557,11 @@ dependencies = [
  "nohash-hasher",
  "num_enum 0.7.5",
  "once_cell",
- "platform-serialization 2.2.0-dev.1",
- "platform-serialization-derive 2.2.0-dev.1",
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
- "platform-versioning 2.2.0-dev.1",
+ "platform-serialization 2.2.0-dev.2",
+ "platform-serialization-derive 2.2.0-dev.2",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
+ "platform-versioning 2.2.0-dev.2",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -2582,11 +2582,11 @@ dependencies = [
  "byteorder",
  "derive_more 1.0.0",
  "dpp 2.0.1",
- "grovedb",
- "grovedb-costs",
- "grovedb-epoch-based-storage-flags",
- "grovedb-path",
- "grovedb-version",
+ "grovedb 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-costs 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-epoch-based-storage-flags 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-path 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-version 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "indexmap 2.12.0",
  "integer-encoding",
@@ -2600,22 +2600,22 @@ dependencies = [
 
 [[package]]
 name = "drive"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "byteorder",
  "derive_more 1.0.0",
- "dpp 2.2.0-dev.1",
- "grovedb",
- "grovedb-costs",
- "grovedb-epoch-based-storage-flags",
- "grovedb-path",
- "grovedb-version",
+ "dpp 2.2.0-dev.2",
+ "grovedb 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-costs 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-epoch-based-storage-flags 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-path 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-version 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
  "hex",
  "indexmap 2.12.0",
  "integer-encoding",
  "nohash-hasher",
- "platform-version 2.2.0-dev.1",
+ "platform-version 2.2.0-dev.2",
  "serde",
  "sqlparser",
  "thiserror 2.0.17",
@@ -2645,18 +2645,18 @@ dependencies = [
 
 [[package]]
 name = "drive-proof-verifier"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "dapi-grpc 2.2.0-dev.1",
+ "dapi-grpc 2.2.0-dev.2",
  "dash-context-provider",
  "derive_more 1.0.0",
- "dpp 2.2.0-dev.1",
- "drive 2.2.0-dev.1",
+ "dpp 2.2.0-dev.2",
+ "drive 2.2.0-dev.2",
  "hex",
  "indexmap 2.12.0",
- "platform-serialization 2.2.0-dev.1",
- "platform-serialization-derive 2.2.0-dev.1",
+ "platform-serialization 2.2.0-dev.2",
+ "platform-serialization-derive 2.2.0-dev.2",
  "serde",
  "serde_json",
  "tenderdash-abci 1.5.0-dev.2",
@@ -3236,10 +3236,10 @@ dependencies = [
 
 [[package]]
 name = "feature-flags-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -3729,12 +3729,12 @@ dependencies = [
  "bincode 2.0.0-rc.3",
  "bincode_derive",
  "blake3",
- "grovedb-costs",
- "grovedb-merk",
- "grovedb-path",
+ "grovedb-costs 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-merk 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-path 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "grovedb-storage",
- "grovedb-version",
- "grovedb-visualize",
+ "grovedb-version 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-visualize 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "hex-literal",
  "indexmap 2.12.0",
@@ -3744,6 +3744,27 @@ dependencies = [
  "reqwest",
  "sha2",
  "tempfile",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "grovedb"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
+dependencies = [
+ "bincode 2.0.0-rc.3",
+ "bincode_derive",
+ "blake3",
+ "grovedb-costs 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-merk 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-path 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-version 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "hex",
+ "hex-literal",
+ "indexmap 2.12.0",
+ "integer-encoding",
+ "reqwest",
+ "sha2",
  "thiserror 2.0.17",
 ]
 
@@ -3759,12 +3780,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "grovedb-costs"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
+dependencies = [
+ "integer-encoding",
+ "intmap",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "grovedb-epoch-based-storage-flags"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc6bdc033cc229b17cd02ee9d5c5a5a344788ed0e69ad7468b0d34d94b021fc4"
 dependencies = [
- "grovedb-costs",
+ "grovedb-costs 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hex",
+ "integer-encoding",
+ "intmap",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "grovedb-epoch-based-storage-flags"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
+dependencies = [
+ "grovedb-costs 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
  "hex",
  "integer-encoding",
  "intmap",
@@ -3783,16 +3826,36 @@ dependencies = [
  "byteorder",
  "colored",
  "ed",
- "grovedb-costs",
- "grovedb-path",
+ "grovedb-costs 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-path 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "grovedb-storage",
- "grovedb-version",
- "grovedb-visualize",
+ "grovedb-version 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-visualize 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "indexmap 2.12.0",
  "integer-encoding",
  "num_cpus",
  "rand 0.8.5",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "grovedb-merk"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
+dependencies = [
+ "bincode 2.0.0-rc.3",
+ "bincode_derive",
+ "blake3",
+ "byteorder",
+ "ed",
+ "grovedb-costs 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-path 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-version 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "grovedb-visualize 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
+ "hex",
+ "indexmap 2.12.0",
+ "integer-encoding",
  "thiserror 2.0.17",
 ]
 
@@ -3806,15 +3869,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "grovedb-path"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
+dependencies = [
+ "hex",
+]
+
+[[package]]
 name = "grovedb-storage"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d04f3831fe210543a7246f2a60ae068f23eac5f9d53200d5a82785750f68fd"
 dependencies = [
  "blake3",
- "grovedb-costs",
- "grovedb-path",
- "grovedb-visualize",
+ "grovedb-costs 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-path 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-visualize 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "integer-encoding",
  "lazy_static",
@@ -3836,10 +3907,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "grovedb-version"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
+dependencies = [
+ "thiserror 2.0.17",
+ "versioned-feature-core 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "grovedb-visualize"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34fa6f41c110d1d141bf912175f187ef51ac5d2a8f163dfd229be007461a548f"
+dependencies = [
+ "hex",
+ "itertools 0.14.0",
+]
+
+[[package]]
+name = "grovedb-visualize"
+version = "3.1.0"
+source = "git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8#375b4206141994160d528a5b2e4d7eb7bc2d16e8"
 dependencies = [
  "hex",
  "itertools 0.14.0",
@@ -3860,9 +3949,9 @@ dependencies = [
  "dash-sdk 2.0.1",
  "ed25519-dalek",
  "env_logger",
- "grovedb",
- "grovedb-costs",
- "grovedb-merk",
+ "grovedb 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-costs 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "grovedb-merk 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "log",
  "num-bigint",
@@ -4668,10 +4757,10 @@ dependencies = [
 
 [[package]]
 name = "keyword-search-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -4893,10 +4982,10 @@ dependencies = [
 
 [[package]]
 name = "masternode-reward-shares-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -5961,10 +6050,10 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "platform-version 2.2.0-dev.1",
+ "platform-version 2.2.0-dev.2",
 ]
 
 [[package]]
@@ -5980,7 +6069,7 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization-derive"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6010,7 +6099,7 @@ dependencies = [
 
 [[package]]
 name = "platform-value"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "base64 0.22.1",
  "bincode 2.0.0-rc.3",
@@ -6018,8 +6107,8 @@ dependencies = [
  "ciborium",
  "hex",
  "indexmap 2.12.0",
- "platform-serialization 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-serialization 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -6033,7 +6122,7 @@ version = "2.0.1"
 source = "git+https://github.com/dashpay/platform?tag=v2.0.1#5f93c70720a1ea09f91c9142668e17f314986f03"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "grovedb-version",
+ "grovedb-version 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "once_cell",
  "thiserror 2.0.17",
  "versioned-feature-core 1.0.0 (git+https://github.com/dashpay/versioned-feature-core)",
@@ -6041,10 +6130,10 @@ dependencies = [
 
 [[package]]
 name = "platform-version"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "grovedb-version",
+ "grovedb-version 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
  "once_cell",
  "thiserror 2.0.17",
  "versioned-feature-core 1.0.0 (git+https://github.com/dashpay/versioned-feature-core)",
@@ -6062,7 +6151,7 @@ dependencies = [
 
 [[package]]
 name = "platform-versioning"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6705,11 +6794,11 @@ dependencies = [
 
 [[package]]
 name = "rs-dapi-client"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "backon",
  "chrono",
- "dapi-grpc 2.2.0-dev.1",
+ "dapi-grpc 2.2.0-dev.2",
  "futures",
  "getrandom 0.2.16",
  "gloo-timers",
@@ -7852,10 +7941,10 @@ dependencies = [
 
 [[package]]
 name = "token-history-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -8604,10 +8693,10 @@ dependencies = [
 
 [[package]]
 name = "wallet-utils-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -9872,11 +9961,11 @@ dependencies = [
 
 [[package]]
 name = "withdrawals-contract"
-version = "2.2.0-dev.1"
+version = "2.2.0-dev.2"
 dependencies = [
  "num_enum 0.5.11",
- "platform-value 2.2.0-dev.1",
- "platform-version 2.2.0-dev.1",
+ "platform-value 2.2.0-dev.2",
+ "platform-version 2.2.0-dev.2",
  "serde",
  "serde_json",
  "serde_repr",

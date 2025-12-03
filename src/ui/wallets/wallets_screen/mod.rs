@@ -67,6 +67,7 @@ pub struct WalletsBalancesScreen {
     pending_wallet_removal_alias: Option<String>,
     send_dialog: SendDialogState,
     receive_dialog: ReceiveDialogState,
+    platform_receive_dialog: PlatformReceiveDialogState,
     selected_account: Option<(AccountCategory, Option<u32>)>,
 }
 
@@ -102,6 +103,19 @@ struct ReceiveDialogState {
     status: Option<String>,
 }
 
+/// State for the Platform address receive dialog (DIP-17)
+#[derive(Default)]
+struct PlatformReceiveDialogState {
+    is_open: bool,
+    /// List of Platform addresses with their balances: (display_address, balance_credits)
+    addresses: Vec<(String, u64)>,
+    /// Currently selected address index
+    selected_index: usize,
+    qr_texture: Option<TextureHandle>,
+    qr_address: Option<String>,
+    status: Option<String>,
+}
+
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
@@ -122,6 +136,7 @@ impl WalletsBalancesScreen {
             pending_wallet_removal_alias: None,
             send_dialog: SendDialogState::default(),
             receive_dialog: ReceiveDialogState::default(),
+            platform_receive_dialog: PlatformReceiveDialogState::default(),
             selected_account: None,
         }
     }
@@ -935,6 +950,22 @@ impl WalletsBalancesScreen {
             {
                 action |= self.open_receive_dialog(ctx);
             }
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            // Platform address receive button
+            if ui
+                .button(
+                    RichText::new("Receive Platform Credits")
+                        .color(DashColors::text_primary(dark_mode)),
+                )
+                .on_hover_text("Show Platform address to receive credits (DIP-17)")
+                .clicked()
+            {
+                action |= self.open_platform_receive_dialog(ctx);
+            }
         });
         action
     }
@@ -984,13 +1015,27 @@ impl WalletsBalancesScreen {
                                 .size(16.0),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(Self::format_dash(summary.confirmed_balance))
-                                    .strong()
-                                    .color(DashColors::text_primary(
-                                        ui.ctx().style().visuals.dark_mode,
-                                    )),
-                            );
+                            // Show Platform credits for Platform Payment accounts
+                            if summary.category == AccountCategory::PlatformPayment {
+                                // Display Platform credits (convert to DASH equivalent)
+                                let credits_as_dash =
+                                    summary.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                ui.label(
+                                    RichText::new(format!("{:.8} Credits", credits_as_dash))
+                                        .strong()
+                                        .color(DashColors::text_primary(
+                                            ui.ctx().style().visuals.dark_mode,
+                                        )),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(Self::format_dash(summary.confirmed_balance))
+                                        .strong()
+                                        .color(DashColors::text_primary(
+                                            ui.ctx().style().visuals.dark_mode,
+                                        )),
+                                );
+                            }
                         });
                     });
 
@@ -1322,6 +1367,284 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
+    /// Open the Platform address receive dialog (DIP-17)
+    fn open_platform_receive_dialog(&mut self, _ctx: &Context) -> AppAction {
+        let Some(wallet) = self.selected_wallet.clone() else {
+            self.platform_receive_dialog.status = Some("Select a wallet first".to_string());
+            self.platform_receive_dialog.is_open = true;
+            return AppAction::None;
+        };
+
+        // Check if wallet is locked
+        {
+            let wallet_guard = match wallet.read() {
+                Ok(guard) => guard,
+                Err(err) => {
+                    self.platform_receive_dialog.status = Some(err.to_string());
+                    self.platform_receive_dialog.is_open = true;
+                    return AppAction::None;
+                }
+            };
+
+            if wallet_guard.uses_password && !wallet_guard.is_open() {
+                self.platform_receive_dialog.status =
+                    Some("Unlock wallet first to view Platform addresses".to_string());
+                self.platform_receive_dialog.is_open = true;
+                return AppAction::None;
+            }
+
+            // Collect Platform addresses with their balances
+            let platform_addresses: Vec<(String, u64)> = wallet_guard
+                .platform_address_info
+                .iter()
+                .map(|(addr, info)| (addr.to_string(), info.balance))
+                .collect();
+
+            if platform_addresses.is_empty() {
+                // Generate a new Platform address if none exists
+                self.platform_receive_dialog.status =
+                    Some("No Platform addresses found. Generating...".to_string());
+                self.platform_receive_dialog.addresses.clear();
+            } else {
+                self.platform_receive_dialog.addresses = platform_addresses;
+                self.platform_receive_dialog.selected_index = 0;
+                self.platform_receive_dialog.status = None;
+            }
+        }
+
+        // If no Platform addresses, try to generate one
+        if self.platform_receive_dialog.addresses.is_empty() {
+            match self.generate_platform_address(&wallet) {
+                Ok(address) => {
+                    self.platform_receive_dialog.addresses = vec![(address, 0)];
+                    self.platform_receive_dialog.selected_index = 0;
+                    self.platform_receive_dialog.status = None;
+                }
+                Err(err) => {
+                    self.platform_receive_dialog.status = Some(err);
+                }
+            }
+        }
+
+        self.platform_receive_dialog.is_open = true;
+        self.platform_receive_dialog.qr_texture = None;
+        self.platform_receive_dialog.qr_address = None;
+
+        AppAction::None
+    }
+
+    /// Generate a new Platform address for the wallet
+    fn generate_platform_address(&self, wallet: &Arc<RwLock<Wallet>>) -> Result<String, String> {
+        let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+        let address = wallet_guard
+            .platform_receive_address(self.app_context.network, true, Some(&self.app_context))
+            .map_err(|e| e.to_string())?;
+        Ok(address.to_string())
+    }
+
+    /// Render the Platform address receive dialog (DIP-17)
+    fn render_platform_receive_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.platform_receive_dialog.is_open {
+            return AppAction::None;
+        }
+
+        // Get current selected address for QR code
+        let current_address = self
+            .platform_receive_dialog
+            .addresses
+            .get(self.platform_receive_dialog.selected_index)
+            .map(|(addr, _)| addr.clone());
+
+        // Generate QR texture if needed
+        if let Some(address) = current_address.clone() {
+            let needs_texture = self.platform_receive_dialog.qr_texture.is_none()
+                || self.platform_receive_dialog.qr_address.as_deref() != Some(&address);
+            if needs_texture {
+                match generate_qr_code_image(&address) {
+                    Ok(image) => {
+                        let texture = ctx.load_texture(
+                            format!("platform_receive_{}", address),
+                            image,
+                            TextureOptions::LINEAR,
+                        );
+                        self.platform_receive_dialog.qr_texture = Some(texture);
+                        self.platform_receive_dialog.qr_address = Some(address);
+                    }
+                    Err(err) => {
+                        self.platform_receive_dialog.status = Some(err.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut open = self.platform_receive_dialog.is_open;
+        let dark_mode = ctx.style().visuals.dark_mode;
+
+        egui::Window::new("Receive Platform Credits")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new("Platform Address (DIP-17)")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0),
+                    );
+                    ui.add_space(10.0);
+
+                    // Show QR code
+                    if let Some(texture) = &self.platform_receive_dialog.qr_texture {
+                        ui.image(SizedTexture::new(texture.id(), egui::vec2(220.0, 220.0)));
+                    } else if !self.platform_receive_dialog.addresses.is_empty() {
+                        ui.label("Generating QR code...");
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Address selector (if multiple addresses)
+                    if self.platform_receive_dialog.addresses.len() > 1 {
+                        ui.horizontal(|ui| {
+                            ui.label("Address:");
+                            ComboBox::from_id_salt("platform_addr_selector")
+                                .selected_text(
+                                    self.platform_receive_dialog
+                                        .addresses
+                                        .get(self.platform_receive_dialog.selected_index)
+                                        .map(|(addr, balance)| {
+                                            let credits_as_dash =
+                                                *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                            format!(
+                                                "{}... ({:.4} DASH)",
+                                                &addr[..12.min(addr.len())],
+                                                credits_as_dash
+                                            )
+                                        })
+                                        .unwrap_or_default(),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (idx, (addr, balance)) in
+                                        self.platform_receive_dialog.addresses.iter().enumerate()
+                                    {
+                                        let credits_as_dash =
+                                            *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                        let label = format!(
+                                            "{}... ({:.4} DASH)",
+                                            &addr[..12.min(addr.len())],
+                                            credits_as_dash
+                                        );
+                                        if ui
+                                            .selectable_label(
+                                                idx == self.platform_receive_dialog.selected_index,
+                                                label,
+                                            )
+                                            .clicked()
+                                        {
+                                            self.platform_receive_dialog.selected_index = idx;
+                                            // Clear QR so it regenerates
+                                            self.platform_receive_dialog.qr_texture = None;
+                                            self.platform_receive_dialog.qr_address = None;
+                                        }
+                                    }
+                                });
+                        });
+                        ui.add_space(5.0);
+                    }
+
+                    // Show selected address - clone values to avoid borrow issues
+                    let selected_addr_data = self
+                        .platform_receive_dialog
+                        .addresses
+                        .get(self.platform_receive_dialog.selected_index)
+                        .cloned();
+
+                    if let Some((address, balance)) = selected_addr_data {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(&address)
+                                .monospace()
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+
+                        let credits_as_dash = balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                        ui.label(
+                            RichText::new(format!("Balance: {:.8} DASH", credits_as_dash))
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+
+                        ui.add_space(8.0);
+
+                        let mut copy_status: Option<String> = None;
+                        let mut new_addr_result: Option<Result<String, String>> = None;
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Copy Address").clicked() {
+                                if let Err(err) = copy_text_to_clipboard(&address) {
+                                    copy_status = Some(format!("Error: {}", err));
+                                } else {
+                                    copy_status = Some("Address copied!".to_string());
+                                }
+                            }
+
+                            // Button to add new Platform address
+                            if let Some(wallet) = &self.selected_wallet {
+                                if ui.button("New Address").clicked() {
+                                    new_addr_result = Some(self.generate_platform_address(wallet));
+                                }
+                            }
+                        });
+
+                        // Handle copy status after the closure
+                        if let Some(status) = copy_status {
+                            self.platform_receive_dialog.status = Some(status);
+                        }
+
+                        // Handle new address generation after the closure
+                        if let Some(result) = new_addr_result {
+                            match result {
+                                Ok(new_addr) => {
+                                    self.platform_receive_dialog.addresses.push((new_addr, 0));
+                                    self.platform_receive_dialog.selected_index =
+                                        self.platform_receive_dialog.addresses.len() - 1;
+                                    self.platform_receive_dialog.qr_texture = None;
+                                    self.platform_receive_dialog.qr_address = None;
+                                    self.platform_receive_dialog.status =
+                                        Some("New address generated!".to_string());
+                                }
+                                Err(err) => {
+                                    self.platform_receive_dialog.status = Some(err);
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(status) = &self.platform_receive_dialog.status {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(status).color(DashColors::text_secondary(dark_mode)),
+                        );
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(
+                            "Send credits from an identity or another Platform address to fund this address.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode))
+                        .size(11.0)
+                        .italics(),
+                    );
+                });
+            });
+
+        self.platform_receive_dialog.is_open = open;
+        if !self.platform_receive_dialog.is_open {
+            self.platform_receive_dialog = PlatformReceiveDialogState::default();
+        }
+        AppAction::None
+    }
+
     fn prepare_send_action(&mut self) -> Result<AppAction, String> {
         let wallet = self
             .selected_wallet
@@ -1590,6 +1913,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
         action |= self.render_send_dialog(ctx);
         action |= self.render_receive_dialog(ctx);
+        action |= self.render_platform_receive_dialog(ctx);
 
         // Rename dialog
         if self.show_rename_dialog {

@@ -2,11 +2,15 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
+use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
+use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
+use dash_sdk::dpp::prelude::AddressNonce;
+use dash_sdk::dpp::ProtocolError;
 
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -14,6 +18,7 @@ use dash_sdk::dpp::dashcore::{
     Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf,
     Transaction, TxIn, TxOut, Txid,
 };
+use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
@@ -250,6 +255,13 @@ impl PartialEq for WalletArcRef {
     }
 }
 
+/// Information about a Platform address balance and nonce
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlatformAddressInfo {
+    pub balance: Credits,
+    pub nonce: AddressNonce,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Wallet {
     pub wallet_seed: WalletSeed,
@@ -274,6 +286,8 @@ pub struct Wallet {
     pub confirmed_balance: u64,
     pub unconfirmed_balance: u64,
     pub total_balance: u64,
+    /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
+    pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1363,6 +1377,90 @@ impl Wallet {
         ))
     }
 
+    /// Generate a Platform receive address (DIP-17).
+    /// Either returns an existing unused Platform address or generates a new one.
+    pub fn platform_receive_address(
+        &mut self,
+        network: Network,
+        skip_known_addresses_with_no_funds: bool,
+        register: Option<&AppContext>,
+    ) -> Result<Address, String> {
+        let seed = *self.seed_bytes()?;
+        let secp = Secp256k1::new();
+        let account = 0u32;
+        let key_class = 0u32;
+
+        // Find the highest index in existing Platform payment addresses
+        let existing_indices: Vec<u32> = self
+            .watched_addresses
+            .iter()
+            .filter(|(path, _)| path.is_platform_payment(network))
+            .filter_map(|(path, _)| {
+                // Extract the index from the path (last component)
+                path.into_iter().last().and_then(|child| match child {
+                    ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
+                    _ => None,
+                })
+            })
+            .collect();
+
+        // If skipping known addresses with no funds, try to find one with zero balance
+        if !skip_known_addresses_with_no_funds {
+            // Return first existing address with zero balance
+            for (path, info) in &self.watched_addresses {
+                if path.is_platform_payment(network) {
+                    if let Some(addr_info) = self.platform_address_info.get(&info.address) {
+                        if addr_info.balance == 0 {
+                            return Ok(info.address.clone());
+                        }
+                    } else {
+                        // No balance info means zero balance
+                        return Ok(info.address.clone());
+                    }
+                }
+            }
+        }
+
+        // Generate a new Platform address at the next index
+        let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
+
+        let derivation_path =
+            DerivationPath::platform_payment_path(network, account, key_class, next_index);
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(&seed, network)
+            .map_err(|e| e.to_string())?;
+        let private_key = extended_private_key.to_priv();
+        let public_key = private_key.public_key(&secp);
+
+        // Use platform_p2pkh to create the proper D/d prefixed address
+        let platform_address = Address::platform_p2pkh(&public_key, network);
+
+        // Register the new address
+        if let Some(app_context) = register {
+            self.register_platform_address(
+                platform_address.clone(),
+                &derivation_path,
+                DerivationPathType::CLEAR_FUNDS,
+                DerivationPathReference::PlatformPayment,
+                app_context,
+            )?;
+        } else {
+            // Just update local state without persisting
+            self.known_addresses
+                .insert(platform_address.clone(), derivation_path.clone());
+            self.watched_addresses.insert(
+                derivation_path,
+                AddressInfo {
+                    address: platform_address.clone(),
+                    path_type: DerivationPathType::CLEAR_FUNDS,
+                    path_reference: DerivationPathReference::PlatformPayment,
+                },
+            );
+        }
+
+        Ok(platform_address)
+    }
+
     pub fn derive_bip44_address(
         &self,
         network: Network,
@@ -1655,5 +1753,161 @@ impl Wallet {
             .db
             .update_address_balance(&self.seed_hash(), address, new_balance)
             .map_err(|e| e.to_string())
+    }
+
+    /// Get all Platform payment addresses from this wallet
+    pub fn platform_addresses(&self, network: Network) -> Vec<(Address, PlatformAddress)> {
+        self.watched_addresses
+            .iter()
+            .filter(|(path, _)| path.is_platform_payment(network))
+            .filter_map(|(_, info)| {
+                PlatformAddress::try_from(info.address.clone())
+                    .ok()
+                    .map(|platform_addr| (info.address.clone(), platform_addr))
+            })
+            .collect()
+    }
+
+    /// Get the total Platform balance (sum of all Platform address balances)
+    pub fn total_platform_balance(&self) -> Credits {
+        self.platform_address_info
+            .values()
+            .map(|info| info.balance)
+            .sum()
+    }
+
+    /// Update Platform address info (balance and nonce)
+    pub fn set_platform_address_info(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+    ) {
+        self.platform_address_info
+            .insert(address, PlatformAddressInfo { balance, nonce });
+    }
+
+    /// Get the private key for a Platform address
+    #[allow(clippy::result_large_err)]
+    fn get_platform_address_private_key(
+        &self,
+        platform_address: &PlatformAddress,
+        network: Network,
+    ) -> Result<PrivateKey, ProtocolError> {
+        // Convert PlatformAddress to Core Address for lookup
+        let core_address = platform_address.to_address_with_network(network);
+
+        // Look up the derivation path for this address
+        let derivation_path = self
+            .known_addresses
+            .get(&core_address)
+            .ok_or_else(|| {
+                ProtocolError::Generic(format!(
+                    "Platform address {} not found in wallet",
+                    core_address
+                ))
+            })?;
+
+        // Get the seed bytes
+        let seed = *self.seed_bytes().map_err(ProtocolError::Generic)?;
+
+        // Derive the private key
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(&seed, network)
+            .map_err(|e| ProtocolError::Generic(e.to_string()))?;
+
+        Ok(extended_private_key.to_priv())
+    }
+}
+
+/// Signer implementation for Platform addresses (DIP-17)
+/// Allows the wallet to sign transactions that spend from Platform addresses
+impl Signer<PlatformAddress> for Wallet {
+    fn sign(
+        &self,
+        platform_address: &PlatformAddress,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        // Only P2PKH addresses are supported for now
+        if !platform_address.is_p2pkh() {
+            return Err(ProtocolError::Generic(
+                "Only P2PKH Platform addresses are currently supported for signing".to_string(),
+            ));
+        }
+
+        // We need the network to derive the key, but we don't have it here.
+        // Try both networks - the address will only exist in one
+        let private_key = self
+            .get_platform_address_private_key(platform_address, Network::Dash)
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Testnet)
+            })
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Devnet)
+            })
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Regtest)
+            })?;
+
+        // Sign the data
+        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
+            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
+
+        Ok(BinaryData::new(signature.to_vec()))
+    }
+
+    fn sign_create_witness(
+        &self,
+        platform_address: &PlatformAddress,
+        data: &[u8],
+    ) -> Result<AddressWitness, ProtocolError> {
+        // Only P2PKH addresses are supported for now
+        if !platform_address.is_p2pkh() {
+            return Err(ProtocolError::Generic(
+                "Only P2PKH Platform addresses are currently supported for signing".to_string(),
+            ));
+        }
+
+        // Get the private key (try all networks)
+        let private_key = self
+            .get_platform_address_private_key(platform_address, Network::Dash)
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Testnet)
+            })
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Devnet)
+            })
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Regtest)
+            })?;
+
+        // Sign the data - produces a compact recoverable signature
+        // The public key will be recovered from the signature during verification
+        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
+            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
+
+        Ok(AddressWitness::P2pkh {
+            signature: BinaryData::new(signature.to_vec()),
+        })
+    }
+
+    fn can_sign_with(&self, platform_address: &PlatformAddress) -> bool {
+        // Only P2PKH addresses are supported
+        if !platform_address.is_p2pkh() {
+            return false;
+        }
+
+        // Check if we have the private key for this address
+        self.get_platform_address_private_key(platform_address, Network::Dash)
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Testnet)
+            })
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Devnet)
+            })
+            .or_else(|_| {
+                self.get_platform_address_private_key(platform_address, Network::Regtest)
+            })
+            .is_ok()
     }
 }

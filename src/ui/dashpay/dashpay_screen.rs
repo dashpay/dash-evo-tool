@@ -1,7 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -122,27 +121,12 @@ impl ScreenLike for DashPayScreen {
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                ("DashPay", AppAction::None),
-            ],
+            vec![("DashPay", AppAction::None)],
             right_buttons,
         );
 
-        // Highlight Contracts in the main left panel
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-
-        // Contracts sub-navigation
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight Dashpay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // DashPay subscreen chooser panel on the left side of the content area
         action |=

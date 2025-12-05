@@ -81,14 +81,3 @@ uninlined_format_args = "allow"
 
 [patch.crates-io]
 elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }
-
-[patch.'https://github.com/dashpay/rust-dashcore']
-dash-spv = { path = "../Dash/rust-dashcore/dash-spv" }
-key-wallet = { path = "../Dash/rust-dashcore/key-wallet" }
-key-wallet-manager = { path = "../Dash/rust-dashcore/key-wallet-manager" }
-dashcore = { path = "../Dash/rust-dashcore/dash" }
-dashcore_hashes = { path = "../Dash/rust-dashcore/hashes" }
-dashcore-private = { path = "../Dash/rust-dashcore/internals" }
-dash-network = { path = "../Dash/rust-dashcore/dash-network" }
-dashcore-rpc = { path = "../Dash/rust-dashcore/rpc-client" }
-dashcore-rpc-json = { path = "../Dash/rust-dashcore/rpc-json" }

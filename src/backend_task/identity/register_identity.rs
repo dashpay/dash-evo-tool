@@ -12,7 +12,7 @@ use dash_sdk::dpp::native_bls::NativeBlsModule;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
-use dash_sdk::platform::transition::put_identity::PutIdentity;
+use dash_sdk::platform::transition::put_identity::{IdentityFunding, PutIdentity};
 use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::{Error, Sdk};
 use std::collections::BTreeMap;
@@ -360,22 +360,25 @@ impl AppContext {
         asset_lock_proof_private_key: &PrivateKey,
         qualified_identity: QualifiedIdentity,
     ) -> Result<Identity, String> {
+        let funding = IdentityFunding::AssetLock {
+            asset_lock_proof: asset_lock_proof.clone(),
+            asset_lock_private_key: *asset_lock_proof_private_key,
+        };
         match identity
-            .send_to_platform_and_wait_for_response(
-                sdk,
-                (asset_lock_proof.clone(), *asset_lock_proof_private_key),
-                &qualified_identity,
-                None,
-            )
+            .send_to_platform_and_wait_for_response(sdk, funding, &qualified_identity, None)
             .await
         {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
+                    let funding_retry = IdentityFunding::AssetLock {
+                        asset_lock_proof: asset_lock_proof.clone(),
+                        asset_lock_private_key: *asset_lock_proof_private_key,
+                    };
                     identity
                         .send_to_platform_and_wait_for_response(
                             sdk,
-                            (asset_lock_proof.clone(), *asset_lock_proof_private_key),
+                            funding_retry,
                             &qualified_identity,
                             None,
                         )

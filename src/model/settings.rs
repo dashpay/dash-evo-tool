@@ -54,7 +54,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self::new(
             Network::Dash,
-            RootScreenType::RootScreenIdentities,
+            RootScreenType::RootScreenDashpay,
             None,
             None, // autodetect
             true,

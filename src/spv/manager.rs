@@ -894,11 +894,13 @@ impl SpvManager {
                                     }
                                 };
 
+                                let quorum_hash_value_reversed = quorum_hash_value.reverse();
+
                                 let result = match client_interface
                                     .get_quorum_by_height(
                                         core_chain_locked_height,
                                         llmq_type,
-                                        quorum_hash_value,
+                                        quorum_hash_value_reversed,
                                     )
                                     .await
                                 {

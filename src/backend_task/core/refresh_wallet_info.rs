@@ -1,6 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::{Arc, RwLock};
@@ -10,13 +10,15 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        // Step 1: Collect all addresses from the wallet without holding the lock
+        // Step 1: Collect Core chain addresses from the wallet (excluding Platform addresses)
+        // Platform addresses (DIP-17) are NOT valid on Core chain and must be skipped
         let addresses = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             wallet_guard
                 .known_addresses
-                .keys()
-                .cloned()
+                .iter()
+                .filter(|(_, path)| !path.is_platform_payment(self.network))
+                .map(|(addr, _)| addr.clone())
                 .collect::<Vec<_>>()
         };
 

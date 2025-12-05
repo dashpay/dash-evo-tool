@@ -1757,12 +1757,12 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "dapi-grpc-macros 2.2.0-dev.2",
+ "dapi-grpc-macros 2.1.0-rc.1",
  "futures-core",
  "getrandom 0.2.16",
- "platform-version 2.2.0-dev.2",
+ "platform-version 2.1.0-rc.1",
  "prost 0.14.1",
  "serde",
  "serde_bytes",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc-macros"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "heck",
  "quote",
@@ -1843,10 +1843,10 @@ dependencies = [
 
 [[package]]
 name = "dash-context-provider"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "dpp 2.2.0-dev.2",
- "drive 2.2.0-dev.2",
+ "dpp 2.1.0-rc.1",
+ "drive 2.1.0-rc.1",
  "hex",
  "serde",
  "serde_json",
@@ -1869,7 +1869,7 @@ dependencies = [
  "chrono-humanize",
  "crossbeam-channel",
  "dark-light",
- "dash-sdk 2.2.0-dev.2",
+ "dash-sdk 2.1.0-rc.1",
  "derive_more 2.0.1",
  "directories",
  "dotenvy",
@@ -1920,6 +1920,7 @@ dependencies = [
 [[package]]
 name = "dash-network"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "bincode_derive",
@@ -1964,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "dash-sdk"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1972,21 +1973,21 @@ dependencies = [
  "bip37-bloom-filter",
  "chrono",
  "ciborium",
- "dapi-grpc 2.2.0-dev.2",
- "dapi-grpc-macros 2.2.0-dev.2",
+ "dapi-grpc 2.1.0-rc.1",
+ "dapi-grpc-macros 2.1.0-rc.1",
  "dash-context-provider",
  "derive_more 1.0.0",
  "dotenvy",
- "dpp 2.2.0-dev.2",
- "drive 2.2.0-dev.2",
- "drive-proof-verifier 2.2.0-dev.2",
+ "dpp 2.1.0-rc.1",
+ "drive 2.1.0-rc.1",
+ "drive-proof-verifier 2.1.0-rc.1",
  "envy",
  "futures",
  "hex",
  "http",
  "js-sys",
  "lru",
- "rs-dapi-client 2.2.0-dev.2",
+ "rs-dapi-client 2.1.0-rc.1",
  "rustls-pemfile",
  "serde",
  "serde_json",
@@ -2000,6 +2001,7 @@ dependencies = [
 [[package]]
 name = "dash-spv"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2049,6 +2051,7 @@ dependencies = [
 [[package]]
 name = "dashcore"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "anyhow",
  "base64-compat",
@@ -2079,6 +2082,7 @@ source = "git+https://github.com/dashpay/rust-dashcore?tag=v0.39.6#51df58f5d5d49
 [[package]]
 name = "dashcore-private"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 
 [[package]]
 name = "dashcore-rpc"
@@ -2096,6 +2100,7 @@ dependencies = [
 [[package]]
 name = "dashcore-rpc"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "dashcore-rpc-json 0.40.0",
  "hex",
@@ -2122,6 +2127,7 @@ dependencies = [
 [[package]]
 name = "dashcore-rpc-json"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "dashcore 0.40.0",
@@ -2146,6 +2152,7 @@ dependencies = [
 [[package]]
 name = "dashcore_hashes"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "dashcore-private 0.40.0",
@@ -2180,10 +2187,10 @@ dependencies = [
 
 [[package]]
 name = "dashpay-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -2209,20 +2216,20 @@ dependencies = [
 
 [[package]]
 name = "data-contracts"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "dashpay-contract 2.2.0-dev.2",
- "dpns-contract 2.2.0-dev.2",
- "feature-flags-contract 2.2.0-dev.2",
- "keyword-search-contract 2.2.0-dev.2",
- "masternode-reward-shares-contract 2.2.0-dev.2",
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "dashpay-contract 2.1.0-rc.1",
+ "dpns-contract 2.1.0-rc.1",
+ "feature-flags-contract 2.1.0-rc.1",
+ "keyword-search-contract 2.1.0-rc.1",
+ "masternode-reward-shares-contract 2.1.0-rc.1",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
- "token-history-contract 2.2.0-dev.2",
- "wallet-utils-contract 2.2.0-dev.2",
- "withdrawals-contract 2.2.0-dev.2",
+ "token-history-contract 2.1.0-rc.1",
+ "wallet-utils-contract 2.1.0-rc.1",
+ "withdrawals-contract 2.1.0-rc.1",
 ]
 
 [[package]]
@@ -2475,10 +2482,10 @@ dependencies = [
 
 [[package]]
 name = "dpns-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -2528,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "dpp"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2543,7 +2550,7 @@ dependencies = [
  "dash-spv",
  "dashcore 0.40.0",
  "dashcore-rpc 0.40.0",
- "data-contracts 2.2.0-dev.2",
+ "data-contracts 2.1.0-rc.1",
  "derive_more 1.0.0",
  "env_logger",
  "getrandom 0.2.16",
@@ -2557,11 +2564,11 @@ dependencies = [
  "nohash-hasher",
  "num_enum 0.7.5",
  "once_cell",
- "platform-serialization 2.2.0-dev.2",
- "platform-serialization-derive 2.2.0-dev.2",
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
- "platform-versioning 2.2.0-dev.2",
+ "platform-serialization 2.1.0-rc.1",
+ "platform-serialization-derive 2.1.0-rc.1",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
+ "platform-versioning 2.1.0-rc.1",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -2600,12 +2607,12 @@ dependencies = [
 
 [[package]]
 name = "drive"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "byteorder",
  "derive_more 1.0.0",
- "dpp 2.2.0-dev.2",
+ "dpp 2.1.0-rc.1",
  "grovedb 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
  "grovedb-costs 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
  "grovedb-epoch-based-storage-flags 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
@@ -2615,7 +2622,7 @@ dependencies = [
  "indexmap 2.12.0",
  "integer-encoding",
  "nohash-hasher",
- "platform-version 2.2.0-dev.2",
+ "platform-version 2.1.0-rc.1",
  "serde",
  "sqlparser",
  "thiserror 2.0.17",
@@ -2645,18 +2652,18 @@ dependencies = [
 
 [[package]]
 name = "drive-proof-verifier"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "dapi-grpc 2.2.0-dev.2",
+ "dapi-grpc 2.1.0-rc.1",
  "dash-context-provider",
  "derive_more 1.0.0",
- "dpp 2.2.0-dev.2",
- "drive 2.2.0-dev.2",
+ "dpp 2.1.0-rc.1",
+ "drive 2.1.0-rc.1",
  "hex",
  "indexmap 2.12.0",
- "platform-serialization 2.2.0-dev.2",
- "platform-serialization-derive 2.2.0-dev.2",
+ "platform-serialization 2.1.0-rc.1",
+ "platform-serialization-derive 2.1.0-rc.1",
  "serde",
  "serde_json",
  "tenderdash-abci 1.5.0-dev.2",
@@ -3236,10 +3243,10 @@ dependencies = [
 
 [[package]]
 name = "feature-flags-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -4708,6 +4715,7 @@ dependencies = [
 [[package]]
 name = "key-wallet"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "async-trait",
  "base58ck",
@@ -4734,6 +4742,7 @@ dependencies = [
 [[package]]
 name = "key-wallet-manager"
 version = "0.40.0"
+source = "git+https://github.com/dashpay/rust-dashcore?rev=daecabc5609409a2e4ce3de657208451d59d518f#daecabc5609409a2e4ce3de657208451d59d518f"
 dependencies = [
  "async-trait",
  "bincode 2.0.0-rc.3",
@@ -4757,10 +4766,10 @@ dependencies = [
 
 [[package]]
 name = "keyword-search-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -4982,10 +4991,10 @@ dependencies = [
 
 [[package]]
 name = "masternode-reward-shares-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -6050,10 +6059,10 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "bincode 2.0.0-rc.3",
- "platform-version 2.2.0-dev.2",
+ "platform-version 2.1.0-rc.1",
 ]
 
 [[package]]
@@ -6069,7 +6078,7 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization-derive"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6099,7 +6108,7 @@ dependencies = [
 
 [[package]]
 name = "platform-value"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "bincode 2.0.0-rc.3",
@@ -6107,8 +6116,8 @@ dependencies = [
  "ciborium",
  "hex",
  "indexmap 2.12.0",
- "platform-serialization 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-serialization 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -6130,7 +6139,7 @@ dependencies = [
 
 [[package]]
 name = "platform-version"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "grovedb-version 3.1.0 (git+https://github.com/dashpay/grovedb?rev=375b4206141994160d528a5b2e4d7eb7bc2d16e8)",
@@ -6151,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "platform-versioning"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6794,11 +6803,11 @@ dependencies = [
 
 [[package]]
 name = "rs-dapi-client"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "backon",
  "chrono",
- "dapi-grpc 2.2.0-dev.2",
+ "dapi-grpc 2.1.0-rc.1",
  "futures",
  "getrandom 0.2.16",
  "gloo-timers",
@@ -7941,10 +7950,10 @@ dependencies = [
 
 [[package]]
 name = "token-history-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -8693,10 +8702,10 @@ dependencies = [
 
 [[package]]
 name = "wallet-utils-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -9961,11 +9970,11 @@ dependencies = [
 
 [[package]]
 name = "withdrawals-contract"
-version = "2.2.0-dev.2"
+version = "2.1.0-rc.1"
 dependencies = [
  "num_enum 0.5.11",
- "platform-value 2.2.0-dev.2",
- "platform-version 2.2.0-dev.2",
+ "platform-value 2.1.0-rc.1",
+ "platform-version 2.1.0-rc.1",
  "serde",
  "serde_json",
  "serde_repr",

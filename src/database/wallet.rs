@@ -397,7 +397,7 @@ impl Database {
 
         let address_rows = address_stmt.query_map([network_str.clone()], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
-            let address: String = row.get(1)?;
+            let address_str: String = row.get(1)?;
             let derivation_path: String = row.get(2)?;
             let balance: Option<u64> = row.get(3)?;
             let path_reference: u32 = row.get(4)?;
@@ -405,11 +405,6 @@ impl Database {
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            let address_unchecked = Address::from_str(&address).expect("Invalid address format");
-            let address = check_address_for_network(address_unchecked, network)?;
-
-            let derivation_path = DerivationPath::from_str(&derivation_path)
-                .expect("Expected to convert to derivation path");
 
             // Convert u32 to DerivationPathReference safely
             let path_reference =
@@ -420,6 +415,30 @@ impl Database {
                         Box::new(std::fmt::Error),
                     )
                 })?;
+
+            // Parse address - Platform addresses (DIP-17/18) use different version bytes
+            // and need special handling
+            let address = if path_reference == DerivationPathReference::PlatformPayment {
+                // Platform addresses have d/D prefix - parse and assume network
+                Address::from_str(&address_str)
+                    .map(|a| a.assume_checked())
+                    .map_err(|e| {
+                        tracing::error!(address = %address_str, error = ?e, "Failed to parse Platform address");
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::fmt::Error),
+                        )
+                    })?
+            } else {
+                // Standard Core addresses - validate network
+                let address_unchecked =
+                    Address::from_str(&address_str).expect("Invalid address format");
+                check_address_for_network(address_unchecked, network)?
+            };
+
+            let derivation_path = DerivationPath::from_str(&derivation_path)
+                .expect("Expected to convert to derivation path");
 
             let path_type = DerivationPathType::from_bits_truncate(path_type);
 

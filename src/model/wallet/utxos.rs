@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use dash_sdk::dashcore_rpc::json::ListUnspentResultEntry;
 use dash_sdk::dashcore_rpc::{Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut};
@@ -95,8 +95,14 @@ impl Wallet {
         network: Network,
         save: Option<&AppContext>,
     ) -> Result<HashMap<OutPoint, TxOut>, String> {
-        // Collect the addresses for which we want to load UTXOs.
-        let addresses: Vec<_> = self.known_addresses.keys().collect();
+        // Collect Core chain addresses for which we want to load UTXOs.
+        // Platform addresses (DIP-17) are NOT valid on Core chain and must be excluded.
+        let addresses: Vec<_> = self
+            .known_addresses
+            .iter()
+            .filter(|(_, path)| !path.is_platform_payment(network))
+            .map(|(addr, _)| addr)
+            .collect();
         if tracing::enabled!(tracing::Level::TRACE) {
             for addr in addresses.iter() {
                 let (net, payload) = (*addr).clone().into_parts();

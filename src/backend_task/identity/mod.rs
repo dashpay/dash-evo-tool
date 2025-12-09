@@ -200,6 +200,13 @@ pub enum RegisterIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
+    /// Fund identity creation from Platform addresses (DIP-17)
+    FundWithPlatformAddresses {
+        /// Platform addresses and credits to use
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        /// Wallet seed hash for signing
+        wallet_seed_hash: WalletSeedHash,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,6 +530,12 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
+        tracing::info!(
+            "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",
+            qualified_identity.identity.id(),
+            inputs
+        );
+
         // Get the wallet for signing - clone it to avoid holding guard across await
         let wallet_clone = {
             let wallet = {
@@ -543,6 +556,8 @@ impl AppContext {
             wallet_guard.clone()
         };
 
+        tracing::info!("Wallet loaded and open, calling top_up_from_addresses...");
+
         // Get the identity
         let identity = qualified_identity.identity.clone();
 
@@ -550,7 +565,12 @@ impl AppContext {
         let new_balance = identity
             .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
             .await
-            .map_err(|e| format!("Failed to top up identity from Platform addresses: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("top_up_from_addresses failed: {}", e);
+                format!("Failed to top up identity from Platform addresses: {}", e)
+            })?;
+
+        tracing::info!("top_up_from_addresses succeeded, new_balance={}", new_balance);
 
         // Update the identity balance in memory
         let mut updated_identity = qualified_identity.clone();
@@ -590,9 +610,8 @@ impl AppContext {
         self.insert_local_qualified_identity(&updated_identity, &None)
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(format!(
-            "Transferred credits to Platform addresses. New balance: {}",
-            new_balance
-        )))
+        Ok(BackendTaskSuccessResult::Message(
+            "Successfully transferred credits".to_string(),
+        ))
     }
 }

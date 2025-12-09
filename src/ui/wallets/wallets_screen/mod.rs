@@ -68,6 +68,8 @@ pub struct WalletsBalancesScreen {
     send_dialog: SendDialogState,
     receive_dialog: ReceiveDialogState,
     platform_receive_dialog: PlatformReceiveDialogState,
+    fund_platform_dialog: FundPlatformAddressDialogState,
+    withdraw_platform_dialog: WithdrawPlatformDialogState,
     selected_account: Option<(AccountCategory, Option<u32>)>,
 }
 
@@ -75,6 +77,8 @@ pub struct WalletsBalancesScreen {
 struct AddressData {
     address: Address,
     balance: u64,
+    /// Platform credits balance for Platform Payment addresses (DIP-17)
+    platform_credits: u64,
     utxo_count: usize,
     total_received: u64,
     address_type: String,
@@ -116,6 +120,36 @@ struct PlatformReceiveDialogState {
     status: Option<String>,
 }
 
+/// State for the Fund Platform Address from Asset Lock dialog (DIP-17)
+#[derive(Default)]
+struct FundPlatformAddressDialogState {
+    is_open: bool,
+    /// Selected asset lock index
+    selected_asset_lock_index: Option<usize>,
+    /// Selected Platform address to fund
+    selected_platform_address: Option<String>,
+    /// List of Platform addresses available
+    platform_addresses: Vec<(String, u64)>,
+    status: Option<String>,
+    is_processing: bool,
+}
+
+/// State for the Withdraw from Platform Address dialog (DIP-17)
+#[derive(Default)]
+struct WithdrawPlatformDialogState {
+    is_open: bool,
+    /// Selected Platform address to withdraw from
+    selected_platform_address: Option<String>,
+    /// Platform addresses with balances
+    platform_addresses: Vec<(String, u64)>,
+    /// Withdrawal amount input
+    amount_input: String,
+    /// Destination Core address
+    destination_address: String,
+    status: Option<String>,
+    is_processing: bool,
+}
+
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
@@ -137,6 +171,8 @@ impl WalletsBalancesScreen {
             send_dialog: SendDialogState::default(),
             receive_dialog: ReceiveDialogState::default(),
             platform_receive_dialog: PlatformReceiveDialogState::default(),
+            fund_platform_dialog: FundPlatformAddressDialogState::default(),
+            withdraw_platform_dialog: WithdrawPlatformDialogState::default(),
             selected_account: None,
         }
     }
@@ -378,6 +414,14 @@ impl WalletsBalancesScreen {
                         .unwrap_or(DerivationPathReference::Unknown);
                     let (account_category, account_index) =
                         Self::categorize_path(derivation_path, path_reference);
+
+                    // Get Platform credits balance for Platform Payment addresses
+                    let platform_credits = wallet
+                        .platform_address_info
+                        .get(address)
+                        .map(|info| info.balance)
+                        .unwrap_or_default();
+
                     AddressData {
                         address: address.clone(),
                         balance: wallet
@@ -385,6 +429,7 @@ impl WalletsBalancesScreen {
                             .get(address)
                             .cloned()
                             .unwrap_or_default(),
+                        platform_credits,
                         utxo_count,
                         total_received,
                         address_type,
@@ -526,8 +571,17 @@ impl WalletsBalancesScreen {
                             ui.label(data.address.to_string());
                         });
                         row.col(|ui| {
-                            let dash_balance = data.balance as f64 * 1e-8;
-                            ui.label(format!("{:.8}", dash_balance));
+                            // For Platform addresses, show credits balance; for others, show Core balance
+                            if data.account_category == AccountCategory::PlatformPayment {
+                                // Platform credits: convert from credits to DASH
+                                // Credits are in duffs * 1000, so divide by 1000 then by 1e8
+                                let dash_balance =
+                                    data.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                ui.label(format!("{:.8}", dash_balance));
+                            } else {
+                                let dash_balance = data.balance as f64 * 1e-8;
+                                ui.label(format!("{:.8}", dash_balance));
+                            }
                         });
                         row.col(|ui| {
                             ui.label(format!("{}", data.utxo_count));
@@ -682,6 +736,8 @@ impl WalletsBalancesScreen {
 
     fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
+        let mut open_fund_dialog_for_idx: Option<(usize, Vec<(String, u64)>)> = None;
+
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
 
@@ -701,7 +757,7 @@ impl WalletsBalancesScreen {
                             ui.add_space(20.0);
                             ui.label(RichText::new("No asset locks found").color(Color32::GRAY).size(14.0));
                             ui.add_space(10.0);
-                            ui.label(RichText::new("Asset locks are special transactions that can be used to create identities").color(Color32::GRAY).size(12.0));
+                            ui.label(RichText::new("Asset locks are special transactions that can be used to create identities or fund Platform addresses").color(Color32::GRAY).size(12.0));
                             ui.add_space(15.0);
                             if ui.button("Search for asset locks").clicked() {
                                 app_action = AppAction::BackendTask(BackendTask::CoreTask(
@@ -711,6 +767,13 @@ impl WalletsBalancesScreen {
                             ui.add_space(20.0);
                         });
                     } else {
+                        // Collect Platform addresses for the fund dialog
+                        let platform_addresses: Vec<(String, u64)> = wallet
+                            .platform_address_info
+                            .iter()
+                            .map(|(addr, info)| (addr.to_string(), info.balance))
+                            .collect();
+
                         egui::ScrollArea::both()
                             .id_salt("asset_locks_table")
                             .show(ui, |ui| {
@@ -723,6 +786,7 @@ impl WalletsBalancesScreen {
                         .column(Column::initial(100.0)) // Amount (Duffs)
                         .column(Column::initial(100.0)) // InstantLock status
                         .column(Column::initial(100.0)) // Usable status
+                        .column(Column::initial(150.0)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 ui.label("Transaction ID");
@@ -739,9 +803,12 @@ impl WalletsBalancesScreen {
                             header.col(|ui| {
                                 ui.label("Usable");
                             });
+                            header.col(|ui| {
+                                ui.label("Actions");
+                            });
                         })
                         .body(|mut body| {
-                            for (tx, address, amount, islock, proof) in &wallet.unused_asset_locks {
+                            for (idx, (tx, address, amount, islock, proof)) in wallet.unused_asset_locks.iter().enumerate() {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         ui.label(tx.txid().to_string());
@@ -760,6 +827,15 @@ impl WalletsBalancesScreen {
                                         let status = if proof.is_some() { "Yes" } else { "No" };
                                         ui.label(status);
                                     });
+                                    row.col(|ui| {
+                                        if proof.is_some() {
+                                            if ui.small_button("Fund Platform Addr").on_hover_text("Fund a Platform address with this asset lock").clicked() {
+                                                open_fund_dialog_for_idx = Some((idx, platform_addresses.clone()));
+                                            }
+                                        } else {
+                                            ui.label(RichText::new("Not ready").color(Color32::GRAY).size(11.0));
+                                        }
+                                    });
                                 });
                             }
                         });
@@ -769,6 +845,17 @@ impl WalletsBalancesScreen {
         } else {
             ui.label("No wallet selected.");
         }
+
+        // Handle dialog opening outside the borrow
+        if let Some((idx, platform_addresses)) = open_fund_dialog_for_idx {
+            self.fund_platform_dialog.selected_asset_lock_index = Some(idx);
+            self.fund_platform_dialog.is_open = true;
+            self.fund_platform_dialog.platform_addresses = platform_addresses;
+            self.fund_platform_dialog.selected_platform_address = None;
+            self.fund_platform_dialog.status = None;
+            self.fund_platform_dialog.is_processing = false;
+        }
+
         app_action
     }
 
@@ -891,11 +978,21 @@ impl WalletsBalancesScreen {
     }
 
     fn platform_balance_duffs(wallet: &Wallet) -> u64 {
-        wallet
+        // Sum identity balances
+        let identity_balance: u64 = wallet
             .identities
             .values()
             .map(|identity| identity.balance() / CREDITS_PER_DUFF)
-            .sum()
+            .sum();
+
+        // Sum Platform address balances (DIP-17)
+        let platform_address_balance: u64 = wallet
+            .platform_address_info
+            .values()
+            .map(|info| info.balance / CREDITS_PER_DUFF)
+            .sum();
+
+        identity_balance + platform_address_balance
     }
 
     fn render_wallet_overview(&self, ui: &mut Ui, wallet: &Wallet) {
@@ -966,6 +1063,18 @@ impl WalletsBalancesScreen {
             {
                 action |= self.open_platform_receive_dialog(ctx);
             }
+
+            // Withdraw from Platform address button
+            if ui
+                .button(
+                    RichText::new("Withdraw to Core")
+                        .color(DashColors::text_primary(dark_mode)),
+                )
+                .on_hover_text("Withdraw credits from Platform address to Core (DIP-17)")
+                .clicked()
+            {
+                action |= self.open_withdraw_platform_dialog();
+            }
         });
         action
     }
@@ -1021,7 +1130,7 @@ impl WalletsBalancesScreen {
                                 let credits_as_dash =
                                     summary.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                                 ui.label(
-                                    RichText::new(format!("{:.8} Credits", credits_as_dash))
+                                    RichText::new(format!("{:.8} DASH", credits_as_dash))
                                         .strong()
                                         .color(DashColors::text_primary(
                                             ui.ctx().style().visuals.dark_mode,
@@ -1645,6 +1754,522 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
+    /// Render the Fund Platform Address from Asset Lock dialog (DIP-17)
+    fn render_fund_platform_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.fund_platform_dialog.is_open {
+            return AppAction::None;
+        }
+
+        let mut action = AppAction::None;
+        let mut open = self.fund_platform_dialog.is_open;
+        let dark_mode = ctx.style().visuals.dark_mode;
+
+        egui::Window::new("Fund Platform Address from Asset Lock")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new("Select a Platform address to fund:")
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(10.0);
+
+                    // Platform address selector
+                    if self.fund_platform_dialog.platform_addresses.is_empty() {
+                        ui.label(
+                            RichText::new("No Platform addresses found. Generate one first.")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .italics(),
+                        );
+                    } else {
+                        ComboBox::from_id_salt("fund_platform_addr_selector")
+                            .selected_text(
+                                self.fund_platform_dialog
+                                    .selected_platform_address
+                                    .as_deref()
+                                    .map(|addr| {
+                                        let balance = self
+                                            .fund_platform_dialog
+                                            .platform_addresses
+                                            .iter()
+                                            .find(|(a, _)| a == addr)
+                                            .map(|(_, b)| *b)
+                                            .unwrap_or(0);
+                                        let credits_as_dash =
+                                            balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                        format!(
+                                            "{}... ({:.4} DASH)",
+                                            &addr[..12.min(addr.len())],
+                                            credits_as_dash
+                                        )
+                                    })
+                                    .unwrap_or_else(|| "Select an address".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (addr, balance) in &self.fund_platform_dialog.platform_addresses
+                                {
+                                    let credits_as_dash =
+                                        *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                    let label = format!(
+                                        "{}... ({:.4} DASH)",
+                                        &addr[..12.min(addr.len())],
+                                        credits_as_dash
+                                    );
+                                    let is_selected = self
+                                        .fund_platform_dialog
+                                        .selected_platform_address
+                                        .as_deref()
+                                        == Some(addr.as_str());
+                                    if ui.selectable_label(is_selected, label).clicked() {
+                                        self.fund_platform_dialog.selected_platform_address =
+                                            Some(addr.clone());
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.add_space(15.0);
+
+                    // Status message
+                    if let Some(status) = &self.fund_platform_dialog.status {
+                        ui.label(RichText::new(status).color(DashColors::text_secondary(dark_mode)));
+                        ui.add_space(10.0);
+                    }
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        let can_fund = self.fund_platform_dialog.selected_platform_address.is_some()
+                            && self.fund_platform_dialog.selected_asset_lock_index.is_some()
+                            && !self.fund_platform_dialog.is_processing;
+
+                        if ui
+                            .add_enabled(
+                                can_fund,
+                                egui::Button::new(if self.fund_platform_dialog.is_processing {
+                                    "Funding..."
+                                } else {
+                                    "Fund Address"
+                                }),
+                            )
+                            .clicked()
+                        {
+                            action = self.prepare_fund_platform_action();
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            self.fund_platform_dialog = FundPlatformAddressDialogState::default();
+                        }
+                    });
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(
+                            "The entire asset lock amount will be used to fund the Platform address.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode))
+                        .size(11.0)
+                        .italics(),
+                    );
+                });
+            });
+
+        self.fund_platform_dialog.is_open = open;
+        if !self.fund_platform_dialog.is_open {
+            self.fund_platform_dialog = FundPlatformAddressDialogState::default();
+        }
+        action
+    }
+
+    /// Prepare the backend task for funding a Platform address from asset lock
+    fn prepare_fund_platform_action(&mut self) -> AppAction {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use std::collections::BTreeMap;
+
+        let Some(wallet_arc) = &self.selected_wallet else {
+            self.fund_platform_dialog.status = Some("No wallet selected".to_string());
+            return AppAction::None;
+        };
+
+        let Some(selected_addr) = &self.fund_platform_dialog.selected_platform_address else {
+            self.fund_platform_dialog.status = Some("Select a Platform address".to_string());
+            return AppAction::None;
+        };
+
+        let Some(asset_lock_idx) = self.fund_platform_dialog.selected_asset_lock_index else {
+            self.fund_platform_dialog.status = Some("No asset lock selected".to_string());
+            return AppAction::None;
+        };
+
+        // Get the asset lock proof and address from the wallet
+        let (seed_hash, asset_lock_proof, asset_lock_address, platform_addr) = {
+            let wallet = match wallet_arc.read() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    self.fund_platform_dialog.status = Some(e.to_string());
+                    return AppAction::None;
+                }
+            };
+
+            let asset_lock = wallet.unused_asset_locks.get(asset_lock_idx);
+            let Some((_, addr, _, _, Some(proof))) = asset_lock else {
+                self.fund_platform_dialog.status =
+                    Some("Asset lock not found or not ready".to_string());
+                return AppAction::None;
+            };
+
+            // Parse the Platform address
+            use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+            let platform_addr = match selected_addr
+                .parse::<Address<NetworkUnchecked>>()
+                .map_err(|e| e.to_string())
+                .and_then(|a| {
+                    PlatformAddress::try_from(a.assume_checked())
+                        .map_err(|e| format!("Invalid Platform address: {}", e))
+                }) {
+                Ok(addr) => addr,
+                Err(e) => {
+                    self.fund_platform_dialog.status = Some(e);
+                    return AppAction::None;
+                }
+            };
+
+            (
+                wallet.seed_hash(),
+                Box::new(proof.clone()),
+                addr.clone(),
+                platform_addr,
+            )
+        };
+
+        // Build outputs - fund the entire asset lock to the selected Platform address
+        let mut outputs: BTreeMap<PlatformAddress, Option<u64>> = BTreeMap::new();
+        outputs.insert(platform_addr, None); // None = take the full amount
+
+        self.fund_platform_dialog.is_processing = true;
+        self.fund_platform_dialog.status = Some("Processing...".to_string());
+
+        AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::FundPlatformAddressFromAssetLock {
+                seed_hash,
+                asset_lock_proof,
+                asset_lock_address,
+                outputs,
+            },
+        ))
+    }
+
+    /// Render the Withdraw from Platform Address dialog (DIP-17)
+    fn render_withdraw_platform_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.withdraw_platform_dialog.is_open {
+            return AppAction::None;
+        }
+
+        let mut action = AppAction::None;
+        let mut open = self.withdraw_platform_dialog.is_open;
+        let dark_mode = ctx.style().visuals.dark_mode;
+
+        egui::Window::new("Withdraw from Platform Address")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new("Withdraw credits from Platform to Core")
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(10.0);
+
+                    // Platform address selector (source)
+                    ui.label("From Platform address:");
+                    if self.withdraw_platform_dialog.platform_addresses.is_empty() {
+                        ui.label(
+                            RichText::new("No Platform addresses with balance found.")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .italics(),
+                        );
+                    } else {
+                        ComboBox::from_id_salt("withdraw_platform_addr_selector")
+                            .selected_text(
+                                self.withdraw_platform_dialog
+                                    .selected_platform_address
+                                    .as_deref()
+                                    .map(|addr| {
+                                        let balance = self
+                                            .withdraw_platform_dialog
+                                            .platform_addresses
+                                            .iter()
+                                            .find(|(a, _)| a == addr)
+                                            .map(|(_, b)| *b)
+                                            .unwrap_or(0);
+                                        let credits_as_dash =
+                                            balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                        format!(
+                                            "{}... ({:.4} DASH)",
+                                            &addr[..12.min(addr.len())],
+                                            credits_as_dash
+                                        )
+                                    })
+                                    .unwrap_or_else(|| "Select an address".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (addr, balance) in
+                                    &self.withdraw_platform_dialog.platform_addresses
+                                {
+                                    if *balance == 0 {
+                                        continue; // Skip addresses with no balance
+                                    }
+                                    let credits_as_dash =
+                                        *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                    let label = format!(
+                                        "{}... ({:.4} DASH)",
+                                        &addr[..12.min(addr.len())],
+                                        credits_as_dash
+                                    );
+                                    let is_selected = self
+                                        .withdraw_platform_dialog
+                                        .selected_platform_address
+                                        .as_deref()
+                                        == Some(addr.as_str());
+                                    if ui.selectable_label(is_selected, label).clicked() {
+                                        self.withdraw_platform_dialog.selected_platform_address =
+                                            Some(addr.clone());
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Amount input
+                    ui.label("Amount (DASH):");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(
+                                &mut self.withdraw_platform_dialog.amount_input,
+                            )
+                            .hint_text("0.001")
+                            .desired_width(150.0),
+                        );
+
+                        // Max button
+                        if let Some(selected) =
+                            &self.withdraw_platform_dialog.selected_platform_address
+                        {
+                            if let Some((_, balance)) = self
+                                .withdraw_platform_dialog
+                                .platform_addresses
+                                .iter()
+                                .find(|(a, _)| a == selected)
+                            {
+                                if ui.small_button("Max").clicked() {
+                                    let max_dash =
+                                        *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                    self.withdraw_platform_dialog.amount_input =
+                                        format!("{:.8}", max_dash);
+                                }
+                            }
+                        }
+                    });
+
+                    ui.add_space(10.0);
+
+                    // Destination Core address
+                    ui.label("To Core address:");
+                    ui.add(
+                        egui::TextEdit::singleline(
+                            &mut self.withdraw_platform_dialog.destination_address,
+                        )
+                        .hint_text("y...")
+                        .desired_width(350.0),
+                    );
+
+                    ui.add_space(15.0);
+
+                    // Status message
+                    if let Some(status) = &self.withdraw_platform_dialog.status {
+                        ui.label(RichText::new(status).color(DashColors::text_secondary(dark_mode)));
+                        ui.add_space(10.0);
+                    }
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        let can_withdraw = self
+                            .withdraw_platform_dialog
+                            .selected_platform_address
+                            .is_some()
+                            && !self.withdraw_platform_dialog.amount_input.is_empty()
+                            && !self.withdraw_platform_dialog.destination_address.is_empty()
+                            && !self.withdraw_platform_dialog.is_processing;
+
+                        if ui
+                            .add_enabled(
+                                can_withdraw,
+                                egui::Button::new(if self.withdraw_platform_dialog.is_processing {
+                                    "Withdrawing..."
+                                } else {
+                                    "Withdraw"
+                                }),
+                            )
+                            .clicked()
+                        {
+                            action = self.prepare_withdraw_platform_action();
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            self.withdraw_platform_dialog = WithdrawPlatformDialogState::default();
+                        }
+                    });
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(
+                            "Note: Withdrawals require waiting for chain confirmations.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode))
+                        .size(11.0)
+                        .italics(),
+                    );
+                });
+            });
+
+        self.withdraw_platform_dialog.is_open = open;
+        if !self.withdraw_platform_dialog.is_open {
+            self.withdraw_platform_dialog = WithdrawPlatformDialogState::default();
+        }
+        action
+    }
+
+    /// Prepare the backend task for withdrawing from a Platform address
+    fn prepare_withdraw_platform_action(&mut self) -> AppAction {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::identity::core_script::CoreScript;
+        use std::collections::BTreeMap;
+
+        let Some(wallet_arc) = &self.selected_wallet else {
+            self.withdraw_platform_dialog.status = Some("No wallet selected".to_string());
+            return AppAction::None;
+        };
+
+        let Some(selected_addr) = &self.withdraw_platform_dialog.selected_platform_address else {
+            self.withdraw_platform_dialog.status = Some("Select a Platform address".to_string());
+            return AppAction::None;
+        };
+
+        // Parse amount
+        let amount_dash: f64 = match self.withdraw_platform_dialog.amount_input.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                self.withdraw_platform_dialog.status = Some("Invalid amount".to_string());
+                return AppAction::None;
+            }
+        };
+        if amount_dash <= 0.0 {
+            self.withdraw_platform_dialog.status = Some("Amount must be positive".to_string());
+            return AppAction::None;
+        }
+        let amount_credits = (amount_dash * 1e8 * CREDITS_PER_DUFF as f64) as u64;
+
+        // Parse destination address and create CoreScript
+        use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+        let dest_addr_str = self.withdraw_platform_dialog.destination_address.trim();
+        let output_script = match dest_addr_str.parse::<Address<NetworkUnchecked>>() {
+            Ok(addr) => {
+                let script_pubkey = addr.assume_checked().script_pubkey();
+                CoreScript::new(script_pubkey)
+            }
+            Err(e) => {
+                self.withdraw_platform_dialog.status =
+                    Some(format!("Invalid destination address: {}", e));
+                return AppAction::None;
+            }
+        };
+
+        // Parse Platform address
+        let platform_addr = match selected_addr
+            .parse::<Address<NetworkUnchecked>>()
+            .map_err(|e| e.to_string())
+            .and_then(|a| {
+                PlatformAddress::try_from(a.assume_checked())
+                    .map_err(|e| format!("Invalid Platform address: {}", e))
+            }) {
+            Ok(addr) => addr,
+            Err(e) => {
+                self.withdraw_platform_dialog.status = Some(e);
+                return AppAction::None;
+            }
+        };
+
+        let seed_hash = {
+            let wallet = match wallet_arc.read() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    self.withdraw_platform_dialog.status = Some(e.to_string());
+                    return AppAction::None;
+                }
+            };
+            wallet.seed_hash()
+        };
+
+        // Build inputs
+        let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
+        inputs.insert(platform_addr, amount_credits);
+
+        self.withdraw_platform_dialog.is_processing = true;
+        self.withdraw_platform_dialog.status = Some("Processing withdrawal...".to_string());
+
+        AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::WithdrawFromPlatformAddress {
+                seed_hash,
+                inputs,
+                output_script,
+                core_fee_per_byte: 1, // Default fee rate
+            },
+        ))
+    }
+
+    /// Open the Withdraw Platform dialog
+    fn open_withdraw_platform_dialog(&mut self) -> AppAction {
+        let Some(wallet) = self.selected_wallet.clone() else {
+            self.withdraw_platform_dialog.status = Some("Select a wallet first".to_string());
+            self.withdraw_platform_dialog.is_open = true;
+            return AppAction::None;
+        };
+
+        // Collect Platform addresses with balances
+        let platform_addresses: Vec<(String, u64)> = {
+            let wallet_guard = match wallet.read() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    self.withdraw_platform_dialog.status = Some(e.to_string());
+                    self.withdraw_platform_dialog.is_open = true;
+                    return AppAction::None;
+                }
+            };
+
+            wallet_guard
+                .platform_address_info
+                .iter()
+                .filter(|(_, info)| info.balance > 0)
+                .map(|(addr, info)| (addr.to_string(), info.balance))
+                .collect()
+        };
+
+        self.withdraw_platform_dialog.platform_addresses = platform_addresses;
+        self.withdraw_platform_dialog.selected_platform_address = None;
+        self.withdraw_platform_dialog.amount_input = String::new();
+        self.withdraw_platform_dialog.destination_address = String::new();
+        self.withdraw_platform_dialog.status = None;
+        self.withdraw_platform_dialog.is_processing = false;
+        self.withdraw_platform_dialog.is_open = true;
+
+        AppAction::None
+    }
+
     fn prepare_send_action(&mut self) -> Result<AppAction, String> {
         let wallet = self
             .selected_wallet
@@ -1914,6 +2539,8 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= self.render_send_dialog(ctx);
         action |= self.render_receive_dialog(ctx);
         action |= self.render_platform_receive_dialog(ctx);
+        action |= self.render_fund_platform_dialog(ctx);
+        action |= self.render_withdraw_platform_dialog(ctx);
 
         // Rename dialog
         if self.show_rename_dialog {

@@ -162,6 +162,14 @@ pub enum BackendTaskSuccessResult {
     PlatformCreditsTransferred {
         seed_hash: WalletSeedHash,
     },
+    /// Platform address funded from asset lock
+    PlatformAddressFunded {
+        seed_hash: WalletSeedHash,
+    },
+    /// Withdrawal from Platform address to Core initiated
+    PlatformAddressWithdrawal {
+        seed_hash: WalletSeedHash,
+    },
 
     // MNList-specific results
     MnListFetchedDiff {
@@ -285,6 +293,34 @@ impl AppContext {
             } => {
                 self.transfer_platform_credits(seed_hash, inputs, outputs)
                     .await
+            }
+            WalletTask::FundPlatformAddressFromAssetLock {
+                seed_hash,
+                asset_lock_proof,
+                asset_lock_address,
+                outputs,
+            } => {
+                self.fund_platform_address_from_asset_lock(
+                    seed_hash,
+                    *asset_lock_proof,
+                    asset_lock_address,
+                    outputs,
+                )
+                .await
+            }
+            WalletTask::WithdrawFromPlatformAddress {
+                seed_hash,
+                inputs,
+                output_script,
+                core_fee_per_byte,
+            } => {
+                self.withdraw_from_platform_address(
+                    seed_hash,
+                    inputs,
+                    output_script,
+                    core_fee_per_byte,
+                )
+                .await
             }
         }
     }

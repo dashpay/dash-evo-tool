@@ -495,6 +495,14 @@ impl AppContext {
                 // address_infos.get() returns Option<&Option<AddressInfo>>
                 // Flatten to get the actual AddressInfo if it exists
                 if let Some(Some(info)) = address_infos.get(platform_addr) {
+                    tracing::info!(
+                        "Platform address {} ({:?}): balance={}, nonce={}",
+                        core_addr,
+                        platform_addr,
+                        info.balance,
+                        info.nonce
+                    );
+
                     // Update in-memory wallet state
                     wallet.set_platform_address_info(
                         core_addr.clone(),
@@ -518,6 +526,11 @@ impl AppContext {
 
                     balances.insert(core_addr.to_string(), (info.balance, info.nonce));
                 } else {
+                    tracing::info!(
+                        "Platform address {} ({:?}): not found on Platform",
+                        core_addr,
+                        platform_addr
+                    );
                     // Address not found on Platform (never funded) - set to 0
                     balances.insert(core_addr.to_string(), (0, 0));
                 }
@@ -573,6 +586,116 @@ impl AppContext {
         self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash })
+    }
+
+    /// Fund Platform addresses from an asset lock
+    pub(crate) async fn fund_platform_address_from_asset_lock(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        asset_lock_proof: AssetLockProof,
+        asset_lock_address: Address,
+        outputs: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            Option<dash_sdk::dpp::balances::credits::Credits>,
+        >,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use dash_sdk::platform::transition::top_up_address::TopUpAddress;
+
+        // Clone wallet and SDK before the async operation to avoid holding guards across await
+        let (wallet, sdk, asset_lock_private_key) = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+
+            // Get the private key for the asset lock address
+            let private_key = wallet
+                .private_key_for_address(&asset_lock_address, self.network)
+                .map_err(|e| format!("Failed to get private key: {}", e))?
+                .ok_or_else(|| "Asset lock address not found in wallet".to_string())?;
+
+            (wallet, sdk, private_key)
+        };
+
+        // Simple fee strategy: reduce from first output
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+
+        // Use the SDK to top up Platform addresses from asset lock
+        let _result = outputs
+            .top_up(
+                &sdk,
+                asset_lock_proof,
+                asset_lock_private_key,
+                fee_strategy,
+                &wallet,
+                None,
+            )
+            .await
+            .map_err(|e| format!("Failed to fund Platform address from asset lock: {}", e))?;
+
+        // Trigger a balance refresh
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+    }
+
+    /// Withdraw from Platform addresses to Core
+    pub(crate) async fn withdraw_from_platform_address(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        inputs: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            dash_sdk::dpp::balances::credits::Credits,
+        >,
+        output_script: dash_sdk::dpp::identity::core_script::CoreScript,
+        core_fee_per_byte: u32,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use dash_sdk::dpp::withdrawal::Pooling;
+        use dash_sdk::platform::transition::address_credit_withdrawal::WithdrawAddressFunds;
+
+        // Clone wallet and SDK before the async operation to avoid holding guards across await
+        let (wallet, sdk) = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+            (wallet, sdk)
+        };
+
+        // Simple fee strategy: deduct from first input
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+
+        // Use the SDK to withdraw
+        let _result = sdk
+            .withdraw_address_funds(
+                inputs,
+                None, // No change output
+                fee_strategy,
+                core_fee_per_byte,
+                Pooling::Never,
+                output_script,
+                &wallet,
+                None,
+            )
+            .await
+            .map_err(|e| format!("Failed to withdraw from Platform address: {}", e))?;
+
+        // Trigger a balance refresh
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash })
     }
 
     fn register_spv_address(

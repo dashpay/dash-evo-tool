@@ -1789,22 +1789,28 @@ impl Wallet {
 
     /// Get the private key for a Platform address
     #[allow(clippy::result_large_err)]
-    fn get_platform_address_private_key(
+    pub fn get_platform_address_private_key(
         &self,
         platform_address: &PlatformAddress,
         network: Network,
     ) -> Result<PrivateKey, ProtocolError> {
-        // Convert PlatformAddress to Core Address for lookup
-        let core_address = platform_address.to_address_with_network(network);
-
-        // Look up the derivation path for this address
+        // Find the derivation path by looking through watched_addresses
+        // and matching the PlatformAddress
         let derivation_path = self
-            .known_addresses
-            .get(&core_address)
+            .watched_addresses
+            .iter()
+            .filter(|(path, _)| path.is_platform_payment(network))
+            .find_map(|(path, info)| {
+                // Try to convert the stored address to a PlatformAddress and compare
+                PlatformAddress::try_from(info.address.clone())
+                    .ok()
+                    .filter(|addr| addr == platform_address)
+                    .map(|_| path.clone())
+            })
             .ok_or_else(|| {
                 ProtocolError::Generic(format!(
-                    "Platform address {} not found in wallet",
-                    core_address
+                    "Platform address {:?} not found in wallet",
+                    platform_address
                 ))
             })?;
 

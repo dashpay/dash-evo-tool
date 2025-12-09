@@ -89,7 +89,10 @@ pub enum CoreItem {
 }
 
 impl AppContext {
-    pub async fn run_core_task(&self, task: CoreTask) -> Result<BackendTaskSuccessResult, String> {
+    pub async fn run_core_task(
+        self: &Arc<Self>,
+        task: CoreTask,
+    ) -> Result<BackendTaskSuccessResult, String> {
         match task {
             CoreTask::GetBestChainLock => self
                 .core_client
@@ -145,17 +148,29 @@ impl AppContext {
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet) => {
+                // Get wallet seed hash for Platform balance refresh
+                let seed_hash = {
+                    let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+                    wallet_guard.seed_hash()
+                };
+
                 if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
                     self.reconcile_spv_wallets()
                         .await
                         .map_err(|e| format!("Error refreshing wallet via SPV: {}", e))?;
-                    Ok(BackendTaskSuccessResult::Message(
-                        "Wallet refreshed from SPV".to_string(),
-                    ))
                 } else {
                     self.refresh_wallet_info(wallet)
-                        .map_err(|e| format!("Error refreshing wallet: {}", e))
+                        .map_err(|e| format!("Error refreshing wallet: {}", e))?;
                 }
+
+                // Also refresh Platform address balances
+                if let Err(e) = self.fetch_platform_address_balances(seed_hash).await {
+                    tracing::warn!("Failed to fetch Platform address balances: {}", e);
+                }
+
+                Ok(BackendTaskSuccessResult::Message(
+                    "Successfully refreshed wallet".to_string(),
+                ))
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)

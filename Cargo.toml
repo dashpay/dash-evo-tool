@@ -81,3 +81,14 @@ uninlined_format_args = "allow"
 
 [patch.crates-io]
 elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }
+
+[patch.'https://github.com/dashpay/rust-dashcore']
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+dashcore_hashes = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+dashcore-private = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+dash-network = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }
+dashcore-rpc-json = { git = "https://github.com/dashpay/rust-dashcore", rev = "5b8b846326bd17892804f21c38588453d3c16500" }

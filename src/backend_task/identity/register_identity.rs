@@ -158,6 +158,19 @@ impl AppContext {
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
+            RegisterIdentityFundingMethod::FundWithPlatformAddresses { inputs, wallet_seed_hash } => {
+                // This is a separate flow - we call a dedicated function for Platform address funding
+                return self
+                    .register_identity_from_platform_addresses(
+                        alias_input,
+                        keys,
+                        wallet,
+                        wallet_identity_index,
+                        inputs,
+                        wallet_seed_hash,
+                    )
+                    .await;
+            }
             RegisterIdentityFundingMethod::FundWithUtxo(
                 utxo,
                 tx_out,
@@ -403,6 +416,116 @@ impl AppContext {
                 } else {
                     Err(e.to_string())
                 }
+            }
+        }
+    }
+
+    /// Register a new identity funded by Platform addresses (DIP-17)
+    async fn register_identity_from_platform_addresses(
+        &self,
+        alias_input: String,
+        keys: super::IdentityKeys,
+        wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
+        wallet_identity_index: u32,
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, dash_sdk::dpp::fee::Credits>,
+        wallet_seed_hash: super::WalletSeedHash,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::platform::transition::put_identity::{IdentityFunding, PutIdentity};
+
+        let sdk = {
+            let guard = self.sdk.read().unwrap();
+            guard.clone()
+        };
+
+        let public_keys = keys.to_public_keys_map();
+
+        // Get the private keys for the Platform addresses from the wallet
+        let input_private_keys: Vec<Vec<u8>> = {
+            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            inputs
+                .keys()
+                .map(|platform_addr| {
+                    wallet_guard
+                        .get_platform_address_private_key(platform_addr, self.network)
+                        .map_err(|e| format!("Failed to get private key for Platform address: {}", e))
+                        .map(|pk| pk.inner.secret_bytes().to_vec())
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+
+        // For Platform address funding, we need to compute the identity ID from the inputs
+        // The SDK will handle this internally when creating the identity
+        // We create a temporary identity with a placeholder ID, which will be computed correctly
+        // during the state transition creation
+
+        // Create a temporary identity ID - will be replaced by the actual one from Platform
+        let temp_identity_id = dash_sdk::platform::Identifier::random();
+
+        let identity = Identity::new_with_id_and_keys(temp_identity_id, public_keys.clone(), sdk.version())
+            .map_err(|e| format!("Failed to create identity: {}", e))?;
+
+        let wallet_seed_hash_actual = { wallet.read().unwrap().seed_hash() };
+        let mut qualified_identity = QualifiedIdentity {
+            identity: identity.clone(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: keys.to_key_storage(wallet_seed_hash_actual),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::from([(
+                wallet_seed_hash_actual,
+                wallet.clone(),
+            )]),
+            wallet_index: Some(wallet_identity_index),
+            top_ups: Default::default(),
+            status: IdentityStatus::PendingCreation,
+            network: self.network,
+        };
+
+        if !alias_input.is_empty() {
+            qualified_identity.alias = Some(alias_input);
+        }
+
+        // Create the funding
+        let funding = IdentityFunding::Addresses {
+            inputs: inputs.clone(),
+            input_private_keys,
+        };
+
+        // Send to Platform and wait for response
+        match identity
+            .send_to_platform_and_wait_for_response(&sdk, funding, &qualified_identity, None)
+            .await
+        {
+            Ok(updated_identity) => {
+                qualified_identity.identity = updated_identity;
+                qualified_identity.status = IdentityStatus::Unknown; // Force refresh
+
+                self.insert_local_qualified_identity(
+                    &qualified_identity,
+                    &Some((wallet_seed_hash, wallet_identity_index)),
+                )
+                .map_err(|e| e.to_string())?;
+
+                {
+                    let mut wallet_guard = wallet.write().unwrap();
+                    wallet_guard.identities.insert(wallet_identity_index, qualified_identity.identity.clone());
+                }
+
+                Ok(BackendTaskSuccessResult::RegisteredIdentity(qualified_identity))
+            }
+            Err(e) => {
+                qualified_identity.status.update(IdentityStatus::FailedCreation);
+
+                self.insert_local_qualified_identity(
+                    &qualified_identity,
+                    &Some((wallet_seed_hash, wallet_identity_index)),
+                )
+                .map_err(|e| e.to_string())?;
+
+                Err(format!("Failed to create identity from Platform addresses: {}", e))
             }
         }
     }

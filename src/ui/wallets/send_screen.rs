@@ -585,13 +585,14 @@ impl WalletSendScreen {
         }
 
         // Parse as a Dash address first, then convert to PlatformAddress
+        // Platform addresses use the same version byte (0x5a / prefix 'd') for
+        // testnet, devnet, and regtest per DIP-18. We use assume_checked() here
+        // because require_network() would fail on regtest (address parses as testnet).
         let unchecked_addr: Address<NetworkUnchecked> = dest_addr_str
             .parse()
             .map_err(|e| format!("Invalid address format: {}", e))?;
 
-        let dest_address = unchecked_addr
-            .require_network(self.app_context.network)
-            .map_err(|e| format!("Address network mismatch: {}", e))?;
+        let dest_address = unchecked_addr.assume_checked();
 
         let dest_platform_addr = PlatformAddress::try_from(dest_address)
             .map_err(|e| format!("Invalid Platform address: {}", e))?;

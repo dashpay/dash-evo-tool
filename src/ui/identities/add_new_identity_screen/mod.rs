@@ -1,3 +1,4 @@
+mod by_platform_address;
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod by_wallet_qr_code;
@@ -80,6 +81,10 @@ pub struct AddNewIdentityScreen {
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
     successful_qualified_identity_id: Option<Identifier>,
+    /// Selected Platform address for funding (DIP-17) with the amount in credits
+    selected_platform_address_for_funding: Option<(dash_sdk::dpp::address_funds::PlatformAddress, dash_sdk::dpp::fee::Credits)>,
+    /// Amount input for Platform address funding (DASH)
+    platform_funding_amount_input: String,
 }
 
 impl AddNewIdentityScreen {
@@ -120,6 +125,8 @@ impl AddNewIdentityScreen {
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
             successful_qualified_identity_id: None,
+            selected_platform_address_for_funding: None,
+            platform_funding_amount_input: "0.5".to_string(),
         };
 
         if let Some(wallet) = selected_wallet {
@@ -518,6 +525,31 @@ impl AddNewIdentityScreen {
                     *step = WalletFundedScreenStep::WaitingOnFunds;
                     self.funding_amount = "0.5".to_string();
                 }
+
+                // Check if wallet has Platform address balance
+                let has_platform_balance = {
+                    let wallet = selected_wallet.read().unwrap();
+                    wallet
+                        .platform_address_info
+                        .values()
+                        .any(|info| info.balance > 0)
+                };
+                if has_platform_balance
+                    && ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UsePlatformAddress,
+                            "Use Platform Address (DIP-17)",
+                        )
+                        .changed()
+                {
+                    self.ensure_correct_identity_keys()
+                        .expect("failed to initialize keys");
+                    let mut step = self.step.write().unwrap();
+                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    self.platform_funding_amount_input = "0.5".to_string();
+                    self.selected_platform_address_for_funding = None;
+                }
             });
     }
 
@@ -702,6 +734,41 @@ impl AddNewIdentityScreen {
                 *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
+                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
+                    identity_input,
+                )))
+            }
+            FundingMethod::UsePlatformAddress => {
+                // Get selected Platform address and amount from the input fields
+                let Some((platform_addr, amount)) = self.selected_platform_address_for_funding.clone() else {
+                    self.error_message = Some("Please select a Platform address".to_string());
+                    return AppAction::None;
+                };
+
+                if amount == 0 {
+                    self.error_message = Some("Amount must be greater than 0".to_string());
+                    return AppAction::None;
+                }
+
+                let wallet_seed_hash = selected_wallet.read().unwrap().seed_hash();
+
+                let mut inputs = std::collections::BTreeMap::new();
+                inputs.insert(platform_addr, amount);
+
+                let identity_input = IdentityRegistrationInfo {
+                    alias_input: self.alias_input.clone(),
+                    keys: self.identity_keys.clone(),
+                    wallet: Arc::clone(selected_wallet),
+                    wallet_identity_index: self.identity_id_number,
+                    identity_funding_method: RegisterIdentityFundingMethod::FundWithPlatformAddresses {
+                        inputs,
+                        wallet_seed_hash,
+                    },
+                };
+
+                let mut step = self.step.write().unwrap();
+                *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
+
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
                     identity_input,
                 )))
@@ -1100,8 +1167,7 @@ impl ScreenLike for AddNewIdentityScreen {
                         inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
                     },
                     FundingMethod::UsePlatformAddress => {
-                        // Not yet implemented for identity creation
-                        ui.label("Platform Address funding for identity creation is not yet available.");
+                        inner_action |= self.render_ui_by_platform_address(ui, step_number);
                     },
                 }
             });

@@ -1,6 +1,9 @@
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::dashcore::Address;
+use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::AssetLockProof;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,5 +18,25 @@ pub enum WalletTask {
         inputs: BTreeMap<PlatformAddress, Credits>,
         /// Destination addresses with amounts
         outputs: BTreeMap<PlatformAddress, Credits>,
+    },
+    /// Fund Platform addresses from an asset lock (DIP-17)
+    FundPlatformAddressFromAssetLock {
+        seed_hash: WalletSeedHash,
+        /// Asset lock proof
+        asset_lock_proof: Box<AssetLockProof>,
+        /// Address to fund (the asset lock address is the source)
+        asset_lock_address: Address,
+        /// Platform addresses and optional amounts to fund (None = distribute evenly)
+        outputs: BTreeMap<PlatformAddress, Option<Credits>>,
+    },
+    /// Withdraw from Platform addresses to Core (DIP-17)
+    WithdrawFromPlatformAddress {
+        seed_hash: WalletSeedHash,
+        /// Platform addresses and amounts to withdraw
+        inputs: BTreeMap<PlatformAddress, Credits>,
+        /// Core script to receive the withdrawal (e.g., P2PKH script)
+        output_script: CoreScript,
+        /// Core fee per byte
+        core_fee_per_byte: u32,
     },
 }

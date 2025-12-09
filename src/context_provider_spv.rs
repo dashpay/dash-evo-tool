@@ -5,8 +5,6 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::{ContextProvider, DataContract};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 /// SPV-based ContextProvider for the Dash SDK.
@@ -82,53 +80,22 @@ impl ContextProvider for SpvProvider {
             .map_err(|e| ContextProviderError::Generic(e.to_string()))
     }
 
-    fn get_quorum_public_key_async(
-        &self,
-        quorum_type: u32,
-        quorum_hash: [u8; 32],
-        core_chain_locked_height: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<[u8; 48], ContextProviderError>> + Send + 'static>>
-    {
-        let spv_manager = {
-            let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
-            let app_ctx = match app_ctx_guard.as_ref() {
-                Some(ctx) => ctx.clone(),
-                None => {
-                    return Box::pin(async {
-                        Err(ContextProviderError::Config("no app context".to_string()))
-                    });
-                }
-            };
-            app_ctx.spv_manager().clone()
-        }; // Guard is dropped here
-
-        Box::pin(async move {
-            // Ask SPV manager for the public key corresponding to (type, hash)
-            match spv_manager
-                .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
-                .await
-            {
-                Ok(key) => Ok(key),
-                Err(e) => Err(ContextProviderError::Generic(format!(
-                    "SPV quorum key lookup failed: {}",
-                    e
-                ))),
-            }
-        })
-    }
-
     fn get_quorum_public_key(
         &self,
         quorum_type: u32,
         quorum_hash: [u8; 32],
         core_chain_locked_height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
-        dash_sdk::sync::block_on(self.get_quorum_public_key_async(
-            quorum_type,
-            quorum_hash,
-            core_chain_locked_height,
-        ))
-        .map_err(|e| ContextProviderError::Generic(format!("block_on failed: {}", e)))?
+        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx = app_ctx_guard
+            .as_ref()
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
+
+        let spv_manager = app_ctx.spv_manager();
+
+        spv_manager
+            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
+            .map_err(|e| ContextProviderError::Generic(format!("SPV quorum key lookup failed: {}", e)))
     }
 
     fn get_platform_activation_height(

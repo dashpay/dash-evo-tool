@@ -2,9 +2,10 @@ use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
-use dash_sdk::dash_spv::client::interface::{DashSpvClientCommand, DashSpvClientInterface};
+use dash_sdk::dash_spv::client::interface::DashSpvClientCommand;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
+use dash_sdk::dash_spv::sync::masternodes::SharedMasternodeState;
 use dash_sdk::dash_spv::types::{
     DetailedSyncProgress, SpvEvent, SyncProgress, SyncStage, ValidationMode,
 };
@@ -104,6 +105,8 @@ pub struct SpvManager {
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
     // Storage manager for direct access to SPV data (shared component from client)
     storage: Arc<Mutex<Option<Arc<tokio::sync::Mutex<DiskStorageManager>>>>>,
+    // Shared masternode state for synchronous quorum lookups
+    masternode_state: Arc<Mutex<Option<SharedMasternodeState>>>,
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
@@ -129,12 +132,6 @@ enum SpvRequest {
         #[allow(dead_code)]
         tx: Box<Transaction>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    GetQuorumPublicKey {
-        quorum_type: u32,
-        quorum_hash: [u8; 32],
-        core_chain_locked_height: u32,
-        response_tx: tokio::sync::oneshot::Sender<Result<[u8; 48], String>>,
     },
 }
 
@@ -162,6 +159,7 @@ impl SpvManager {
             subtasks,
             wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new())),
             storage: Arc::new(Mutex::new(None)),
+            masternode_state: Arc::new(Mutex::new(None)),
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
@@ -429,6 +427,14 @@ impl SpvManager {
         }
 
         {
+            let mut masternode_guard = self
+                .masternode_state
+                .lock()
+                .expect("masternode_state lock poisoned");
+            *masternode_guard = None;
+        }
+
+        {
             let mut request_guard = self.request_tx.lock().expect("request_tx poisoned");
             *request_guard = None;
         }
@@ -481,9 +487,9 @@ impl SpvManager {
 
     /// Attempt to resolve a quorum public key via the SPV client's masternode/quorum state.
     ///
-    /// Note: This is an async method that communicates with the SPV runtime thread.
+    /// This is a synchronous method that reads directly from the shared masternode state.
     /// If SPV state is unavailable or the key is not known yet, an error is returned for the caller to handle.
-    pub async fn get_quorum_public_key(
+    pub fn get_quorum_public_key(
         &self,
         quorum_type: u32,
         quorum_hash: [u8; 32],
@@ -496,42 +502,57 @@ impl SpvManager {
             core_chain_locked_height
         );
 
-        let request_tx = self
-            .request_tx
+        let masternode_state = self
+            .masternode_state
             .lock()
-            .expect("request_tx poisoned")
+            .expect("masternode_state lock poisoned")
             .clone()
             .ok_or_else(|| {
-                tracing::error!("SPV client not running - request_tx is None");
-                "SPV client not running".to_string()
+                tracing::error!("SPV masternode state not available");
+                "SPV masternode state not available".to_string()
             })?;
 
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-
-        tracing::debug!("Sending quorum request to SPV runtime");
-        // Send the request
-        request_tx
-            .send(SpvRequest::GetQuorumPublicKey {
-                quorum_type,
-                quorum_hash,
-                core_chain_locked_height,
-                response_tx,
-            })
-            .await
-            .map_err(|_| {
-                tracing::error!("Failed to send quorum request");
-                "SPV runtime channel closed".to_string()
-            })?;
-
-        tracing::debug!("Waiting for quorum response from SPV runtime");
-        // Wait for response
-        let result = response_rx.await.map_err(|_| {
-            tracing::error!("SPV request cancelled - response channel dropped");
-            "SPV request cancelled".to_string()
+        let quorum_type_u8 = u8::try_from(quorum_type).map_err(|_| {
+            format!(
+                "Quorum type {} is outside the valid range for LLMQ identifiers",
+                quorum_type
+            )
         })?;
 
-        tracing::debug!("Received quorum response: {:?}", result.is_ok());
-        result
+        let llmq_type = LLMQType::from(quorum_type_u8);
+
+        let quorum_hash_value = <QuorumHash as dash_sdk::dash_spv::Hash>::from_slice(&quorum_hash)
+            .map_err(|e| format!("Invalid quorum hash 0x{}: {}", hex::encode(quorum_hash), e))?;
+
+        // The hash needs to be reversed for lookup
+        let quorum_hash_reversed = quorum_hash_value.reverse();
+
+        match masternode_state.get_quorum_public_key_sync(
+            core_chain_locked_height,
+            llmq_type,
+            quorum_hash_reversed,
+        ) {
+            Ok(pk) => {
+                tracing::debug!("Quorum public key found successfully");
+                Ok(*pk.as_ref())
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
+                    core_chain_locked_height,
+                    quorum_type,
+                    hex::encode(quorum_hash),
+                    err
+                );
+                Err(format!(
+                    "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
+                    core_chain_locked_height,
+                    quorum_type,
+                    hex::encode(quorum_hash),
+                    err
+                ))
+            }
+        }
     }
 
     pub async fn load_wallet_from_seed(
@@ -685,6 +706,16 @@ impl SpvManager {
             *storage_guard = Some(storage);
         }
 
+        // Store the shared masternode state for synchronous quorum lookups
+        {
+            let masternode_state = client.shared_masternode_state();
+            let mut state_guard = self
+                .masternode_state
+                .lock()
+                .expect("masternode_state lock poisoned");
+            *state_guard = Some(masternode_state);
+        }
+
         // Set up progress handler
         if let Some(progress_rx) = client.take_progress_receiver() {
             self.spawn_progress_handler(progress_rx);
@@ -702,13 +733,11 @@ impl SpvManager {
             *guard = Some(request_tx);
         }
 
-        // Create a command channel for interacting with the DashSpvClient runtime
-        let (command_sender, command_receiver) =
-            tokio::sync::mpsc::unbounded_channel::<DashSpvClientCommand>();
-        let client_interface = DashSpvClientInterface::new(command_sender);
+        // Spawn request handler in a separate task
+        self.spawn_request_handler(request_rx, stop_token.clone());
 
-        // Spawn request handler in a separate task with access to the client interface
-        self.spawn_request_handler(request_rx, client_interface, stop_token.clone());
+        // Create a command channel for the monitor_network API (still required but unused for quorum lookups)
+        let (_command_sender, command_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Syncing;
 
@@ -832,7 +861,6 @@ impl SpvManager {
     fn spawn_request_handler(
         &self,
         mut request_rx: mpsc::Receiver<SpvRequest>,
-        client_interface: DashSpvClientInterface,
         cancel: CancellationToken,
     ) {
         tracing::info!("SPV request handler started");
@@ -850,84 +878,6 @@ impl SpvManager {
                                 // Note: broadcast_transaction would need access to the client
                                 // For now, just return not implemented
                                 let _ = response_tx.send(Err("Broadcast not yet implemented".to_string()));
-                            }
-                            Some(SpvRequest::GetQuorumPublicKey {
-                                quorum_type,
-                                quorum_hash,
-                                core_chain_locked_height,
-                                response_tx,
-                            }) => {
-                                tracing::info!(
-                                    "Request handler received GetQuorumPublicKey: type={}, hash={}, height={}",
-                                    quorum_type,
-                                    hex::encode(quorum_hash),
-                                    core_chain_locked_height
-                                );
-                                tracing::debug!("Calling DashSpvClientInterface::get_quorum_by_height");
-
-                                let quorum_type_u8 = match u8::try_from(quorum_type) {
-                                    Ok(value) => value,
-                                    Err(_) => {
-                                        let message = format!(
-                                            "Quorum type {} is outside the valid range for LLMQ identifiers",
-                                            quorum_type
-                                        );
-                                        tracing::warn!(message);
-                                        let _ = response_tx.send(Err(message));
-                                        continue;
-                                    }
-                                };
-
-                                let llmq_type = LLMQType::from(quorum_type_u8);
-
-                                let quorum_hash_value = match <QuorumHash as dash_sdk::dash_spv::Hash>::from_slice(&quorum_hash) {
-                                    Ok(value) => value,
-                                    Err(e) => {
-                                        let message = format!(
-                                            "Invalid quorum hash 0x{}: {}",
-                                            hex::encode(quorum_hash),
-                                            e
-                                        );
-                                        tracing::warn!(message);
-                                        let _ = response_tx.send(Err(message));
-                                        continue;
-                                    }
-                                };
-
-                                let quorum_hash_value_reversed = quorum_hash_value.reverse();
-
-                                let result = match client_interface
-                                    .get_quorum_by_height(
-                                        core_chain_locked_height,
-                                        llmq_type,
-                                        quorum_hash_value_reversed,
-                                    )
-                                    .await
-                                {
-                                    Ok(quorum) => {
-                                        tracing::info!("Quorum found successfully");
-                                        let pk48: [u8; 48] = *quorum.quorum_entry.quorum_public_key.as_ref();
-                                        Ok(pk48)
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
-                                            core_chain_locked_height,
-                                            quorum_type,
-                                            hex::encode(quorum_hash),
-                                            err
-                                        );
-                                        Err(format!(
-                                            "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
-                                            core_chain_locked_height,
-                                            quorum_type,
-                                            hex::encode(quorum_hash),
-                                            err
-                                        ))
-                                    }
-                                };
-                                tracing::debug!("Sending response back: {:?}", result.is_ok());
-                                let _ = response_tx.send(result);
                             }
                             None => {
                                 tracing::warn!("SPV request channel closed");

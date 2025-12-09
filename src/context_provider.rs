@@ -10,8 +10,6 @@ use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;
 use dash_sdk::platform::DataContract;
 use rusqlite::Result;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Provider {
@@ -118,37 +116,15 @@ impl ContextProvider for Provider {
             .map_err(|e| dash_sdk::error::ContextProviderError::Generic(e.to_string()))
     }
 
-    fn get_quorum_public_key_async(
-        &self,
-        quorum_type: u32,
-        quorum_hash: [u8; 32],
-        _core_chain_locked_height: u32,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = std::result::Result<[u8; 48], ContextProviderError>>
-                + Send
-                + 'static,
-        >,
-    > {
-        let core_client = self.core.clone();
-        Box::pin(async move {
-            let key = core_client.get_quorum_public_key(quorum_type, quorum_hash)?;
-            Ok(key)
-        })
-    }
-
     fn get_quorum_public_key(
         &self,
         quorum_type: u32,
         quorum_hash: [u8; 32],
-        core_chain_locked_height: u32,
+        _core_chain_locked_height: u32,
     ) -> std::result::Result<[u8; 48], ContextProviderError> {
-        dash_sdk::sync::block_on(self.get_quorum_public_key_async(
-            quorum_type,
-            quorum_hash,
-            core_chain_locked_height,
-        ))
-        .map_err(|e| ContextProviderError::Generic(format!("block_on failed: {}", e)))?
+        self.core
+            .get_quorum_public_key(quorum_type, quorum_hash)
+            .map_err(|e| ContextProviderError::Generic(e.to_string()))
     }
 
     fn get_platform_activation_height(

@@ -2617,42 +2617,80 @@ impl ScreenLike for WalletsBalancesScreen {
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        if let crate::ui::BackendTaskSuccessResult::WalletPayment {
-            txid,
-            recipients,
-            total_amount,
-        } = backend_task_success_result
-        {
-            let msg = if recipients.len() == 1 {
-                let (address, amount) = &recipients[0];
-                format!(
-                    "Sent {} to {}\nTxID: {}",
-                    Self::format_dash(*amount),
-                    address,
-                    txid
-                )
-            } else {
-                format!(
-                    "Sent {} total to {} recipients\nTxID: {}",
-                    Self::format_dash(total_amount),
-                    recipients.len(),
-                    txid
-                )
-            };
-            self.display_message(&msg, MessageType::Success);
-            return;
-        }
-
-        if let crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } =
-            backend_task_success_result
-            && let Some(selected) = &self.selected_wallet
-            && let Ok(wallet) = selected.read()
-            && wallet.seed_hash() == seed_hash
-        {
-            self.receive_dialog.address = Some(address.clone());
-            self.receive_dialog.qr_texture = None;
-            self.receive_dialog.qr_address = None;
-            self.receive_dialog.status = None;
+        match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::WalletPayment {
+                txid,
+                recipients,
+                total_amount,
+            } => {
+                let msg = if recipients.len() == 1 {
+                    let (address, amount) = &recipients[0];
+                    format!(
+                        "Sent {} to {}\nTxID: {}",
+                        Self::format_dash(*amount),
+                        address,
+                        txid
+                    )
+                } else {
+                    format!(
+                        "Sent {} total to {} recipients\nTxID: {}",
+                        Self::format_dash(total_amount),
+                        recipients.len(),
+                        txid
+                    )
+                };
+                self.display_message(&msg, MessageType::Success);
+            }
+            crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
+                if let Some(selected) = &self.selected_wallet
+                    && let Ok(wallet) = selected.read()
+                    && wallet.seed_hash() == seed_hash
+                {
+                    self.receive_dialog.address = Some(address.clone());
+                    self.receive_dialog.qr_texture = None;
+                    self.receive_dialog.qr_address = None;
+                    self.receive_dialog.status = None;
+                }
+            }
+            crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
+                self.withdraw_platform_dialog.is_processing = false;
+                self.withdraw_platform_dialog.status =
+                    Some("Withdrawal successful!".to_string());
+                self.display_message("Platform withdrawal successful", MessageType::Success);
+            }
+            crate::ui::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
+                self.fund_platform_dialog.is_processing = false;
+                self.fund_platform_dialog.status = Some("Funding successful!".to_string());
+                self.display_message("Platform address funded successfully", MessageType::Success);
+            }
+            crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { .. } => {
+                self.display_message(
+                    "Platform credits transferred successfully",
+                    MessageType::Success,
+                );
+            }
+            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances { seed_hash, balances } => {
+                // Update wallet's platform_address_info if this is for the selected wallet
+                if let Some(selected) = &self.selected_wallet {
+                    if let Ok(mut wallet) = selected.write() {
+                        if wallet.seed_hash() == seed_hash {
+                            // Update balances in the wallet
+                            for (addr_str, (balance, nonce)) in balances {
+                                // Find the address that matches the string
+                                if let Some((addr, _)) = wallet
+                                    .platform_address_info
+                                    .iter()
+                                    .find(|(a, _)| a.to_string() == addr_str)
+                                {
+                                    let addr = addr.clone();
+                                    wallet.set_platform_address_info(addr, balance, nonce);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 

@@ -284,10 +284,10 @@ impl AppContext {
             (signed, unsigned.1, recipient.script_pubkey())
         };
 
-        self.spv_manager
-            .broadcast_transaction(&tx)
-            .await
-            .map_err(|e| format!("Broadcast failed: {e}"))?;
+        // self.spv_manager
+        //     .broadcast_transaction(&tx)
+        //     .await
+        //     .map_err(|e| format!("Broadcast failed: {e}"))?;
 
         self.reconcile_spv_wallets()
             .await

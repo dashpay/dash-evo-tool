@@ -362,17 +362,17 @@ impl SpvManager {
         }
     }
 
-    pub async fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), String> {
-        let guard = self.client.read().await;
-        let client = guard
-            .as_ref()
-            .ok_or_else(|| "SPV client not initialized".to_string())?;
+    // pub async fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), String> {
+    //     let guard = self.client.read().await;
+    //     let client = guard
+    //         .as_ref()
+    //         .ok_or_else(|| "SPV client not initialized".to_string())?;
 
-        client
-            .broadcast_transaction(tx)
-            .await
-            .map_err(|e| format!("Failed to broadcast via SPV: {e}"))
-    }
+    //     client
+    //         .broadcast_transaction(tx)
+    //         .await
+    //         .map_err(|e| format!("Failed to broadcast via SPV: {e}"))
+    // }
 
     /// Create a reconciliation signal channel for external listeners.
     /// Returns a receiver that will get a signal when SPV wallet state likely changed.
@@ -385,7 +385,7 @@ impl SpvManager {
 
     /// Attempt to resolve a quorum public key via the SPV client's masternode/quorum state.
     ///
-    /// Note: This is a blocking, best-effort lookup. If SPV state is unavailable,
+    /// Note: This is a blocking lookup. If SPV state is unavailable,
     /// or the key is not known yet, an error is returned for the caller to handle.
     pub fn get_quorum_public_key(
         &self,
@@ -393,39 +393,52 @@ impl SpvManager {
         quorum_hash: [u8; 32],
         core_chain_locked_height: u32,
     ) -> Result<[u8; 48], String> {
-        // Try repeatedly to grab a non-blocking read guard.
-        // We avoid blocking_read to prevent panicking inside Tokio runtime threads.
-        let mut attempts = 0u32;
-        loop {
-            if let Ok(guard) = self.client.try_read() {
-                if let Some(client) = guard.as_ref() {
-                    if let Some(q) = client.get_quorum_at_height(
-                        core_chain_locked_height,
-                        quorum_type as u8,
-                        &quorum_hash,
-                    ) {
-                        let pk48: [u8; 48] = *q.quorum_entry.quorum_public_key.as_ref();
-                        return Ok(pk48);
-                    } else {
-                        return Err(format!(
+        tracing::info!(
+            llmq_type = quorum_type,
+            hash = %hex::encode(quorum_hash),
+            height = core_chain_locked_height,
+            "SPV quorum public key lookup requested"
+        );
+        let client = Arc::clone(&self.client);
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let guard = client.read().await;
+                let client = guard
+                    .as_ref()
+                    .ok_or_else(|| "SPV client not initialized".to_string())?;
+                tracing::info!(
+                    llmq_type = quorum_type,
+                    hash = %hex::encode(quorum_hash),
+                    height = core_chain_locked_height,
+                    "SPV quorum public key lookup in progress"
+                );
+                client
+                    .get_quorum_at_height(core_chain_locked_height, quorum_type as u8, &quorum_hash)
+                    .map(|q| {
+                        tracing::info!(
+                            llmq_type = quorum_type,
+                            hash = %hex::encode(quorum_hash),
+                            height = core_chain_locked_height,
+                            "SPV quorum public key lookup succeeded"
+                        );
+                        *q.quorum_entry.quorum_public_key.as_ref()
+                    })
+                    .ok_or_else(|| {
+                        tracing::warn!(
+                            llmq_type = quorum_type,
+                            hash = %hex::encode(quorum_hash),
+                            height = core_chain_locked_height,
+                            "SPV quorum public key lookup failed"
+                        );
+                        format!(
                             "Quorum not found at height {} for llmq_type={} hash=0x{}",
                             core_chain_locked_height,
                             quorum_type,
                             hex::encode(quorum_hash)
-                        ));
-                    }
-                } else {
-                    return Err("SPV client not initialized".to_string());
-                }
-            }
-
-            attempts = attempts.saturating_add(1);
-            if attempts > 500 {
-                return Err("SPV client busy; try again".to_string());
-            }
-            // Short backoff to yield to the writer; keep small to avoid stalling proof verification.
-            std::thread::sleep(std::time::Duration::from_millis(4));
-        }
+                        )
+                    })
+            })
+        })
     }
 
     pub async fn load_wallet_from_seed(

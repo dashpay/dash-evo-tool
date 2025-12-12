@@ -187,11 +187,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| {
-                    BackendTaskSuccessResult::Message(
-                        "Successfully registered contract".to_string(),
-                    )
-                })
+                .map(|_| BackendTaskSuccessResult::RegisteredContract)
                 .map_err(|e| format!("Error registering contract: {}", e))
             }
             ContractTask::UpdateDataContract(mut data_contract, identity, signing_key) => {
@@ -204,16 +200,12 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| {
-                    BackendTaskSuccessResult::Message("Successfully updated contract".to_string())
-                })
+                .map(|_| BackendTaskSuccessResult::UpdatedContract)
                 .map_err(|e| format!("Error updating contract: {}", e))
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
-                .map(|_| {
-                    BackendTaskSuccessResult::Message("Successfully removed contract".to_string())
-                })
+                .map(|_| BackendTaskSuccessResult::RemovedContract)
                 .map_err(|e| format!("Error removing contract: {}", e)),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
                 self.db
@@ -224,9 +216,7 @@ impl AppContext {
                         self,
                     )
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::Message(
-                    "DataContract successfully saved".to_string(),
-                ))
+                Ok(BackendTaskSuccessResult::SavedContract)
             }
         }
     }

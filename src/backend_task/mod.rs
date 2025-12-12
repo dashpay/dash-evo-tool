@@ -81,8 +81,8 @@ pub enum BackendTaskSuccessResult {
     // General results
     None,
     Refresh,
-    Message(String), // TODO: Remove this and only use proper result types.
-    // Right now we are matching the strings from this in the UI which is unreliable.
+    Message(String), // Used for: progress messages during long operations, placeholder messages for
+    // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     WalletPayment {
         txid: String,
         /// List of (address, amount) pairs for each recipient
@@ -186,6 +186,59 @@ pub enum BackendTaskSuccessResult {
     MnListFetchedDiffs {
         items: Vec<((u32, u32), MnListDiff)>,
     },
+
+    // Token operation results (replacing string messages)
+    PausedTokens,
+    ResumedTokens,
+    MintedTokens,
+    BurnedTokens,
+    FrozeTokens,
+    UnfrozeTokens,
+    TransferredTokens,
+    PurchasedTokens,
+    SetTokenPrice,
+    DestroyedFrozenFunds,
+    ClaimedTokens,
+    UpdatedTokenConfig(String), // The config item that was updated
+    FetchedTokenBalances,
+    SavedToken,
+
+    // Identity operation results (replacing string messages)
+    AddedKeyToIdentity,
+    TransferredCredits,
+    WithdrewFromIdentity,
+    RegisteredDpnsName,
+    RefreshedIdentity(QualifiedIdentity),
+    LoadedIdentity(QualifiedIdentity),
+
+    // Document operation results (replacing string messages)
+    DeletedDocument(Identifier),
+    ReplacedDocument(Identifier),
+    TransferredDocument(Identifier),
+    PurchasedDocument(Identifier),
+    SetDocumentPrice(Identifier),
+
+    // Contract operation results (replacing string messages)
+    UpdatedContract,
+    RemovedContract,
+    FetchedNonce,
+    RegisteredContract,
+    RegisteredTokenContract,
+    SavedContract,
+    ContractNotFound,
+    TokenNotFound,
+    ProofErrorLogged,
+
+    // Wallet operation results (replacing string messages)
+    RefreshedWallet,
+
+    // DPNS operation results (replacing string messages)
+    ScheduledVotes,
+    RefreshedDpnsContests,
+    RefreshedOwnedDpnsNames,
+
+    // Broadcast results
+    BroadcastedStateTransition,
 }
 
 impl BackendTaskSuccessResult {}

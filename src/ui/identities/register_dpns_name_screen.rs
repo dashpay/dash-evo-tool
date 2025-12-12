@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -158,18 +158,15 @@ impl RegisterDpnsNameScreen {
 
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "Successfully registered dpns name" {
-                    self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
-                }
-            }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.register_dpns_name_status =
-                    RegisterDpnsNameStatus::ErrorMessage(message.to_string());
-            }
+        if let MessageType::Error = message_type {
+            self.register_dpns_name_status =
+                RegisterDpnsNameStatus::ErrorMessage(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::RegisteredDpnsName = backend_task_success_result {
+            self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }
 

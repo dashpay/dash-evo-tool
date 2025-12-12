@@ -1,3 +1,4 @@
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -246,19 +247,15 @@ impl ClaimTokensScreen {
 
 impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Claimed") || message == "ClaimTokens" {
-                    self.status = ClaimTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::ClaimedTokens = backend_task_success_result {
+            self.status = ClaimTokensStatus::Complete;
         }
     }
 

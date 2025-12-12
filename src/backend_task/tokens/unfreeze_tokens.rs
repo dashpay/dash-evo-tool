@@ -99,8 +99,6 @@ impl AppContext {
         }
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "UnfreezeTokens".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::UnfrozeTokens)
     }
 }

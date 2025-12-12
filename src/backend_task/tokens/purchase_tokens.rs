@@ -129,8 +129,6 @@ impl AppContext {
         }
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "PurchaseTokens".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::PurchasedTokens)
     }
 }

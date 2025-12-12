@@ -1,6 +1,6 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -348,18 +348,15 @@ impl FreezeTokensScreen {
 
 impl ScreenLike for FreezeTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                // Possibly check the exact message used in your backend
-                if message.contains("Successfully froze identity") || message == "FreezeTokens" {
-                    self.status = FreezeTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = FreezeTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {}
+        if let MessageType::Error = message_type {
+            self.status = FreezeTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::FrozeTokens = backend_task_success_result {
+            self.status = FreezeTokensStatus::Complete;
         }
     }
 

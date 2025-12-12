@@ -82,8 +82,6 @@ impl AppContext {
             )
         })?;
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully refreshed loaded identities dpns names".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
     }
 }

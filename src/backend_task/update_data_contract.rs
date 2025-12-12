@@ -73,7 +73,7 @@ impl AppContext {
         // Update UI
         sender
             .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::Message("Nonce fetched successfully".to_string()),
+                BackendTaskSuccessResult::FetchedNonce,
             )))
             .await
             .map_err(|e| format!("Failed to send message: {}", e))?;
@@ -110,17 +110,13 @@ impl AppContext {
                 self.db
                     .replace_contract(data_contract.id(), &returned_contract, self)
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::Message(
-                    "DataContract successfully updated".to_string(),
-                ))
+                Ok(BackendTaskSuccessResult::UpdatedContract)
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
                     sender
                         .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::Message(
-                                "Transaction returned proof error".to_string(),
-                            ),
+                            BackendTaskSuccessResult::ProofErrorLogged,
                         )))
                         .await
                         .map_err(|e| format!("Failed to send message: {}", e))?;

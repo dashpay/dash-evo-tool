@@ -1,3 +1,4 @@
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -358,19 +359,15 @@ impl BurnTokensScreen {
 
 impl ScreenLike for BurnTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Successfully burned tokens") || message == "BurnTokens" {
-                    self.status = BurnTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = BurnTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = BurnTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::BurnedTokens = backend_task_success_result {
+            self.status = BurnTokensStatus::Complete;
         }
     }
 

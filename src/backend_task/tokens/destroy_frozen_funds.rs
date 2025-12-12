@@ -79,8 +79,6 @@ impl AppContext {
         tracing::info!("DestroyFrozenFunds proof result: {}", proof_result);
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "DestroyFrozenFunds".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::DestroyedFrozenFunds)
     }
 }

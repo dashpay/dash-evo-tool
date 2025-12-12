@@ -88,9 +88,7 @@ impl AppContext {
         }
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| {
-                BackendTaskSuccessResult::Message("Successfully added key to identity".to_string())
-            })
+            .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity)
             .map_err(|e| format!("Database error: {}", e))
     }
 }

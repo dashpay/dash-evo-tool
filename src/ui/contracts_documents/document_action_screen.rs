@@ -1507,22 +1507,18 @@ impl ScreenLike for DocumentActionScreen {
     }
 
     fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
-        if message.contains("deleted successfully")
-            || message.contains("replaced successfully")
-            || message.contains("transferred successfully")
-            || message.contains("purchased successfully")
-            || message.contains("price set successfully")
-        {
-            self.broadcast_status = BroadcastStatus::Broadcasted;
-        } else {
-            self.backend_message = Some(message.to_string());
-            self.broadcast_status = BroadcastStatus::NotBroadcasted;
-        }
+        self.backend_message = Some(message.to_string());
+        self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+            BackendTaskSuccessResult::BroadcastedDocument(_)
+            | BackendTaskSuccessResult::DeletedDocument(_)
+            | BackendTaskSuccessResult::ReplacedDocument(_)
+            | BackendTaskSuccessResult::TransferredDocument(_)
+            | BackendTaskSuccessResult::PurchasedDocument(_)
+            | BackendTaskSuccessResult::SetDocumentPrice(_) => {
                 self.broadcast_status = BroadcastStatus::Broadcasted;
             }
             BackendTaskSuccessResult::Documents(documents) => {

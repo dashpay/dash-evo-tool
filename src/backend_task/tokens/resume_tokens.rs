@@ -78,8 +78,6 @@ impl AppContext {
         tracing::info!("ResumeTokens proof result: {}", proof_result);
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "ResumeTokens".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::ResumedTokens)
     }
 }

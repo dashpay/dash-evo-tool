@@ -306,25 +306,6 @@ impl UpdateDataContractScreen {
 impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Success => {
-                if message.contains("Nonce fetched successfully") {
-                    self.broadcast_status = BroadcastStatus::Broadcasting(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    );
-                } else if message.contains("Transaction returned proof error") {
-                    self.broadcast_status = BroadcastStatus::ProofError(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    );
-                } else {
-                    self.broadcast_status = BroadcastStatus::Done;
-                }
-            }
             MessageType::Error => {
                 if message.contains("proof error logged, contract inserted into the database") {
                     self.error_message = Some(message.to_string());
@@ -333,17 +314,32 @@ impl ScreenLike for UpdateDataContractScreen {
                     self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
                 }
             }
-            MessageType::Info => {
-                // You could display an info label, or do nothing
-            }
+            _ => {}
         }
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        // If a separate result needs to be handled here, you can do so
-        // For example, if success is a special message or we want to show it in the UI
-        if let BackendTaskSuccessResult::Message(_msg) = result {
-            self.broadcast_status = BroadcastStatus::Done;
+        match result {
+            BackendTaskSuccessResult::FetchedNonce => {
+                self.broadcast_status = BroadcastStatus::Broadcasting(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
+            BackendTaskSuccessResult::UpdatedContract => {
+                self.broadcast_status = BroadcastStatus::Done;
+            }
+            BackendTaskSuccessResult::ProofErrorLogged => {
+                self.broadcast_status = BroadcastStatus::ProofError(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
+            _ => {}
         }
     }
 

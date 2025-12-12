@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -236,20 +236,20 @@ impl ScreenLike for AddKeyScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "Successfully added key to identity" {
-                    self.add_key_status = AddKeyStatus::Complete;
-                }
-                if message == "Successfully refreshed identity" {
-                    self.refresh();
-                }
+        if let MessageType::Error = message_type {
+            self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::AddedKeyToIdentity => {
+                self.add_key_status = AddKeyStatus::Complete;
             }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+            BackendTaskSuccessResult::RefreshedIdentity(_) => {
+                self.refresh();
             }
+            _ => {}
         }
     }
 

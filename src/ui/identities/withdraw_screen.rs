@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -266,18 +266,15 @@ impl WithdrawalScreen {
 
 impl ScreenLike for WithdrawalScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "Successfully withdrew from identity" {
-                    self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Complete;
-                }
-            }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.withdraw_from_identity_status =
-                    WithdrawFromIdentityStatus::ErrorMessage(message.to_string());
-            }
+        if let MessageType::Error = message_type {
+            self.withdraw_from_identity_status =
+                WithdrawFromIdentityStatus::ErrorMessage(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::WithdrewFromIdentity = backend_task_success_result {
+            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Complete;
         }
     }
 

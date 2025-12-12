@@ -37,9 +37,7 @@ impl AppContext {
             .map_err(|e| format!("Withdrawal error: {}", e))?;
         qualified_identity.identity.set_balance(remaining_balance);
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| {
-                BackendTaskSuccessResult::Message("Successfully withdrew from identity".to_string())
-            })
+            .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity)
             .map_err(|e| format!("Database error: {}", e))
     }
 }

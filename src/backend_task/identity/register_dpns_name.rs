@@ -208,8 +208,6 @@ impl AppContext {
         self.update_local_qualified_identity(&qualified_identity)
             .map_err(|e| format!("Database error: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully registered dpns name".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::RegisteredDpnsName)
     }
 }

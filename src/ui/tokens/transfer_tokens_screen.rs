@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -257,18 +257,14 @@ impl TransferTokensScreen {
 
 impl ScreenLike for TransferTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "TransferTokens" {
-                    self.transfer_tokens_status = TransferTokensStatus::Complete;
-                }
-            }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.transfer_tokens_status =
-                    TransferTokensStatus::ErrorMessage(message.to_string());
-            }
+        if let MessageType::Error = message_type {
+            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::TransferredTokens = backend_task_success_result {
+            self.transfer_tokens_status = TransferTokensStatus::Complete;
         }
     }
 

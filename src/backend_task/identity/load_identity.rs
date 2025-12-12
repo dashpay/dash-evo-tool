@@ -356,9 +356,7 @@ impl AppContext {
                 .insert(identity_index, qualified_identity.identity.clone());
         }
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully loaded identity".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
     fn match_user_identity_keys_with_wallet(

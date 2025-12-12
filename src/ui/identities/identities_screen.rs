@@ -926,9 +926,7 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
-        if message.contains("Error refreshing identity")
-            || message.contains("Successfully refreshed identity")
-        {
+        if let crate::ui::MessageType::Error = message_type {
             self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
         }
         self.backend_message = Some((message.to_string(), message_type, Utc::now()));
@@ -936,10 +934,16 @@ impl ScreenLike for IdentitiesScreen {
 
     fn display_task_result(
         &mut self,
-        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+        backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        // Nothing
-        // If we don't include this, success messages from ZMQ listener will keep popping up
+        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) = backend_task_success_result {
+            self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
+            self.backend_message = Some((
+                "Successfully refreshed identity".to_string(),
+                crate::ui::MessageType::Success,
+                Utc::now(),
+            ));
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

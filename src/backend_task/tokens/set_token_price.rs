@@ -106,8 +106,6 @@ impl AppContext {
         }
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "SetDirectPurchasePrice".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::SetTokenPrice)
     }
 }

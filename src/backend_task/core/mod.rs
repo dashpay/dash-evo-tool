@@ -168,9 +168,7 @@ impl AppContext {
                     tracing::warn!("Failed to fetch Platform address balances: {}", e);
                 }
 
-                Ok(BackendTaskSuccessResult::Message(
-                    "Successfully refreshed wallet".to_string(),
-                ))
+                Ok(BackendTaskSuccessResult::RefreshedWallet)
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)

@@ -78,6 +78,6 @@ impl AppContext {
         tracing::info!("PauseTokens proof result: {}", proof_result);
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message("PauseTokens".to_string()))
+        Ok(BackendTaskSuccessResult::PausedTokens)
     }
 }

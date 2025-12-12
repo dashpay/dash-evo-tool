@@ -169,9 +169,6 @@ impl AppContext {
         .map_err(|e| format!("Error inserting token into local database: {}", e))?;
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message(format!(
-            "Successfully updated token config item: {}",
-            change_item
-        )))
+        Ok(BackendTaskSuccessResult::UpdatedTokenConfig(change_item.to_string()))
     }
 }

@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
@@ -701,28 +701,16 @@ impl ScreenWithWalletUnlock for AddExistingIdentityScreen {
 
 impl ScreenLike for AddExistingIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "Successfully loaded identity" {
-                    self.success_message = Some("Successfully loaded identity.".to_string());
-                    self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
-                } else if (message.starts_with("Successfully loaded ")
-                    && message.contains(" up to index "))
-                    || message.starts_with("Finished loading identities up to index ")
-                {
-                    self.success_message = Some(message.to_string());
-                    self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
-                } else {
-                    self.backend_message = Some(message.to_string());
-                }
-            }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
-            }
+        if let MessageType::Error = message_type {
+            self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::LoadedIdentity(_) = backend_task_success_result {
+            self.success_message = Some("Successfully loaded identity.".to_string());
+            self.add_identity_status = AddIdentityStatus::Complete;
+            self.backend_message = None;
         }
     }
 

@@ -12,7 +12,7 @@ use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
@@ -30,7 +30,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
-use crate::ui::{BackendTaskSuccessResult, MessageType, Screen, ScreenLike};
+use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::IdentityPublicKey;
@@ -332,45 +332,36 @@ impl PurchaseTokenScreen {
 
 impl ScreenLike for PurchaseTokenScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TokenPricing {
-            token_id: _,
-            prices,
-        } = result
-        {
-            self.pricing_fetch_attempted = true;
-            if let Some(schedule) = prices {
-                self.fetched_pricing_schedule = Some(schedule);
-                self.recalculate_price();
-                self.status = PurchaseTokensStatus::NotStarted;
-            } else {
-                // No pricing schedule found - token is not for sale
-                self.status = PurchaseTokensStatus::ErrorMessage(
-                    "This token is not available for direct purchase. No pricing has been set."
-                        .to_string(),
-                );
-                self.error_message = Some(
-                    "This token is not available for direct purchase. No pricing has been set."
-                        .to_string(),
-                );
+        match result {
+            BackendTaskSuccessResult::TokenPricing { token_id: _, prices } => {
+                self.pricing_fetch_attempted = true;
+                if let Some(schedule) = prices {
+                    self.fetched_pricing_schedule = Some(schedule);
+                    self.recalculate_price();
+                    self.status = PurchaseTokensStatus::NotStarted;
+                } else {
+                    // No pricing schedule found - token is not for sale
+                    self.status = PurchaseTokensStatus::ErrorMessage(
+                        "This token is not available for direct purchase. No pricing has been set."
+                            .to_string(),
+                    );
+                    self.error_message = Some(
+                        "This token is not available for direct purchase. No pricing has been set."
+                            .to_string(),
+                    );
+                }
             }
+            BackendTaskSuccessResult::PurchasedTokens => {
+                self.status = PurchaseTokensStatus::Complete;
+            }
+            _ => {}
         }
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Successfully purchaseed tokens") || message == "PurchaseTokens"
-                {
-                    self.status = PurchaseTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = PurchaseTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = PurchaseTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
         }
     }
 

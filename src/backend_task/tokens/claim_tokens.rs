@@ -103,6 +103,6 @@ impl AppContext {
         }
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message("ClaimTokens".to_string()))
+        Ok(BackendTaskSuccessResult::ClaimedTokens)
     }
 }

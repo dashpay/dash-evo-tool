@@ -1,6 +1,6 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -926,22 +926,25 @@ impl UpdateTokenConfigScreen {
 impl ScreenLike for UpdateTokenConfigScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Success => {
-                self.backend_message =
-                    Some((message.to_string(), MessageType::Success, Utc::now()));
-                if message.contains("Successfully updated token config item") {
-                    self.update_status = UpdateTokenConfigStatus::NotUpdating;
-                }
-            }
             MessageType::Error => {
                 self.backend_message = Some((message.to_string(), MessageType::Error, Utc::now()));
-                if message.contains("Failed to update token config") {
-                    self.update_status = UpdateTokenConfigStatus::NotUpdating;
-                }
+                self.update_status = UpdateTokenConfigStatus::NotUpdating;
             }
             MessageType::Info => {
                 self.backend_message = Some((message.to_string(), MessageType::Info, Utc::now()));
             }
+            _ => {}
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item) = backend_task_success_result {
+            self.backend_message = Some((
+                format!("Successfully updated token config item: {}", change_item),
+                MessageType::Success,
+                Utc::now(),
+            ));
+            self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }
     }
 

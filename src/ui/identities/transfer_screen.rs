@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -467,19 +467,16 @@ impl TransferScreen {
 
 impl ScreenLike for TransferScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "Successfully transferred credits" {
-                    self.transfer_credits_status = TransferCreditsStatus::Complete;
-                }
-            }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.transfer_credits_status =
-                    TransferCreditsStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
+        if let MessageType::Error = message_type {
+            self.transfer_credits_status =
+                TransferCreditsStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::TransferredCredits = backend_task_success_result {
+            self.transfer_credits_status = TransferCreditsStatus::Complete;
         }
     }
 

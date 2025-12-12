@@ -1,6 +1,6 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -380,19 +380,15 @@ impl MintTokensScreen {
 
 impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Successfully minted tokens") || message == "MintTokens" {
-                    self.status = MintTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = MintTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = MintTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::MintedTokens = backend_task_success_result {
+            self.status = MintTokensStatus::Complete;
         }
     }
 

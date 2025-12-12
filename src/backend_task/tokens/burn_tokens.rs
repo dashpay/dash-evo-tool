@@ -137,6 +137,6 @@ impl AppContext {
         }
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message("BurnTokens".to_string()))
+        Ok(BackendTaskSuccessResult::BurnedTokens)
     }
 }

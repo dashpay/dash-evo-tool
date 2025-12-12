@@ -190,8 +190,6 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::Message(
-            "TransferTokens".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::TransferredTokens)
     }
 }

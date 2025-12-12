@@ -2597,10 +2597,7 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message.contains("Successfully refreshed wallet")
-            || message.contains("Error refreshing wallet")
-            || message.contains("Wallet refreshed from SPV")
-        {
+        if let MessageType::Error = message_type {
             self.refreshing = false;
         }
         self.message = Some((message.to_string(), message_type, Utc::now()))
@@ -2611,6 +2608,14 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::RefreshedWallet => {
+                self.refreshing = false;
+                self.message = Some((
+                    "Successfully refreshed wallet".to_string(),
+                    MessageType::Success,
+                    Utc::now(),
+                ));
+            }
             crate::ui::BackendTaskSuccessResult::WalletPayment {
                 txid,
                 recipients,

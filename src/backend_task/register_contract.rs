@@ -46,17 +46,13 @@ impl AppContext {
                         self,
                     )
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::Message(
-                    "DataContract successfully registered".to_string(),
-                ))
+                Ok(BackendTaskSuccessResult::RegisteredContract)
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
                     sender
                         .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::Message(
-                                "Transaction returned proof error".to_string(),
-                            ),
+                            BackendTaskSuccessResult::ProofErrorLogged,
                         )))
                         .await
                         .map_err(|e| format!("Failed to send message: {}", e))?;

@@ -49,9 +49,7 @@ impl AppContext {
         }
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| {
-                BackendTaskSuccessResult::Message("Successfully transferred credits".to_string())
-            })
+            .map(|_| BackendTaskSuccessResult::TransferredCredits)
             .map_err(|e| e.to_string())
     }
 }

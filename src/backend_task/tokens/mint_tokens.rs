@@ -146,6 +146,6 @@ impl AppContext {
         }
 
         // Return success
-        Ok(BackendTaskSuccessResult::Message("MintTokens".to_string()))
+        Ok(BackendTaskSuccessResult::MintedTokens)
     }
 }

@@ -243,10 +243,7 @@ impl AppContext {
                 // Handle the result - DocumentDeleteResult contains the deleted document ID
                 match result {
                     DocumentDeleteResult::Deleted(deleted_id) => {
-                        Ok(BackendTaskSuccessResult::Message(format!(
-                            "Document {} deleted successfully",
-                            deleted_id
-                        )))
+                        Ok(BackendTaskSuccessResult::DeletedDocument(deleted_id))
                     }
                 }
             }
@@ -300,10 +297,7 @@ impl AppContext {
                 // Handle the result - DocumentReplaceResult contains the replaced document
                 match result {
                     DocumentReplaceResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::Message(format!(
-                            "Document {} replaced successfully",
-                            document.id()
-                        )))
+                        Ok(BackendTaskSuccessResult::ReplacedDocument(document.id()))
                     }
                 }
             }
@@ -375,11 +369,7 @@ impl AppContext {
                 // Handle the result - DocumentTransferResult contains the transferred document
                 match result {
                     DocumentTransferResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::Message(format!(
-                            "Document {} transferred to {} successfully",
-                            document.id(),
-                            new_owner_id
-                        )))
+                        Ok(BackendTaskSuccessResult::TransferredDocument(document.id()))
                     }
                 }
             }
@@ -452,11 +442,7 @@ impl AppContext {
                 // Handle the result - DocumentPurchaseResult contains the purchased document
                 match result {
                     DocumentPurchaseResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::Message(format!(
-                            "Document {} purchased for {} credits",
-                            document.id(),
-                            price
-                        )))
+                        Ok(BackendTaskSuccessResult::PurchasedDocument(document.id()))
                     }
                 }
             }
@@ -528,11 +514,7 @@ impl AppContext {
                 // Handle the result - DocumentSetPriceResult contains the document with updated price
                 match result {
                     DocumentSetPriceResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::Message(format!(
-                            "Document {} price set to {} credits",
-                            document.id(),
-                            price
-                        )))
+                        Ok(BackendTaskSuccessResult::SetDocumentPrice(document.id()))
                     }
                 }
             }

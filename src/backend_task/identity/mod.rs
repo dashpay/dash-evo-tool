@@ -649,8 +649,6 @@ impl AppContext {
         self.insert_local_qualified_identity(&updated_identity, &None)
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully transferred credits".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::TransferredCredits)
     }
 }

@@ -1806,23 +1806,6 @@ impl ScreenLike for DPNSScreen {
                 }
             }
         }
-        if message.contains("Successfully cast scheduled vote") {
-            self.scheduled_vote_cast_in_progress = false;
-        }
-        // If it's from a DPNS query or identity refresh, remove refreshing state
-        if message.contains("Successfully refreshed DPNS contests")
-            || message.contains("Successfully refreshed loaded identities dpns names")
-            || message.contains("Contested resource query failed")
-            || message.contains("Error refreshing owned DPNS names")
-        {
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
-        }
-
-        if message.contains("Votes scheduled")
-            && self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes
-        {
-            self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-        }
 
         // Save into general error_message for top-of-screen
         self.message = Some((message.to_string(), message_type, Utc::now()));
@@ -1870,16 +1853,15 @@ impl ScreenLike for DPNSScreen {
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
             }
             // If scheduling succeeded
-            BackendTaskSuccessResult::Message(msg) => {
-                if msg.contains("Votes scheduled") {
-                    if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
-                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-                    }
-                    self.bulk_schedule_message =
-                        Some((MessageType::Success, "Votes scheduled".to_string()));
+            BackendTaskSuccessResult::ScheduledVotes => {
+                if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+                    self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                 }
+                self.bulk_schedule_message =
+                    Some((MessageType::Success, "Votes scheduled".to_string()));
             }
             BackendTaskSuccessResult::CastScheduledVote(vote) => {
+                self.scheduled_vote_cast_in_progress = false;
                 if let Ok(mut guard) = self.scheduled_votes.lock()
                     && let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
                         v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
@@ -1887,6 +1869,10 @@ impl ScreenLike for DPNSScreen {
                 {
                     *status = ScheduledVoteCastingStatus::Completed;
                 }
+            }
+            BackendTaskSuccessResult::RefreshedDpnsContests
+            | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
         }

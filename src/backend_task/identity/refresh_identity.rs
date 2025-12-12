@@ -67,6 +67,8 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(BackendTaskSuccessResult::RefreshedIdentity(qualified_identity))
+        Ok(BackendTaskSuccessResult::RefreshedIdentity(
+            qualified_identity,
+        ))
     }
 }

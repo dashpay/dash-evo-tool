@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -468,8 +468,7 @@ impl TransferScreen {
 impl ScreenLike for TransferScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.transfer_credits_status =
-                TransferCreditsStatus::ErrorMessage(message.to_string());
+            self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }

@@ -1,7 +1,7 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -938,7 +938,9 @@ impl ScreenLike for UpdateTokenConfigScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item) = backend_task_success_result {
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item) =
+            backend_task_success_result
+        {
             self.backend_message = Some((
                 format!("Successfully updated token config item: {}", change_item),
                 MessageType::Success,

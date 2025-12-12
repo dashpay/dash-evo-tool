@@ -936,7 +936,9 @@ impl ScreenLike for IdentitiesScreen {
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) = backend_task_success_result {
+        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
+            backend_task_success_result
+        {
             self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
             self.backend_message = Some((
                 "Successfully refreshed identity".to_string(),

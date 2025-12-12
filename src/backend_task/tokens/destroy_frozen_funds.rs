@@ -51,7 +51,7 @@ impl AppContext {
             .map_err(|e| format!("Error signing DestroyFrozenFunds transition: {}", e))?;
 
         // Broadcast
-        let _proof_result = state_transition
+        let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
             .map_err(|e| match e {
@@ -74,6 +74,9 @@ impl AppContext {
                 }
                 e => format!("Error broadcasting Destroy Frozen funds transition: {}", e),
             })?;
+
+        // Log proof result for audit trail
+        tracing::info!("DestroyFrozenFunds proof result: {}", proof_result);
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(

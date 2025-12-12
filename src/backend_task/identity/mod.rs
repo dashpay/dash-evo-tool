@@ -562,7 +562,7 @@ impl AppContext {
         let identity = qualified_identity.identity.clone();
 
         // Execute the top-up
-        let new_balance = identity
+        let (address_infos, new_balance) = identity
             .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
             .await
             .map_err(|e| {
@@ -571,6 +571,13 @@ impl AppContext {
             })?;
 
         tracing::info!("top_up_from_addresses succeeded, new_balance={}", new_balance);
+
+        // Update source address balances using proof-verified data from SDK response
+        if let Err(e) =
+            self.update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
+        {
+            tracing::warn!("Failed to update wallet platform address info: {}", e);
+        }
 
         // Update the identity balance in memory
         let mut updated_identity = qualified_identity.clone();
@@ -589,18 +596,39 @@ impl AppContext {
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
-        _key_id: Option<KeyID>,
+        key_id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
         // Get the identity
         let identity = qualified_identity.identity.clone();
 
+        // Get the signing key if specified
+        let signing_key = key_id.and_then(|id| identity.get_public_key_by_id(id));
+
         // Execute the transfer - qualified_identity is consumed here as the signer
-        let (new_balance, _address_infos) = identity
-            .transfer_credits_to_addresses(sdk, outputs, None, qualified_identity.clone(), None)
+        let (address_infos, new_balance) = identity
+            .transfer_credits_to_addresses(sdk, outputs, signing_key, qualified_identity.clone(), None)
             .await
             .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
+
+        // Update destination address balances in any wallets that contain them
+        // (using proof-verified data from the SDK response)
+        {
+            let wallets = self.wallets.read().unwrap();
+            for (seed_hash, wallet_arc) in wallets.iter() {
+                if let Err(e) =
+                    self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
+                {
+                    tracing::warn!(
+                        "Failed to update wallet platform address info: {}",
+                        e
+                    );
+                }
+                // Break early since all wallets share the same network addresses
+                let _ = wallet_arc; // silence unused warning
+            }
+        }
 
         // Update the identity balance in memory
         let mut updated_identity = qualified_identity;

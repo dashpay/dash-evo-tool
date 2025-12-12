@@ -173,10 +173,21 @@ pub async fn update_profile(
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let _result = sdk
+        let result = sdk
             .document_replace(builder, identity_key, &identity)
             .await
             .map_err(|e| format!("Error replacing profile: {}", e))?;
+
+        // Log the proof-verified document for audit trail
+        match result {
+            dash_sdk::platform::documents::transitions::DocumentReplaceResult::Document(doc) => {
+                tracing::info!(
+                    "Profile updated: doc_id={}, revision={:?}",
+                    doc.id(),
+                    doc.revision()
+                );
+            }
+        }
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),
@@ -221,10 +232,21 @@ pub async fn update_profile(
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let _result = sdk
+        let result = sdk
             .document_create(builder, identity_key, &identity)
             .await
             .map_err(|e| format!("Error creating profile: {}", e))?;
+
+        // Log the proof-verified document for audit trail
+        match result {
+            dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
+                tracing::info!(
+                    "Profile created: doc_id={}, revision={:?}",
+                    doc.id(),
+                    doc.revision()
+                );
+            }
+        }
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),

@@ -98,7 +98,7 @@ impl AppContext {
             .map_err(|e| format!("Error signing Token Config Update transition: {}", e))?;
 
         // Broadcast the state transition
-        let _proof_result = state_transition
+        let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
             .map_err(|e| match e {
@@ -122,8 +122,12 @@ impl AppContext {
                 e => format!("Error broadcasting Update token config transition: {}", e),
             })?;
 
+        // Log proof result for audit trail
+        tracing::info!("TokenConfigUpdate proof result: {}", proof_result);
+
         // Now update the data contract in the local database
-        // First, fetch the updated contract from the platform
+        // The proof result contains an action document, not the updated contract,
+        // so we need to fetch the updated contract from the platform
         let data_contract =
             DataContract::fetch(sdk, identity_token_info.data_contract.contract.id())
                 .await

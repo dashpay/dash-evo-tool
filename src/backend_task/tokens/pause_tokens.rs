@@ -50,7 +50,7 @@ impl AppContext {
             .map_err(|e| format!("Error signing Pause Tokens transition: {}", e))?;
 
         // Broadcast
-        let _proof_result = state_transition
+        let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
             .map_err(|e| match e {
@@ -73,6 +73,9 @@ impl AppContext {
                 }
                 e => format!("Error broadcasting Pause Tokens transition: {}", e),
             })?;
+
+        // Log proof result for audit trail
+        tracing::info!("PauseTokens proof result: {}", proof_result);
 
         // Return success
         Ok(BackendTaskSuccessResult::Message("PauseTokens".to_string()))

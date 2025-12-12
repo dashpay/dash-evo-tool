@@ -1194,10 +1194,10 @@ impl Wallet {
                 .map_err(|e| e.to_string())?;
             let private_key = extended_private_key.to_priv();
 
-            // Use platform_p2pkh to create the proper D/d prefixed address
+            // Create a P2PKH address for platform payment
             let secp = Secp256k1::new();
             let public_key = private_key.public_key(&secp);
-            let platform_address = Address::platform_p2pkh(&public_key, network);
+            let platform_address = Address::p2pkh(&public_key, network);
 
             // Register the Platform address
             self.register_platform_address(
@@ -1432,8 +1432,8 @@ impl Wallet {
         let private_key = extended_private_key.to_priv();
         let public_key = private_key.public_key(&secp);
 
-        // Use platform_p2pkh to create the proper D/d prefixed address
-        let platform_address = Address::platform_p2pkh(&public_key, network);
+        // Create a P2PKH address for platform payment
+        let platform_address = Address::p2pkh(&public_key, network);
 
         // Register the new address
         if let Some(app_context) = register {

@@ -3,12 +3,12 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::tokens::builders::set_price::TokenChangeDirectPurchasePriceTransitionBuilder;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::tokens::transitions::SetPriceResult;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
@@ -49,14 +49,8 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let state_transition = builder
-            .sign(sdk, &signing_key, sending_identity, self.platform_version())
-            .await
-            .map_err(|e| format!("Error signing SetPrice state transition: {}", e))?;
-
-        // broadcast and wait
-        let _proof_result = state_transition
-            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+        let result = sdk
+            .token_set_price_for_direct_purchase(builder, &signing_key, sending_identity)
             .await
             .map_err(|e| match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
@@ -78,6 +72,38 @@ impl AppContext {
                 }
                 e => format!("Error broadcasting SetPrice Tokens transition: {}", e),
             })?;
+
+        // Log the proof-verified set price result
+        match result {
+            SetPriceResult::PricingSchedule(owner_id, schedule) => {
+                tracing::info!(
+                    "SetDirectPurchasePrice: owner {} has_schedule={}",
+                    owner_id,
+                    schedule.is_some()
+                );
+            }
+            SetPriceResult::HistoricalDocument(document) => {
+                tracing::info!(
+                    "SetDirectPurchasePrice: historical document id={}",
+                    document.id()
+                );
+            }
+            SetPriceResult::GroupActionWithDocument(power, doc) => {
+                tracing::info!(
+                    "SetDirectPurchasePrice: group action power={}, has_doc={}",
+                    power,
+                    doc.is_some()
+                );
+            }
+            SetPriceResult::GroupActionWithPricingSchedule(power, status, schedule) => {
+                tracing::info!(
+                    "SetDirectPurchasePrice: group action power={}, status={:?}, has_schedule={}",
+                    power,
+                    status,
+                    schedule.is_some()
+                );
+            }
+        }
 
         // Return success
         Ok(BackendTaskSuccessResult::Message(

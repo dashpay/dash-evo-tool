@@ -543,6 +543,57 @@ impl AppContext {
         })
     }
 
+    /// Update wallet platform address info from SDK-returned AddressInfos.
+    /// This uses the proof-verified data from SDK operations rather than fetching.
+    pub(crate) fn update_wallet_platform_address_info_from_sdk(
+        &self,
+        seed_hash: WalletSeedHash,
+        address_infos: &dash_sdk::query_types::AddressInfos,
+    ) -> Result<(), String> {
+        let wallet_arc = {
+            let wallets = self.wallets.read().unwrap();
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or_else(|| "Wallet not found".to_string())?
+        };
+
+        let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+
+        for (platform_addr, maybe_info) in address_infos.iter() {
+            if let Some(info) = maybe_info {
+                // Convert PlatformAddress to core Address using the network
+                let core_addr = platform_addr.to_address_with_network(self.network);
+
+                // Update in-memory wallet state
+                wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
+
+                // Update database
+                if let Err(e) = self.db.set_platform_address_info(
+                    &seed_hash,
+                    &core_addr,
+                    info.balance,
+                    info.nonce,
+                    &self.network,
+                ) {
+                    tracing::warn!(
+                        "Failed to store Platform address info in database: {}",
+                        e
+                    );
+                }
+
+                tracing::debug!(
+                    "Updated platform address {} balance={} nonce={} from SDK response",
+                    core_addr,
+                    info.balance,
+                    info.nonce
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Transfer credits between Platform addresses
     pub(crate) async fn transfer_platform_credits(
         self: &Arc<Self>,
@@ -576,14 +627,14 @@ impl AppContext {
         // Simple fee strategy: deduct from first input
         let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
-        // Use the SDK to transfer
-        let _result = sdk
+        // Use the SDK to transfer - returns proof-verified updated address infos
+        let address_infos = sdk
             .transfer_address_funds(inputs, outputs, fee_strategy, &wallet, None)
             .await
             .map_err(|e| format!("Failed to transfer Platform credits: {}", e))?;
 
-        // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash).await?;
+        // Update wallet balances from the proof-verified response (no extra fetch needed)
+        self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)?;
 
         Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash })
     }

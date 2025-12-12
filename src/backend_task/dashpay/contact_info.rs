@@ -392,10 +392,21 @@ pub async fn create_or_update_contact_info(
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let _result = sdk
+        let result = sdk
             .document_replace(builder, signing_key, &identity)
             .await
             .map_err(|e| format!("Error updating contact info: {}", e))?;
+
+        // Log the proof-verified document for audit trail
+        match result {
+            dash_sdk::platform::documents::transitions::DocumentReplaceResult::Document(doc) => {
+                tracing::info!(
+                    "Contact info updated: doc_id={}, revision={:?}",
+                    doc.id(),
+                    doc.revision()
+                );
+            }
+        }
     } else {
         // Create new contactInfo document
         let mut rng = StdRng::from_entropy();
@@ -441,10 +452,21 @@ pub async fn create_or_update_contact_info(
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let _result = sdk
+        let result = sdk
             .document_create(builder, signing_key, &identity)
             .await
             .map_err(|e| format!("Error creating contact info: {}", e))?;
+
+        // Log the proof-verified document for audit trail
+        match result {
+            dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
+                tracing::info!(
+                    "Contact info created: doc_id={}, revision={:?}",
+                    doc.id(),
+                    doc.revision()
+                );
+            }
+        }
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated(

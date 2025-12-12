@@ -65,9 +65,25 @@ impl AppContext {
             .await
             .map_err(|e| format!("Broadcasting error: {}", e))?;
 
-        if let StateTransitionProofResult::VerifiedPartialIdentity(identity) = result {
-            for public_key in identity.loaded_public_keys.into_values() {
-                qualified_identity.identity.add_public_key(public_key);
+        // Log and handle the proof result
+        tracing::info!("AddKeyToIdentity proof result: {}", result);
+
+        match result {
+            StateTransitionProofResult::VerifiedPartialIdentity(identity) => {
+                // Update the identity with proof-verified public keys
+                for public_key in identity.loaded_public_keys.into_values() {
+                    qualified_identity.identity.add_public_key(public_key);
+                }
+            }
+            other => {
+                tracing::warn!(
+                    "Unexpected proof result type for add key to identity: {}",
+                    other
+                );
+                // Still add the key we tried to add, since the broadcast succeeded
+                qualified_identity
+                    .identity
+                    .add_public_key(public_key_to_add.identity_public_key.clone());
             }
         }
 

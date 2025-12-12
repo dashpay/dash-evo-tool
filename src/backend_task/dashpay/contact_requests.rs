@@ -418,10 +418,21 @@ pub async fn send_contact_request_with_proof(
         builder = builder.with_state_transition_creation_options(options);
     }
 
-    let _result = sdk
+    let result = sdk
         .document_create(builder, identity_key, &identity)
         .await
         .map_err(|e| format!("Error creating contact request: {}", e))?;
+
+    // Log the proof-verified document for audit trail
+    match result {
+        dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
+            tracing::info!(
+                "Contact request created: doc_id={}, revision={:?}",
+                doc.id(),
+                doc.revision()
+            );
+        }
+    }
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),

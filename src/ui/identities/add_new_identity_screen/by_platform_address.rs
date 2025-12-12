@@ -79,18 +79,15 @@ impl AddNewIdentityScreen {
         let selected_addr_display = self
             .selected_platform_address_for_funding
             .as_ref()
-            .map(|(addr, _)| {
-                let display = match addr {
-                    PlatformAddress::P2pkh(hash) => {
-                        let hex = hex::encode(hash);
-                        format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
-                    }
-                    PlatformAddress::P2sh(hash) => {
-                        let hex = hex::encode(hash);
-                        format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
-                    }
-                };
-                display
+            .map(|(addr, _)| match addr {
+                PlatformAddress::P2pkh(hash) => {
+                    let hex = hex::encode(hash);
+                    format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
+                }
+                PlatformAddress::P2sh(hash) => {
+                    let hex = hex::encode(hash);
+                    format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
+                }
             })
             .unwrap_or_else(|| "Select a Platform address".to_string());
 
@@ -135,39 +132,35 @@ impl AddNewIdentityScreen {
             );
 
             // Update selected amount when text changes
-            if response.changed() {
-                if let Some((platform_addr, _)) = self.selected_platform_address_for_funding.clone()
-                {
-                    let max_balance = platform_addresses
-                        .iter()
-                        .find(|(_, addr, _)| *addr == platform_addr)
-                        .map(|(_, _, balance)| *balance)
-                        .unwrap_or(0);
+            if response.changed()
+                && let Some((platform_addr, _)) = self.selected_platform_address_for_funding
+            {
+                let max_balance = platform_addresses
+                    .iter()
+                    .find(|(_, addr, _)| *addr == platform_addr)
+                    .map(|(_, _, balance)| *balance)
+                    .unwrap_or(0);
 
-                    let amount_credits = self
-                        .platform_funding_amount_input
-                        .parse::<f64>()
-                        .map(|dash| (dash * 1e8 * CREDITS_PER_DUFF as f64) as u64)
-                        .unwrap_or(0);
+                let amount_credits = self
+                    .platform_funding_amount_input
+                    .parse::<f64>()
+                    .map(|dash| (dash * 1e8 * CREDITS_PER_DUFF as f64) as u64)
+                    .unwrap_or(0);
 
-                    self.selected_platform_address_for_funding =
-                        Some((platform_addr, amount_credits.min(max_balance)));
-                }
+                self.selected_platform_address_for_funding =
+                    Some((platform_addr, amount_credits.min(max_balance)));
             }
 
             // Max button
-            if let Some((platform_addr, _)) = &self.selected_platform_address_for_funding {
-                if let Some((_, _, balance)) = platform_addresses
+            if let Some((platform_addr, _)) = &self.selected_platform_address_for_funding
+                && let Some((_, _, balance)) = platform_addresses
                     .iter()
                     .find(|(_, addr, _)| addr == platform_addr)
-                {
-                    if ui.small_button("Max").clicked() {
-                        let max_dash = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                        self.platform_funding_amount_input = format!("{:.8}", max_dash);
-                        self.selected_platform_address_for_funding =
-                            Some((*platform_addr, *balance));
-                    }
-                }
+                && ui.small_button("Max").clicked()
+            {
+                let max_dash = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                self.platform_funding_amount_input = format!("{:.8}", max_dash);
+                self.selected_platform_address_for_funding = Some((*platform_addr, *balance));
             }
         });
 

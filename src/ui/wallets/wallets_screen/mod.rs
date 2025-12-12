@@ -1696,11 +1696,10 @@ impl WalletsBalancesScreen {
                             }
 
                             // Button to add new Platform address
-                            if let Some(wallet) = &self.selected_wallet {
-                                if ui.button("New Address").clicked() {
+                            if let Some(wallet) = &self.selected_wallet
+                                && ui.button("New Address").clicked() {
                                     new_addr_result = Some(self.generate_platform_address(wallet));
                                 }
-                            }
                         });
 
                         // Handle copy status after the closure
@@ -2058,19 +2057,15 @@ impl WalletsBalancesScreen {
                         // Max button
                         if let Some(selected) =
                             &self.withdraw_platform_dialog.selected_platform_address
-                        {
-                            if let Some((_, balance)) = self
+                            && let Some((_, balance)) = self
                                 .withdraw_platform_dialog
                                 .platform_addresses
                                 .iter()
                                 .find(|(a, _)| a == selected)
-                            {
-                                if ui.small_button("Max").clicked() {
-                                    let max_dash = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                                    self.withdraw_platform_dialog.amount_input =
-                                        format!("{:.8}", max_dash);
-                                }
-                            }
+                            && ui.small_button("Max").clicked()
+                        {
+                            let max_dash = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                            self.withdraw_platform_dialog.amount_input = format!("{:.8}", max_dash);
                         }
                     });
 
@@ -2671,21 +2666,20 @@ impl ScreenLike for WalletsBalancesScreen {
                 balances,
             } => {
                 // Update wallet's platform_address_info if this is for the selected wallet
-                if let Some(selected) = &self.selected_wallet {
-                    if let Ok(mut wallet) = selected.write() {
-                        if wallet.seed_hash() == seed_hash {
-                            // Update balances in the wallet
-                            for (addr_str, (balance, nonce)) in balances {
-                                // Find the address that matches the string
-                                if let Some((addr, _)) = wallet
-                                    .platform_address_info
-                                    .iter()
-                                    .find(|(a, _)| a.to_string() == addr_str)
-                                {
-                                    let addr = addr.clone();
-                                    wallet.set_platform_address_info(addr, balance, nonce);
-                                }
-                            }
+                if let Some(selected) = &self.selected_wallet
+                    && let Ok(mut wallet) = selected.write()
+                    && wallet.seed_hash() == seed_hash
+                {
+                    // Update balances in the wallet
+                    for (addr_str, (balance, nonce)) in balances {
+                        // Find the address that matches the string
+                        if let Some((addr, _)) = wallet
+                            .platform_address_info
+                            .iter()
+                            .find(|(a, _)| a.to_string() == addr_str)
+                        {
+                            let addr = addr.clone();
+                            wallet.set_platform_address_info(addr, balance, nonce);
                         }
                     }
                 }

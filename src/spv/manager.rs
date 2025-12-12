@@ -511,8 +511,7 @@ impl SpvManager {
                 .ok_or_else(|| "SPV client not initialized".to_string())?
         };
 
-        let llmq_type = LLMQType::try_from(quorum_type as u8)
-            .map_err(|e| format!("Invalid LLMQ type {}: {}", quorum_type, e))?;
+        let llmq_type = LLMQType::from(quorum_type as u8);
         let qh = QuorumHash::from_byte_array(quorum_hash);
 
         tracing::debug!(

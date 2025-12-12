@@ -743,8 +743,7 @@ impl AddNewIdentityScreen {
             }
             FundingMethod::UsePlatformAddress => {
                 // Get selected Platform address and amount from the input fields
-                let Some((platform_addr, amount)) =
-                    self.selected_platform_address_for_funding.clone()
+                let Some((platform_addr, amount)) = self.selected_platform_address_for_funding
                 else {
                     self.error_message = Some("Please select a Platform address".to_string());
                     return AppAction::None;

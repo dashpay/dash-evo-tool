@@ -9812,8 +9812,3 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
 ]
-
-[[patch.unused]]
-name = "elliptic-curve-tools"
-version = "0.1.2"
-source = "git+https://github.com/mikelodder7/elliptic-curve-tools?rev=c989865fa71503d2cbf5c5795c4ebcf4a2f3221c#c989865fa71503d2cbf5c5795c4ebcf4a2f3221c"

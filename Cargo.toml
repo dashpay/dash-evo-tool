@@ -78,6 +78,3 @@ egui_kittest = { version = "0.32.0", features = ["eframe"] }
 
 [lints.clippy]
 uninlined_format_args = "allow"
-
-[patch.crates-io]
-elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }

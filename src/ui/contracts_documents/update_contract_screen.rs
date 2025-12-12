@@ -305,16 +305,13 @@ impl UpdateDataContractScreen {
 
 impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Error => {
-                if message.contains("proof error logged, contract inserted into the database") {
-                    self.error_message = Some(message.to_string());
-                    self.broadcast_status = BroadcastStatus::Done;
-                } else {
-                    self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
-                }
+        if message_type == MessageType::Error {
+            if message.contains("proof error logged, contract inserted into the database") {
+                self.error_message = Some(message.to_string());
+                self.broadcast_status = BroadcastStatus::Done;
+            } else {
+                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
             }
-            _ => {}
         }
     }
 

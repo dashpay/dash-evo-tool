@@ -2,6 +2,7 @@ mod asset_lock_transaction;
 pub mod encryption;
 mod utxos;
 
+use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::account::AccountType;
@@ -10,7 +11,6 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::dpp::ProtocolError;
 
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -88,8 +88,12 @@ pub trait DerivationPathHelpers {
     fn is_platform_payment(&self, network: Network) -> bool;
     fn bip44_account_index(&self) -> Option<u32>;
     fn bip44_address_index(&self) -> Option<u32>;
-    fn platform_payment_path(network: Network, account: u32, key_class: u32, index: u32)
-        -> DerivationPath;
+    fn platform_payment_path(
+        network: Network,
+        account: u32,
+        key_class: u32,
+        index: u32,
+    ) -> DerivationPath;
 }
 
 impl DerivationPathHelpers for DerivationPath {
@@ -1845,12 +1849,8 @@ impl Signer<PlatformAddress> for Wallet {
         // Try both networks - the address will only exist in one
         let private_key = self
             .get_platform_address_private_key(platform_address, Network::Dash)
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Testnet)
-            })
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Devnet)
-            })
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| {
                 self.get_platform_address_private_key(platform_address, Network::Regtest)
             })?;
@@ -1877,12 +1877,8 @@ impl Signer<PlatformAddress> for Wallet {
         // Get the private key (try all networks)
         let private_key = self
             .get_platform_address_private_key(platform_address, Network::Dash)
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Testnet)
-            })
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Devnet)
-            })
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| {
                 self.get_platform_address_private_key(platform_address, Network::Regtest)
             })?;
@@ -1905,15 +1901,9 @@ impl Signer<PlatformAddress> for Wallet {
 
         // Check if we have the private key for this address
         self.get_platform_address_private_key(platform_address, Network::Dash)
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Testnet)
-            })
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Devnet)
-            })
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Regtest)
-            })
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
+            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Regtest))
             .is_ok()
     }
 }

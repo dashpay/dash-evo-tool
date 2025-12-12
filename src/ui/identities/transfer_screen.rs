@@ -14,8 +14,8 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -198,7 +198,8 @@ impl TransferScreen {
             ui.add_space(5.0);
 
             // Platform Address button
-            let platform_selected = self.destination_type == TransferDestinationType::PlatformAddress;
+            let platform_selected =
+                self.destination_type == TransferDestinationType::PlatformAddress;
             let platform_button = egui::Button::new(
                 RichText::new("Platform Address")
                     .color(if platform_selected {
@@ -250,8 +251,7 @@ impl TransferScreen {
         // because require_network() would fail on regtest (address parses as testnet).
         let address = unchecked_addr.assume_checked();
 
-        PlatformAddress::try_from(address)
-            .map_err(|e| format!("Invalid Platform address: {}", e))
+        PlatformAddress::try_from(address).map_err(|e| format!("Invalid Platform address: {}", e))
     }
 
     /// Handle the confirmation action for Platform address transfer
@@ -297,11 +297,13 @@ impl TransferScreen {
         let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         outputs.insert(platform_address, credits as Credits);
 
-        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TransferToAddresses {
-            identity: self.identity.clone(),
-            outputs,
-            key_id: Some(selected_key.id()),
-        }))
+        AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TransferToAddresses {
+                identity: self.identity.clone(),
+                outputs,
+                key_id: Some(selected_key.id()),
+            },
+        ))
     }
 
     /// Handle the confirmation action when user clicks OK
@@ -637,7 +639,9 @@ impl ScreenLike for TransferScreen {
                     )
                     && match self.destination_type {
                         TransferDestinationType::Identity => !self.receiver_identity_id.is_empty(),
-                        TransferDestinationType::PlatformAddress => !self.platform_address_input.is_empty(),
+                        TransferDestinationType::PlatformAddress => {
+                            !self.platform_address_input.is_empty()
+                        }
                     };
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -657,7 +661,9 @@ impl ScreenLike for TransferScreen {
                 if self.confirmation_popup {
                     inner_action |= match self.destination_type {
                         TransferDestinationType::Identity => self.show_confirmation_popup(ui),
-                        TransferDestinationType::PlatformAddress => self.show_platform_address_confirmation_popup(ui),
+                        TransferDestinationType::PlatformAddress => {
+                            self.show_platform_address_confirmation_popup(ui)
+                        }
                     };
                 }
 

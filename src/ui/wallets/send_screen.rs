@@ -1,7 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -12,8 +12,8 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
-use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -145,7 +145,8 @@ impl WalletSendScreen {
         }
 
         // Validate all recipients and build PaymentRecipient list
-        let mut payment_recipients: Vec<PaymentRecipient> = Vec::with_capacity(self.recipients.len());
+        let mut payment_recipients: Vec<PaymentRecipient> =
+            Vec::with_capacity(self.recipients.len());
         let mut total_amount: u64 = 0;
 
         for (index, recipient) in self.recipients.iter().enumerate() {
@@ -689,15 +690,10 @@ impl WalletSendScreen {
                             .map(|(_, p, _)| p == platform_addr)
                             .unwrap_or(false);
 
-                        let response = ui
-                            .selectable_label(
-                                is_selected,
-                                format!(
-                                    "{} - {}",
-                                    platform_addr,
-                                    Self::format_credits(*balance)
-                                ),
-                            );
+                        let response = ui.selectable_label(
+                            is_selected,
+                            format!("{} - {}", platform_addr, Self::format_credits(*balance)),
+                        );
 
                         if response.clicked() {
                             self.platform_source_address =
@@ -1005,7 +1001,9 @@ impl ScreenLike for WalletSendScreen {
                 self.memo.clear();
                 self.subtract_fee = false;
             }
-            crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred { .. } => {
+            crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred {
+                ..
+            } => {
                 self.display_message(
                     "Platform credits transferred successfully!",
                     MessageType::Success,

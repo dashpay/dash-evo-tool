@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::theme::DashColors;
@@ -67,11 +67,7 @@ impl TopUpIdentityScreen {
 
                     let response = ui.selectable_label(
                         is_selected,
-                        format!(
-                            "{} - {}",
-                            platform_addr,
-                            Self::format_credits(*balance)
-                        ),
+                        format!("{} - {}", platform_addr, Self::format_credits(*balance)),
                     );
 
                     if response.clicked() {

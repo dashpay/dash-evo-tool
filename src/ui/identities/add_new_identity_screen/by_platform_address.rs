@@ -32,11 +32,7 @@ impl AddNewIdentityScreen {
         }
     }
 
-    pub fn render_ui_by_platform_address(
-        &mut self,
-        ui: &mut Ui,
-        step_number: u32,
-    ) -> AppAction {
+    pub fn render_ui_by_platform_address(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         let mut action = AppAction::None;
 
         ui.add_space(10.0);
@@ -50,27 +46,26 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
 
         // Get Platform addresses from the wallet
-        let platform_addresses: Vec<(String, PlatformAddress, u64)> = if let Some(wallet_arc) =
-            &self.selected_wallet
-        {
-            let wallet = wallet_arc.read().unwrap();
-            let network = self.app_context.network;
-            wallet
-                .platform_addresses(network)
-                .into_iter()
-                .map(|(core_addr, platform_addr)| {
-                    let balance = wallet
-                        .platform_address_info
-                        .get(&core_addr)
-                        .map(|info| info.balance)
-                        .unwrap_or(0);
-                    (core_addr.to_string(), platform_addr, balance)
-                })
-                .filter(|(_, _, balance)| *balance > 0)
-                .collect()
-        } else {
-            vec![]
-        };
+        let platform_addresses: Vec<(String, PlatformAddress, u64)> =
+            if let Some(wallet_arc) = &self.selected_wallet {
+                let wallet = wallet_arc.read().unwrap();
+                let network = self.app_context.network;
+                wallet
+                    .platform_addresses(network)
+                    .into_iter()
+                    .map(|(core_addr, platform_addr)| {
+                        let balance = wallet
+                            .platform_address_info
+                            .get(&core_addr)
+                            .map(|info| info.balance)
+                            .unwrap_or(0);
+                        (core_addr.to_string(), platform_addr, balance)
+                    })
+                    .filter(|(_, _, balance)| *balance > 0)
+                    .collect()
+            } else {
+                vec![]
+            };
 
         if platform_addresses.is_empty() {
             ui.colored_label(
@@ -195,15 +190,14 @@ impl AddNewIdentityScreen {
                 .map(|(_, amount)| *amount > 0)
                 .unwrap_or(false);
 
-        let button =
-            egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
-                .fill(if can_create {
-                    Color32::from_rgb(0, 128, 255)
-                } else {
-                    Color32::from_rgb(100, 100, 100)
-                })
-                .frame(true)
-                .corner_radius(3.0);
+        let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
+            .fill(if can_create {
+                Color32::from_rgb(0, 128, 255)
+            } else {
+                Color32::from_rgb(100, 100, 100)
+            })
+            .frame(true)
+            .corner_radius(3.0);
 
         if ui.add_enabled(can_create, button).clicked() {
             self.error_message = None;

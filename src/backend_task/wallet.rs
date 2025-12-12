@@ -8,9 +8,13 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTask {
-    GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    GenerateReceiveAddress {
+        seed_hash: WalletSeedHash,
+    },
     /// Fetch Platform address balances and nonces from Platform for a wallet
-    FetchPlatformAddressBalances { seed_hash: WalletSeedHash },
+    FetchPlatformAddressBalances {
+        seed_hash: WalletSeedHash,
+    },
     /// Transfer credits between Platform addresses
     TransferPlatformCredits {
         seed_hash: WalletSeedHash,

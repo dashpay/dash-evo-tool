@@ -471,10 +471,8 @@ impl AppContext {
         }
 
         // Create a set of PlatformAddresses for the query
-        let address_set: BTreeSet<PlatformAddress> = platform_addresses
-            .iter()
-            .map(|(_, pa)| *pa)
-            .collect();
+        let address_set: BTreeSet<PlatformAddress> =
+            platform_addresses.iter().map(|(_, pa)| *pa).collect();
 
         // Fetch from Platform using the SDK
         let sdk = {
@@ -504,11 +502,7 @@ impl AppContext {
                     );
 
                     // Update in-memory wallet state
-                    wallet.set_platform_address_info(
-                        core_addr.clone(),
-                        info.balance,
-                        info.nonce,
-                    );
+                    wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
 
                     // Update database
                     if let Err(e) = self.db.set_platform_address_info(
@@ -518,10 +512,7 @@ impl AppContext {
                         info.nonce,
                         &self.network,
                     ) {
-                        tracing::warn!(
-                            "Failed to store Platform address info in database: {}",
-                            e
-                        );
+                        tracing::warn!("Failed to store Platform address info in database: {}", e);
                     }
 
                     balances.insert(core_addr.to_string(), (info.balance, info.nonce));
@@ -576,10 +567,7 @@ impl AppContext {
                     info.nonce,
                     &self.network,
                 ) {
-                    tracing::warn!(
-                        "Failed to store Platform address info in database: {}",
-                        e
-                    );
+                    tracing::warn!("Failed to store Platform address info in database: {}", e);
                 }
 
                 tracing::debug!(

@@ -714,7 +714,14 @@ impl Database {
             "INSERT OR REPLACE INTO platform_address_balances
              (seed_hash, address, balance, nonce, network, updated_at)
              VALUES (?, ?, ?, ?, ?, ?)",
-            params![seed_hash, address_str, balance as i64, nonce as i64, network_str, updated_at],
+            params![
+                seed_hash,
+                address_str,
+                balance as i64,
+                nonce as i64,
+                network_str,
+                updated_at
+            ],
         )?;
         Ok(())
     }
@@ -735,14 +742,11 @@ impl Database {
              WHERE seed_hash = ? AND address = ? AND network = ?",
         )?;
 
-        let result = stmt.query_row(
-            params![seed_hash, address_str, network_str],
-            |row| {
-                let balance: i64 = row.get(0)?;
-                let nonce: i64 = row.get(1)?;
-                Ok((balance as u64, nonce as u32))
-            },
-        );
+        let result = stmt.query_row(params![seed_hash, address_str, network_str], |row| {
+            let balance: i64 = row.get(0)?;
+            let nonce: i64 = row.get(1)?;
+            Ok((balance as u64, nonce as u32))
+        });
 
         match result {
             Ok(info) => Ok(Some(info)),

@@ -6,7 +6,6 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
-use std::sync::RwLock;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
     DocumentActionScreen, DocumentActionType,
@@ -57,6 +56,7 @@ use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokens::burn_tokens_screen::BurnTokensScreen;
 use tokens::claim_tokens_screen::ClaimTokensScreen;
 use tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -378,9 +378,10 @@ impl PartialEq for ScreenType {
             (ScreenType::DashPayAddContactWithId(a), ScreenType::DashPayAddContactWithId(b)) => {
                 a == b
             }
-            (ScreenType::DashPayContactDetails(a1, a2), ScreenType::DashPayContactDetails(b1, b2)) => {
-                a1 == b1 && a2 == b2
-            }
+            (
+                ScreenType::DashPayContactDetails(a1, a2),
+                ScreenType::DashPayContactDetails(b1, b2),
+            ) => a1 == b1 && a2 == b2,
             (
                 ScreenType::DashPayContactProfileViewer(a1, a2),
                 ScreenType::DashPayContactProfileViewer(b1, b2),

@@ -503,8 +503,13 @@ impl AppContext {
                 inputs,
                 wallet_seed_hash,
             } => {
-                self.top_up_identity_from_platform_addresses(sdk, identity, inputs, wallet_seed_hash)
-                    .await
+                self.top_up_identity_from_platform_addresses(
+                    sdk,
+                    identity,
+                    inputs,
+                    wallet_seed_hash,
+                )
+                .await
             }
             IdentityTask::TransferToAddresses {
                 identity,
@@ -570,7 +575,10 @@ impl AppContext {
                 format!("Failed to top up identity from Platform addresses: {}", e)
             })?;
 
-        tracing::info!("top_up_from_addresses succeeded, new_balance={}", new_balance);
+        tracing::info!(
+            "top_up_from_addresses succeeded, new_balance={}",
+            new_balance
+        );
 
         // Update source address balances using proof-verified data from SDK response
         if let Err(e) =
@@ -608,7 +616,13 @@ impl AppContext {
 
         // Execute the transfer - qualified_identity is consumed here as the signer
         let (address_infos, new_balance) = identity
-            .transfer_credits_to_addresses(sdk, outputs, signing_key, qualified_identity.clone(), None)
+            .transfer_credits_to_addresses(
+                sdk,
+                outputs,
+                signing_key,
+                qualified_identity.clone(),
+                None,
+            )
             .await
             .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
 
@@ -620,10 +634,7 @@ impl AppContext {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
                 {
-                    tracing::warn!(
-                        "Failed to update wallet platform address info: {}",
-                        e
-                    );
+                    tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }
                 // Break early since all wallets share the same network addresses
                 let _ = wallet_arc; // silence unused warning

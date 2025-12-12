@@ -82,7 +82,10 @@ pub struct AddNewIdentityScreen {
     pub app_context: Arc<AppContext>,
     successful_qualified_identity_id: Option<Identifier>,
     /// Selected Platform address for funding (DIP-17) with the amount in credits
-    selected_platform_address_for_funding: Option<(dash_sdk::dpp::address_funds::PlatformAddress, dash_sdk::dpp::fee::Credits)>,
+    selected_platform_address_for_funding: Option<(
+        dash_sdk::dpp::address_funds::PlatformAddress,
+        dash_sdk::dpp::fee::Credits,
+    )>,
     /// Amount input for Platform address funding (DASH)
     platform_funding_amount_input: String,
 }
@@ -740,7 +743,9 @@ impl AddNewIdentityScreen {
             }
             FundingMethod::UsePlatformAddress => {
                 // Get selected Platform address and amount from the input fields
-                let Some((platform_addr, amount)) = self.selected_platform_address_for_funding.clone() else {
+                let Some((platform_addr, amount)) =
+                    self.selected_platform_address_for_funding.clone()
+                else {
                     self.error_message = Some("Please select a Platform address".to_string());
                     return AppAction::None;
                 };
@@ -760,10 +765,11 @@ impl AddNewIdentityScreen {
                     keys: self.identity_keys.clone(),
                     wallet: Arc::clone(selected_wallet),
                     wallet_identity_index: self.identity_id_number,
-                    identity_funding_method: RegisterIdentityFundingMethod::FundWithPlatformAddresses {
-                        inputs,
-                        wallet_seed_hash,
-                    },
+                    identity_funding_method:
+                        RegisterIdentityFundingMethod::FundWithPlatformAddresses {
+                            inputs,
+                            wallet_seed_hash,
+                        },
                 };
 
                 let mut step = self.step.write().unwrap();

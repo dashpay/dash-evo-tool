@@ -1067,8 +1067,7 @@ impl WalletsBalancesScreen {
             // Withdraw from Platform address button
             if ui
                 .button(
-                    RichText::new("Withdraw to Core")
-                        .color(DashColors::text_primary(dark_mode)),
+                    RichText::new("Withdraw to Core").color(DashColors::text_primary(dark_mode)),
                 )
                 .on_hover_text("Withdraw credits from Platform address to Core (DIP-17)")
                 .clicked()
@@ -2067,8 +2066,7 @@ impl WalletsBalancesScreen {
                                 .find(|(a, _)| a == selected)
                             {
                                 if ui.small_button("Max").clicked() {
-                                    let max_dash =
-                                        *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                    let max_dash = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                                     self.withdraw_platform_dialog.amount_input =
                                         format!("{:.8}", max_dash);
                                 }
@@ -2092,7 +2090,9 @@ impl WalletsBalancesScreen {
 
                     // Status message
                     if let Some(status) = &self.withdraw_platform_dialog.status {
-                        ui.label(RichText::new(status).color(DashColors::text_secondary(dark_mode)));
+                        ui.label(
+                            RichText::new(status).color(DashColors::text_secondary(dark_mode)),
+                        );
                         ui.add_space(10.0);
                     }
 
@@ -2127,12 +2127,10 @@ impl WalletsBalancesScreen {
 
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new(
-                            "Note: Withdrawals require waiting for chain confirmations.",
-                        )
-                        .color(DashColors::text_secondary(dark_mode))
-                        .size(11.0)
-                        .italics(),
+                        RichText::new("Note: Withdrawals require waiting for chain confirmations.")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(11.0)
+                            .italics(),
                     );
                 });
             });
@@ -2654,8 +2652,7 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
                 self.withdraw_platform_dialog.is_processing = false;
-                self.withdraw_platform_dialog.status =
-                    Some("Withdrawal successful!".to_string());
+                self.withdraw_platform_dialog.status = Some("Withdrawal successful!".to_string());
                 self.display_message("Platform withdrawal successful", MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
@@ -2669,7 +2666,10 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success,
                 );
             }
-            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances { seed_hash, balances } => {
+            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
+                seed_hash,
+                balances,
+            } => {
                 // Update wallet's platform_address_info if this is for the selected wallet
                 if let Some(selected) = &self.selected_wallet {
                     if let Ok(mut wallet) = selected.write() {

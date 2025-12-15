@@ -139,6 +139,7 @@ impl AddNewWalletScreen {
                 uses_password,
                 master_bip44_ecdsa_extended_public_key,
                 address_balances: Default::default(),
+                address_total_received: Default::default(),
                 known_addresses: Default::default(),
                 watched_addresses: Default::default(),
                 unused_asset_locks: Default::default(),
@@ -159,13 +160,19 @@ impl AddNewWalletScreen {
                 .map_err(|e| e.to_string())?;
 
             let wallet_arc = Arc::new(RwLock::new(wallet));
+            let new_wallet_seed_hash = wallet_arc.read().unwrap().seed_hash();
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.insert(wallet_arc.read().unwrap().seed_hash(), wallet_arc.clone());
+                wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
                 self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
                 eprintln!("Failed to acquire write lock on wallets");
+            }
+
+            // Set pending wallet selection so the wallet screen auto-selects this wallet
+            if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
+                *pending = Some(new_wallet_seed_hash);
             }
 
             self.app_context.bootstrap_wallet_addresses(&wallet_arc);

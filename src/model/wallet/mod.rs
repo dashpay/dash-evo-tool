@@ -272,6 +272,8 @@ pub struct Wallet {
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
     pub address_balances: BTreeMap<Address, u64>,
+    /// Historical total received per address (not just current UTXOs)
+    pub address_total_received: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     #[allow(clippy::type_complexity)]
@@ -1178,7 +1180,7 @@ impl Wallet {
         Ok(())
     }
 
-    /// Bootstrap DIP-17 Platform payment addresses (D/d prefix)
+    /// Bootstrap DIP-17 Platform payment addresses (dashevo/tdashevo Bech32m prefix per DIP-18)
     /// These addresses are for receiving Dash Credits on Platform, independent of identities.
     fn bootstrap_platform_payment_addresses(
         &mut self,
@@ -1756,6 +1758,31 @@ impl Wallet {
         context
             .db
             .update_address_balance(&self.seed_hash(), address, new_balance)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn update_address_total_received(
+        &mut self,
+        address: &Address,
+        total_received: Duffs,
+        context: &AppContext,
+    ) -> Result<(), String> {
+        // Check if the total received differs from the current value
+        if let Some(current_total) = self.address_total_received.get(address)
+            && *current_total == total_received
+        {
+            // If the total received hasn't changed, skip the update.
+            return Ok(());
+        }
+
+        // Update in memory
+        self.address_total_received
+            .insert(address.clone(), total_received);
+
+        // Update the database
+        context
+            .db
+            .update_address_total_received(&self.seed_hash(), address, total_received)
             .map_err(|e| e.to_string())
     }
 

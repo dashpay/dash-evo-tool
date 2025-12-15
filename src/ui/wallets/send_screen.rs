@@ -49,6 +49,26 @@ impl SendRecipient {
     }
 }
 
+/// A single Platform recipient entry with address and amount
+#[derive(Debug, Clone)]
+pub struct PlatformSendRecipient {
+    pub id: usize,
+    pub address: String,
+    pub amount: String,
+    pub error: Option<String>,
+}
+
+impl PlatformSendRecipient {
+    pub fn new(id: usize) -> Self {
+        Self {
+            id,
+            address: String::new(),
+            amount: String::new(),
+            error: None,
+        }
+    }
+}
+
 pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -63,9 +83,10 @@ pub struct WalletSendScreen {
     next_recipient_id: usize,
 
     // Platform mode fields
-    platform_source_address: Option<(Address, PlatformAddress, Credits)>,
-    platform_destination_address: String,
-    platform_amount: String,
+    platform_source_addresses: Vec<(Address, PlatformAddress, Credits, String)>, // Added: manual amount input
+    platform_recipients: Vec<PlatformSendRecipient>,
+    next_platform_recipient_id: usize,
+    platform_advanced_inputs: bool, // Show manual input amount configuration
 
     // Common options
     subtract_fee: bool,
@@ -91,9 +112,10 @@ impl WalletSendScreen {
             send_mode: SendMode::Core,
             recipients: vec![SendRecipient::new(0)],
             next_recipient_id: 1,
-            platform_source_address: None,
-            platform_destination_address: String::new(),
-            platform_amount: String::new(),
+            platform_source_addresses: Vec::new(),
+            platform_recipients: vec![PlatformSendRecipient::new(0)],
+            next_platform_recipient_id: 1,
+            platform_advanced_inputs: false,
             subtract_fee: false,
             memo: String::new(),
             sending: false,
@@ -113,6 +135,18 @@ impl WalletSendScreen {
     fn remove_recipient(&mut self, id: usize) {
         if self.recipients.len() > 1 {
             self.recipients.retain(|r| r.id != id);
+        }
+    }
+
+    fn add_platform_recipient(&mut self) {
+        let id = self.next_platform_recipient_id;
+        self.next_platform_recipient_id += 1;
+        self.platform_recipients.push(PlatformSendRecipient::new(id));
+    }
+
+    fn remove_platform_recipient(&mut self, id: usize) {
+        if self.platform_recipients.len() > 1 {
+            self.platform_recipients.retain(|r| r.id != id);
         }
     }
 
@@ -573,48 +607,135 @@ impl WalletSendScreen {
             wallet_guard.seed_hash()
         };
 
-        // Validate source address
-        let (_source_core_addr, source_platform_addr, source_balance) = self
-            .platform_source_address
-            .clone()
-            .ok_or_else(|| "Please select a source address".to_string())?;
-
-        // Parse destination address
-        let dest_addr_str = self.platform_destination_address.trim();
-        if dest_addr_str.is_empty() {
-            return Err("Destination address is required".to_string());
+        // Validate source addresses
+        if self.platform_source_addresses.is_empty() {
+            return Err("Please select at least one source address".to_string());
         }
 
-        // Parse as a Dash address first, then convert to PlatformAddress
-        // Platform addresses use the same version byte (0x5a / prefix 'd') for
-        // testnet, devnet, and regtest per DIP-18. We use assume_checked() here
-        // because require_network() would fail on regtest (address parses as testnet).
-        let unchecked_addr: Address<NetworkUnchecked> = dest_addr_str
-            .parse()
-            .map_err(|e| format!("Invalid address format: {}", e))?;
+        // Calculate total available from selected sources
+        let total_available: Credits = self
+            .platform_source_addresses
+            .iter()
+            .map(|(_, _, balance, _)| *balance)
+            .sum();
 
-        let dest_address = unchecked_addr.assume_checked();
+        // If advanced mode, calculate total input from manual amounts
+        let total_manual_input: Option<Credits> = if self.platform_advanced_inputs {
+            let mut total: Credits = 0;
+            for (index, (_, _, balance, amount_str)) in
+                self.platform_source_addresses.iter().enumerate()
+            {
+                if amount_str.trim().is_empty() {
+                    continue; // Skip empty amounts (will use 0)
+                }
+                let amount = Self::parse_amount_to_credits(amount_str)
+                    .map_err(|e| format!("Source {}: {}", index + 1, e))?;
+                if amount > *balance {
+                    return Err(format!(
+                        "Source {}: Amount {} exceeds available balance {}",
+                        index + 1,
+                        Self::format_credits(amount),
+                        Self::format_credits(*balance)
+                    ));
+                }
+                total = total.saturating_add(amount);
+            }
+            Some(total)
+        } else {
+            None
+        };
 
-        let dest_platform_addr = PlatformAddress::try_from(dest_address)
-            .map_err(|e| format!("Invalid Platform address: {}", e))?;
-
-        // Parse amount
-        let amount = Self::parse_amount_to_credits(&self.platform_amount)?;
-
-        if amount > source_balance {
-            return Err(format!(
-                "Insufficient balance. Available: {}, Requested: {}",
-                Self::format_credits(source_balance),
-                Self::format_credits(amount)
-            ));
+        // Validate recipients
+        if self.platform_recipients.is_empty() {
+            return Err("At least one recipient is required".to_string());
         }
 
-        // Build inputs and outputs
-        let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
-        inputs.insert(source_platform_addr, amount);
-
+        // Build outputs from recipients
         let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
-        outputs.insert(dest_platform_addr, amount);
+        let mut total_output: Credits = 0;
+
+        for (index, recipient) in self.platform_recipients.iter().enumerate() {
+            let dest_addr_str = recipient.address.trim();
+            if dest_addr_str.is_empty() {
+                return Err(format!("Recipient {} has an empty address", index + 1));
+            }
+
+            // Try to parse as Bech32m Platform address first (DIP-18 format: dashevo1.../tdashevo1...)
+            // Fall back to standard base58 Dash address for backwards compatibility
+            let dest_platform_addr = if dest_addr_str.starts_with("dashevo1")
+                || dest_addr_str.starts_with("tdashevo1")
+            {
+                let (addr, _network) = PlatformAddress::from_bech32m_string(dest_addr_str)
+                    .map_err(|e| format!("Recipient {}: Invalid Bech32m address: {}", index + 1, e))?;
+                addr
+            } else {
+                // Parse as a standard Dash address, then convert to PlatformAddress
+                let unchecked_addr: Address<NetworkUnchecked> = dest_addr_str
+                    .parse()
+                    .map_err(|e| format!("Recipient {}: Invalid address format: {}", index + 1, e))?;
+                let dest_address = unchecked_addr.assume_checked();
+                PlatformAddress::try_from(dest_address)
+                    .map_err(|e| format!("Recipient {}: Invalid Platform address: {}", index + 1, e))?
+            };
+
+            // Parse amount
+            let amount = Self::parse_amount_to_credits(&recipient.amount)
+                .map_err(|e| format!("Recipient {}: {}", index + 1, e))?;
+
+            if amount == 0 {
+                return Err(format!("Recipient {} has zero amount", index + 1));
+            }
+
+            total_output = total_output.saturating_add(amount);
+
+            // Add to outputs (if same address exists, amounts are combined)
+            *outputs.entry(dest_platform_addr).or_insert(0) += amount;
+        }
+
+        // Build inputs from selected source addresses
+        let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
+
+        if self.platform_advanced_inputs {
+            // Advanced mode: use manual input amounts
+            let total_input = total_manual_input.unwrap_or(0);
+            if total_input < total_output {
+                return Err(format!(
+                    "Total input ({}) is less than total output ({})",
+                    Self::format_credits(total_input),
+                    Self::format_credits(total_output)
+                ));
+            }
+
+            for (_, platform_addr, _, amount_str) in &self.platform_source_addresses {
+                if amount_str.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(amount) = Self::parse_amount_to_credits(amount_str) {
+                    if amount > 0 {
+                        inputs.insert(*platform_addr, amount);
+                    }
+                }
+            }
+        } else {
+            // Simple mode: auto-distribute output amount across sources
+            if total_output > total_available {
+                return Err(format!(
+                    "Insufficient balance. Available: {}, Total requested: {}",
+                    Self::format_credits(total_available),
+                    Self::format_credits(total_output)
+                ));
+            }
+
+            let mut remaining = total_output;
+            for (_, platform_addr, balance, _) in &self.platform_source_addresses {
+                if remaining == 0 {
+                    break;
+                }
+                let amount_from_this_source = remaining.min(*balance);
+                inputs.insert(*platform_addr, amount_from_this_source);
+                remaining = remaining.saturating_sub(amount_from_this_source);
+            }
+        }
 
         self.sending = true;
 
@@ -651,11 +772,41 @@ impl WalletSendScreen {
         let platform_addresses = self.get_platform_addresses();
 
         ui.add_space(15.0);
-        ui.label(
-            RichText::new("Source Platform Address")
-                .color(DashColors::text_primary(dark_mode))
-                .strong()
-                .size(16.0),
+
+        // Calculate total selected balance
+        let total_selected: Credits = self
+            .platform_source_addresses
+            .iter()
+            .map(|(_, _, b, _)| *b)
+            .sum();
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Source Platform Addresses")
+                    .color(DashColors::text_primary(dark_mode))
+                    .strong()
+                    .size(16.0),
+            );
+            if !self.platform_source_addresses.is_empty() {
+                ui.label(
+                    RichText::new(format!(
+                        "({} selected, Total: {})",
+                        self.platform_source_addresses.len(),
+                        Self::format_credits(total_selected)
+                    ))
+                    .color(DashColors::text_secondary(dark_mode))
+                    .size(12.0),
+                );
+            }
+        });
+        ui.add_space(5.0);
+
+        // Advanced mode checkbox
+        ui.checkbox(
+            &mut self.platform_advanced_inputs,
+            RichText::new("Advanced: Configure input amounts manually")
+                .color(DashColors::text_secondary(dark_mode))
+                .size(12.0),
         );
         ui.add_space(5.0);
 
@@ -678,108 +829,211 @@ impl WalletSendScreen {
                     );
                 });
         } else {
+            let advanced_mode = self.platform_advanced_inputs;
             Frame::group(ui.style())
                 .fill(DashColors::surface(dark_mode))
                 .inner_margin(Margin::symmetric(12, 10))
                 .corner_radius(5.0)
                 .show(ui, |ui| {
+                    let network = self.app_context.network;
                     for (core_addr, platform_addr, balance) in &platform_addresses {
-                        let is_selected = self
-                            .platform_source_address
-                            .as_ref()
-                            .map(|(_, p, _)| p == platform_addr)
-                            .unwrap_or(false);
+                        let selected_idx = self
+                            .platform_source_addresses
+                            .iter()
+                            .position(|(_, p, _, _)| p == platform_addr);
+                        let is_selected = selected_idx.is_some();
 
-                        let response = ui.selectable_label(
-                            is_selected,
-                            format!("{} - {}", platform_addr, Self::format_credits(*balance)),
-                        );
+                        // Display in DIP-18 Bech32m format
+                        let addr_display = platform_addr.to_bech32m_string(network);
 
-                        if response.clicked() {
-                            self.platform_source_address =
-                                Some((core_addr.clone(), *platform_addr, *balance));
+                        ui.horizontal(|ui| {
+                            let label =
+                                format!("{} - {}", addr_display, Self::format_credits(*balance));
+
+                            let mut checked = is_selected;
+                            if ui.checkbox(&mut checked, label).changed() {
+                                if checked {
+                                    // Add to selected with empty amount
+                                    self.platform_source_addresses.push((
+                                        core_addr.clone(),
+                                        *platform_addr,
+                                        *balance,
+                                        String::new(),
+                                    ));
+                                } else {
+                                    // Remove from selected
+                                    self.platform_source_addresses
+                                        .retain(|(_, p, _, _)| p != platform_addr);
+                                }
+                            }
+
+                            // Show amount input in advanced mode for selected addresses
+                            // Re-check the index after potential modification above
+                            if advanced_mode {
+                                if let Some(current_idx) = self
+                                    .platform_source_addresses
+                                    .iter()
+                                    .position(|(_, p, _, _)| p == platform_addr)
+                                {
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("Amount:")
+                                            .color(DashColors::text_secondary(dark_mode))
+                                            .size(12.0),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(
+                                            &mut self.platform_source_addresses[current_idx].3,
+                                        )
+                                        .hint_text("DASH")
+                                        .desired_width(100.0),
+                                    );
+                                    if ui.small_button("Max").clicked() {
+                                        let max_dash = *balance as f64 / 1000.0 / 100_000_000.0;
+                                        self.platform_source_addresses[current_idx].3 =
+                                            format!("{:.8}", max_dash);
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // Show total input in advanced mode
+                    if advanced_mode && !self.platform_source_addresses.is_empty() {
+                        ui.add_space(10.0);
+                        let mut total_input: Credits = 0;
+                        for (_, _, _, amount_str) in &self.platform_source_addresses {
+                            if let Ok(amount) = Self::parse_amount_to_credits(amount_str) {
+                                total_input = total_input.saturating_add(amount);
+                            }
                         }
+                        ui.label(
+                            RichText::new(format!(
+                                "Total input: {}",
+                                Self::format_credits(total_input)
+                            ))
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong()
+                            .size(12.0),
+                        );
                     }
                 });
         }
 
         ui.add_space(15.0);
 
-        // Destination address
-        ui.label(
-            RichText::new("Destination Platform Address")
-                .color(DashColors::text_primary(dark_mode))
-                .strong()
-                .size(16.0),
-        );
-        ui.add_space(5.0);
+        // Recipients section (similar to Core mode)
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Recipients")
+                    .color(DashColors::text_primary(dark_mode))
+                    .strong()
+                    .size(16.0),
+            );
 
-        Frame::group(ui.style())
-            .fill(DashColors::surface(dark_mode))
-            .inner_margin(Margin::symmetric(12, 10))
-            .corner_radius(5.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Address:")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
-                    ui.add_space(5.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.platform_destination_address)
-                            .hint_text("Enter Platform address (D... or d...)")
-                            .desired_width(500.0),
-                    );
-                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(RichText::new("+ Add Recipient").color(DashColors::DASH_BLUE))
+                    .clicked()
+                {
+                    self.add_platform_recipient();
+                }
             });
+        });
 
-        ui.add_space(15.0);
+        ui.add_space(10.0);
 
-        // Amount
-        ui.label(
-            RichText::new("Amount")
-                .color(DashColors::text_primary(dark_mode))
-                .strong()
-                .size(16.0),
-        );
-        ui.add_space(5.0);
+        // Show available balance from selected sources
+        if !self.platform_source_addresses.is_empty() {
+            let total_available: Credits = self
+                .platform_source_addresses
+                .iter()
+                .map(|(_, _, b, _)| *b)
+                .sum();
+            ui.label(
+                RichText::new(format!("Available from selected sources: {}", Self::format_credits(total_available)))
+                    .color(DashColors::text_secondary(dark_mode))
+                    .size(12.0),
+            );
+            ui.add_space(5.0);
+        }
+
+        // Collect IDs to remove after the loop
+        let mut to_remove: Option<usize> = None;
+        let recipient_count = self.platform_recipients.len();
+        let show_remove = recipient_count > 1;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
             .corner_radius(5.0)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Amount (DASH):")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
-                    ui.add_space(5.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.platform_amount)
-                            .hint_text("0.01")
-                            .desired_width(150.0),
-                    );
+                for i in 0..recipient_count {
+                    let recipient_id = self.platform_recipients[i].id;
 
-                    if let Some((_, _, balance)) = &self.platform_source_address {
-                        ui.add_space(10.0);
+                    // Address field
+                    ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("Available: {}", Self::format_credits(*balance)))
+                            RichText::new(format!("Address {}:", i + 1))
                                 .color(DashColors::text_secondary(dark_mode))
-                                .size(12.0),
+                                .size(14.0),
+                        );
+                        ui.add_space(5.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.platform_recipients[i].address)
+                                .hint_text("Enter Platform address (dashevo1... or tdashevo1...)")
+                                .desired_width(450.0),
                         );
 
                         ui.add_space(5.0);
-                        if ui.small_button("Max").clicked() {
-                            // Set to max (minus a small buffer for fees)
-                            let max_dash = *balance as f64 / 1000.0 / 100_000_000.0;
-                            self.platform_amount = format!("{:.8}", max_dash);
+
+                        // Amount field
+                        ui.label(
+                            RichText::new(format!("Amount {} (DASH):", i + 1))
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.add_space(5.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.platform_recipients[i].amount)
+                                .hint_text("0.01")
+                                .desired_width(120.0),
+                        );
+
+                        ui.add_space(5.0);
+
+                        if show_remove {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(
+                                            RichText::new("Remove").color(DashColors::ERROR),
+                                        )
+                                        .clicked()
+                                    {
+                                        to_remove = Some(recipient_id);
+                                    }
+                                },
+                            );
                         }
+                    });
+
+                    if let Some(error) = &self.platform_recipients[i].error {
+                        ui.add_space(5.0);
+                        ui.label(RichText::new(error).color(DashColors::ERROR).size(12.0));
                     }
-                });
+
+                    if i < recipient_count - 1 {
+                        ui.add_space(5.0);
+                    }
+                }
             });
+
+        // Remove recipient if requested
+        if let Some(id) = to_remove {
+            self.remove_platform_recipient(id);
+        }
 
         // Send button
         ui.add_space(20.0);
@@ -792,12 +1046,17 @@ impl WalletSendScreen {
 
             ui.add_space(20.0);
 
+            // Check if any recipient has data
+            let has_recipient_data = self
+                .platform_recipients
+                .iter()
+                .any(|r| !r.address.is_empty() && !r.amount.is_empty());
+
             // Send button
             let can_send = wallet_is_open
                 && !self.sending
-                && self.platform_source_address.is_some()
-                && !self.platform_destination_address.is_empty()
-                && !self.platform_amount.is_empty();
+                && !self.platform_source_addresses.is_empty()
+                && has_recipient_data;
 
             let send_button = egui::Button::new(
                 RichText::new(if self.sending {
@@ -1010,9 +1269,10 @@ impl ScreenLike for WalletSendScreen {
                 );
 
                 // Clear the Platform form
-                self.platform_source_address = None;
-                self.platform_destination_address.clear();
-                self.platform_amount.clear();
+                self.platform_source_addresses.clear();
+                self.platform_recipients = vec![PlatformSendRecipient::new(0)];
+                self.next_platform_recipient_id = 1;
+                self.platform_advanced_inputs = false;
             }
             _ => {
                 self.display_message("Operation completed", MessageType::Success);

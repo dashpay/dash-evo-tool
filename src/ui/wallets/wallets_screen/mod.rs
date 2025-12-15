@@ -24,7 +24,6 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
 use eframe::epaint::TextureHandle;
@@ -379,9 +378,11 @@ impl WalletsBalancesScreen {
 
                     let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
 
-                    // Calculate total received by summing UTXO values
-                    let total_received = utxo_info
-                        .map(|outpoints| outpoints.values().map(|txout| txout.value).sum::<u64>())
+                    // Get total received from the wallet (fetched from Core RPC)
+                    let total_received = wallet
+                        .address_total_received
+                        .get(address)
+                        .cloned()
                         .unwrap_or(0u64);
 
                     let index = derivation_path
@@ -565,10 +566,23 @@ impl WalletsBalancesScreen {
                 });
             })
             .body(|mut body| {
+                let network = self.app_context.network;
                 for data in &address_data {
                     body.row(25.0, |mut row| {
                         row.col(|ui| {
-                            ui.label(data.address.to_string());
+                            // For Platform Payment addresses, display in DIP-18 Bech32m format
+                            if data.account_category == AccountCategory::PlatformPayment {
+                                use dash_sdk::dpp::address_funds::PlatformAddress;
+                                if let Ok(platform_addr) =
+                                    PlatformAddress::try_from(data.address.clone())
+                                {
+                                    ui.label(platform_addr.to_bech32m_string(network));
+                                } else {
+                                    ui.label(data.address.to_string());
+                                }
+                            } else {
+                                ui.label(data.address.to_string());
+                            }
                         });
                         row.col(|ui| {
                             // For Platform addresses, show credits balance; for others, show Core balance
@@ -622,7 +636,15 @@ impl WalletsBalancesScreen {
             .as_ref()
             .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
 
-        if wallet_is_open {
+        // Only show "Add Receiving Address" button for Main Account (BIP44 account 0)
+        let is_main_account = self
+            .selected_account
+            .as_ref()
+            .is_some_and(|(category, index)| {
+                *category == AccountCategory::Bip44 && index.unwrap_or(0) == 0
+            });
+
+        if wallet_is_open && is_main_account {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui
@@ -632,7 +654,7 @@ impl WalletsBalancesScreen {
                     self.add_receiving_address();
                 }
             });
-        } else {
+        } else if !wallet_is_open {
             ui.add_space(10.0);
             self.render_wallet_unlock_if_needed(ui);
         }
@@ -767,11 +789,17 @@ impl WalletsBalancesScreen {
                             ui.add_space(20.0);
                         });
                     } else {
-                        // Collect Platform addresses for the fund dialog
+                        // Collect Platform addresses for the fund dialog (using DIP-18 Bech32m format)
+                        let network = self.app_context.network;
                         let platform_addresses: Vec<(String, u64)> = wallet
                             .platform_address_info
                             .iter()
-                            .map(|(addr, info)| (addr.to_string(), info.balance))
+                            .filter_map(|(addr, info)| {
+                                use dash_sdk::dpp::address_funds::PlatformAddress;
+                                PlatformAddress::try_from(addr.clone())
+                                    .ok()
+                                    .map(|pa| (pa.to_bech32m_string(network), info.balance))
+                            })
                             .collect();
 
                         egui::ScrollArea::both()
@@ -978,21 +1006,13 @@ impl WalletsBalancesScreen {
     }
 
     fn platform_balance_duffs(wallet: &Wallet) -> u64 {
-        // Sum identity balances
-        let identity_balance: u64 = wallet
-            .identities
-            .values()
-            .map(|identity| identity.balance() / CREDITS_PER_DUFF)
-            .sum();
-
-        // Sum Platform address balances (DIP-17)
-        let platform_address_balance: u64 = wallet
+        // Only sum Platform address balances (DIP-17)
+        // Identity balances are shown separately on the Identities screen
+        wallet
             .platform_address_info
             .values()
             .map(|info| info.balance / CREDITS_PER_DUFF)
-            .sum();
-
-        identity_balance + platform_address_balance
+            .sum()
     }
 
     fn render_wallet_overview(&self, ui: &mut Ui, wallet: &Wallet) {
@@ -1501,11 +1521,17 @@ impl WalletsBalancesScreen {
                 return AppAction::None;
             }
 
-            // Collect Platform addresses with their balances
+            // Collect Platform addresses with their balances (using DIP-18 Bech32m format)
+            let network = self.app_context.network;
             let platform_addresses: Vec<(String, u64)> = wallet_guard
                 .platform_address_info
                 .iter()
-                .map(|(addr, info)| (addr.to_string(), info.balance))
+                .filter_map(|(addr, info)| {
+                    use dash_sdk::dpp::address_funds::PlatformAddress;
+                    PlatformAddress::try_from(addr.clone())
+                        .ok()
+                        .map(|pa| (pa.to_bech32m_string(network), info.balance))
+                })
                 .collect();
 
             if platform_addresses.is_empty() {
@@ -1541,13 +1567,18 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Generate a new Platform address for the wallet
+    /// Generate a new Platform address for the wallet (or return existing one with zero balance)
+    /// Returns the address in DIP-18 Bech32m format (e.g., tdashevo1... for testnet)
     fn generate_platform_address(&self, wallet: &Arc<RwLock<Wallet>>) -> Result<String, String> {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
         let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
         let address = wallet_guard
-            .platform_receive_address(self.app_context.network, true, Some(&self.app_context))
+            .platform_receive_address(self.app_context.network, false, Some(&self.app_context))
             .map_err(|e| e.to_string())?;
-        Ok(address.to_string())
+        // Convert to PlatformAddress and encode as Bech32m per DIP-18
+        let platform_addr =
+            PlatformAddress::try_from(address).map_err(|e| format!("Invalid address: {}", e))?;
+        Ok(platform_addr.to_bech32m_string(self.app_context.network))
     }
 
     /// Render the Platform address receive dialog (DIP-17)
@@ -1918,19 +1949,33 @@ impl WalletsBalancesScreen {
                 return AppAction::None;
             };
 
-            // Parse the Platform address
+            // Parse the Platform address (Bech32m format: dashevo1.../tdashevo1...)
             use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-            let platform_addr = match selected_addr
-                .parse::<Address<NetworkUnchecked>>()
-                .map_err(|e| e.to_string())
-                .and_then(|a| {
-                    PlatformAddress::try_from(a.assume_checked())
-                        .map_err(|e| format!("Invalid Platform address: {}", e))
-                }) {
-                Ok(addr) => addr,
-                Err(e) => {
-                    self.fund_platform_dialog.status = Some(e);
-                    return AppAction::None;
+            let platform_addr = if selected_addr.starts_with("dashevo1")
+                || selected_addr.starts_with("tdashevo1")
+            {
+                match PlatformAddress::from_bech32m_string(selected_addr) {
+                    Ok((addr, _network)) => addr,
+                    Err(e) => {
+                        self.fund_platform_dialog.status =
+                            Some(format!("Invalid Bech32m address: {}", e));
+                        return AppAction::None;
+                    }
+                }
+            } else {
+                // Fall back to base58 parsing for backwards compatibility
+                match selected_addr
+                    .parse::<Address<NetworkUnchecked>>()
+                    .map_err(|e| e.to_string())
+                    .and_then(|a| {
+                        PlatformAddress::try_from(a.assume_checked())
+                            .map_err(|e| format!("Invalid Platform address: {}", e))
+                    }) {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        self.fund_platform_dialog.status = Some(e);
+                        return AppAction::None;
+                    }
                 }
             };
 
@@ -2182,18 +2227,32 @@ impl WalletsBalancesScreen {
             }
         };
 
-        // Parse Platform address
-        let platform_addr = match selected_addr
-            .parse::<Address<NetworkUnchecked>>()
-            .map_err(|e| e.to_string())
-            .and_then(|a| {
-                PlatformAddress::try_from(a.assume_checked())
-                    .map_err(|e| format!("Invalid Platform address: {}", e))
-            }) {
-            Ok(addr) => addr,
-            Err(e) => {
-                self.withdraw_platform_dialog.status = Some(e);
-                return AppAction::None;
+        // Parse Platform address (Bech32m format: dashevo1.../tdashevo1...)
+        let platform_addr = if selected_addr.starts_with("dashevo1")
+            || selected_addr.starts_with("tdashevo1")
+        {
+            match PlatformAddress::from_bech32m_string(selected_addr) {
+                Ok((addr, _network)) => addr,
+                Err(e) => {
+                    self.withdraw_platform_dialog.status =
+                        Some(format!("Invalid Bech32m address: {}", e));
+                    return AppAction::None;
+                }
+            }
+        } else {
+            // Fall back to base58 parsing for backwards compatibility
+            match selected_addr
+                .parse::<Address<NetworkUnchecked>>()
+                .map_err(|e| e.to_string())
+                .and_then(|a| {
+                    PlatformAddress::try_from(a.assume_checked())
+                        .map_err(|e| format!("Invalid Platform address: {}", e))
+                }) {
+                Ok(addr) => addr,
+                Err(e) => {
+                    self.withdraw_platform_dialog.status = Some(e);
+                    return AppAction::None;
+                }
             }
         };
 
@@ -2244,11 +2303,17 @@ impl WalletsBalancesScreen {
                 }
             };
 
+            let network = self.app_context.network;
             wallet_guard
                 .platform_address_info
                 .iter()
                 .filter(|(_, info)| info.balance > 0)
-                .map(|(addr, info)| (addr.to_string(), info.balance))
+                .filter_map(|(addr, info)| {
+                    use dash_sdk::dpp::address_funds::PlatformAddress;
+                    PlatformAddress::try_from(addr.clone())
+                        .ok()
+                        .map(|pa| (pa.to_bech32m_string(network), info.balance))
+                })
                 .collect()
         };
 
@@ -2693,7 +2758,27 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    fn refresh_on_arrival(&mut self) {}
+    fn refresh_on_arrival(&mut self) {
+        // Check if there's a pending wallet selection (e.g., from wallet creation/import)
+        if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
+            if let Some(seed_hash) = pending.take() {
+                if let Ok(wallets) = self.app_context.wallets.read() {
+                    if let Some(wallet) = wallets.get(&seed_hash) {
+                        self.selected_wallet = Some(wallet.clone());
+                        self.selected_account = None;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // If no wallet is selected but wallets exist, select the first one
+        if self.selected_wallet.is_none() {
+            if let Ok(wallets) = self.app_context.wallets.read() {
+                self.selected_wallet = wallets.values().next().cloned();
+            }
+        }
+    }
 
     fn refresh(&mut self) {}
 }

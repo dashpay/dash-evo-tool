@@ -52,7 +52,8 @@ impl TopUpIdentityScreen {
             return action;
         }
 
-        // Show list of Platform addresses
+        // Show list of Platform addresses (using DIP-18 Bech32m format)
+        let network = self.app_context.network;
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
@@ -65,9 +66,11 @@ impl TopUpIdentityScreen {
                         .map(|(_, p, _)| p == platform_addr)
                         .unwrap_or(false);
 
+                    // Display address in Bech32m format
+                    let addr_display = platform_addr.to_bech32m_string(network);
                     let response = ui.selectable_label(
                         is_selected,
-                        format!("{} - {}", platform_addr, Self::format_credits(*balance)),
+                        format!("{} - {}", addr_display, Self::format_credits(*balance)),
                     );
 
                     if response.clicked() {

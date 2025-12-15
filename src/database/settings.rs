@@ -166,6 +166,37 @@ impl Database {
         Ok(())
     }
 
+    /// Adds the core_backend_mode column to the settings table (migration for version 15).
+    pub fn add_core_backend_mode_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // Check if core_backend_mode column exists
+        let column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !column_exists {
+            // Default to 1 (SPV mode) to match current app behavior
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Updates the core backend mode (SPV=1, RPC=0) in the settings table.
+    ///
+    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
+    pub fn update_core_backend_mode(&self, mode: u8) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET core_backend_mode = ? WHERE id = 1",
+            rusqlite::params![mode],
+        )?;
+        Ok(())
+    }
+
     /// Updates the database version in the settings table.
     pub fn update_database_version(&self, new_version: u16, conn: &Connection) -> Result<()> {
         // Ensure the database version is updated
@@ -194,12 +225,13 @@ impl Database {
             bool,
             bool,
             ThemeMode,
+            u8,
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference FROM settings WHERE id = 1",
+            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode FROM settings WHERE id = 1",
         )?;
 
         let result = stmt.query_row([], |row| {
@@ -212,6 +244,7 @@ impl Database {
             let overwrite_dash_conf: Option<bool> = row.get(6)?;
             let disable_zmq: Option<bool> = row.get(7)?;
             let theme_preference: Option<String> = row.get(8)?;
+            let core_backend_mode: Option<u8> = row.get(9)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -247,6 +280,7 @@ impl Database {
                 overwrite_dash_conf.unwrap_or(true),
                 disable_zmq.unwrap_or(false),
                 theme_mode,
+                core_backend_mode.unwrap_or(1), // Default to SPV (1)
             ))
         });
 

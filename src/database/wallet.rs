@@ -33,8 +33,8 @@ impl Database {
             wallet.master_bip44_ecdsa_extended_public_key.encode();
 
         self.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
                 wallet.encrypted_seed_slice(),
@@ -45,7 +45,10 @@ impl Database {
                 wallet.is_main as i32,
                 wallet.uses_password,
                 wallet.password_hint().clone(),
-                network_str
+                network_str,
+                wallet.confirmed_balance as i64,
+                wallet.unconfirmed_balance as i64,
+                wallet.total_balance as i64
             ],
         )?;
         Ok(())
@@ -209,6 +212,81 @@ impl Database {
         }
     }
 
+    /// Migration: Add balance columns to wallet table (version 16).
+    pub fn add_wallet_balance_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if confirmed_balance column exists
+        let column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='confirmed_balance'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !column_exists {
+            conn.execute(
+                "ALTER TABLE wallet ADD COLUMN confirmed_balance INTEGER DEFAULT 0;",
+                (),
+            )?;
+            conn.execute(
+                "ALTER TABLE wallet ADD COLUMN unconfirmed_balance INTEGER DEFAULT 0;",
+                (),
+            )?;
+            conn.execute(
+                "ALTER TABLE wallet ADD COLUMN total_balance INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Update the wallet's balance fields in the database.
+    pub fn update_wallet_balances(
+        &self,
+        seed_hash: &[u8; 32],
+        confirmed_balance: u64,
+        unconfirmed_balance: u64,
+        total_balance: u64,
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "UPDATE wallet SET confirmed_balance = ?, unconfirmed_balance = ?, total_balance = ? WHERE seed_hash = ?",
+            params![confirmed_balance as i64, unconfirmed_balance as i64, total_balance as i64, seed_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Add total_received column to wallet_addresses table.
+    pub fn add_address_total_received_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if total_received column exists
+        let column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet_addresses') WHERE name='total_received'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !column_exists {
+            conn.execute(
+                "ALTER TABLE wallet_addresses ADD COLUMN total_received INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Update the total_received for an address.
+    pub fn update_address_total_received(
+        &self,
+        seed_hash: &[u8; 32],
+        address: &Address,
+        total_received: u64,
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "UPDATE wallet_addresses SET total_received = ? WHERE seed_hash = ? AND address = ?",
+            params![total_received as i64, seed_hash, address.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_transactions (
@@ -309,7 +387,7 @@ impl Database {
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint FROM wallet WHERE network = ?",
+            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
@@ -324,6 +402,9 @@ impl Database {
             let is_main: bool = row.get(6)?;
             let uses_password: bool = row.get(7)?;
             let password_hint: Option<String> = row.get(8)?;
+            let confirmed_balance: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
+            let unconfirmed_balance: i64 = row.get::<_, Option<i64>>(10)?.unwrap_or(0);
+            let total_balance: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
@@ -365,6 +446,7 @@ impl Database {
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
                     address_balances: BTreeMap::new(),
+                    address_total_received: BTreeMap::new(),
                     known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
                     unused_asset_locks: vec![],
@@ -373,9 +455,9 @@ impl Database {
                     utxos: HashMap::new(),
                     transactions: Vec::new(),
                     is_main,
-                    confirmed_balance: 0,
-                    unconfirmed_balance: 0,
-                    total_balance: 0,
+                    confirmed_balance: confirmed_balance as u64,
+                    unconfirmed_balance: unconfirmed_balance as u64,
+                    total_balance: total_balance as u64,
                     platform_address_info: BTreeMap::new(),
                 },
             );
@@ -392,7 +474,7 @@ impl Database {
             "step 2: retrieve all addresses, balances, and derivation paths associated with the wallets"
         );
         let mut address_stmt = conn.prepare(
-            "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
+            "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type, total_received FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
         )?;
 
         let address_rows = address_stmt.query_map([network_str.clone()], |row| {
@@ -402,6 +484,7 @@ impl Database {
             let balance: Option<u64> = row.get(3)?;
             let path_reference: u32 = row.get(4)?;
             let path_type: u32 = row.get(5)?;
+            let total_received: Option<u64> = row.get(6)?;
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
@@ -416,10 +499,10 @@ impl Database {
                     )
                 })?;
 
-            // Parse address - Platform addresses (DIP-17/18) use different version bytes
-            // and need special handling
+            // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with dashevo/tdashevo prefix
+            // and need special handling when stored (we store as Core address format internally)
             let address = if path_reference == DerivationPathReference::PlatformPayment {
-                // Platform addresses have d/D prefix - parse and assume network
+                // Platform addresses are stored as Core addresses for internal lookup
                 Address::from_str(&address_str)
                     .map(|a| a.assume_checked())
                     .map_err(|e| {
@@ -449,6 +532,7 @@ impl Database {
                 balance,
                 path_reference,
                 path_type,
+                total_received,
             ))
         })?;
 
@@ -457,11 +541,17 @@ impl Database {
             if row.is_err() {
                 continue;
             }
-            let (seed_array, address, derivation_path, balance, path_reference, path_type) = row?;
+            let (seed_array, address, derivation_path, balance, path_reference, path_type, total_received) = row?;
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Update the address balance if available.
                 if let Some(balance) = balance {
                     wallet.address_balances.insert(address.clone(), balance);
+                }
+                // Update total received if available.
+                if let Some(total_received) = total_received {
+                    wallet
+                        .address_total_received
+                        .insert(address.clone(), total_received);
                 }
 
                 // Add the address to the `known_addresses` map.
@@ -687,6 +777,39 @@ impl Database {
                 );
                 // Insert the identity into the wallet's identities HashMap with wallet_index as the key
                 wallet.identities.insert(wallet_index, identity.identity);
+            }
+        }
+
+        tracing::trace!(
+            network = network_str,
+            "step 9: retrieve platform address info for wallets"
+        );
+        // Load platform address info for each wallet (using existing connection to avoid deadlock)
+        let mut platform_stmt = conn.prepare(
+            "SELECT seed_hash, address, balance, nonce FROM platform_address_balances WHERE network = ?",
+        )?;
+        let platform_rows = platform_stmt.query_map([network_str.clone()], |row| {
+            let seed_hash: Vec<u8> = row.get(0)?;
+            let address_str: String = row.get(1)?;
+            let balance: i64 = row.get(2)?;
+            let nonce: i64 = row.get(3)?;
+            let seed_hash_array: [u8; 32] = seed_hash
+                .try_into()
+                .expect("Seed hash should be 32 bytes");
+            Ok((seed_hash_array, address_str, balance as u64, nonce as u32))
+        })?;
+
+        for row in platform_rows {
+            if let Ok((seed_hash, address_str, balance, nonce)) = row {
+                if let Some(wallet) = wallets_map.get_mut(&seed_hash) {
+                    if let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str) {
+                        let address = address.assume_checked();
+                        wallet.platform_address_info.insert(
+                            address,
+                            crate::model::wallet::PlatformAddressInfo { balance, nonce },
+                        );
+                    }
+                }
             }
         }
 

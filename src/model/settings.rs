@@ -1,4 +1,5 @@
 use crate::model::password_info::PasswordInfo;
+use crate::spv::CoreBackendMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
@@ -16,6 +17,7 @@ pub struct Settings {
     pub overwrite_dash_conf: bool,
     pub disable_zmq: bool,
     pub theme_mode: ThemeMode,
+    pub core_backend_mode: CoreBackendMode,
 }
 
 impl
@@ -27,6 +29,7 @@ impl
         bool,
         bool,
         ThemeMode,
+        u8,
     )> for Settings
 {
     /// Converts a tuple into a Settings instance
@@ -41,10 +44,18 @@ impl
             bool,
             bool,
             ThemeMode,
+            u8,
         ),
     ) -> Self {
         Self::new(
-            tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6,
+            tuple.0,
+            tuple.1,
+            tuple.2,
+            tuple.3,
+            tuple.4,
+            tuple.5,
+            tuple.6,
+            CoreBackendMode::from(tuple.7),
         )
     }
 }
@@ -60,6 +71,7 @@ impl Default for Settings {
             true,
             false,
             ThemeMode::System,
+            CoreBackendMode::Spv, // Default to SPV mode
         )
     }
 }
@@ -74,6 +86,7 @@ impl Settings {
         overwrite_dash_conf: bool,
         disable_zmq: bool,
         theme_mode: ThemeMode,
+        core_backend_mode: CoreBackendMode,
     ) -> Self {
         Self {
             network,
@@ -83,6 +96,7 @@ impl Settings {
             overwrite_dash_conf,
             disable_zmq,
             theme_mode,
+            core_backend_mode,
         }
     }
 }

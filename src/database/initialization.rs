@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 14;
+pub const DEFAULT_DB_VERSION: u16 = 17;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,15 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            17 => {
+                self.add_address_total_received_column(tx)?;
+            }
+            16 => {
+                self.add_wallet_balance_columns(tx)?;
+            }
+            15 => {
+                self.add_core_backend_mode_column(tx)?;
+            }
             14 => {
                 self.initialize_wallet_transactions_table(tx)?;
             }
@@ -225,6 +234,7 @@ impl Database {
             overwrite_dash_conf INTEGER,
             disable_zmq INTEGER DEFAULT 0,
             theme_preference TEXT DEFAULT 'System',
+            core_backend_mode INTEGER DEFAULT 1,
             database_version INTEGER NOT NULL
         )",
             [],
@@ -242,7 +252,10 @@ impl Database {
                 is_main INTEGER,
                 uses_password INTEGER NOT NULL,
                 password_hint TEXT,
-                network TEXT NOT NULL
+                network TEXT NOT NULL,
+                confirmed_balance INTEGER DEFAULT 0,
+                unconfirmed_balance INTEGER DEFAULT 0,
+                total_balance INTEGER DEFAULT 0
             )",
             [],
         )?;

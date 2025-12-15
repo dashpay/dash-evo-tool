@@ -43,7 +43,7 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v10::PLATFORM_V10;
+use dash_sdk::dpp::version::v11::PLATFORM_V11;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use egui::Context;
@@ -98,6 +98,9 @@ pub struct AppContext {
     pub(crate) subtasks: Arc<TaskManager>,
     pub(crate) spv_manager: Arc<SpvManager>,
     core_backend_mode: AtomicU8,
+    /// Pending wallet selection - set after creating/importing a wallet
+    /// so the wallet screen can auto-select the new wallet
+    pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
 }
 
 impl AppContext {
@@ -201,6 +204,14 @@ impl AppContext {
             }
         };
 
+        // Load the core backend mode from settings, defaulting to SPV if not set
+        let saved_core_backend_mode = db
+            .get_settings()
+            .ok()
+            .flatten()
+            .map(|s| s.7) // core_backend_mode is the 8th element (index 7)
+            .unwrap_or(CoreBackendMode::Spv.as_u8());
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
@@ -227,7 +238,8 @@ impl AppContext {
             cached_settings: RwLock::new(None),
             subtasks,
             spv_manager,
-            core_backend_mode: AtomicU8::new(CoreBackendMode::Spv.as_u8()),
+            core_backend_mode: AtomicU8::new(saved_core_backend_mode),
+            pending_wallet_selection: Mutex::new(None),
         };
 
         let app_context = Arc::new(app_context);
@@ -278,6 +290,12 @@ impl AppContext {
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
         self.core_backend_mode
             .store(mode.as_u8(), Ordering::Relaxed);
+
+        // Persist the mode to the database (hold the guard to ensure cache invalidation)
+        let _guard = self.invalidate_settings_cache();
+        if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
+            tracing::error!("Failed to persist core backend mode: {}", e);
+        }
 
         // Switch SDK context provider to match the selected backend
         match mode {
@@ -613,7 +631,7 @@ impl AppContext {
         };
 
         // Simple fee strategy: deduct from first input
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
 
         // Use the SDK to transfer - returns proof-verified updated address infos
         let address_infos = sdk
@@ -938,6 +956,15 @@ impl AppContext {
 
             if let Ok(mut wallet) = wallet_arc.write() {
                 wallet.update_spv_balances(balance.confirmed, balance.unconfirmed, balance.total);
+                // Persist balances to database
+                if let Err(e) = self.db.update_wallet_balances(
+                    seed_hash,
+                    balance.confirmed,
+                    balance.unconfirmed,
+                    balance.total,
+                ) {
+                    tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
+                }
             }
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
@@ -1794,10 +1821,10 @@ impl AppContext {
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
-        Network::Dash => &PLATFORM_V10,
-        Network::Testnet => &PLATFORM_V10,
-        Network::Devnet => &PLATFORM_V10,
-        Network::Regtest => &PLATFORM_V10,
+        Network::Dash => &PLATFORM_V11,
+        Network::Testnet => &PLATFORM_V11,
+        Network::Devnet => &PLATFORM_V11,
+        Network::Regtest => &PLATFORM_V11,
         _ => panic!("unsupported network"),
     }
 }

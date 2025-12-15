@@ -45,11 +45,11 @@ impl AddNewIdentityScreen {
         self.show_platform_address_balance(ui);
         ui.add_space(10.0);
 
-        // Get Platform addresses from the wallet
+        // Get Platform addresses from the wallet (using DIP-18 Bech32m format for display)
+        let network = self.app_context.network;
         let platform_addresses: Vec<(String, PlatformAddress, u64)> =
             if let Some(wallet_arc) = &self.selected_wallet {
                 let wallet = wallet_arc.read().unwrap();
-                let network = self.app_context.network;
                 wallet
                     .platform_addresses(network)
                     .into_iter()
@@ -59,7 +59,8 @@ impl AddNewIdentityScreen {
                             .get(&core_addr)
                             .map(|info| info.balance)
                             .unwrap_or(0);
-                        (core_addr.to_string(), platform_addr, balance)
+                        // Use Bech32m format for display
+                        (platform_addr.to_bech32m_string(network), platform_addr, balance)
                     })
                     .filter(|(_, _, balance)| *balance > 0)
                     .collect()
@@ -75,18 +76,21 @@ impl AddNewIdentityScreen {
             return action;
         }
 
-        // Platform address selector
+        // Platform address selector (display in DIP-18 Bech32m format)
         let selected_addr_display = self
             .selected_platform_address_for_funding
             .as_ref()
-            .map(|(addr, _)| match addr {
-                PlatformAddress::P2pkh(hash) => {
-                    let hex = hex::encode(hash);
-                    format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
-                }
-                PlatformAddress::P2sh(hash) => {
-                    let hex = hex::encode(hash);
-                    format!("{}...{}", &hex[..8], &hex[hex.len() - 8..])
+            .map(|(addr, _)| {
+                let bech32_addr = addr.to_bech32m_string(network);
+                // Truncate for display: show first 12 chars... last 8 chars
+                if bech32_addr.len() > 24 {
+                    format!(
+                        "{}...{}",
+                        &bech32_addr[..12],
+                        &bech32_addr[bech32_addr.len() - 8..]
+                    )
+                } else {
+                    bech32_addr
                 }
             })
             .unwrap_or_else(|| "Select a Platform address".to_string());
@@ -94,13 +98,19 @@ impl AddNewIdentityScreen {
         ComboBox::from_label("Platform Address")
             .selected_text(selected_addr_display)
             .show_ui(ui, |ui| {
-                for (core_addr_str, platform_addr, balance) in &platform_addresses {
+                for (bech32_addr_str, platform_addr, balance) in &platform_addresses {
                     let dash_balance = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                    let label = format!(
-                        "{}... ({:.4} DASH)",
-                        &core_addr_str[..12.min(core_addr_str.len())],
-                        dash_balance
-                    );
+                    // Truncate Bech32m address for display in dropdown
+                    let addr_display = if bech32_addr_str.len() > 20 {
+                        format!(
+                            "{}...{}",
+                            &bech32_addr_str[..12],
+                            &bech32_addr_str[bech32_addr_str.len() - 6..]
+                        )
+                    } else {
+                        bech32_addr_str.clone()
+                    };
+                    let label = format!("{} ({:.4} DASH)", addr_display, dash_balance);
                     let is_selected = self
                         .selected_platform_address_for_funding
                         .as_ref()

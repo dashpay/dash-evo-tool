@@ -240,9 +240,17 @@ impl TransferScreen {
             return Err("Platform address is required".to_string());
         }
 
-        let unchecked_addr: Address<NetworkUnchecked> = self
-            .platform_address_input
-            .trim()
+        let input = self.platform_address_input.trim();
+
+        // Try to parse as Bech32m Platform address first (DIP-18 format: dashevo1.../tdashevo1...)
+        if input.starts_with("dashevo1") || input.starts_with("tdashevo1") {
+            let (addr, _network) = PlatformAddress::from_bech32m_string(input)
+                .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
+            return Ok(addr);
+        }
+
+        // Fall back to base58 parsing for backwards compatibility
+        let unchecked_addr: Address<NetworkUnchecked> = input
             .parse()
             .map_err(|e| format!("Invalid address format: {}", e))?;
 

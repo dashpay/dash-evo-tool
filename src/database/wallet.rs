@@ -509,7 +509,7 @@ impl Database {
                 identity.network = *network;
 
                 tracing::trace!(
-                    wallet_seed = ?wallet_seed_hash_array,
+                    wallet_seed = hex::encode(wallet_seed_hash_array),
                     wallet_alias = ?wallet.alias,
                     identity = ?identity.identity.id().to_string(Encoding::Base58),
                     identity_alias = ?identity.alias,

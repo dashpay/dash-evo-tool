@@ -5,11 +5,19 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::MessageType;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
+    Display names can include any UTF-8 characters (emojis, symbols, etc.).\n\n\
+    Display names are limited to 25 characters.\n\n\
+    Bios are limited to 250 characters.\n\n\
+    Avatar URLs should point to publicly accessible images (max 500 chars).\n\n\
+    Profiles are public and visible to all DashPay users.";
 
 #[derive(Debug, Clone)]
 pub struct DashPayProfile {
@@ -71,6 +79,7 @@ pub struct ProfileScreen {
     avatar_textures: HashMap<String, TextureHandle>, // Cache for avatar textures
     avatar_loading: bool,                            // Track if avatar is being loaded
     pending_action: Option<Box<AppAction>>,          // Action to execute on next frame
+    show_info_popup: bool,
 }
 
 impl ProfileScreen {
@@ -96,6 +105,7 @@ impl ProfileScreen {
             avatar_textures: HashMap::new(),
             avatar_loading: false,
             pending_action: None,
+            show_info_popup: false,
         };
 
         // Auto-select identity on creation - prefer one with a profile
@@ -493,13 +503,14 @@ impl ProfileScreen {
                                 ui.label(RichText::new("Edit Profile").strong().color(DashColors::text_primary(dark_mode)));
 
                                 ui.add_space(5.0);
-                                crate::ui::helpers::info_icon_button(ui,
-                                    "Profile Guidelines:\n\n\
-                                    • Display names can include any UTF-8 characters (emojis, symbols, etc.)\n\
-                                    • Display names are limited to 25 characters\n\
-                                    • Bios are limited to 250 characters\n\
-                                    • Avatar URLs should point to publicly accessible images (max 500 chars)\n\
-                                    • Profiles are public and visible to all DashPay users");
+                                if crate::ui::helpers::info_icon_button(
+                                    ui,
+                                    PROFILE_GUIDELINES_INFO_TEXT,
+                                )
+                                .clicked()
+                                {
+                                    self.show_info_popup = true;
+                                }
                             });
 
                             ui.separator();
@@ -799,6 +810,19 @@ impl ProfileScreen {
         });
         }
 
+        // Show info popup if requested
+        if self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui.ctx(), |ui| {
+                    let mut popup =
+                        InfoPopup::new("Profile Guidelines", PROFILE_GUIDELINES_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = false;
+                    }
+                });
+        }
+
         action
     }
 
@@ -884,7 +908,7 @@ impl ProfileScreen {
                 }
             }
             _ => {
-                // Don't show "Operation completed" message
+                // Ignore other results
             }
         }
     }

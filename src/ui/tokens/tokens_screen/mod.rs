@@ -47,7 +47,6 @@ use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
 use crate::ui::theme::DashColors;
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
@@ -62,6 +61,7 @@ use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -2787,19 +2787,10 @@ impl ScreenLike for TokensScreen {
 
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
-                        egui::Window::new("Distribution Type Info")
-                            .collapsible(false)
-                            .resizable(true)
-                            .show(ui.ctx(), |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    let mut cache = CommonMarkCache::default();
-                                    CommonMarkViewer::new().show(ui, &mut cache, &info_text);
-                                });
-
-                                if ui.button("Close").clicked() {
-                                    self.show_pop_up_info = None;
-                                }
-                            });
+                        let mut popup = InfoPopup::new("Information", &info_text).markdown(true);
+                        if popup.show(ui).inner {
+                            self.show_pop_up_info = None;
+                        }
                     }
 
                     inner_action

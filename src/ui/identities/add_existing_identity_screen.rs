@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -839,16 +840,13 @@ impl ScreenLike for AddExistingIdentityScreen {
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-            egui::Window::new("Load Identity Information")
-                .collapsible(false) // Prevent collapsing
-                .resizable(false) // Prevent resizing
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    ui.label(show_pop_up_info_text);
-
-                    // Add a close button to dismiss the popup
-                    ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.show_pop_up_info = None
+                    let mut popup =
+                        InfoPopup::new("Load Identity Information", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
                     }
                 });
         }

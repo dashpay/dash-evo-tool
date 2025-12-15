@@ -3,8 +3,8 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -17,6 +17,15 @@ use dash_sdk::platform::Identifier;
 use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
+    This is the contact's public DashPay profile.\n\n\
+    This information is published on Dash Platform.\n\n\
+    Anyone can view this profile.\n\n\
+    The contact controls what information to share.\n\n\
+    This is different from your private notes about them.";
+
+const PRIVATE_INFO_TEXT: &str = "This information is encrypted and stored on Platform. Only you can decrypt it.";
 
 #[derive(Debug, Clone)]
 pub struct ContactPublicProfile {
@@ -43,6 +52,7 @@ pub struct ContactProfileViewerScreen {
     editing_private_info: bool,
     avatar_textures: HashMap<String, TextureHandle>,
     avatar_loading: bool,
+    show_info_popup: Option<(&'static str, &'static str)>,
 }
 
 impl ContactProfileViewerScreen {
@@ -99,6 +109,7 @@ impl ContactProfileViewerScreen {
             editing_private_info: false,
             avatar_textures: HashMap::new(),
             avatar_loading: false,
+            show_info_popup: None,
         }
     }
 
@@ -187,15 +198,9 @@ impl ContactProfileViewerScreen {
             }
             ui.heading("Public Profile");
             ui.add_space(5.0);
-            crate::ui::helpers::info_icon_button(
-                ui,
-                "About Public Profiles:\n\n\
-                • This is the contact's public DashPay profile\n\
-                • This information is published on Dash Platform\n\
-                • Anyone can view this profile\n\
-                • The contact controls what information to share\n\
-                • This is different from your private notes about them",
-            );
+            if crate::ui::helpers::info_icon_button(ui, PUBLIC_PROFILE_INFO_TEXT).clicked() {
+                self.show_info_popup = Some(("About Public Profiles", PUBLIC_PROFILE_INFO_TEXT));
+            }
         });
 
         ui.separator();
@@ -481,10 +486,11 @@ impl ContactProfileViewerScreen {
 
                         ui.vertical(|ui| {
                             ui.add_space(9.0);
-                            crate::ui::helpers::info_icon_button(
-                                ui,
-                                "This information is encrypted and stored on Platform. Only you can decrypt it.",
-                            );
+                            if crate::ui::helpers::info_icon_button(ui, PRIVATE_INFO_TEXT).clicked()
+                            {
+                                self.show_info_popup =
+                                    Some(("Private Contact Information", PRIVATE_INFO_TEXT));
+                            }
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -610,32 +616,30 @@ impl ScreenLike for ContactProfileViewerScreen {
             ctx,
             &self.app_context,
             vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                (
-                    "DashPay",
-                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
-                ),
+                ("DashPay", AppAction::None),
                 ("Contact Profile", AppAction::None),
             ],
             vec![],
         );
 
-        // Add navigation panels
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
             add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
         action |= island_central_panel(ctx, |ui| self.render(ui));
+
+        // Show info popup if requested
+        if let Some((title, text)) = self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup = InfoPopup::new(title, text);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = None;
+                    }
+                });
+        }
 
         action
     }
@@ -697,7 +701,7 @@ impl ScreenLike for ContactProfileViewerScreen {
                 self.message = Some((msg, MessageType::Info));
             }
             _ => {
-                self.message = Some(("Unexpected response type".to_string(), MessageType::Error));
+                // Ignore other results
             }
         }
     }

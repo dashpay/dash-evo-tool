@@ -345,7 +345,7 @@ pub async fn create_or_update_contact_info(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found")?;
+        .ok_or("No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.")?;
 
     // Create document properties
     let mut properties = BTreeMap::new();

@@ -8,6 +8,7 @@ mod initialization;
 mod proof_log;
 mod scheduled_votes;
 mod settings;
+mod single_key_wallet;
 mod tokens;
 mod top_ups;
 mod utxo;
@@ -128,6 +129,11 @@ impl Database {
 
         tx.execute(
             "DELETE FROM wallet WHERE network = ?1",
+            rusqlite::params![&network_str],
+        )?;
+
+        tx.execute(
+            "DELETE FROM single_key_wallet WHERE network = ?1",
             rusqlite::params![&network_str],
         )?;
 

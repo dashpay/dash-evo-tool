@@ -23,7 +23,7 @@ pub enum WalletTask {
         /// Destination addresses with amounts
         outputs: BTreeMap<PlatformAddress, Credits>,
     },
-    /// Fund Platform addresses from an asset lock (DIP-17)
+    /// Fund Platform addresses from an asset lock
     FundPlatformAddressFromAssetLock {
         seed_hash: WalletSeedHash,
         /// Asset lock proof
@@ -33,7 +33,7 @@ pub enum WalletTask {
         /// Platform addresses and optional amounts to fund (None = distribute evenly)
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,
     },
-    /// Withdraw from Platform addresses to Core (DIP-17)
+    /// Withdraw from Platform addresses to Core
     WithdrawFromPlatformAddress {
         seed_hash: WalletSeedHash,
         /// Platform addresses and amounts to withdraw

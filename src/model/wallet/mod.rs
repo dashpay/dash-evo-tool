@@ -1,5 +1,6 @@
 mod asset_lock_transaction;
 pub mod encryption;
+pub mod single_key;
 mod utxos;
 
 use dash_sdk::dpp::ProtocolError;
@@ -1383,7 +1384,7 @@ impl Wallet {
         ))
     }
 
-    /// Generate a Platform receive address (DIP-17).
+    /// Generate a Platform receive address .
     /// Either returns an existing unused Platform address or generates a new one.
     pub fn platform_receive_address(
         &mut self,
@@ -1857,7 +1858,7 @@ impl Wallet {
     }
 }
 
-/// Signer implementation for Platform addresses (DIP-17)
+/// Signer implementation for Platform addresses
 /// Allows the wallet to sign transactions that spend from Platform addresses
 impl Signer<PlatformAddress> for Wallet {
     fn sign(

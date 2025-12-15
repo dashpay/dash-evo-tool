@@ -12,6 +12,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -43,7 +44,7 @@ pub enum FundingMethod {
     UseUnusedAssetLock,
     UseWalletBalance,
     AddressWithQRCode,
-    /// Use Platform Address credits (DIP-17)
+    /// Use Platform Address credits
     UsePlatformAddress,
 }
 
@@ -81,7 +82,7 @@ pub struct AddNewIdentityScreen {
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
     successful_qualified_identity_id: Option<Identifier>,
-    /// Selected Platform address for funding (DIP-17) with the amount in credits
+    /// Selected Platform address for funding  with the amount in credits
     selected_platform_address_for_funding: Option<(
         dash_sdk::dpp::address_funds::PlatformAddress,
         dash_sdk::dpp::fee::Credits,
@@ -510,7 +511,7 @@ impl AddNewIdentityScreen {
                 {
                     if let Some(wallet) = &self.selected_wallet {
                         let wallet = wallet.read().unwrap();
-                        let max_amount = wallet.max_balance();
+                        let max_amount = wallet.total_balance_duffs();
                         self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                     }
                     let mut step = self.step.write().unwrap(); // Write lock on step
@@ -542,7 +543,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Use Platform Address (DIP-17)",
+                            "Use Platform Address ",
                         )
                         .changed()
                 {
@@ -812,7 +813,7 @@ impl AddNewIdentityScreen {
                 if let Some(wallet) = &self.selected_wallet {
                     let wallet = wallet.read().unwrap(); // Read lock on the wallet
                     if ui.button("Max").clicked() {
-                        let max_amount = wallet.max_balance();
+                        let max_amount = wallet.total_balance_duffs();
                         self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
                         self.funding_amount_exact = Some(max_amount);
                     }
@@ -1181,15 +1182,13 @@ impl ScreenLike for AddNewIdentityScreen {
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-            egui::Window::new("Identity Index Information")
-                .collapsible(false)
-                .resizable(false)
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    ui.label(show_pop_up_info_text);
-
-                    // Add a close button to dismiss the popup
-                    if ui.button("Close").clicked() {
-                        self.show_pop_up_info = None
+                    let mut popup =
+                        InfoPopup::new("Identity Information", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
                     }
                 });
         }

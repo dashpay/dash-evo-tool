@@ -1,4 +1,6 @@
+mod refresh_single_key_wallet_info;
 mod refresh_wallet_info;
+mod send_single_key_wallet_payment;
 mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
@@ -6,6 +8,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
@@ -32,9 +35,14 @@ pub enum CoreTask {
     GetBestChainLock,
     GetBestChainLocks,
     RefreshWalletInfo(Arc<RwLock<Wallet>>),
+    RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
     StartDashQT(Network, PathBuf, bool),
     SendWalletPayment {
         wallet: Arc<RwLock<Wallet>>,
+        request: WalletPaymentRequest,
+    },
+    SendSingleKeyWalletPayment {
+        wallet: Arc<RwLock<SingleKeyWallet>>,
         request: WalletPaymentRequest,
     },
 }
@@ -49,12 +57,20 @@ impl PartialEq for CoreTask {
                     CoreTask::RefreshWalletInfo(_)
                 )
                 | (
+                    CoreTask::RefreshSingleKeyWalletInfo(_),
+                    CoreTask::RefreshSingleKeyWalletInfo(_)
+                )
+                | (
                     CoreTask::StartDashQT(_, _, _),
                     CoreTask::StartDashQT(_, _, _)
                 )
                 | (
                     CoreTask::SendWalletPayment { .. },
                     CoreTask::SendWalletPayment { .. },
+                )
+                | (
+                    CoreTask::SendSingleKeyWalletPayment { .. },
+                    CoreTask::SendSingleKeyWalletPayment { .. },
                 )
         )
     }
@@ -170,12 +186,19 @@ impl AppContext {
 
                 Ok(BackendTaskSuccessResult::RefreshedWallet)
             }
+            CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
+                self.refresh_single_key_wallet_info(wallet)?;
+                Ok(BackendTaskSuccessResult::RefreshedWallet)
+            }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::SendWalletPayment { wallet, request } => {
                 self.send_wallet_payment(wallet, request).await
+            }
+            CoreTask::SendSingleKeyWalletPayment { wallet, request } => {
+                self.send_single_key_wallet_payment(wallet, request).await
             }
         }
     }

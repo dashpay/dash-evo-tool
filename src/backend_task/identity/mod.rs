@@ -200,7 +200,7 @@ pub enum RegisterIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
-    /// Fund identity creation from Platform addresses (DIP-17)
+    /// Fund identity creation from Platform addresses
     FundWithPlatformAddresses {
         /// Platform addresses and credits to use
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
@@ -261,7 +261,7 @@ pub enum IdentityTask {
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
-    /// Top up an identity from Platform addresses (DIP-17)
+    /// Top up an identity from Platform addresses
     TopUpIdentityFromPlatformAddresses {
         identity: QualifiedIdentity,
         /// Platform addresses and amounts to use for top-up
@@ -272,7 +272,7 @@ pub enum IdentityTask {
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
-    /// Transfer credits from identity to Platform addresses (DIP-17)
+    /// Transfer credits from identity to Platform addresses
     TransferToAddresses {
         identity: QualifiedIdentity,
         /// Platform addresses and amounts to receive credits

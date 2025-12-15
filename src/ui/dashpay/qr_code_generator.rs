@@ -2,9 +2,9 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -16,6 +16,14 @@ use eframe::epaint::TextureHandle;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
+const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
+    QR codes allow instant mutual contact establishment.\n\n\
+    The recipient can scan to automatically send and accept contact requests.\n\n\
+    QR codes expire after the specified validity period.\n\n\
+    Each QR code is unique and can only be used once.\n\n\
+    The account reference determines which wallet account to use.\n\n\
+    WARNING: Anyone with this QR code can automatically become your contact.";
+
 pub struct QRCodeGeneratorScreen {
     pub app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
@@ -24,6 +32,7 @@ pub struct QRCodeGeneratorScreen {
     validity_hours: String,
     generated_qr_data: Option<String>,
     message: Option<(String, MessageType)>,
+    show_info_popup: bool,
 }
 
 impl QRCodeGeneratorScreen {
@@ -36,6 +45,7 @@ impl QRCodeGeneratorScreen {
             validity_hours: "24".to_string(),
             generated_qr_data: None,
             message: None,
+            show_info_popup: false,
         }
     }
 
@@ -89,16 +99,9 @@ impl QRCodeGeneratorScreen {
             }
             ui.heading("Generate Contact QR Code");
             ui.add_space(5.0);
-            crate::ui::helpers::info_icon_button(
-                ui,
-                "About Contact QR Codes:\n\n\
-                • QR codes allow instant mutual contact establishment\n\
-                • The recipient can scan to automatically send and accept contact requests\n\
-                • QR codes expire after the specified validity period\n\
-                • Each QR code is unique and can only be used once\n\
-                • The account reference determines which wallet account to use\n\n\
-                WARNING: Anyone with this QR code can automatically become your contact",
-            );
+            if crate::ui::helpers::info_icon_button(ui, QR_CODE_INFO_TEXT).clicked() {
+                self.show_info_popup = true;
+            }
         });
 
         ui.separator();
@@ -299,28 +302,14 @@ impl ScreenLike for QRCodeGeneratorScreen {
             ctx,
             &self.app_context,
             vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                (
-                    "DashPay",
-                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
-                ),
+                ("DashPay", AppAction::None),
                 ("QR Generator", AppAction::None),
             ],
             vec![],
         );
 
-        // Add navigation panels
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // Add DashPay subscreen chooser panel
         action |= add_dashpay_subscreen_chooser_panel(
@@ -331,6 +320,19 @@ impl ScreenLike for QRCodeGeneratorScreen {
 
         // Main content area with island styling
         action |= island_central_panel(ctx, |ui| self.render(ui));
+
+        // Show info popup if requested
+        if self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup =
+                        InfoPopup::new("About Contact QR Codes", QR_CODE_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = false;
+                    }
+                });
+        }
 
         action
     }

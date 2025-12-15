@@ -6,6 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
+use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
     DocumentActionScreen, DocumentActionType,
@@ -37,8 +38,10 @@ use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
-use crate::ui::wallets::import_wallet_screen::ImportWalletScreen;
+use crate::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
+use crate::ui::wallets::import_private_key_screen::ImportPrivateKeyScreen;
 use crate::ui::wallets::send_screen::WalletSendScreen;
+use crate::ui::wallets::single_key_send_screen::SingleKeyWalletSendScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
@@ -230,9 +233,11 @@ pub enum ScreenType {
     DPNSMyUsernames,
     AddNewIdentity,
     WalletsBalances,
-    ImportWallet,
+    ImportMnemonic,
+    ImportPrivateKey,
     AddNewWallet,
     WalletSendScreen(Arc<RwLock<Wallet>>),
+    SingleKeyWalletSendScreen(Arc<RwLock<SingleKeyWallet>>),
     AddExistingIdentity,
     TransitionVisualizer,
     WithdrawalScreen(QualifiedIdentity),
@@ -307,13 +312,18 @@ impl PartialEq for ScreenType {
         // Compare variants, ignoring Arc<RwLock<Wallet>> contents for WalletSendScreen
         match (self, other) {
             (ScreenType::WalletSendScreen(_), ScreenType::WalletSendScreen(_)) => true,
+            (
+                ScreenType::SingleKeyWalletSendScreen(_),
+                ScreenType::SingleKeyWalletSendScreen(_),
+            ) => true,
             (ScreenType::Identities, ScreenType::Identities) => true,
             (ScreenType::DPNSActiveContests, ScreenType::DPNSActiveContests) => true,
             (ScreenType::DPNSPastContests, ScreenType::DPNSPastContests) => true,
             (ScreenType::DPNSMyUsernames, ScreenType::DPNSMyUsernames) => true,
             (ScreenType::AddNewIdentity, ScreenType::AddNewIdentity) => true,
             (ScreenType::WalletsBalances, ScreenType::WalletsBalances) => true,
-            (ScreenType::ImportWallet, ScreenType::ImportWallet) => true,
+            (ScreenType::ImportMnemonic, ScreenType::ImportMnemonic) => true,
+            (ScreenType::ImportPrivateKey, ScreenType::ImportPrivateKey) => true,
             (ScreenType::AddNewWallet, ScreenType::AddNewWallet) => true,
             (ScreenType::AddExistingIdentity, ScreenType::AddExistingIdentity) => true,
             (ScreenType::TransitionVisualizer, ScreenType::TransitionVisualizer) => true,
@@ -466,12 +476,18 @@ impl ScreenType {
             ScreenType::WalletsBalances => {
                 Screen::WalletsBalancesScreen(WalletsBalancesScreen::new(app_context))
             }
-            ScreenType::ImportWallet => {
-                Screen::ImportWalletScreen(ImportWalletScreen::new(app_context))
+            ScreenType::ImportMnemonic => {
+                Screen::ImportMnemonicScreen(ImportMnemonicScreen::new(app_context))
+            }
+            ScreenType::ImportPrivateKey => {
+                Screen::ImportPrivateKeyScreen(ImportPrivateKeyScreen::new(app_context))
             }
             ScreenType::WalletSendScreen(wallet) => {
                 Screen::WalletSendScreen(WalletSendScreen::new(app_context, wallet.clone()))
             }
+            ScreenType::SingleKeyWalletSendScreen(wallet) => Screen::SingleKeyWalletSendScreen(
+                SingleKeyWalletSendScreen::new(app_context, wallet.clone()),
+            ),
             ScreenType::ProofLog => Screen::ProofLogScreen(ProofLogScreen::new(app_context)),
             ScreenType::ScheduledVotes => {
                 Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::ScheduledVotes))
@@ -651,7 +667,8 @@ pub enum Screen {
     DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
-    ImportWalletScreen(ImportWalletScreen),
+    ImportMnemonicScreen(ImportMnemonicScreen),
+    ImportPrivateKeyScreen(ImportPrivateKeyScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
     AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
@@ -672,6 +689,7 @@ pub enum Screen {
     NetworkChooserScreen(NetworkChooserScreen),
     WalletsBalancesScreen(WalletsBalancesScreen),
     WalletSendScreen(WalletSendScreen),
+    SingleKeyWalletSendScreen(SingleKeyWalletSendScreen),
     AddContractsScreen(AddContractsScreen),
     ProofVisualizerScreen(ProofVisualizerScreen),
     MasternodeListDiffScreen(MasternodeListDiffScreen),
@@ -733,8 +751,10 @@ impl Screen {
                 screen.app_context = app_context;
                 screen.update_selected_wallet_for_network();
             }
-            Screen::ImportWalletScreen(screen) => screen.app_context = app_context,
+            Screen::ImportMnemonicScreen(screen) => screen.app_context = app_context,
+            Screen::ImportPrivateKeyScreen(screen) => screen.app_context = app_context,
             Screen::WalletSendScreen(screen) => screen.app_context = app_context,
+            Screen::SingleKeyWalletSendScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
             Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
@@ -870,9 +890,13 @@ impl Screen {
             Screen::GroupActionsScreen(_) => ScreenType::GroupActions,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
-            Screen::ImportWalletScreen(_) => ScreenType::ImportWallet,
+            Screen::ImportMnemonicScreen(_) => ScreenType::ImportMnemonic,
+            Screen::ImportPrivateKeyScreen(_) => ScreenType::ImportPrivateKey,
             Screen::WalletSendScreen(screen) => {
                 ScreenType::WalletSendScreen(screen.selected_wallet.clone().unwrap())
+            }
+            Screen::SingleKeyWalletSendScreen(screen) => {
+                ScreenType::SingleKeyWalletSendScreen(screen.selected_wallet.clone().unwrap())
             }
             Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
@@ -978,7 +1002,8 @@ impl ScreenLike for Screen {
             Screen::DPNSScreen(screen) => screen.refresh(),
             Screen::DocumentQueryScreen(screen) => screen.refresh(),
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
-            Screen::ImportWalletScreen(screen) => screen.refresh(),
+            Screen::ImportMnemonicScreen(screen) => screen.refresh(),
+            Screen::ImportPrivateKeyScreen(screen) => screen.refresh(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh(),
             Screen::TopUpIdentityScreen(screen) => screen.refresh(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh(),
@@ -996,6 +1021,7 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.refresh(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh(),
             Screen::WalletSendScreen(screen) => screen.refresh(),
+            Screen::SingleKeyWalletSendScreen(screen) => screen.refresh(),
             Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
@@ -1040,7 +1066,8 @@ impl ScreenLike for Screen {
             Screen::DPNSScreen(screen) => screen.refresh_on_arrival(),
             Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
-            Screen::ImportWalletScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ImportMnemonicScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ImportPrivateKeyScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::TopUpIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh_on_arrival(),
@@ -1058,6 +1085,7 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.refresh_on_arrival(),
             Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
             Screen::WalletSendScreen(screen) => screen.refresh_on_arrival(),
+            Screen::SingleKeyWalletSendScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
@@ -1102,7 +1130,8 @@ impl ScreenLike for Screen {
             Screen::DPNSScreen(screen) => screen.ui(ctx),
             Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
-            Screen::ImportWalletScreen(screen) => screen.ui(ctx),
+            Screen::ImportMnemonicScreen(screen) => screen.ui(ctx),
+            Screen::ImportPrivateKeyScreen(screen) => screen.ui(ctx),
             Screen::AddNewIdentityScreen(screen) => screen.ui(ctx),
             Screen::TopUpIdentityScreen(screen) => screen.ui(ctx),
             Screen::AddExistingIdentityScreen(screen) => screen.ui(ctx),
@@ -1120,6 +1149,7 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.ui(ctx),
             Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
             Screen::WalletSendScreen(screen) => screen.ui(ctx),
+            Screen::SingleKeyWalletSendScreen(screen) => screen.ui(ctx),
             Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
@@ -1164,7 +1194,8 @@ impl ScreenLike for Screen {
             Screen::DPNSScreen(screen) => screen.display_message(message, message_type),
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
-            Screen::ImportWalletScreen(screen) => screen.display_message(message, message_type),
+            Screen::ImportMnemonicScreen(screen) => screen.display_message(message, message_type),
+            Screen::ImportPrivateKeyScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::TopUpIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::AddExistingIdentityScreen(screen) => {
@@ -1190,6 +1221,9 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.display_message(message, message_type),
             Screen::WalletsBalancesScreen(screen) => screen.display_message(message, message_type),
             Screen::WalletSendScreen(screen) => screen.display_message(message, message_type),
+            Screen::SingleKeyWalletSendScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
             Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
@@ -1264,7 +1298,10 @@ impl ScreenLike for Screen {
             Screen::AddNewWalletScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
-            Screen::ImportWalletScreen(screen) => {
+            Screen::ImportMnemonicScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::ImportPrivateKeyScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::AddNewIdentityScreen(screen) => {
@@ -1315,6 +1352,9 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::WalletSendScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::SingleKeyWalletSendScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::ProofLogScreen(screen) => {
@@ -1390,19 +1430,19 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::DashPayContactDetailsScreen(screen) => {
-                screen.display_message("Success", MessageType::Success)
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::DashPayContactProfileViewerScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::DashPaySendPaymentScreen(screen) => {
-                screen.display_message("Success", MessageType::Success)
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::DashPayContactInfoEditorScreen(screen) => {
-                screen.display_message("Success", MessageType::Success)
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::DashPayQRGeneratorScreen(screen) => {
-                screen.display_message("Success", MessageType::Success)
+                screen.display_task_result(backend_task_success_result)
             }
             Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
@@ -1416,7 +1456,8 @@ impl ScreenLike for Screen {
             Screen::DPNSScreen(screen) => screen.pop_on_success(),
             Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
-            Screen::ImportWalletScreen(screen) => screen.pop_on_success(),
+            Screen::ImportMnemonicScreen(screen) => screen.pop_on_success(),
+            Screen::ImportPrivateKeyScreen(screen) => screen.pop_on_success(),
             Screen::AddNewIdentityScreen(screen) => screen.pop_on_success(),
             Screen::TopUpIdentityScreen(screen) => screen.pop_on_success(),
             Screen::AddExistingIdentityScreen(screen) => screen.pop_on_success(),
@@ -1434,6 +1475,7 @@ impl ScreenLike for Screen {
             Screen::NetworkChooserScreen(screen) => screen.pop_on_success(),
             Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
             Screen::WalletSendScreen(screen) => screen.pop_on_success(),
+            Screen::SingleKeyWalletSendScreen(screen) => screen.pop_on_success(),
             Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),

@@ -22,7 +22,7 @@ use dash_sdk::{
     },
     platform::{Identifier, IdentityPublicKey},
 };
-use egui::{Color32, ComboBox, Response, RichText, Ui};
+use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
@@ -30,12 +30,46 @@ use super::tokens::tokens_screen::IdentityTokenInfo;
 /// This constant provides a constant padding to be used in such cases to ensure proper alignment.
 pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
 
-/// Helper function to create a styled info icon button
+/// Helper function to create a styled info icon button with a circle and "i"
+/// Returns a Response that can be checked for .clicked() to show an info popup
 pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
-    let icon = RichText::new("ⓘ").size(14.0).color(Color32::LIGHT_BLUE);
+    let size = 16.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(size, size),
+        egui::Sense::click(),
+    );
 
-    ui.add(egui::Label::new(icon).sense(egui::Sense::hover()))
+    if ui.is_rect_visible(rect) {
+        let is_hovered = response.hovered();
+        let color = if is_hovered {
+            Color32::from_rgb(100, 180, 255) // Brighter blue on hover
+        } else {
+            Color32::from_rgb(70, 130, 180) // Steel blue
+        };
+
+        let center = rect.center();
+        let radius = size / 2.0 - 1.0;
+
+        // Draw circle outline
+        ui.painter().circle_stroke(
+            center,
+            radius,
+            egui::Stroke::new(1.5, color),
+        );
+
+        // Draw "i" text in the center
+        ui.painter().text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            "i",
+            egui::FontId::proportional(11.0),
+            color,
+        );
+    }
+
+    response
         .on_hover_text(hover_text)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
@@ -48,7 +82,6 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
 /// Returns the newly selected key (if changed), otherwise the existing one.
 // Allow dead_code: This function provides UI for key selection within identities,
 // useful for identity-based operations and key management interfaces
-#[allow(dead_code)]
 pub fn render_key_selector(
     ui: &mut Ui,
     selected_identity: &QualifiedIdentity,

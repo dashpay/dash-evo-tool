@@ -96,7 +96,7 @@ impl Wallet {
         save: Option<&AppContext>,
     ) -> Result<HashMap<OutPoint, TxOut>, String> {
         // Collect Core chain addresses for which we want to load UTXOs.
-        // Platform addresses (DIP-17) are NOT valid on Core chain and must be excluded.
+        // Platform addresses  are NOT valid on Core chain and must be excluded.
         let addresses: Vec<_> = self
             .known_addresses
             .iter()

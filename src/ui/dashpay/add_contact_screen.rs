@@ -4,8 +4,8 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -16,6 +16,12 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::IdentityPublicKey;
 use egui::{Context, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
+
+const CONTACT_REQUEST_INFO_TEXT: &str = "About Contact Requests:\n\n\
+    Contact requests establish secure communication channels.\n\n\
+    Both parties must accept before payments can be sent.\n\n\
+    Your display name and username will be shared with the contact.\n\n\
+    You can manage contacts from the Contacts screen.";
 
 #[derive(Debug, Clone, PartialEq)]
 enum ContactRequestStatus {
@@ -33,6 +39,7 @@ pub struct AddContactScreen {
     account_label: String,
     message: Option<(String, MessageType)>,
     status: ContactRequestStatus,
+    show_info_popup: bool,
 }
 
 impl AddContactScreen {
@@ -45,6 +52,7 @@ impl AddContactScreen {
             account_label: String::new(),
             message: None,
             status: ContactRequestStatus::NotStarted,
+            show_info_popup: false,
         }
     }
 
@@ -57,6 +65,7 @@ impl AddContactScreen {
             account_label: String::new(),
             message: None,
             status: ContactRequestStatus::NotStarted,
+            show_info_popup: false,
         }
     }
 
@@ -182,28 +191,14 @@ impl ScreenLike for AddContactScreen {
             ctx,
             &self.app_context,
             vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                (
-                    "DashPay",
-                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
-                ),
+                ("DashPay", AppAction::None),
                 ("Send Contact Request", AppAction::None),
             ],
             vec![],
         );
 
-        // Add navigation panels
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
             add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
@@ -223,14 +218,9 @@ impl ScreenLike for AddContactScreen {
                 }
                 ui.heading("Send Contact Request");
                 ui.add_space(5.0);
-                crate::ui::helpers::info_icon_button(
-                    ui,
-                    "About Contact Requests:\n\n\
-                    • Contact requests establish secure communication channels\n\
-                    • Both parties must accept before payments can be sent\n\
-                    • Your display name and username will be shared with the contact\n\
-                    • You can manage contacts from the Contacts screen",
-                );
+                if crate::ui::helpers::info_icon_button(ui, CONTACT_REQUEST_INFO_TEXT).clicked() {
+                    self.show_info_popup = true;
+                }
             });
             ui.separator();
 
@@ -480,6 +470,19 @@ impl ScreenLike for AddContactScreen {
 
             inner_action
         });
+
+        // Show info popup if requested
+        if self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup =
+                        InfoPopup::new("About Contact Requests", CONTACT_REQUEST_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = false;
+                    }
+                });
+        }
 
         action
     }

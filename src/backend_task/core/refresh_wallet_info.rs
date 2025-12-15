@@ -12,7 +12,7 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Step 1: Collect Core chain addresses from the wallet (excluding Platform addresses)
-        // Platform addresses (DIP-17) are NOT valid on Core chain and must be skipped
+        // Platform addresses  are NOT valid on Core chain and must be skipped
         let addresses = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             wallet_guard
@@ -86,9 +86,11 @@ impl AppContext {
                 match client.get_received_by_address(address, None) {
                     Ok(amount) => {
                         let total_received = amount.to_sat();
-                        if let Err(e) =
-                            wallet_guard.update_address_total_received(address, total_received, self)
-                        {
+                        if let Err(e) = wallet_guard.update_address_total_received(
+                            address,
+                            total_received,
+                            self,
+                        ) {
                             tracing::debug!(
                                 ?e,
                                 address = %address,

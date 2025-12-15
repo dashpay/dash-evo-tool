@@ -11,6 +11,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -50,7 +51,7 @@ pub struct TopUpIdentityScreen {
     wallet_password: String,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
-    // Platform address fields (DIP-17)
+    // Platform address fields
     selected_platform_address: Option<(Address, PlatformAddress, Credits)>,
     platform_top_up_amount: String,
 }
@@ -600,8 +601,12 @@ impl ScreenLike for TopUpIdentityScreen {
                         ));
                         ui.add_space(10.0);
 
-                        // Add info icon with hover tooltip
-                        crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP);
+                        // Add info icon with hover tooltip and click popup
+                        if crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP)
+                            .clicked()
+                        {
+                            self.show_pop_up_info = Some(WALLET_SELECTION_TOOLTIP.to_string());
+                        }
                     });
                     step_number += 1;
 
@@ -646,15 +651,13 @@ impl ScreenLike for TopUpIdentityScreen {
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-            egui::Window::new("Identity Index Information")
-                .collapsible(false) // Prevent collapsing
-                .resizable(false) // Prevent resizing
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    ui.label(show_pop_up_info_text);
-
-                    // Add a close button to dismiss the popup
-                    if ui.button("Close").clicked() {
-                        self.show_pop_up_info = None
+                    let mut popup =
+                        InfoPopup::new("Wallet Selection Info", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
                     }
                 });
         }

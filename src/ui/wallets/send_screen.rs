@@ -141,7 +141,8 @@ impl WalletSendScreen {
     fn add_platform_recipient(&mut self) {
         let id = self.next_platform_recipient_id;
         self.next_platform_recipient_id += 1;
-        self.platform_recipients.push(PlatformSendRecipient::new(id));
+        self.platform_recipients
+            .push(PlatformSendRecipient::new(id));
     }
 
     fn remove_platform_recipient(&mut self, id: usize) {
@@ -666,16 +667,20 @@ impl WalletSendScreen {
                 || dest_addr_str.starts_with("tdashevo1")
             {
                 let (addr, _network) = PlatformAddress::from_bech32m_string(dest_addr_str)
-                    .map_err(|e| format!("Recipient {}: Invalid Bech32m address: {}", index + 1, e))?;
+                    .map_err(|e| {
+                        format!("Recipient {}: Invalid Bech32m address: {}", index + 1, e)
+                    })?;
                 addr
             } else {
                 // Parse as a standard Dash address, then convert to PlatformAddress
-                let unchecked_addr: Address<NetworkUnchecked> = dest_addr_str
-                    .parse()
-                    .map_err(|e| format!("Recipient {}: Invalid address format: {}", index + 1, e))?;
+                let unchecked_addr: Address<NetworkUnchecked> =
+                    dest_addr_str.parse().map_err(|e| {
+                        format!("Recipient {}: Invalid address format: {}", index + 1, e)
+                    })?;
                 let dest_address = unchecked_addr.assume_checked();
-                PlatformAddress::try_from(dest_address)
-                    .map_err(|e| format!("Recipient {}: Invalid Platform address: {}", index + 1, e))?
+                PlatformAddress::try_from(dest_address).map_err(|e| {
+                    format!("Recipient {}: Invalid Platform address: {}", index + 1, e)
+                })?
             };
 
             // Parse amount
@@ -951,9 +956,12 @@ impl WalletSendScreen {
                 .map(|(_, _, b, _)| *b)
                 .sum();
             ui.label(
-                RichText::new(format!("Available from selected sources: {}", Self::format_credits(total_available)))
-                    .color(DashColors::text_secondary(dark_mode))
-                    .size(12.0),
+                RichText::new(format!(
+                    "Available from selected sources: {}",
+                    Self::format_credits(total_available)
+                ))
+                .color(DashColors::text_secondary(dark_mode))
+                .size(12.0),
             );
             ui.add_space(5.0);
         }
@@ -1275,7 +1283,7 @@ impl ScreenLike for WalletSendScreen {
                 self.platform_advanced_inputs = false;
             }
             _ => {
-                self.display_message("Operation completed", MessageType::Success);
+                // Ignore other results
             }
         }
     }

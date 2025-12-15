@@ -69,7 +69,7 @@ impl QRScannerScreen {
                 ) {
                     Some(key) => key,
                     None => {
-                        self.display_message("No suitable signing key found", MessageType::Error);
+                        self.display_message("No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.", MessageType::Error);
                         return AppAction::None;
                     }
                 };

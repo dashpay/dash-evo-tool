@@ -68,7 +68,7 @@ pub struct TransferScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
-    // Platform address transfer fields (DIP-17)
+    // Platform address transfer fields
     destination_type: TransferDestinationType,
     platform_address_input: String,
 }

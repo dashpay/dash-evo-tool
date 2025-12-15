@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 17;
+pub const DEFAULT_DB_VERSION: u16 = 18;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -34,6 +34,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            18 => {
+                self.initialize_single_key_wallet_table(tx)?;
+            }
             17 => {
                 self.add_address_total_received_column(tx)?;
             }
@@ -279,7 +282,7 @@ impl Database {
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
 
-        // Create Platform address balances table (DIP-17)
+        // Create Platform address balances table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS platform_address_balances (
                 seed_hash BLOB NOT NULL,
@@ -429,6 +432,9 @@ impl Database {
         // Initialize contacts and DashPay tables while holding the same connection lock
         self.init_contacts_tables(&conn)?;
         self.init_dashpay_tables_in_tx(&conn)?;
+
+        // Initialize single key wallet table
+        self.initialize_single_key_wallet_table(&conn)?;
 
         Ok(())
     }

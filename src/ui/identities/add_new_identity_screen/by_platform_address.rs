@@ -60,7 +60,11 @@ impl AddNewIdentityScreen {
                             .map(|info| info.balance)
                             .unwrap_or(0);
                         // Use Bech32m format for display
-                        (platform_addr.to_bech32m_string(network), platform_addr, balance)
+                        (
+                            platform_addr.to_bech32m_string(network),
+                            platform_addr,
+                            balance,
+                        )
                     })
                     .filter(|(_, _, balance)| *balance > 0)
                     .collect()

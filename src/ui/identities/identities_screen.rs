@@ -954,8 +954,8 @@ impl ScreenLike for IdentitiesScreen {
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
-                    "Import Wallet",
-                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
+                    "Import Mnemonic",
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
                 ),
                 (
                     "Create Wallet",

@@ -799,7 +799,7 @@ impl ScreenLike for ContactsList {
                 }
             }
             _ => {
-                self.message = Some(("Operation completed".to_string(), MessageType::Success));
+                // Ignore other results
             }
         }
     }

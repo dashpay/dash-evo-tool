@@ -144,7 +144,9 @@ pub fn generate_auto_accept_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found")?;
+        .ok_or(
+            "No suitable signing key found. This operation requires a CRITICAL ECDSA_SECP256K1 AUTHENTICATION key.",
+        )?;
 
     let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
     let wallet_seed = identity
@@ -288,7 +290,7 @@ pub fn verify_auto_accept_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found")?;
+        .ok_or("No suitable signing key found. This operation requires a CRITICAL ECDSA_SECP256K1 AUTHENTICATION key.")?;
     let wallet_seed = our_identity
         .private_keys
         .get_resolve(

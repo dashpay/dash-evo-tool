@@ -8,7 +8,7 @@ impl TopUpIdentityScreen {
         if let Some(selected_wallet) = &self.wallet {
             let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
 
-            let total_balance: u64 = wallet.max_balance(); // Sum up all the balances
+            let total_balance: u64 = wallet.total_balance_duffs(); // Use stored balance with UTXO fallback
 
             let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
 

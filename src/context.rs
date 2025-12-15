@@ -11,6 +11,7 @@ use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
+use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathReference, DerivationPathType, Wallet,
     WalletSeedHash, WalletTransaction,
@@ -83,6 +84,7 @@ pub struct AppContext {
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
+    pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
@@ -101,6 +103,10 @@ pub struct AppContext {
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
+    /// Currently selected HD wallet (persisted across screen navigation)
+    pub(crate) selected_wallet_hash: Mutex<Option<WalletSeedHash>>,
+    /// Currently selected single key wallet (persisted across screen navigation)
+    pub(crate) selected_single_key_hash: Mutex<Option<SingleKeyHash>>,
 }
 
 impl AppContext {
@@ -185,6 +191,13 @@ impl AppContext {
             .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
             .collect();
 
+        let single_key_wallets: BTreeMap<_, _> = db
+            .get_single_key_wallets(network)
+            .expect("expected to get single key wallets")
+            .into_iter()
+            .map(|w| (w.key_hash(), Arc::new(RwLock::new(w))))
+            .collect();
+
         let developer_mode_enabled = config.developer_mode.unwrap_or(false);
 
         let animate = match developer_mode_enabled {
@@ -229,8 +242,9 @@ impl AppContext {
             token_history_contract: Arc::new(token_history_contract),
             keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
-            has_wallet: (!wallets.is_empty()).into(),
+            has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
+            single_key_wallets: RwLock::new(single_key_wallets),
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
@@ -240,6 +254,8 @@ impl AppContext {
             spv_manager,
             core_backend_mode: AtomicU8::new(saved_core_backend_mode),
             pending_wallet_selection: Mutex::new(None),
+            selected_wallet_hash: Mutex::new(None),
+            selected_single_key_hash: Mutex::new(None),
         };
 
         let app_context = Arc::new(app_context);
@@ -334,8 +350,13 @@ impl AppContext {
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
-            self.has_wallet.store(false, Ordering::Relaxed);
         }
+
+        if let Ok(mut single_key_wallets) = self.single_key_wallets.write() {
+            single_key_wallets.clear();
+        }
+
+        self.has_wallet.store(false, Ordering::Relaxed);
 
         Ok(())
     }

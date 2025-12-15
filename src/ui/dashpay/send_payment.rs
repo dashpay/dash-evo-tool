@@ -5,9 +5,9 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::amount_input::AmountInput;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -22,6 +22,12 @@ use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
+const PAYMENT_GUIDELINES_INFO_TEXT: &str = "Payment Guidelines:\n\n\
+    Payments to contacts use encrypted payment channels.\n\n\
+    Only you and the recipient can see payment details.\n\n\
+    Addresses are never reused for privacy.\n\n\
+    Memos are stored locally and not sent on-chain.";
+
 pub struct SendPaymentScreen {
     pub app_context: Arc<AppContext>,
     pub from_identity: QualifiedIdentity,
@@ -32,6 +38,7 @@ pub struct SendPaymentScreen {
     memo: String,
     message: Option<(String, MessageType)>,
     sending: bool,
+    show_info_popup: bool,
 }
 
 impl SendPaymentScreen {
@@ -50,6 +57,7 @@ impl SendPaymentScreen {
             memo: String::new(),
             message: None,
             sending: false,
+            show_info_popup: false,
         }
     }
 
@@ -93,14 +101,9 @@ impl SendPaymentScreen {
             }
             ui.heading("Send Payment");
             ui.add_space(5.0);
-            crate::ui::helpers::info_icon_button(
-                ui,
-                "Payment Guidelines:\n\n\
-                • Payments to contacts use encrypted payment channels\n\
-                • Only you and the recipient can see payment details\n\
-                • Addresses are never reused for privacy\n\
-                • Memos are stored locally and not sent on-chain",
-            );
+            if crate::ui::helpers::info_icon_button(ui, PAYMENT_GUIDELINES_INFO_TEXT).clicked() {
+                self.show_info_popup = true;
+            }
         });
 
         ui.separator();
@@ -275,32 +278,31 @@ impl ScreenLike for SendPaymentScreen {
             ctx,
             &self.app_context,
             vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                (
-                    "DashPay",
-                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
-                ),
+                ("DashPay", AppAction::None),
                 ("Send Payment", AppAction::None),
             ],
             vec![],
         );
 
-        // Add navigation panels
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
             add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Payments);
 
         action |= island_central_panel(ctx, |ui| self.render(ui));
+
+        // Show info popup if requested
+        if self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup =
+                        InfoPopup::new("Payment Guidelines", PAYMENT_GUIDELINES_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = false;
+                    }
+                });
+        }
 
         action
     }
@@ -707,7 +709,7 @@ impl PaymentHistory {
                 self.message = None;
             }
             _ => {
-                self.message = Some(("Operation completed".to_string(), MessageType::Success));
+                // Ignore other results
             }
         }
     }

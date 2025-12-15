@@ -422,7 +422,7 @@ impl AppContext {
         }
     }
 
-    /// Register a new identity funded by Platform addresses (DIP-17)
+    /// Register a new identity funded by Platform addresses
     async fn register_identity_from_platform_addresses(
         &self,
         alias_input: String,

@@ -2,8 +2,8 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -14,6 +14,12 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::platform::{Document, Identifier};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
+
+const PROFILE_SEARCH_INFO_TEXT: &str = "About Profile Search:\n\n\
+    Search for public DashPay profiles on the Platform.\n\n\
+    Search by display name, username, or identity ID.\n\n\
+    View anyone's public profile information.\n\n\
+    Add contacts directly from search results.";
 
 #[derive(Debug, Clone)]
 pub struct ProfileSearchResult {
@@ -31,6 +37,7 @@ pub struct ProfileSearchScreen {
     message: Option<(String, MessageType)>,
     loading: bool,
     has_searched: bool, // Track if a search has been performed
+    show_info_popup: bool,
 }
 
 impl ProfileSearchScreen {
@@ -42,6 +49,7 @@ impl ProfileSearchScreen {
             message: None,
             loading: false,
             has_searched: false,
+            show_info_popup: false,
         }
     }
 
@@ -102,14 +110,9 @@ impl ProfileSearchScreen {
         ui.horizontal(|ui| {
             ui.heading("Search Public Profiles");
             ui.add_space(5.0);
-            crate::ui::helpers::info_icon_button(
-                ui,
-                "About Profile Search:\n\n\
-                • Search for public DashPay profiles on the Platform\n\
-                • Search by display name, username, or identity ID\n\
-                • View anyone's public profile information\n\
-                • Add contacts directly from search results",
-            );
+            if crate::ui::helpers::info_icon_button(ui, PROFILE_SEARCH_INFO_TEXT).clicked() {
+                self.show_info_popup = true;
+            }
         });
 
         ui.separator();
@@ -280,16 +283,7 @@ impl ScreenLike for ProfileSearchScreen {
             ctx,
             &self.app_context,
             vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                (
-                    "DashPay",
-                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
-                ),
+                ("DashPay", AppAction::None),
                 ("Profile Search", AppAction::None),
             ],
             vec![(
@@ -298,13 +292,8 @@ impl ScreenLike for ProfileSearchScreen {
             )],
         );
 
-        // Add navigation panels
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // Add DashPay subscreen chooser panel
         action |= add_dashpay_subscreen_chooser_panel(
@@ -325,6 +314,19 @@ impl ScreenLike for ProfileSearchScreen {
             self.has_searched = false;
             self.message = None;
             action = AppAction::None; // Consume the action
+        }
+
+        // Show info popup if requested
+        if self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup =
+                        InfoPopup::new("About Profile Search", PROFILE_SEARCH_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = false;
+                    }
+                });
         }
 
         action
@@ -373,7 +375,7 @@ impl ScreenLike for ProfileSearchScreen {
                 self.message = Some((msg, MessageType::Info));
             }
             _ => {
-                self.message = Some(("Unexpected response type".to_string(), MessageType::Error));
+                // Ignore other results
             }
         }
     }

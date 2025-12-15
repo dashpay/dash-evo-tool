@@ -541,7 +541,15 @@ impl Database {
             if row.is_err() {
                 continue;
             }
-            let (seed_array, address, derivation_path, balance, path_reference, path_type, total_received) = row?;
+            let (
+                seed_array,
+                address,
+                derivation_path,
+                balance,
+                path_reference,
+                path_type,
+                total_received,
+            ) = row?;
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Update the address balance if available.
                 if let Some(balance) = balance {
@@ -793,9 +801,8 @@ impl Database {
             let address_str: String = row.get(1)?;
             let balance: i64 = row.get(2)?;
             let nonce: i64 = row.get(3)?;
-            let seed_hash_array: [u8; 32] = seed_hash
-                .try_into()
-                .expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] =
+                seed_hash.try_into().expect("Seed hash should be 32 bytes");
             Ok((seed_hash_array, address_str, balance as u64, nonce as u32))
         })?;
 

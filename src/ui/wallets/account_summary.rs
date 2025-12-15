@@ -139,7 +139,7 @@ pub struct AccountSummary {
     pub label: String,
     pub index: Option<u32>,
     pub confirmed_balance: u64,
-    /// Platform credits balance for Platform Payment addresses (DIP-17)
+    /// Platform credits balance for Platform Payment addresses
     pub platform_credits: Credits,
     pub total_addresses: usize,
     pub external_addresses: usize,

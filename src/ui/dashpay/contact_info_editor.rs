@@ -3,8 +3,8 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -14,6 +14,13 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
+
+const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
+    This information is encrypted and stored on Platform.\n\n\
+    It is NEVER shared with the contact - only you can decrypt it.\n\n\
+    Only you can see these nicknames and notes.\n\n\
+    Hidden contacts can still send you payments.\n\n\
+    Use this to organize and remember your contacts.";
 
 pub struct ContactInfoEditorScreen {
     pub app_context: Arc<AppContext>,
@@ -27,6 +34,7 @@ pub struct ContactInfoEditorScreen {
     account_input: String,
     message: Option<(String, MessageType)>,
     saving: bool,
+    show_info_popup: bool,
 }
 
 impl ContactInfoEditorScreen {
@@ -47,6 +55,7 @@ impl ContactInfoEditorScreen {
             account_input: String::new(),
             message: None,
             saving: false,
+            show_info_popup: false,
         }
     }
 
@@ -105,15 +114,9 @@ impl ContactInfoEditorScreen {
             }
             ui.heading("Edit Private Contact Details");
             ui.add_space(5.0);
-            crate::ui::helpers::info_icon_button(
-                ui,
-                "About Private Contact Information:\n\n\
-                • This information is encrypted and stored on Platform\n\
-                • It is NEVER shared with the contact - only you can decrypt it\n\
-                • Only you can see these nicknames and notes\n\
-                • Hidden contacts can still send you payments\n\
-                • Use this to organize and remember your contacts",
-            );
+            if crate::ui::helpers::info_icon_button(ui, PRIVATE_CONTACT_INFO_TEXT).clicked() {
+                self.show_info_popup = true;
+            }
         });
 
         ui.separator();
@@ -286,34 +289,33 @@ impl ScreenLike for ContactInfoEditorScreen {
             ctx,
             &self.app_context,
             vec![
-                (
-                    "Contracts",
-                    AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                    ),
-                ),
-                (
-                    "DashPay",
-                    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDashpay),
-                ),
+                ("DashPay", AppAction::None),
                 ("Contact Details", AppAction::PopScreen),
                 ("Edit", AppAction::None),
             ],
             right_buttons,
         );
 
-        // Navigation panels
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
-        );
-        action |= add_contracts_subscreen_chooser_panel(ctx, &self.app_context);
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
             add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content area with island styling
         action |= island_central_panel(ctx, |ui| self.render(ui));
+
+        // Show info popup if requested
+        if self.show_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup =
+                        InfoPopup::new("Private Contact Information", PRIVATE_CONTACT_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_info_popup = false;
+                    }
+                });
+        }
 
         // Handle custom actions from top panel
         if let AppAction::Custom(command) = &action

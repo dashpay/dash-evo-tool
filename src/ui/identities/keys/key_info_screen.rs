@@ -6,6 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -502,22 +503,6 @@ impl ScreenLike for KeyInfoScreen {
                     }
                 }
 
-                // Show the popup window if `show_popup` is true
-                if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-                    egui::Window::new("Sign Message Info")
-                        .collapsible(false) // Prevent collapsing
-                        .resizable(false) // Prevent resizing
-                        .show(ctx, |ui| {
-                            ui.label(RichText::new(show_pop_up_info_text).color(Color32::BLACK));
-                            ui.add_space(10.0);
-
-                            // Add a close button to dismiss the popup
-                            if ui.button("Close").clicked() {
-                                self.show_pop_up_info = None
-                            }
-                        });
-                }
-
                 // Show the remove private key confirmation popup
                 if self.show_confirm_remove_private_key {
                     self.render_remove_private_key_confirm(ui);
@@ -528,6 +513,19 @@ impl ScreenLike for KeyInfoScreen {
 
             inner_action
         });
+
+        // Show the popup window if `show_popup` is true
+        if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup = InfoPopup::new("Sign Message Info", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
+                    }
+                });
+        }
+
         action
     }
 }

@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
 
-pub struct ImportWalletScreen {
+pub struct ImportMnemonicScreen {
     seed_phrase_words: Vec<String>,
     selected_seed_phrase_length: usize,
     seed_phrase: Option<Mnemonic>,
@@ -34,7 +34,7 @@ pub struct ImportWalletScreen {
     use_password_for_app: bool,
 }
 
-impl ImportWalletScreen {
+impl ImportMnemonicScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             seed_phrase_words: vec!["".to_string(); 24],
@@ -243,14 +243,14 @@ impl ImportWalletScreen {
     }
 }
 
-impl ScreenLike for ImportWalletScreen {
+impl ScreenLike for ImportMnemonicScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
-                ("Import Wallet", AppAction::None),
+                ("Import Mnemonic", AppAction::None),
             ],
             vec![],
         );

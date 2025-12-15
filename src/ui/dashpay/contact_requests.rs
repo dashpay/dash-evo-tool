@@ -708,7 +708,7 @@ impl ScreenLike for ContactRequests {
                 self.message = Some((msg, MessageType::Success));
             }
             _ => {
-                self.message = Some(("Operation completed".to_string(), MessageType::Success));
+                // Ignore other results
             }
         }
     }

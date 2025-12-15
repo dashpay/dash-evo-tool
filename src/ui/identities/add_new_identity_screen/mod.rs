@@ -16,7 +16,9 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult,
+};
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -76,8 +78,7 @@ pub struct AddNewIdentityScreen {
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
     error_message: Option<String>,
-    show_password: bool,
-    wallet_password: String,
+    wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
@@ -123,8 +124,7 @@ impl AddNewIdentityScreen {
                 keys_input: vec![],
             },
             error_message: None,
-            show_password: false,
-            wallet_password: "".to_string(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
@@ -927,40 +927,6 @@ impl AddNewIdentityScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for AddNewIdentityScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}
-
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
@@ -1066,15 +1032,27 @@ impl ScreenLike for AddNewIdentityScreen {
                     return;
                 };
 
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+                // Check if wallet needs unlocking
+                let wallet = self.selected_wallet.as_ref().unwrap();
 
-                if needed_unlock {
-                    if just_unlocked {
-                        // Select wallet will properly update all dependencies
-                        self.update_wallet(self.selected_wallet.clone().expect("we just checked selected_wallet set above"));
-                    } else {
-                        return;
+                // Try to open wallet without password if it doesn't use one
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    self.error_message = Some(e);
+                }
+
+                // If wallet needs password unlock
+                if wallet_needs_unlock(wallet) {
+                    // Show message and button to unlock
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to continue.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Unlock Wallet").clicked() {
+                        self.wallet_unlock_popup.open();
                     }
+                    return;
                 }
 
                 ui.add_space(10.0);
@@ -1180,7 +1158,7 @@ impl ScreenLike for AddNewIdentityScreen {
             inner_action
         });
 
-        // Show the popup window if `show_popup` is true
+        // Show the info popup if requested
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
@@ -1191,6 +1169,19 @@ impl ScreenLike for AddNewIdentityScreen {
                         self.show_pop_up_info = None;
                     }
                 });
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result =
+                    self.wallet_unlock_popup
+                        .show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet was unlocked, update dependencies
+                    self.update_wallet(wallet.clone());
+                }
+            }
         }
 
         action

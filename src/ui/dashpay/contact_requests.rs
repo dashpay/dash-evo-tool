@@ -3,16 +3,21 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::wallet_unlock_popup::{
+    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+};
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct ContactRequest {
@@ -47,6 +52,8 @@ pub struct ContactRequests {
     has_fetched_requests: bool,
     accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
     reject_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl ContactRequests {
@@ -65,6 +72,8 @@ impl ContactRequests {
             has_fetched_requests: false,
             accept_confirmation_dialog: None,
             reject_confirmation_dialog: None,
+            selected_wallet: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         };
 
         // Auto-select first identity on creation if available
@@ -77,6 +86,15 @@ impl ContactRequests {
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            // Get wallet for the selected identity
+            let mut error_message = None;
+            new_self.selected_wallet = get_selected_wallet(
+                &identities[0],
+                Some(&app_context),
+                None,
+                &mut error_message,
+            );
 
             // Load requests from database for this identity
             new_self.load_requests_from_database();
@@ -284,6 +302,19 @@ impl ContactRequests {
                     self.message = None;
                     self.has_fetched_requests = false;
 
+                    // Update wallet for the newly selected identity
+                    if let Some(identity) = &self.selected_identity {
+                        let mut error_message = None;
+                        self.selected_wallet = get_selected_wallet(
+                            identity,
+                            Some(&self.app_context),
+                            None,
+                            &mut error_message,
+                        );
+                    } else {
+                        self.selected_wallet = None;
+                    }
+
                     // Load requests from database for the newly selected identity
                     self.load_requests_from_database();
                 }
@@ -428,48 +459,64 @@ impl ContactRequests {
                                                         .strong()
                                                 );
                                             } else {
-                                                // Show Accept/Reject buttons
-                                                if ui.button("Reject").clicked() {
-                                                    // Show confirmation dialog for reject
-                                                    let name = request.from_display_name.as_ref()
-                                                        .or(request.from_username.as_ref())
-                                                        .cloned()
-                                                        .unwrap_or_else(|| {
-                                                            let id_str = request.from_identity.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
-                                                            format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
-                                                        });
+                                                // Check wallet lock status before showing buttons
+                                                let wallet_locked = if let Some(wallet) = &self.selected_wallet {
+                                                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                                                        self.message = Some((e, MessageType::Error));
+                                                    }
+                                                    wallet_needs_unlock(wallet)
+                                                } else {
+                                                    false
+                                                };
 
-                                                    self.reject_confirmation_dialog = Some((
-                                                        ConfirmationDialog::new(
-                                                            "Reject Contact Request",
-                                                            format!("Are you sure you want to reject the contact request from {}?", name)
-                                                        )
-                                                        .confirm_text(Some("Reject"))
-                                                        .cancel_text(Some("Cancel"))
-                                                        .danger_mode(true),
-                                                        request.clone()
-                                                    ));
-                                                }
+                                                if wallet_locked {
+                                                    if ui.button("Unlock Wallet").clicked() {
+                                                        self.wallet_unlock_popup.open();
+                                                    }
+                                                } else {
+                                                    // Show Accept/Reject buttons
+                                                    if ui.button("Reject").clicked() {
+                                                        // Show confirmation dialog for reject
+                                                        let name = request.from_display_name.as_ref()
+                                                            .or(request.from_username.as_ref())
+                                                            .cloned()
+                                                            .unwrap_or_else(|| {
+                                                                let id_str = request.from_identity.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+                                                                format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
+                                                            });
 
-                                                if ui.button("Accept").clicked() {
-                                                    // Show confirmation dialog for accept
-                                                    let name = request.from_display_name.as_ref()
-                                                        .or(request.from_username.as_ref())
-                                                        .cloned()
-                                                        .unwrap_or_else(|| {
-                                                            let id_str = request.from_identity.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
-                                                            format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
-                                                        });
+                                                        self.reject_confirmation_dialog = Some((
+                                                            ConfirmationDialog::new(
+                                                                "Reject Contact Request",
+                                                                format!("Are you sure you want to reject the contact request from {}?", name)
+                                                            )
+                                                            .confirm_text(Some("Reject"))
+                                                            .cancel_text(Some("Cancel"))
+                                                            .danger_mode(true),
+                                                            request.clone()
+                                                        ));
+                                                    }
 
-                                                    self.accept_confirmation_dialog = Some((
-                                                        ConfirmationDialog::new(
-                                                            "Accept Contact Request",
-                                                            format!("Are you sure you want to accept the contact request from {}?", name)
-                                                        )
-                                                        .confirm_text(Some("Accept"))
-                                                        .cancel_text(Some("Cancel")),
-                                                        request.clone()
-                                                    ));
+                                                    if ui.button("Accept").clicked() {
+                                                        // Show confirmation dialog for accept
+                                                        let name = request.from_display_name.as_ref()
+                                                            .or(request.from_username.as_ref())
+                                                            .cloned()
+                                                            .unwrap_or_else(|| {
+                                                                let id_str = request.from_identity.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+                                                                format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
+                                                            });
+
+                                                        self.accept_confirmation_dialog = Some((
+                                                            ConfirmationDialog::new(
+                                                                "Accept Contact Request",
+                                                                format!("Are you sure you want to accept the contact request from {}?", name)
+                                                            )
+                                                            .confirm_text(Some("Accept"))
+                                                            .cancel_text(Some("Cancel")),
+                                                            request.clone()
+                                                        ));
+                                                    }
                                                 }
                                             }
                                         },
@@ -583,6 +630,17 @@ impl ScreenLike for ContactRequests {
         egui::CentralPanel::default().show(ctx, |ui| {
             action = self.render(ui);
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully, UI will update on next frame
+                }
+            }
+        }
+
         action
     }
 

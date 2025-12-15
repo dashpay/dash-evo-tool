@@ -4,18 +4,23 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{
+    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+};
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::IdentityPublicKey;
 use egui::{Context, RichText, ScrollArea, TextEdit, Ui};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const CONTACT_REQUEST_INFO_TEXT: &str = "About Contact Requests:\n\n\
     Contact requests establish secure communication channels.\n\n\
@@ -40,6 +45,8 @@ pub struct AddContactScreen {
     message: Option<(String, MessageType)>,
     status: ContactRequestStatus,
     show_info_popup: bool,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl AddContactScreen {
@@ -53,6 +60,8 @@ impl AddContactScreen {
             message: None,
             status: ContactRequestStatus::NotStarted,
             show_info_popup: false,
+            selected_wallet: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         }
     }
 
@@ -66,6 +75,8 @@ impl AddContactScreen {
             message: None,
             status: ContactRequestStatus::NotStarted,
             show_info_popup: false,
+            selected_wallet: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         }
     }
 
@@ -260,6 +271,12 @@ impl ScreenLike for AddContactScreen {
                 );
                 ui.separator();
 
+                // Track identity before selection to detect changes
+                let prev_identity_id = self.selected_identity.as_ref().map(|i| {
+                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                    i.identity.id()
+                });
+
                 let key_action = add_identity_key_chooser(
                     ui,
                     &self.app_context,
@@ -270,6 +287,25 @@ impl ScreenLike for AddContactScreen {
                 );
                 if !matches!(key_action, AppAction::None) {
                     inner_action = key_action;
+                }
+
+                // Update wallet if identity changed
+                let new_identity_id = self.selected_identity.as_ref().map(|i| {
+                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                    i.identity.id()
+                });
+                if prev_identity_id != new_identity_id {
+                    if let Some(identity) = &self.selected_identity {
+                        let mut error_message = None;
+                        self.selected_wallet = get_selected_wallet(
+                            identity,
+                            Some(&self.app_context),
+                            None,
+                            &mut error_message,
+                        );
+                    } else {
+                        self.selected_wallet = None;
+                    }
                 }
             });
 
@@ -427,44 +463,72 @@ impl ScreenLike for AddContactScreen {
                 ui.group(|ui| {
                     let _dark_mode = ui.ctx().style().visuals.dark_mode;
 
-                    // Action buttons
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            inner_action |= AppAction::PopScreen;
+                    // Check wallet lock status before showing send button
+                    let wallet_locked = if let Some(wallet) = &self.selected_wallet {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.message = Some((e, MessageType::Error));
                         }
+                        wallet_needs_unlock(wallet)
+                    } else {
+                        false
+                    };
 
+                    if wallet_locked {
                         ui.add_space(10.0);
-
-                        let send_button_enabled = !self.username_or_id.is_empty()
-                            && self.selected_identity.is_some()
-                            && self.selected_key.is_some();
-
-                        let send_button = egui::Button::new(
-                            RichText::new("Send Contact Request").color(egui::Color32::WHITE),
-                        )
-                        .fill(if send_button_enabled {
-                            egui::Color32::from_rgb(0, 141, 228) // Dash blue
-                        } else {
-                            egui::Color32::GRAY
-                        });
-
-                        if ui.add_enabled(send_button_enabled, send_button).clicked() {
-                            inner_action |= self.send_contact_request();
-                        }
-
-                        // Show retry button for recoverable errors
-                        if let ContactRequestStatus::Error(ref err) = self.status
-                            && err.is_recoverable()
-                        {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to send contact request.",
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                inner_action |= AppAction::PopScreen;
+                            }
                             ui.add_space(10.0);
-                            if ui.button("Retry").clicked() {
-                                // Clear both status and message before retrying
-                                self.status = ContactRequestStatus::NotStarted;
-                                self.message = None;
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                        });
+                    } else {
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                inner_action |= AppAction::PopScreen;
+                            }
+
+                            ui.add_space(10.0);
+
+                            let send_button_enabled = !self.username_or_id.is_empty()
+                                && self.selected_identity.is_some()
+                                && self.selected_key.is_some();
+
+                            let send_button = egui::Button::new(
+                                RichText::new("Send Contact Request").color(egui::Color32::WHITE),
+                            )
+                            .fill(if send_button_enabled {
+                                egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                            } else {
+                                egui::Color32::GRAY
+                            });
+
+                            if ui.add_enabled(send_button_enabled, send_button).clicked() {
                                 inner_action |= self.send_contact_request();
                             }
-                        }
-                    });
+
+                            // Show retry button for recoverable errors
+                            if let ContactRequestStatus::Error(ref err) = self.status
+                                && err.is_recoverable()
+                            {
+                                ui.add_space(10.0);
+                                if ui.button("Retry").clicked() {
+                                    // Clear both status and message before retrying
+                                    self.status = ContactRequestStatus::NotStarted;
+                                    self.message = None;
+                                    inner_action |= self.send_contact_request();
+                                }
+                            }
+                        });
+                    }
                 });
             });
 
@@ -482,6 +546,16 @@ impl ScreenLike for AddContactScreen {
                         self.show_info_popup = false;
                     }
                 });
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully, UI will update on next frame
+                }
+            }
         }
 
         action

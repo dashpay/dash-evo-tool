@@ -1,4 +1,3 @@
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use crate::{app::AppAction, ui::theme::DashColors};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -86,7 +85,7 @@ impl TokensScreen {
                                     action |= internal_action;
                                 }
                                 Err(e) => {
-                                    self.set_error_message(Some(e));
+                                    self.token_creator_error_message = Some(e);
                                 }
                             }
                         }
@@ -97,7 +96,7 @@ impl TokensScreen {
                                     self.json_popup_text = schema;
                                 }
                                 Err(e) => {
-                                    self.set_error_message(Some(e.to_string()));
+                                    self.token_creator_error_message = Some(e.to_string());
                                 }
                             }
                         }

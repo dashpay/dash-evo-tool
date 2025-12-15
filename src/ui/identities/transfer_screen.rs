@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 
 use super::get_selected_wallet;
@@ -66,8 +66,7 @@ pub struct TransferScreen {
     confirmation_popup: bool,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     // Platform address transfer fields
     destination_type: TransferDestinationType,
     platform_address_input: String,
@@ -104,8 +103,7 @@ impl TransferScreen {
             confirmation_popup: false,
             confirmation_dialog: None,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             destination_type: TransferDestinationType::Identity,
             platform_address_input: String::new(),
         }
@@ -573,10 +571,22 @@ impl ScreenLike for TransferScreen {
                 }
             } else {
                 if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        return inner_action;
+                    if let Some(wallet) = &self.selected_wallet {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                            return inner_action;
+                        }
                     }
                 }
 
@@ -718,40 +728,18 @@ impl ScreenLike for TransferScreen {
 
             inner_action
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
+
         action
     }
 }
 
-impl ScreenWithWalletUnlock for TransferScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}

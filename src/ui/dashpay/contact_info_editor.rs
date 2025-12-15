@@ -3,17 +3,22 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{
+    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+};
 use crate::ui::dashpay::DashPaySubscreen;
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
     This information is encrypted and stored on Platform.\n\n\
@@ -35,6 +40,8 @@ pub struct ContactInfoEditorScreen {
     message: Option<(String, MessageType)>,
     saving: bool,
     show_info_popup: bool,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl ContactInfoEditorScreen {
@@ -43,6 +50,15 @@ impl ContactInfoEditorScreen {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     ) -> Self {
+        // Get wallet for the identity
+        let mut error_message = None;
+        let selected_wallet = get_selected_wallet(
+            &identity,
+            Some(&app_context),
+            None,
+            &mut error_message,
+        );
+
         Self {
             app_context,
             identity,
@@ -56,6 +72,8 @@ impl ContactInfoEditorScreen {
             message: None,
             saving: false,
             show_info_popup: false,
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         }
     }
 
@@ -229,25 +247,53 @@ impl ContactInfoEditorScreen {
 
                 ui.add_space(20.0);
 
-                // Action buttons
-                ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                // Check wallet lock status before showing save button
+                let wallet_locked = if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.message = Some((e, MessageType::Error));
+                    }
+                    wallet_needs_unlock(wallet)
+                } else {
+                    false
+                };
 
-                    if self.saving {
-                        ui.spinner();
-                        ui.label(RichText::new("Saving...").color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
-                    } else {
-                        if ui.button(RichText::new("💾 Save Changes").size(16.0)).clicked() {
-                            action = self.save_contact_info();
-                        }
-
-                        ui.add_space(10.0);
-
+                if wallet_locked {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to save changes.",
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
                         if ui.button(RichText::new("❌ Cancel").size(16.0)).clicked() {
                             action = AppAction::PopScreen;
                         }
-                    }
-                });
+                        ui.add_space(10.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                    });
+                } else {
+                    // Action buttons
+                    ui.horizontal(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+                        if self.saving {
+                            ui.spinner();
+                            ui.label(RichText::new("Saving...").color(if dark_mode { DashColors::DARK_TEXT_SECONDARY } else { DashColors::TEXT_SECONDARY }));
+                        } else {
+                            if ui.button(RichText::new("💾 Save Changes").size(16.0)).clicked() {
+                                action = self.save_contact_info();
+                            }
+
+                            ui.add_space(10.0);
+
+                            if ui.button(RichText::new("❌ Cancel").size(16.0)).clicked() {
+                                action = AppAction::PopScreen;
+                            }
+                        }
+                    });
+                }
             });
 
         });
@@ -315,6 +361,16 @@ impl ScreenLike for ContactInfoEditorScreen {
                         self.show_info_popup = false;
                     }
                 });
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully, UI will update on next frame
+                }
+            }
         }
 
         // Handle custom actions from top panel

@@ -66,7 +66,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -1069,8 +1069,7 @@ pub struct TokensScreen {
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     token_names_input: Vec<(String, String, TokenNameLanguage, TokenSearchable)>,
     contract_keywords_input: String,
     token_description_input: String,
@@ -1421,8 +1420,7 @@ impl TokensScreen {
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_token_creator_confirmation_popup: false,
             token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
@@ -2839,6 +2837,19 @@ impl ScreenLike for TokensScreen {
         {
             action = AppAction::BackendTask(bt);
         }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result =
+                    self.wallet_unlock_popup
+                        .show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
+
         action
     }
 
@@ -2957,40 +2968,6 @@ impl ScreenLike for TokensScreen {
             }
             _ => {}
         }
-    }
-}
-
-impl ScreenWithWalletUnlock for TokensScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.token_creator_error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.token_creator_error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
     }
 }
 

@@ -15,7 +15,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
@@ -47,8 +47,7 @@ pub struct TopUpIdentityScreen {
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     copied_to_clipboard: Option<Option<String>>,
     error_message: Option<String>,
-    show_password: bool,
-    wallet_password: String,
+    wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
     // Platform address fields
@@ -70,8 +69,7 @@ impl TopUpIdentityScreen {
             funding_utxo: None,
             copied_to_clipboard: None,
             error_message: None,
-            show_password: false,
-            wallet_password: "".to_string(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             app_context: app_context.clone(),
             selected_platform_address: None,
@@ -382,39 +380,6 @@ impl TopUpIdentityScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for TopUpIdentityScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}
 
 impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -618,10 +583,22 @@ impl ScreenLike for TopUpIdentityScreen {
                         return;
                     };
 
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        return;
+                    if let Some(wallet) = &self.wallet {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                            return;
+                        }
                     }
 
                     ui.add_space(10.0);
@@ -648,6 +625,16 @@ impl ScreenLike for TopUpIdentityScreen {
 
             inner_action
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {

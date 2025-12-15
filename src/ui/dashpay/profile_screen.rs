@@ -3,14 +3,19 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
+use crate::ui::components::wallet_unlock_popup::{
+    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+};
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
     Display names can include any UTF-8 characters (emojis, symbols, etc.).\n\n\
@@ -80,6 +85,8 @@ pub struct ProfileScreen {
     avatar_loading: bool,                            // Track if avatar is being loaded
     pending_action: Option<Box<AppAction>>,          // Action to execute on next frame
     show_info_popup: bool,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl ProfileScreen {
@@ -106,6 +113,8 @@ impl ProfileScreen {
             avatar_loading: false,
             pending_action: None,
             show_info_popup: false,
+            selected_wallet: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         };
 
         // Auto-select identity on creation - prefer one with a profile
@@ -134,6 +143,15 @@ impl ProfileScreen {
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            // Get wallet for the selected identity
+            let mut error_message = None;
+            new_self.selected_wallet = get_selected_wallet(
+                &identities[selected_idx],
+                Some(&app_context),
+                None,
+                &mut error_message,
+            );
 
             // Load profile from database for this identity
             new_self.load_profile_from_database();
@@ -443,6 +461,19 @@ impl ProfileScreen {
                     self.avatar_loading = false;
                     self.avatar_textures.clear();
 
+                    // Update wallet for the newly selected identity
+                    if let Some(identity) = &self.selected_identity {
+                        let mut error_message = None;
+                        self.selected_wallet = get_selected_wallet(
+                            identity,
+                            Some(&self.app_context),
+                            None,
+                            &mut error_message,
+                        );
+                    } else {
+                        self.selected_wallet = None;
+                    }
+
                     // Load profile from database for the newly selected identity
                     self.load_profile_from_database();
                 }
@@ -649,35 +680,63 @@ impl ProfileScreen {
 
                                 ui.add_space(15.0);
 
-                                // Action buttons
-                                ui.horizontal(|ui| {
-                                    if ui.button("Cancel").clicked() {
-                                        // Show confirmation if there are unsaved changes
-                                        if self.has_unsaved_changes {
-                                            // TODO: Add confirmation dialog
-                                            self.cancel_editing();
-                                        } else {
+                                // Check wallet lock status before showing save button
+                                let wallet_locked = if let Some(wallet) = &self.selected_wallet {
+                                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                                        self.message = Some((e, MessageType::Error));
+                                    }
+                                    wallet_needs_unlock(wallet)
+                                } else {
+                                    false
+                                };
+
+                                if wallet_locked {
+                                    ui.add_space(10.0);
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(200, 150, 50),
+                                        "Wallet is locked. Please unlock to save profile.",
+                                    );
+                                    ui.add_space(8.0);
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Cancel").clicked() {
                                             self.cancel_editing();
                                         }
-                                    }
-
-                                    ui.add_space(10.0);
-
-                                    let save_button = egui::Button::new(
-                                        RichText::new("Save Profile").color(egui::Color32::WHITE),
-                                    )
-                                    .fill(if self.is_valid() {
-                                        egui::Color32::from_rgb(0, 141, 228) // Dash blue
-                                    } else {
-                                        egui::Color32::GRAY
+                                        ui.add_space(10.0);
+                                        if ui.button("Unlock Wallet").clicked() {
+                                            self.wallet_unlock_popup.open();
+                                        }
                                     });
+                                } else {
+                                    // Action buttons
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Cancel").clicked() {
+                                            // Show confirmation if there are unsaved changes
+                                            if self.has_unsaved_changes {
+                                                // TODO: Add confirmation dialog
+                                                self.cancel_editing();
+                                            } else {
+                                                self.cancel_editing();
+                                            }
+                                        }
 
-                                    if ui.add_enabled(self.is_valid(), save_button).clicked() {
-                                        action |= self.save_profile();
-                                    }
+                                        ui.add_space(10.0);
 
-                                    // Save status removed to avoid UI disruption
-                                });
+                                        let save_button = egui::Button::new(
+                                            RichText::new("Save Profile").color(egui::Color32::WHITE),
+                                        )
+                                        .fill(if self.is_valid() {
+                                            egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                                        } else {
+                                            egui::Color32::GRAY
+                                        });
+
+                                        if ui.add_enabled(self.is_valid(), save_button).clicked() {
+                                            action |= self.save_profile();
+                                        }
+
+                                        // Save status removed to avoid UI disruption
+                                    });
+                                }
                             });
                         });
                     });
@@ -900,6 +959,16 @@ impl ProfileScreen {
                         self.show_info_popup = false;
                     }
                 });
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ui.ctx(), wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully, UI will update on next frame
+                }
+            }
         }
 
         action

@@ -8,7 +8,9 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult,
+};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -87,8 +89,7 @@ pub struct AddExistingIdentityScreen {
     testnet_loaded_nodes: Option<TestnetNodes>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     identity_associated_with_wallet: bool,
-    show_password: bool,
-    wallet_password: String,
+    wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
     pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
@@ -119,8 +120,7 @@ impl AddExistingIdentityScreen {
             testnet_loaded_nodes,
             selected_wallet,
             identity_associated_with_wallet: true,
-            show_password: false,
-            wallet_password: "".to_string(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
             identity_index_input: String::new(),
             app_context: app_context.clone(),
@@ -234,15 +234,20 @@ impl AddExistingIdentityScreen {
                             .any(|(_, wallet)| Arc::ptr_eq(wallet, selected_wallet));
 
                         if wallet_still_loaded {
-                            let (needed_unlock, just_unlocked) =
-                                self.render_wallet_unlock_if_needed(ui);
-                            if needed_unlock && !just_unlocked {
-                                should_return_early = true;
-                            } else if just_unlocked {
+                            // Try to open wallet without password if it doesn't use one
+                            if let Err(e) = try_open_wallet_no_password(selected_wallet) {
+                                self.error_message = Some(e);
+                            }
+
+                            if wallet_needs_unlock(selected_wallet) {
                                 ui.colored_label(
-                                    Color32::GREEN,
-                                    "Wallet unlocked. We'll pull any matching keys automatically.",
+                                    Color32::from_rgb(200, 150, 50),
+                                    "Wallet is locked.",
                                 );
+                                if ui.button("Unlock Wallet").clicked() {
+                                    self.wallet_unlock_popup.open();
+                                }
+                                should_return_early = true;
                             }
                         } else {
                             self.selected_wallet = None;
@@ -473,9 +478,23 @@ impl AddExistingIdentityScreen {
             return action;
         };
 
-        let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
+        let wallet = self.selected_wallet.as_ref().unwrap();
 
-        if needed_unlock && !just_unlocked {
+        // Try to open wallet without password if it doesn't use one
+        if let Err(e) = try_open_wallet_no_password(wallet) {
+            self.error_message = Some(e);
+        }
+
+        if wallet_needs_unlock(wallet) {
+            ui.add_space(10.0);
+            ui.colored_label(
+                Color32::from_rgb(200, 150, 50),
+                "Wallet is locked. Please unlock to continue.",
+            );
+            ui.add_space(8.0);
+            if ui.button("Unlock Wallet").clicked() {
+                self.wallet_unlock_popup.open();
+            }
             return action;
         }
 
@@ -666,40 +685,6 @@ impl AddExistingIdentityScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for AddExistingIdentityScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}
-
 impl ScreenLike for AddExistingIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
@@ -849,6 +834,18 @@ impl ScreenLike for AddExistingIdentityScreen {
                         self.show_pop_up_info = None;
                     }
                 });
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result =
+                    self.wallet_unlock_popup
+                        .show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
         }
 
         action

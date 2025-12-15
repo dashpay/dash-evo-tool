@@ -4,13 +4,18 @@ use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::wallet_unlock_popup::{
+    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+};
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub struct QRScannerScreen {
     pub app_context: Arc<AppContext>,
@@ -20,6 +25,8 @@ pub struct QRScannerScreen {
     parsed_qr_data: Option<AutoAcceptProofData>,
     message: Option<(String, MessageType)>,
     sending: bool,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl QRScannerScreen {
@@ -32,6 +39,8 @@ impl QRScannerScreen {
             parsed_qr_data: None,
             message: None,
             sending: false,
+            selected_wallet: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         }
     }
 
@@ -143,6 +152,9 @@ impl QRScannerScreen {
                 ui.label(RichText::new("1. Select Your Identity").strong());
                 ui.separator();
 
+                // Track identity before selection to detect changes
+                let prev_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
+
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
                     ui.add(
@@ -157,6 +169,22 @@ impl QRScannerScreen {
                         .other_option(false),
                     );
                 });
+
+                // Update wallet if identity changed
+                let new_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
+                if prev_identity_id != new_identity_id {
+                    if let Some(identity) = &self.selected_identity {
+                        let mut error_message = None;
+                        self.selected_wallet = get_selected_wallet(
+                            identity,
+                            Some(&self.app_context),
+                            None,
+                            &mut error_message,
+                        );
+                    } else {
+                        self.selected_wallet = None;
+                    }
+                }
             });
 
             ui.add_space(20.0);
@@ -217,14 +245,35 @@ impl QRScannerScreen {
 
                     ui.add_space(10.0);
 
-                    ui.horizontal(|ui| {
-                        if self.sending {
-                            ui.spinner();
-                            ui.label("Sending contact request...");
-                        } else if ui.button("Send Contact Request").clicked() {
-                            action = self.send_contact_request_with_proof();
+                    // Check wallet lock status before showing send button
+                    let wallet_locked = if let Some(wallet) = &self.selected_wallet {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.message = Some((e, MessageType::Error));
                         }
-                    });
+                        wallet_needs_unlock(wallet)
+                    } else {
+                        false
+                    };
+
+                    if wallet_locked {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to send contact request.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            if self.sending {
+                                ui.spinner();
+                                ui.label("Sending contact request...");
+                            } else if ui.button("Send Contact Request").clicked() {
+                                action = self.send_contact_request_with_proof();
+                            }
+                        });
+                    }
 
                     ui.add_space(10.0);
 
@@ -277,6 +326,16 @@ impl ScreenLike for QRScannerScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             action = self.render(ui);
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully, UI will update on next frame
+                }
+            }
+        }
 
         action
     }

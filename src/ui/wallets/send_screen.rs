@@ -8,7 +8,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
@@ -97,8 +97,7 @@ pub struct WalletSendScreen {
     message: Option<(String, MessageType, DateTime<Utc>)>,
 
     // Wallet unlock
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
 }
 
@@ -120,8 +119,7 @@ impl WalletSendScreen {
             memo: String::new(),
             sending: false,
             message: None,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
         }
     }
@@ -769,8 +767,24 @@ impl WalletSendScreen {
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
         if !wallet_is_open {
-            self.render_wallet_unlock_if_needed(ui);
-            ui.add_space(10.0);
+            if let Some(wallet) = &self.selected_wallet {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    self.error_message = Some(e);
+                }
+                if wallet_needs_unlock(wallet) {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to continue.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Unlock Wallet").clicked() {
+                        self.wallet_unlock_popup.open();
+                    }
+                    ui.add_space(10.0);
+                    return AppAction::None;
+                }
+            }
         }
 
         // Platform addresses list
@@ -1112,8 +1126,24 @@ impl WalletSendScreen {
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
         if !wallet_is_open {
-            self.render_wallet_unlock_if_needed(ui);
-            ui.add_space(10.0);
+            if let Some(wallet) = &self.selected_wallet {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    self.error_message = Some(e);
+                }
+                if wallet_needs_unlock(wallet) {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to continue.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Unlock Wallet").clicked() {
+                        self.wallet_unlock_popup.open();
+                    }
+                    ui.add_space(10.0);
+                    return AppAction::None;
+                }
+            }
         }
 
         // Recipients
@@ -1215,6 +1245,16 @@ impl ScreenLike for WalletSendScreen {
             inner_action
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
+
         action
     }
 
@@ -1293,36 +1333,3 @@ impl ScreenLike for WalletSendScreen {
     fn refresh(&mut self) {}
 }
 
-impl ScreenWithWalletUnlock for WalletSendScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}

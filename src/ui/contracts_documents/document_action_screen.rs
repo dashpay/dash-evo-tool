@@ -9,7 +9,7 @@ use crate::ui::ScreenLike;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering,
     add_identity_key_chooser_with_doc_type, show_success_screen,
@@ -89,9 +89,8 @@ pub struct DocumentActionScreen {
     pub selected_identity: Option<QualifiedIdentity>,
     pub selected_key: Option<IdentityPublicKey>,
     pub wallet: Option<Arc<RwLock<Wallet>>>,
-    pub wallet_password: String,
+    pub wallet_unlock_popup: WalletUnlockPopup,
     pub wallet_failure: Option<String>,
-    pub show_password: bool,
     pub broadcast_status: BroadcastStatus,
     pub selected_contract: Option<QualifiedContract>,
     pub selected_document_type: Option<DocumentType>,
@@ -149,9 +148,8 @@ impl DocumentActionScreen {
             selected_identity,
             selected_key: None,
             wallet: None,
-            wallet_password: String::new(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_failure: None,
-            show_password: false,
             broadcast_status: BroadcastStatus::NotBroadcasted,
             selected_contract,
             selected_document_type: None,
@@ -172,9 +170,8 @@ impl DocumentActionScreen {
         self.selected_identity = None;
         self.selected_key = None;
         self.wallet = None;
-        self.wallet_password.clear();
+        self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
-        self.show_password = false;
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
         self.selected_contract = None;
         self.selected_document_type = None;
@@ -1499,6 +1496,16 @@ impl ScreenLike for DocumentActionScreen {
             _ => self.render_main_content(ui),
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
+
         action
     }
 
@@ -1644,9 +1651,20 @@ impl DocumentActionScreen {
                 &mut self.backend_message,
             );
         }
-        if self.wallet.is_some() {
-            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-            if needed_unlock && !just_unlocked {
+        if let Some(wallet) = &self.wallet {
+            if let Err(e) = try_open_wallet_no_password(wallet) {
+                self.backend_message = Some(e);
+            }
+            if wallet_needs_unlock(wallet) {
+                ui.add_space(10.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 150, 50),
+                    "Wallet is locked. Please unlock to continue.",
+                );
+                ui.add_space(8.0);
+                if ui.button("Unlock Wallet").clicked() {
+                    self.wallet_unlock_popup.open();
+                }
                 return action;
             }
         }
@@ -1663,39 +1681,5 @@ impl DocumentActionScreen {
         }
 
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for DocumentActionScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.wallet_failure = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.wallet_failure.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
     }
 }

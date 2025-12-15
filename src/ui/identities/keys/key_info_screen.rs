@@ -10,7 +10,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
@@ -39,8 +39,7 @@ pub struct KeyInfoScreen {
     private_key_input: String,
     error_message: Option<String>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     message_input: String,
     signed_message: Option<String>,
     sign_error_message: Option<String>,
@@ -497,9 +496,23 @@ impl ScreenLike for KeyInfoScreen {
                 }
 
                 if self.view_wallet_unlock {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-                    if !needed_unlock || just_unlocked {
-                        self.wallet_open = true;
+                    if let Some(wallet) = &self.selected_wallet {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                        } else {
+                            self.wallet_open = true;
+                        }
                     }
                 }
 
@@ -513,6 +526,16 @@ impl ScreenLike for KeyInfoScreen {
 
             inner_action
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
@@ -555,8 +578,7 @@ impl KeyInfoScreen {
             private_key_input: String::new(),
             error_message: None,
             selected_wallet,
-            wallet_password: "".to_string(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             message_input: "".to_string(),
             signed_message: None,
             sign_error_message: None,
@@ -754,36 +776,3 @@ impl KeyInfoScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for KeyInfoScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}

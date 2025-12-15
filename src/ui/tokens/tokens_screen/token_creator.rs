@@ -17,7 +17,6 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::Component;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
@@ -95,20 +94,29 @@ impl TokensScreen {
                         ui.add_space(10.0);
                         ui.separator();
 
-                        // 3) If the wallet is locked, show unlock
-                        //    But only do this step if we actually have a wallet reference:
-                        let mut need_unlock = false;
-                        let mut just_unlocked = false;
+                        // 3) If the wallet is locked, show unlock button
+                        if let Some(wallet) = &self.selected_wallet {
+                            use crate::ui::components::wallet_unlock_popup::{
+                                wallet_needs_unlock, try_open_wallet_no_password,
+                            };
 
-                        if self.selected_wallet.is_some() {
-                            let (n, j) = self.render_wallet_unlock_if_needed(ui);
-                            need_unlock = n;
-                            just_unlocked = j;
-                        }
+                            // Try to open wallet without password if it doesn't use one
+                            if let Err(e) = try_open_wallet_no_password(wallet) {
+                                self.token_creator_error_message = Some(e);
+                            }
 
-                        if need_unlock && !just_unlocked {
-                            // We must wait for unlock before continuing
-                            return;
+                            if wallet_needs_unlock(wallet) {
+                                ui.add_space(10.0);
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(200, 150, 50),
+                                    "Wallet is locked. Please unlock to continue.",
+                                );
+                                ui.add_space(8.0);
+                                if ui.button("Unlock Wallet").clicked() {
+                                    self.wallet_unlock_popup.open();
+                                }
+                                return;
+                            }
                         }
 
                         // 4) Show input fields for token name, decimals, base supply, etc.

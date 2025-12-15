@@ -509,7 +509,7 @@ impl ScreenType {
             }
             ScreenType::GroveSTARK => Screen::GroveSTARKScreen(GroveSTARKScreen::new(app_context)),
             ScreenType::Dashpay => {
-                Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Contacts))
+                Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Profile))
             }
             ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
                 app_context.clone(),

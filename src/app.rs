@@ -230,7 +230,7 @@ impl AppState {
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
         let mut contracts_dashpay_screen =
-            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Contacts);
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
 
         // Create DashPay screens
         let mut dashpay_contacts_screen =
@@ -282,7 +282,7 @@ impl AppState {
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(testnet_app_context);
             contracts_dashpay_screen =
-                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Contacts);
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
             tokens_balances_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
@@ -353,7 +353,7 @@ impl AppState {
             proof_log_screen = ProofLogScreen::new(local_app_context);
             platform_info_screen = PlatformInfoScreen::new(local_app_context);
             contracts_dashpay_screen =
-                DashPayScreen::new(local_app_context, DashPaySubscreen::Contacts);
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
             tokens_balances_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
             token_search_screen =

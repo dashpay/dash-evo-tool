@@ -474,7 +474,7 @@ impl ProfileScreen {
 
         // Profile loading status
         if !self.profile_load_attempted && !self.loading {
-            ui.label("No profile loaded");
+            ui.label("No profile loaded for the selected identity. Press 'Refresh' to load.");
         }
 
         // Loading or saving indicator
@@ -492,322 +492,401 @@ impl ProfileScreen {
             return action;
         } else {
             ScrollArea::vertical().show(ui, |ui| {
-            if self.editing {
-                // Edit mode
-                ui.horizontal(|ui| {
-                    // Main editing panel (left side)
-                    ui.vertical(|ui| {
-                        ui.group(|ui| {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Edit Profile").strong().color(DashColors::text_primary(dark_mode)));
+                if self.editing {
+                    // Edit mode
+                    ui.horizontal(|ui| {
+                        // Main editing panel (left side)
+                        ui.vertical(|ui| {
+                            ui.group(|ui| {
+                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Edit Profile")
+                                            .strong()
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
 
-                                ui.add_space(5.0);
-                                if crate::ui::helpers::info_icon_button(
-                                    ui,
-                                    PROFILE_GUIDELINES_INFO_TEXT,
-                                )
-                                .clicked()
-                                {
-                                    self.show_info_popup = true;
-                                }
-                            });
+                                    ui.add_space(5.0);
+                                    if crate::ui::helpers::info_icon_button(
+                                        ui,
+                                        PROFILE_GUIDELINES_INFO_TEXT,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.show_info_popup = true;
+                                    }
+                                });
 
-                            ui.separator();
-
-                            // Display Name Field
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Display Name:").color(DashColors::text_primary(dark_mode)));
-                                ui.label(RichText::new("*").color(egui::Color32::RED)); // Required indicator
-                            });
-
-                            let display_name_response = ui.add(
-                                TextEdit::singleline(&mut self.edit_display_name)
-                                    .hint_text("Enter your display name (required)")
-                                    .desired_width(300.0),
-                            );
-
-                            // Character count with color coding
-                            let char_count = self.edit_display_name.len();
-                            let count_color = if char_count > 25 {
-                                egui::Color32::RED
-                            } else if char_count > 20 {
-                                egui::Color32::ORANGE
-                            } else {
-                                DashColors::text_secondary(dark_mode)
-                            };
-                            ui.label(RichText::new(format!("{}/25", char_count)).small().color(count_color));
-
-                            if display_name_response.changed() {
-                                self.check_for_changes();
-                                self.validate_profile();
-                            }
-
-                            ui.add_space(10.0);
-
-                            // Bio Field
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Bio/Status:").color(DashColors::text_primary(dark_mode)));
-                            });
-
-                            let bio_response = ui.add(
-                                TextEdit::multiline(&mut self.edit_bio)
-                                    .hint_text("Tell others about yourself (optional)")
-                                    .desired_width(300.0)
-                                    .desired_rows(4),
-                            );
-
-                            // Bio character count with color coding
-                            let bio_count = self.edit_bio.len();
-                            let bio_count_color = if bio_count > 140 {
-                                egui::Color32::RED
-                            } else if bio_count > 120 {
-                                egui::Color32::ORANGE
-                            } else {
-                                DashColors::text_secondary(dark_mode)
-                            };
-                            ui.label(RichText::new(format!("{}/140", bio_count)).small().color(bio_count_color));
-
-                            if bio_response.changed() {
-                                self.check_for_changes();
-                                self.validate_profile();
-                            }
-
-                            ui.add_space(10.0);
-
-                            // Avatar URL Field
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Avatar URL:").color(DashColors::text_primary(dark_mode)));
-                            });
-
-                            let avatar_response = ui.add(
-                                TextEdit::singleline(&mut self.edit_avatar_url)
-                                    .hint_text("https://example.com/avatar.jpg (optional)")
-                                    .desired_width(300.0),
-                            );
-
-                            // Avatar URL character count
-                            let url_count = self.edit_avatar_url.len();
-                            let url_count_color = if url_count > 500 {
-                                egui::Color32::RED
-                            } else if url_count > 450 {
-                                egui::Color32::ORANGE
-                            } else {
-                                DashColors::text_secondary(dark_mode)
-                            };
-                            if !self.edit_avatar_url.is_empty() {
-                                ui.label(RichText::new(format!("{}/500", url_count)).small().color(url_count_color));
-                            }
-
-                            if avatar_response.changed() {
-                                self.check_for_changes();
-                                self.validate_profile();
-                            }
-
-                            // Show validation errors
-                            if !self.validation_errors.is_empty() {
-                                ui.add_space(10.0);
                                 ui.separator();
-                                ui.label(RichText::new("Validation Errors:").color(egui::Color32::RED).strong());
-                                for error in &self.validation_errors {
-                                    ui.label(RichText::new(format!("• {}", error.message())).color(egui::Color32::RED).small());
+
+                                // Display Name Field
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Display Name:")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.label(RichText::new("*").color(egui::Color32::RED)); // Required indicator
+                                });
+
+                                let display_name_response = ui.add(
+                                    TextEdit::singleline(&mut self.edit_display_name)
+                                        .hint_text("Enter your display name (required)")
+                                        .desired_width(300.0),
+                                );
+
+                                // Character count with color coding
+                                let char_count = self.edit_display_name.len();
+                                let count_color = if char_count > 25 {
+                                    egui::Color32::RED
+                                } else if char_count > 20 {
+                                    egui::Color32::ORANGE
+                                } else {
+                                    DashColors::text_secondary(dark_mode)
+                                };
+                                ui.label(
+                                    RichText::new(format!("{}/25", char_count))
+                                        .small()
+                                        .color(count_color),
+                                );
+
+                                if display_name_response.changed() {
+                                    self.check_for_changes();
+                                    self.validate_profile();
                                 }
-                            }
 
-                            ui.add_space(15.0);
+                                ui.add_space(10.0);
 
-                            // Action buttons
-                            ui.horizontal(|ui| {
-                                if ui.button("Cancel").clicked() {
-                                    // Show confirmation if there are unsaved changes
-                                    if self.has_unsaved_changes {
-                                        // TODO: Add confirmation dialog
-                                        self.cancel_editing();
-                                    } else {
-                                        self.cancel_editing();
+                                // Bio Field
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Bio/Status:")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                });
+
+                                let bio_response = ui.add(
+                                    TextEdit::multiline(&mut self.edit_bio)
+                                        .hint_text("Tell others about yourself (optional)")
+                                        .desired_width(300.0)
+                                        .desired_rows(4),
+                                );
+
+                                // Bio character count with color coding
+                                let bio_count = self.edit_bio.len();
+                                let bio_count_color = if bio_count > 140 {
+                                    egui::Color32::RED
+                                } else if bio_count > 120 {
+                                    egui::Color32::ORANGE
+                                } else {
+                                    DashColors::text_secondary(dark_mode)
+                                };
+                                ui.label(
+                                    RichText::new(format!("{}/140", bio_count))
+                                        .small()
+                                        .color(bio_count_color),
+                                );
+
+                                if bio_response.changed() {
+                                    self.check_for_changes();
+                                    self.validate_profile();
+                                }
+
+                                ui.add_space(10.0);
+
+                                // Avatar URL Field
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Avatar URL:")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                });
+
+                                let avatar_response = ui.add(
+                                    TextEdit::singleline(&mut self.edit_avatar_url)
+                                        .hint_text("https://example.com/avatar.jpg (optional)")
+                                        .desired_width(300.0),
+                                );
+
+                                // Avatar URL character count
+                                let url_count = self.edit_avatar_url.len();
+                                let url_count_color = if url_count > 500 {
+                                    egui::Color32::RED
+                                } else if url_count > 450 {
+                                    egui::Color32::ORANGE
+                                } else {
+                                    DashColors::text_secondary(dark_mode)
+                                };
+                                if !self.edit_avatar_url.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("{}/500", url_count))
+                                            .small()
+                                            .color(url_count_color),
+                                    );
+                                }
+
+                                if avatar_response.changed() {
+                                    self.check_for_changes();
+                                    self.validate_profile();
+                                }
+
+                                // Show validation errors
+                                if !self.validation_errors.is_empty() {
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new("Validation Errors:")
+                                            .color(egui::Color32::RED)
+                                            .strong(),
+                                    );
+                                    for error in &self.validation_errors {
+                                        ui.label(
+                                            RichText::new(format!("• {}", error.message()))
+                                                .color(egui::Color32::RED)
+                                                .small(),
+                                        );
                                     }
                                 }
 
-                                ui.add_space(10.0);
+                                ui.add_space(15.0);
 
-                                let save_button = egui::Button::new(
-                                    RichText::new("Save Profile")
-                                        .color(egui::Color32::WHITE)
-                                ).fill(if self.is_valid() {
+                                // Action buttons
+                                ui.horizontal(|ui| {
+                                    if ui.button("Cancel").clicked() {
+                                        // Show confirmation if there are unsaved changes
+                                        if self.has_unsaved_changes {
+                                            // TODO: Add confirmation dialog
+                                            self.cancel_editing();
+                                        } else {
+                                            self.cancel_editing();
+                                        }
+                                    }
+
+                                    ui.add_space(10.0);
+
+                                    let save_button = egui::Button::new(
+                                        RichText::new("Save Profile").color(egui::Color32::WHITE),
+                                    )
+                                    .fill(if self.is_valid() {
                                         egui::Color32::from_rgb(0, 141, 228) // Dash blue
                                     } else {
                                         egui::Color32::GRAY
                                     });
 
-                                if ui.add_enabled(self.is_valid(), save_button).clicked() {
-                                    action |= self.save_profile();
-                                }
-
-                                // Save status removed to avoid UI disruption
-                            });
-                        });
-                    });
-                });
-            } else {
-                // View mode
-                if let Some(profile) = self.profile.clone() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            // Avatar display
-                            ui.vertical(|ui| {
-                                ui.add_space(5.0);
-                                ui.horizontal(|ui| {
-                                    ui.add_space(10.0);
-
-                                    // Check if we have an avatar URL and try to display it
-                                    if !profile.avatar_url.is_empty() {
-                                        let texture_id = format!("avatar_{}", profile.avatar_url);
-
-                                        // Check if texture is already cached
-                                        if let Some(texture) = self.avatar_textures.get(&texture_id) {
-                                            // Display the cached avatar image
-                                            ui.add(
-                                                egui::Image::new(texture)
-                                                    .fit_to_exact_size(egui::vec2(50.0, 50.0))
-                                                    .corner_radius(5.0)
-                                            );
-                                        } else {
-                                            // Check if image data was loaded by async task
-                                            let data_id = format!("avatar_data_{}", profile.avatar_url);
-                                            let color_image = ui.ctx().data_mut(|data| {
-                                                data.get_temp::<ColorImage>(egui::Id::new(&data_id))
-                                            });
-
-                                            if let Some(color_image) = color_image {
-                                                // Create texture from loaded image
-                                                let texture = ui.ctx().load_texture(
-                                                    &texture_id,
-                                                    color_image,
-                                                    egui::TextureOptions::LINEAR
-                                                );
-
-                                                // Display the image
-                                                ui.add(
-                                                    egui::Image::new(&texture)
-                                                        .fit_to_exact_size(egui::vec2(50.0, 50.0))
-                                                        .corner_radius(5.0)
-                                                );
-
-                                                // Cache the texture
-                                                self.avatar_textures.insert(texture_id, texture);
-                                                self.avatar_loading = false;
-
-                                                // Clear the temporary data
-                                                ui.ctx().data_mut(|data| {
-                                                    data.remove::<ColorImage>(egui::Id::new(&data_id));
-                                                });
-                                            } else if !self.avatar_loading {
-                                                // Start loading the avatar
-                                                self.avatar_loading = true;
-                                                self.load_avatar_texture(ui.ctx(), &profile.avatar_url);
-                                                // Show spinner while loading
-                                                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
-                                            } else {
-                                                // Show loading indicator
-                                                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
-                                            }
-                                        }
-                                    } else {
-                                        // No avatar URL, show default emoji
-                                        ui.label(RichText::new("👤").size(50.0));
+                                    if ui.add_enabled(self.is_valid(), save_button).clicked() {
+                                        action |= self.save_profile();
                                     }
+
+                                    // Save status removed to avoid UI disruption
                                 });
                             });
+                        });
+                    });
+                } else {
+                    // View mode
+                    if let Some(profile) = self.profile.clone() {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                // Avatar display
+                                ui.vertical(|ui| {
+                                    ui.add_space(5.0);
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(10.0);
 
-                            ui.vertical(|ui| {
-                                // Display name
-                                if !profile.display_name.is_empty() {
-                                    ui.label(RichText::new(&profile.display_name).heading());
-                                } else {
-                                    ui.label(RichText::new("No display name set").weak());
-                                }
+                                        // Check if we have an avatar URL and try to display it
+                                        if !profile.avatar_url.is_empty() {
+                                            let texture_id =
+                                                format!("avatar_{}", profile.avatar_url);
 
-                                // Username from identity
-                                if let Some(identity) = &self.selected_identity
-                                    && !identity.dpns_names.is_empty()
-                                {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "@{}",
-                                            identity.dpns_names[0].name
-                                        ))
-                                        .strong(),
-                                    );
-                                }
+                                            // Check if texture is already cached
+                                            if let Some(texture) =
+                                                self.avatar_textures.get(&texture_id)
+                                            {
+                                                // Display the cached avatar image
+                                                ui.add(
+                                                    egui::Image::new(texture)
+                                                        .fit_to_exact_size(egui::vec2(50.0, 50.0))
+                                                        .corner_radius(5.0),
+                                                );
+                                            } else {
+                                                // Check if image data was loaded by async task
+                                                let data_id =
+                                                    format!("avatar_data_{}", profile.avatar_url);
+                                                let color_image = ui.ctx().data_mut(|data| {
+                                                    data.get_temp::<ColorImage>(egui::Id::new(
+                                                        &data_id,
+                                                    ))
+                                                });
 
-                                // Identity ID
-                                if let Some(identity) = &self.selected_identity {
-                                    ui.label(
-                                        RichText::new(format!("ID: {}", identity.identity.id()))
+                                                if let Some(color_image) = color_image {
+                                                    // Create texture from loaded image
+                                                    let texture = ui.ctx().load_texture(
+                                                        &texture_id,
+                                                        color_image,
+                                                        egui::TextureOptions::LINEAR,
+                                                    );
+
+                                                    // Display the image
+                                                    ui.add(
+                                                        egui::Image::new(&texture)
+                                                            .fit_to_exact_size(egui::vec2(
+                                                                50.0, 50.0,
+                                                            ))
+                                                            .corner_radius(5.0),
+                                                    );
+
+                                                    // Cache the texture
+                                                    self.avatar_textures
+                                                        .insert(texture_id, texture);
+                                                    self.avatar_loading = false;
+
+                                                    // Clear the temporary data
+                                                    ui.ctx().data_mut(|data| {
+                                                        data.remove::<ColorImage>(egui::Id::new(
+                                                            &data_id,
+                                                        ));
+                                                    });
+                                                } else if !self.avatar_loading {
+                                                    // Start loading the avatar
+                                                    self.avatar_loading = true;
+                                                    self.load_avatar_texture(
+                                                        ui.ctx(),
+                                                        &profile.avatar_url,
+                                                    );
+                                                    // Show spinner while loading
+                                                    ui.add(
+                                                        egui::Spinner::new()
+                                                            .color(DashColors::DASH_BLUE),
+                                                    );
+                                                } else {
+                                                    // Show loading indicator
+                                                    ui.add(
+                                                        egui::Spinner::new()
+                                                            .color(DashColors::DASH_BLUE),
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            // No avatar URL, show default emoji
+                                            ui.label(RichText::new("👤").size(50.0));
+                                        }
+                                    });
+                                });
+
+                                ui.vertical(|ui| {
+                                    // Display name
+                                    if !profile.display_name.is_empty() {
+                                        ui.label(RichText::new(&profile.display_name).heading());
+                                    } else {
+                                        ui.label(RichText::new("No display name set").weak());
+                                    }
+
+                                    // Username from identity
+                                    if let Some(identity) = &self.selected_identity
+                                        && !identity.dpns_names.is_empty()
+                                    {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "@{}",
+                                                identity.dpns_names[0].name
+                                            ))
+                                            .strong(),
+                                        );
+                                    }
+
+                                    // Identity ID
+                                    if let Some(identity) = &self.selected_identity {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "ID: {}",
+                                                identity.identity.id()
+                                            ))
                                             .small()
                                             .weak(),
+                                        );
+                                    }
+                                });
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::TOP),
+                                    |ui| {
+                                        let edit_button = egui::Button::new(
+                                            RichText::new("Edit Profile")
+                                                .color(egui::Color32::WHITE),
+                                        )
+                                        .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+
+                                        if ui.add(edit_button).clicked() {
+                                            self.start_editing();
+                                        }
+                                    },
+                                );
+                            });
+
+                            ui.separator();
+
+                            // Bio
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            ui.label(
+                                RichText::new("Bio:")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            if !profile.bio.is_empty() {
+                                ui.label(
+                                    RichText::new(&profile.bio)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("No bio set")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
+
+                            ui.separator();
+
+                            // Avatar URL
+                            ui.label(
+                                RichText::new("Avatar URL:")
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            if !profile.avatar_url.is_empty() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&profile.avatar_url)
+                                            .color(DashColors::text_primary(dark_mode)),
                                     );
-                                }
-                            });
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                let edit_button = egui::Button::new(
-                                    RichText::new("Edit Profile")
-                                        .color(egui::Color32::WHITE)
-                                ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-
-                                if ui.add(edit_button).clicked() {
-                                    self.start_editing();
-                                }
-                            });
+                                    if ui.small_button("Copy").clicked() {
+                                        ui.ctx().copy_text(profile.avatar_url.clone());
+                                        self.display_message(
+                                            "Avatar URL copied to clipboard",
+                                            MessageType::Info,
+                                        );
+                                    }
+                                });
+                            } else {
+                                ui.label(
+                                    RichText::new("No avatar URL set")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
                         });
+                    } else if self.profile_load_attempted {
+                        // No profile exists (only show after we've tried to load)
+                        ui.label("No DashPay profile found for this identity.");
+                        ui.add_space(10.0);
+                        let create_button = egui::Button::new(
+                            RichText::new("Create Profile").color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
-                        ui.separator();
-
-                        // Bio
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        ui.label(RichText::new("Bio:").strong().color(DashColors::text_primary(dark_mode)));
-                        if !profile.bio.is_empty() {
-                            ui.label(RichText::new(&profile.bio).color(DashColors::text_primary(dark_mode)));
-                        } else {
-                            ui.label(RichText::new("No bio set").color(DashColors::text_secondary(dark_mode)));
+                        if ui.add(create_button).clicked() {
+                            self.start_editing();
                         }
-
-                        ui.separator();
-
-                        // Avatar URL
-                        ui.label(RichText::new("Avatar URL:").strong().color(DashColors::text_primary(dark_mode)));
-                        if !profile.avatar_url.is_empty() {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&profile.avatar_url).color(DashColors::text_primary(dark_mode)));
-                                if ui.small_button("Copy").clicked() {
-                                    ui.ctx().copy_text(profile.avatar_url.clone());
-                                    self.display_message(
-                                        "Avatar URL copied to clipboard",
-                                        MessageType::Info,
-                                    );
-                                }
-                            });
-                        } else {
-                            ui.label(RichText::new("No avatar URL set").color(DashColors::text_secondary(dark_mode)));
-                        }
-                    });
-                } else if self.profile_load_attempted {
-                    // No profile exists (only show after we've tried to load)
-                    ui.label("No DashPay profile found for this identity.");
-                    ui.add_space(10.0);
-                    let create_button = egui::Button::new(
-                        RichText::new("Create Profile")
-                            .color(egui::Color32::WHITE)
-                    ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-
-                    if ui.add(create_button).clicked() {
-                        self.start_editing();
                     }
                 }
-
-            }
-        });
+            });
         }
 
         // Show info popup if requested

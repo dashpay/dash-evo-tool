@@ -115,10 +115,23 @@ impl InfoPopup {
                             CommonMarkViewer::new().show(ui, &mut cache, &message);
                         });
                 } else {
-                    // Render plain text
-                    ui.label(
-                        egui::RichText::new(&message).color(DashColors::text_primary(dark_mode)),
-                    );
+                    // Render plain text with tight spacing
+                    // Reduce item spacing for tighter layout
+                    ui.spacing_mut().item_spacing.y = 2.0;
+
+                    // Split on double newlines (paragraphs) and render with controlled spacing
+                    let paragraphs: Vec<&str> = message.split("\n\n").collect();
+                    for (i, paragraph) in paragraphs.iter().enumerate() {
+                        // Replace single newlines with spaces for proper wrapping within paragraphs
+                        let text = paragraph.replace('\n', " ");
+                        ui.label(
+                            egui::RichText::new(text).color(DashColors::text_primary(dark_mode)),
+                        );
+                        // Add small space between paragraphs (but not after the last one)
+                        if i < paragraphs.len() - 1 {
+                            ui.add_space(4.0);
+                        }
+                    }
                 }
 
                 ui.add_space(20.0);

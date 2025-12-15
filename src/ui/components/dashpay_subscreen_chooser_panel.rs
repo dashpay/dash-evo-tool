@@ -15,9 +15,9 @@ pub fn add_dashpay_subscreen_chooser_panel(
     let dark_mode = ctx.style().visuals.dark_mode;
 
     let subscreens = vec![
+        DashPaySubscreen::Profile,
         DashPaySubscreen::Contacts,
         DashPaySubscreen::Requests,
-        DashPaySubscreen::Profile,
         DashPaySubscreen::Payments,
         DashPaySubscreen::ProfileSearch,
     ];

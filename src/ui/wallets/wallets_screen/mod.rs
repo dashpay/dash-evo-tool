@@ -344,8 +344,8 @@ impl WalletsBalancesScreen {
                             if ui.button("Lock").clicked() {
                                 should_lock_wallet = true;
                             }
-                        } else {
-                            ui.add_enabled(false, egui::Button::new("Locked"));
+                        } else if ui.button("Unlock").clicked() {
+                            self.show_unlock_dialog = true;
                         }
                     }
                     if should_lock_wallet {
@@ -656,9 +656,6 @@ impl WalletsBalancesScreen {
                     self.add_receiving_address();
                 }
             });
-        } else if !wallet_is_open {
-            ui.add_space(10.0);
-            self.render_wallet_unlock_if_needed(ui);
         }
     }
 
@@ -2652,6 +2649,110 @@ impl ScreenLike for WalletsBalancesScreen {
                         });
                     });
                 });
+        }
+
+        // Unlock dialog
+        if self.show_unlock_dialog {
+            let mut close_dialog = false;
+            egui::Window::new("Unlock Wallet")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        if let Some(wallet_arc) = &self.selected_wallet {
+                            if let Ok(wallet) = wallet_arc.read() {
+                                if let Some(alias) = &wallet.alias {
+                                    ui.label(format!(
+                                        "Wallet \"{}\" is locked. Please enter the password to unlock it:",
+                                        alias
+                                    ));
+                                } else {
+                                    ui.label("This wallet is locked. Please enter the password to unlock it:");
+                                }
+                            }
+                        }
+
+                        ui.add_space(10.0);
+
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let mut attempt_unlock = false;
+
+                        ui.horizontal(|ui| {
+                            let password_input = ui.add(
+                                egui::TextEdit::singleline(&mut self.wallet_password)
+                                    .password(!self.show_password)
+                                    .hint_text("Enter password")
+                                    .desired_width(250.0)
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
+                            );
+
+                            if password_input.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                attempt_unlock = true;
+                            }
+                        });
+
+                        ui.add_space(5.0);
+
+                        ui.checkbox(&mut self.show_password, "Show Password");
+
+                        ui.add_space(10.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Unlock").clicked() {
+                                attempt_unlock = true;
+                            }
+
+                            if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+
+                        if attempt_unlock {
+                            if let Some(wallet_arc) = &self.selected_wallet {
+                                let mut wallet = wallet_arc.write().unwrap();
+                                let unlock_result =
+                                    wallet.wallet_seed.open(&self.wallet_password);
+
+                                match unlock_result {
+                                    Ok(_) => {
+                                        self.error_message = None;
+                                        close_dialog = true;
+                                        // Trigger wallet unlocked handling
+                                        drop(wallet);
+                                        self.app_context.handle_wallet_unlocked(wallet_arc);
+                                    }
+                                    Err(_) => {
+                                        if let Some(hint) = wallet.password_hint() {
+                                            self.error_message = Some(format!(
+                                                "Incorrect Password, password hint is {}",
+                                                hint
+                                            ));
+                                        } else {
+                                            self.error_message =
+                                                Some("Incorrect Password".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            self.wallet_password.clear();
+                        }
+
+                        // Display error message if the password was incorrect
+                        if let Some(error_message) = &self.error_message {
+                            ui.add_space(5.0);
+                            ui.colored_label(Color32::RED, error_message);
+                        }
+                    });
+                });
+
+            if close_dialog {
+                self.show_unlock_dialog = false;
+                self.wallet_password.clear();
+                self.error_message = None;
+            }
         }
 
         if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) =

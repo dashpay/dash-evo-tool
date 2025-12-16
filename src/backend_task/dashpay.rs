@@ -218,11 +218,9 @@ impl AppContext {
                 .await
             }
             DashPayTask::RegisterDashPayAddresses { identity } => {
-                let result = incoming_payments::register_dashpay_addresses_for_identity(
-                    self,
-                    &identity,
-                )
-                .await?;
+                let result =
+                    incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
+                        .await?;
 
                 Ok(BackendTaskSuccessResult::Message(format!(
                     "Registered {} DashPay addresses for {} contacts{}",

@@ -1646,7 +1646,8 @@ impl AppContext {
                     self.db.get_dashpay_address_mapping(&address)
                 {
                     // Update the highest receive index if needed
-                    if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id) {
+                    if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id)
+                    {
                         if address_index >= indices.highest_receive_index {
                             let _ = self.db.update_highest_receive_index(
                                 &owner_id,
@@ -1669,7 +1670,9 @@ impl AppContext {
                     tracing::info!(
                         "DashPay payment received: {} duffs from contact {} to address {} (index {})",
                         tx_out.value,
-                        contact_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                        contact_id.to_string(
+                            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
+                        ),
                         address,
                         address_index
                     );

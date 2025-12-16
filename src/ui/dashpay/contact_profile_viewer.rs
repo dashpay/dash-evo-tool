@@ -25,7 +25,8 @@ const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
     The contact controls what information to share.\n\n\
     This is different from your private notes about them.";
 
-const PRIVATE_INFO_TEXT: &str = "This information is encrypted and stored on Platform. Only you can decrypt it.";
+const PRIVATE_INFO_TEXT: &str =
+    "This information is encrypted and stored on Platform. Only you can decrypt it.";
 
 #[derive(Debug, Clone)]
 pub struct ContactPublicProfile {
@@ -240,16 +241,18 @@ impl ContactProfileViewerScreen {
                                         let texture_id = format!("contact_avatar_{}", avatar_url);
 
                                         // Check if texture is already cached
-                                        if let Some(texture) = self.avatar_textures.get(&texture_id) {
+                                        if let Some(texture) = self.avatar_textures.get(&texture_id)
+                                        {
                                             // Display the cached avatar image
                                             ui.add(
                                                 egui::Image::new(texture)
                                                     .fit_to_exact_size(egui::vec2(60.0, 60.0))
-                                                    .corner_radius(5.0)
+                                                    .corner_radius(5.0),
                                             );
                                         } else {
                                             // Check if image data was loaded by async task
-                                            let data_id = format!("contact_avatar_data_{}", avatar_url);
+                                            let data_id =
+                                                format!("contact_avatar_data_{}", avatar_url);
                                             let color_image = ui.ctx().data_mut(|data| {
                                                 data.get_temp::<ColorImage>(egui::Id::new(&data_id))
                                             });
@@ -259,14 +262,14 @@ impl ContactProfileViewerScreen {
                                                 let texture = ui.ctx().load_texture(
                                                     &texture_id,
                                                     color_image,
-                                                    egui::TextureOptions::LINEAR
+                                                    egui::TextureOptions::LINEAR,
                                                 );
 
                                                 // Display the image
                                                 ui.add(
                                                     egui::Image::new(&texture)
                                                         .fit_to_exact_size(egui::vec2(60.0, 60.0))
-                                                        .corner_radius(5.0)
+                                                        .corner_radius(5.0),
                                                 );
 
                                                 // Cache the texture
@@ -275,17 +278,25 @@ impl ContactProfileViewerScreen {
 
                                                 // Clear the temporary data
                                                 ui.ctx().data_mut(|data| {
-                                                    data.remove::<ColorImage>(egui::Id::new(&data_id));
+                                                    data.remove::<ColorImage>(egui::Id::new(
+                                                        &data_id,
+                                                    ));
                                                 });
                                             } else if !self.avatar_loading {
                                                 // Start loading the avatar
                                                 self.avatar_loading = true;
                                                 self.load_avatar_texture(ui.ctx(), avatar_url);
                                                 // Show spinner while loading
-                                                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                                                ui.add(
+                                                    egui::Spinner::new()
+                                                        .color(DashColors::DASH_BLUE),
+                                                );
                                             } else {
                                                 // Show loading indicator
-                                                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                                                ui.add(
+                                                    egui::Spinner::new()
+                                                        .color(DashColors::DASH_BLUE),
+                                                );
                                             }
                                         }
                                         ui.label(
@@ -309,7 +320,7 @@ impl ContactProfileViewerScreen {
                                             .color(DashColors::text_secondary(dark_mode)),
                                     );
                                 }
-                            }
+                            },
                         );
 
                         ui.separator();
@@ -419,18 +430,14 @@ impl ContactProfileViewerScreen {
                         action = self.fetch_profile();
                     }
 
-                    let pay_button = egui::Button::new(
-                        RichText::new("Pay")
-                            .color(egui::Color32::WHITE)
-                    ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                    let pay_button =
+                        egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
                     if ui.add(pay_button).clicked() {
                         action = AppAction::AddScreen(
-                            ScreenType::DashPaySendPayment(
-                                self.identity.clone(),
-                                self.contact_id,
-                            )
-                            .create_screen(&self.app_context),
+                            ScreenType::DashPaySendPayment(self.identity.clone(), self.contact_id)
+                                .create_screen(&self.app_context),
                         );
                     }
                 });
@@ -449,10 +456,9 @@ impl ContactProfileViewerScreen {
                             action = self.fetch_profile();
                         }
 
-                        let pay_button = egui::Button::new(
-                            RichText::new("Pay")
-                                .color(egui::Color32::WHITE)
-                        ).fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                        let pay_button =
+                            egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
+                                .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
                         if ui.add(pay_button).clicked() {
                             action = AppAction::AddScreen(
@@ -499,17 +505,28 @@ impl ContactProfileViewerScreen {
                                     match self.save_private_info() {
                                         Ok(_) => {
                                             self.editing_private_info = false;
-                                            self.message = Some(("Private info saved".to_string(), MessageType::Success));
+                                            self.message = Some((
+                                                "Private info saved".to_string(),
+                                                MessageType::Success,
+                                            ));
                                         }
                                         Err(e) => {
-                                            self.message = Some((format!("Failed to save: {}", e), MessageType::Error));
+                                            self.message = Some((
+                                                format!("Failed to save: {}", e),
+                                                MessageType::Error,
+                                            ));
                                         }
                                     }
                                 }
                                 if ui.button("Cancel").clicked() {
                                     self.editing_private_info = false;
                                     // Reload from database
-                                    if let Ok((nick, notes, hidden)) = self.app_context.db.load_contact_private_info(&self.identity.identity.id(), &self.contact_id) {
+                                    if let Ok((nick, notes, hidden)) =
+                                        self.app_context.db.load_contact_private_info(
+                                            &self.identity.identity.id(),
+                                            &self.contact_id,
+                                        )
+                                    {
                                         self.nickname = nick;
                                         self.notes = notes;
                                         self.is_hidden = hidden;
@@ -526,8 +543,7 @@ impl ContactProfileViewerScreen {
                     // Nickname field
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("Nickname:")
-                                .color(DashColors::text_secondary(dark_mode)),
+                            RichText::new("Nickname:").color(DashColors::text_secondary(dark_mode)),
                         );
                         if self.editing_private_info {
                             ui.text_edit_singleline(&mut self.nickname);
@@ -547,8 +563,7 @@ impl ContactProfileViewerScreen {
                     // Notes field
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("Notes:")
-                                .color(DashColors::text_secondary(dark_mode)),
+                            RichText::new("Notes:").color(DashColors::text_secondary(dark_mode)),
                         );
                         if self.editing_private_info {
                             ui.text_edit_multiline(&mut self.notes);
@@ -568,11 +583,13 @@ impl ContactProfileViewerScreen {
                     // Hidden toggle
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("Hidden:")
-                                .color(DashColors::text_secondary(dark_mode)),
+                            RichText::new("Hidden:").color(DashColors::text_secondary(dark_mode)),
                         );
                         if self.editing_private_info {
-                            ui.checkbox(&mut self.is_hidden, "Hide this contact from the main list");
+                            ui.checkbox(
+                                &mut self.is_hidden,
+                                "Hide this contact from the main list",
+                            );
                         } else {
                             ui.label(
                                 RichText::new(if self.is_hidden { "Yes" } else { "No" })

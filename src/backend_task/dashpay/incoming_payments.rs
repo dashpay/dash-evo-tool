@@ -120,10 +120,7 @@ pub async fn register_dashpay_addresses_for_identity(
         let contact_id = match Identifier::from_bytes(&contact.contact_identity_id) {
             Ok(id) => id,
             Err(e) => {
-                result.errors.push(format!(
-                    "Invalid contact ID: {}",
-                    e
-                ));
+                result.errors.push(format!("Invalid contact ID: {}", e));
                 continue;
             }
         };
@@ -220,17 +217,17 @@ fn register_dashpay_address(
     contact_id: &Identifier,
     address_index: u32,
 ) -> Result<(), String> {
-    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
     use crate::model::wallet::{DerivationPathReference, DerivationPathType};
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 
     // Create a derivation path representation for DashPay addresses
     // m/9'/5'/15'/0'/<owner_hash>/<contact_hash>/<index>
     // Note: We use a simplified representation since full 256-bit paths don't fit in standard BIP32
     let path = DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(9).unwrap(),  // Feature purpose
-        ChildNumber::from_hardened_idx(5).unwrap(),  // Coin type (Dash)
+        ChildNumber::from_hardened_idx(9).unwrap(), // Feature purpose
+        ChildNumber::from_hardened_idx(5).unwrap(), // Coin type (Dash)
         ChildNumber::from_hardened_idx(15).unwrap(), // DashPay feature
-        ChildNumber::from_hardened_idx(0).unwrap(),  // Account
+        ChildNumber::from_hardened_idx(0).unwrap(), // Account
         // For the identity indices, we use a hash to fit in u32
         ChildNumber::from_normal_idx(hash_identifier_to_u32(owner_id)).unwrap(),
         ChildNumber::from_normal_idx(hash_identifier_to_u32(contact_id)).unwrap(),
@@ -321,7 +318,7 @@ pub async fn process_incoming_payment(
             &contact_id, // from contact
             &owner_id,   // to us
             amount_duffs as i64,
-            None,        // memo - not available for incoming
+            None, // memo - not available for incoming
             "received",
         )
         .map_err(|e| format!("Failed to save payment: {}", e))?;

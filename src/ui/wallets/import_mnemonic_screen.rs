@@ -1,11 +1,11 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::{RootScreenType, Screen, ScreenLike};
-use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
+use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::{RootScreenType, Screen, ScreenLike};
 use eframe::egui::Context;
 
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
@@ -177,7 +177,9 @@ impl ImportMnemonicScreen {
                     "Load Existing Identity".to_string(),
                     AppAction::PopThenAddScreenToMainScreen(
                         RootScreenType::RootScreenIdentities,
-                        Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(&self.app_context)),
+                        Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(
+                            &self.app_context,
+                        )),
                     ),
                 ),
                 (

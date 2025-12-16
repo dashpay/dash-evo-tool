@@ -10,8 +10,14 @@ impl AddNewIdentityScreen {
             ui,
             "Success!".to_string(),
             vec![
-                ("Back to Identities".to_string(), AppAction::PopScreenAndRefresh),
-                ("Register DPNS Name".to_string(), AppAction::Custom("register_dpns".to_string())),
+                (
+                    "Back to Identities".to_string(),
+                    AppAction::PopScreenAndRefresh,
+                ),
+                (
+                    "Register DPNS Name".to_string(),
+                    AppAction::Custom("register_dpns".to_string()),
+                ),
             ],
         );
 

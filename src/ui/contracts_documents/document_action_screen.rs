@@ -9,7 +9,9 @@ use crate::ui::ScreenLike;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering,
     add_identity_key_chooser_with_doc_type, show_success_screen,
@@ -1499,7 +1501,9 @@ impl ScreenLike for DocumentActionScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully
                 }

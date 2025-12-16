@@ -126,11 +126,8 @@ impl WalletUnlockPopup {
 
                 // Title/description
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Enter password to unlock \"{}\":",
-                        wallet_alias
-                    ))
-                    .color(DashColors::text_primary(dark_mode)),
+                    egui::RichText::new(format!("Enter password to unlock \"{}\":", wallet_alias))
+                        .color(DashColors::text_primary(dark_mode)),
                 );
 
                 ui.add_space(12.0);
@@ -153,9 +150,7 @@ impl WalletUnlockPopup {
                 }
 
                 // Check for Enter key
-                if password_response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
+                if password_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     attempt_unlock = true;
                 }
 

@@ -11,7 +11,9 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -243,7 +245,10 @@ impl WithdrawalScreen {
         crate::ui::helpers::show_success_screen(
             ui,
             "Successfully withdrew from identity".to_string(),
-            vec![("Back to Identities".to_string(), AppAction::PopScreenAndRefresh)],
+            vec![(
+                "Back to Identities".to_string(),
+                AppAction::PopScreenAndRefresh,
+            )],
         )
     }
 }
@@ -535,7 +540,9 @@ impl ScreenLike for WithdrawalScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully
                 }
@@ -545,4 +552,3 @@ impl ScreenLike for WithdrawalScreen {
         action
     }
 }
-

@@ -1063,9 +1063,7 @@ impl App for AppState {
                 self.change_network(network);
                 self.selected_main_screen = main_screen;
                 self.active_root_screen_mut().refresh_on_arrival();
-                self.current_app_context()
-                    .update_settings(main_screen)
-                    .ok();
+                self.current_app_context().update_settings(main_screen).ok();
                 // If there's an additional screen to push, create and push it
                 if let Some(screen_type) = add_screen {
                     let screen = screen_type.create_screen(self.current_app_context());

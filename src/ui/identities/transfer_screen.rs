@@ -30,7 +30,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
 
 use super::get_selected_wallet;
@@ -452,7 +454,10 @@ impl TransferScreen {
         crate::ui::helpers::show_success_screen(
             ui,
             "Success!".to_string(),
-            vec![("Back to Identities".to_string(), AppAction::PopScreenAndRefresh)],
+            vec![(
+                "Back to Identities".to_string(),
+                AppAction::PopScreenAndRefresh,
+            )],
         )
     }
 }
@@ -718,7 +723,9 @@ impl ScreenLike for TransferScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully
                 }
@@ -728,4 +735,3 @@ impl ScreenLike for TransferScreen {
         action
     }
 }
-

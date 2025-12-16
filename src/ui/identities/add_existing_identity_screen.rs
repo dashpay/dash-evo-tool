@@ -9,7 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult,
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
@@ -653,8 +653,14 @@ impl AddExistingIdentityScreen {
             ui,
             success_text,
             vec![
-                ("Load Another".to_string(), AppAction::Custom("load_another".to_string())),
-                ("Back to Identities Screen".to_string(), AppAction::PopScreenAndRefresh),
+                (
+                    "Load Another".to_string(),
+                    AppAction::Custom("load_another".to_string()),
+                ),
+                (
+                    "Back to Identities Screen".to_string(),
+                    AppAction::PopScreenAndRefresh,
+                ),
             ],
         );
 
@@ -835,9 +841,9 @@ impl ScreenLike for AddExistingIdentityScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result =
-                    self.wallet_unlock_popup
-                        .show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully
                 }

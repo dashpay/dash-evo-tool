@@ -4,8 +4,8 @@ use crate::{
     app::AppAction,
     context::AppContext,
     model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
-    ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
     ui::contracts_documents::group_actions_screen::GroupActionsScreen,
+    ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
 };
 use arboard::Clipboard;
 use dash_sdk::{
@@ -35,10 +35,7 @@ pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
 /// Returns a Response that can be checked for .clicked() to show an info popup
 pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
     let size = 16.0;
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(size, size),
-        egui::Sense::click(),
-    );
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
         let is_hovered = response.hovered();
@@ -52,11 +49,8 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         let radius = size / 2.0 - 1.0;
 
         // Draw circle outline
-        ui.painter().circle_stroke(
-            center,
-            radius,
-            egui::Stroke::new(1.5, color),
-        );
+        ui.painter()
+            .circle_stroke(center, radius, egui::Stroke::new(1.5, color));
 
         // Draw "i" text in the center
         ui.painter().text(
@@ -797,7 +791,10 @@ pub fn show_group_token_success_screen(
                 action = AppAction::PopScreenAndRefresh;
             }
 
-            if !is_unilateral_group_member && has_group && ui.button("Go to Group Actions").clicked() {
+            if !is_unilateral_group_member
+                && has_group
+                && ui.button("Go to Group Actions").clicked()
+            {
                 action = AppAction::PopThenAddScreenToMainScreen(
                     RootScreenType::RootScreenDocumentQuery,
                     Screen::GroupActionsScreen(GroupActionsScreen::new(app_context)),

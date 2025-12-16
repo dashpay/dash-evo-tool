@@ -12,7 +12,9 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
@@ -55,11 +57,7 @@ impl SendPaymentScreen {
         to_contact_id: Identifier,
     ) -> Self {
         // Get wallet from identity's associated wallets
-        let selected_wallet = from_identity
-            .associated_wallets
-            .values()
-            .next()
-            .cloned();
+        let selected_wallet = from_identity.associated_wallets.values().next().cloned();
 
         Self {
             app_context: app_context.clone(),
@@ -130,7 +128,11 @@ impl SendPaymentScreen {
                 identity: self.from_identity.clone(),
                 contact_id: self.to_contact_id,
                 amount_dash,
-                memo: if self.memo.is_empty() { None } else { Some(self.memo.clone()) },
+                memo: if self.memo.is_empty() {
+                    None
+                } else {
+                    Some(self.memo.clone())
+                },
             },
         )))
     }
@@ -418,7 +420,9 @@ impl ScreenLike for SendPaymentScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully
                 }

@@ -428,7 +428,10 @@ impl ScreenLike for ContactDetailsScreen {
         action |= add_top_panel(
             ctx,
             &self.app_context,
-            vec![("DashPay", AppAction::None), (&contact_name, AppAction::None)],
+            vec![
+                ("DashPay", AppAction::None),
+                (&contact_name, AppAction::None),
+            ],
             vec![],
         );
 
@@ -444,10 +447,8 @@ impl ScreenLike for ContactDetailsScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let mut popup = InfoPopup::new(
-                        "Private Contact Information",
-                        PRIVATE_CONTACT_INFO_TEXT,
-                    );
+                    let mut popup =
+                        InfoPopup::new("Private Contact Information", PRIVATE_CONTACT_INFO_TEXT);
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }

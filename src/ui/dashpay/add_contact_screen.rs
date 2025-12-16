@@ -151,8 +151,14 @@ impl AddContactScreen {
             ui,
             "Contact Request Sent Successfully!".to_string(),
             vec![
-                ("Send Another Request".to_string(), AppAction::Custom("send_another".to_string())),
-                ("Back to Contacts".to_string(), AppAction::PopScreenAndRefresh),
+                (
+                    "Send Another Request".to_string(),
+                    AppAction::Custom("send_another".to_string()),
+                ),
+                (
+                    "Back to Contacts".to_string(),
+                    AppAction::PopScreenAndRefresh,
+                ),
                 ("Back to DashPay".to_string(), AppAction::PopScreen),
             ],
         );

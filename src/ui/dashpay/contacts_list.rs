@@ -706,11 +706,8 @@ impl ContactsList {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     // Hide/Unhide button
-                                    let hide_button_text = if contact.is_hidden {
-                                        "Unhide"
-                                    } else {
-                                        "Hide"
-                                    };
+                                    let hide_button_text =
+                                        if contact.is_hidden { "Unhide" } else { "Hide" };
                                     if ui.button(hide_button_text).clicked() {
                                         let new_hidden = !contact.is_hidden;
                                         if let Some(identity) = &self.selected_identity {

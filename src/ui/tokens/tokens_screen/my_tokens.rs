@@ -631,10 +631,12 @@ impl TokensScreen {
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     Ok(None) => {
-                        self.token_creator_error_message = Some("Token contract not found".to_string());
+                        self.token_creator_error_message =
+                            Some("Token contract not found".to_string());
                     }
                     Err(e) => {
-                        self.token_creator_error_message = Some(format!("Error fetching token contract: {e}"));
+                        self.token_creator_error_message =
+                            Some(format!("Error fetching token contract: {e}"));
                     }
                 }
             }

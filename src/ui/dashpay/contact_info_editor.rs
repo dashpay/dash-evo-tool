@@ -10,7 +10,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
@@ -52,12 +52,8 @@ impl ContactInfoEditorScreen {
     ) -> Self {
         // Get wallet for the identity
         let mut error_message = None;
-        let selected_wallet = get_selected_wallet(
-            &identity,
-            Some(&app_context),
-            None,
-            &mut error_message,
-        );
+        let selected_wallet =
+            get_selected_wallet(&identity, Some(&app_context), None, &mut error_message);
 
         Self {
             app_context,
@@ -366,7 +362,9 @@ impl ScreenLike for ContactInfoEditorScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully, UI will update on next frame
                 }

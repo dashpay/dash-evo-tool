@@ -7,7 +7,10 @@ impl TopUpIdentityScreen {
         crate::ui::helpers::show_success_screen(
             ui,
             "Successfully topped up!".to_string(),
-            vec![("Back to Identities".to_string(), AppAction::PopScreenAndRefresh)],
+            vec![(
+                "Back to Identities".to_string(),
+                AppAction::PopScreenAndRefresh,
+            )],
         )
     }
 }

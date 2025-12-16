@@ -163,8 +163,14 @@ impl AddTokenByIdScreen {
             ui,
             "Token Added Successfully".to_string(),
             vec![
-                ("Add another token".to_string(), AppAction::Custom("add_another".to_string())),
-                ("Back to Tokens screen".to_string(), AppAction::PopScreenAndRefresh),
+                (
+                    "Add another token".to_string(),
+                    AppAction::Custom("add_another".to_string()),
+                ),
+                (
+                    "Back to Tokens screen".to_string(),
+                    AppAction::PopScreenAndRefresh,
+                ),
             ],
         );
 

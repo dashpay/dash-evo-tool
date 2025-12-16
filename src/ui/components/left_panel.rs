@@ -50,7 +50,7 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
 // Function to load an SVG as a texture with specified dimensions
 pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Option<TextureHandle> {
-    let cache_key = format!("{}_{}_{}",path, width, height);
+    let cache_key = format!("{}_{}_{}", path, width, height);
     // Use ctx.data_mut to check if texture is already cached
     ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(&cache_key)))
         .or_else(|| {
@@ -89,7 +89,10 @@ pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Opti
                 let pixels = pixmap.data().to_vec();
                 let texture = ctx.load_texture(
                     &cache_key,
-                    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels),
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [width as usize, height as usize],
+                        &pixels,
+                    ),
                     egui::TextureOptions::LINEAR,
                 );
 

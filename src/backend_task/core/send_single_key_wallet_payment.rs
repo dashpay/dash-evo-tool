@@ -30,7 +30,6 @@ impl AppContext {
         wallet: Arc<RwLock<SingleKeyWallet>>,
         request: WalletPaymentRequest,
     ) -> Result<BackendTaskSuccessResult, String> {
-
         // Get wallet data
         let (private_key, utxos, change_address) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;

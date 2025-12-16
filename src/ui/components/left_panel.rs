@@ -48,6 +48,62 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
         })
 }
 
+// Function to load an SVG as a texture with specified dimensions
+pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Option<TextureHandle> {
+    let cache_key = format!("{}_{}_{}",path, width, height);
+    // Use ctx.data_mut to check if texture is already cached
+    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(&cache_key)))
+        .or_else(|| {
+            // Only do expensive operations if texture is not cached
+            if let Some(content) = Assets::get(path) {
+                // Parse SVG
+                let options = resvg::usvg::Options::default();
+                let tree = match resvg::usvg::Tree::from_data(&content.data, &options) {
+                    Ok(tree) => tree,
+                    Err(e) => {
+                        eprintln!("Failed to parse SVG at {}: {}", path, e);
+                        return None;
+                    }
+                };
+
+                // Create a pixmap to render into
+                let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+
+                // Calculate scale to fit the SVG into the desired dimensions
+                let svg_size = tree.size();
+                let scale_x = width as f32 / svg_size.width();
+                let scale_y = height as f32 / svg_size.height();
+                let scale = scale_x.min(scale_y);
+
+                // Center the SVG
+                let offset_x = (width as f32 - svg_size.width() * scale) / 2.0;
+                let offset_y = (height as f32 - svg_size.height() * scale) / 2.0;
+
+                let transform = resvg::tiny_skia::Transform::from_scale(scale, scale)
+                    .post_translate(offset_x, offset_y);
+
+                // Render the SVG
+                resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+                // Convert to egui texture
+                let pixels = pixmap.data().to_vec();
+                let texture = ctx.load_texture(
+                    &cache_key,
+                    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels),
+                    egui::TextureOptions::LINEAR,
+                );
+
+                // Cache the texture
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(&cache_key), texture.clone()));
+
+                Some(texture)
+            } else {
+                eprintln!("SVG not found in embedded assets at path: {}", path);
+                None
+            }
+        })
+}
+
 pub fn add_left_panel(
     ctx: &Context,
     app_context: &Arc<AppContext>,
@@ -208,7 +264,8 @@ pub fn add_left_panel(
                                     egui::Layout::bottom_up(egui::Align::Center),
                                     |ui| {
                                         // Dash logo at the very bottom
-                                        if let Some(dash_texture) = load_icon(ctx, "dash.png") {
+                                        // Use 100x40 for rendering (2x for crisp display), then scale down
+                                        if let Some(dash_texture) = load_svg_icon(ctx, "dashlogo.svg", 100, 40) {
                                             if app_context.network == Network::Dash {
                                                 ui.add_space(Spacing::SM);
                                             }

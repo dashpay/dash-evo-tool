@@ -60,6 +60,8 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
+    user_mode: crate::model::settings::UserMode,
+    show_evonode_tools: bool,
 }
 
 impl NetworkChooserScreen {
@@ -99,6 +101,8 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
+        let user_mode = settings.user_mode;
+        let show_evonode_tools = settings.show_evonode_tools;
 
         let mut backend_modes = HashMap::new();
         backend_modes.insert(Network::Dash, mainnet_app_context.core_backend_mode());
@@ -146,6 +150,8 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_message: None,
+            user_mode,
+            show_evonode_tools,
         }
     }
 
@@ -644,6 +650,73 @@ impl NetworkChooserScreen {
                                 ));
                             }
                         });
+                });
+
+                ui.add_space(10.0);
+
+                // Experience Level (User Mode)
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("👤").size(16.0));
+                    ui.label("Experience Level:");
+
+                    egui::ComboBox::from_id_salt("user_mode_selection")
+                        .selected_text(match self.user_mode {
+                            crate::model::settings::UserMode::Beginner => "🌱 Beginner",
+                            crate::model::settings::UserMode::Advanced => "⚡ Advanced",
+                        })
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(
+                                    &mut self.user_mode,
+                                    crate::model::settings::UserMode::Beginner,
+                                    "🌱 Beginner",
+                                )
+                                .clicked()
+                            {
+                                let _ = self.mainnet_app_context.db.update_user_mode("Beginner");
+                            }
+                            if ui
+                                .selectable_value(
+                                    &mut self.user_mode,
+                                    crate::model::settings::UserMode::Advanced,
+                                    "⚡ Advanced",
+                                )
+                                .clicked()
+                            {
+                                let _ = self.mainnet_app_context.db.update_user_mode("Advanced");
+                            }
+                        });
+                });
+
+                ui.add_space(10.0);
+
+                // Show Evonode Tools
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🖥").size(16.0));
+                    ui.label("Show Evonode Tools:");
+
+                    let mut show_evonode = self.show_evonode_tools;
+                    if ui.checkbox(&mut show_evonode, "").changed() {
+                        self.show_evonode_tools = show_evonode;
+                        let _ = self
+                            .mainnet_app_context
+                            .db
+                            .update_show_evonode_tools(show_evonode);
+                    }
+
+                    ui.label(
+                        egui::RichText::new(if self.show_evonode_tools {
+                            "Enabled"
+                        } else {
+                            "Hidden"
+                        })
+                        .color(if self.show_evonode_tools {
+                            DashColors::DASH_BLUE
+                        } else {
+                            DashColors::text_secondary(dark_mode)
+                        }),
+                    );
                 });
 
                 // Dash-QT Path

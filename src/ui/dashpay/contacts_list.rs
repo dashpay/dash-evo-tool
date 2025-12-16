@@ -10,8 +10,8 @@ use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{RichText, ScrollArea, Ui};
-use std::collections::BTreeMap;
+use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -57,6 +57,8 @@ pub struct ContactsList {
     show_hidden: bool,
     search_filter: SearchFilter,
     sort_order: SortOrder,
+    avatar_textures: BTreeMap<String, TextureHandle>, // Cache for avatar textures by URL
+    avatars_loading: HashSet<String>,                 // Track which avatars are being loaded
 }
 
 impl ContactsList {
@@ -73,6 +75,8 @@ impl ContactsList {
             show_hidden: false,
             search_filter: SearchFilter::All,
             sort_order: SortOrder::Name,
+            avatar_textures: BTreeMap::new(),
+            avatars_loading: HashSet::new(),
         };
 
         // Auto-select first identity on creation if available
@@ -191,6 +195,49 @@ impl ContactsList {
         AppAction::None
     }
 
+    /// Load an avatar image from a URL asynchronously
+    fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
+        // Mark as loading
+        self.avatars_loading.insert(url.to_string());
+
+        let ctx_clone = ctx.clone();
+        let url_clone = url.to_string();
+
+        // Spawn async task to fetch and load the image
+        tokio::spawn(async move {
+            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone)
+                .await
+            {
+                Ok(image_bytes) => {
+                    // Try to load the image
+                    if let Ok(image) = image::load_from_memory(&image_bytes) {
+                        // Convert to RGBA
+                        let rgba_image = image.to_rgba8();
+                        let size = [rgba_image.width() as usize, rgba_image.height() as usize];
+                        let pixels = rgba_image.into_raw();
+
+                        // Create ColorImage
+                        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+
+                        // Request repaint to load texture in UI thread
+                        ctx_clone.request_repaint();
+
+                        // Store the image data temporarily for the UI thread to pick up
+                        ctx_clone.data_mut(|data| {
+                            data.insert_temp(
+                                egui::Id::new(format!("contact_avatar_data_{}", url_clone)),
+                                color_image,
+                            );
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to fetch contact avatar image: {}", e);
+                }
+            }
+        });
+    }
+
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -219,8 +266,10 @@ impl ContactsList {
                     );
 
                     if response.changed() {
-                        // Clear contacts when identity changes
+                        // Clear contacts and avatar caches when identity changes
                         self.contacts.clear();
+                        self.avatar_textures.clear();
+                        self.avatars_loading.clear();
                         self.message = None;
                         self.loading = false;
 
@@ -235,7 +284,7 @@ impl ContactsList {
 
         if identities.is_empty() {
             ui.colored_label(
-                egui::Color32::from_rgb(255, 165, 0),
+                egui::Color32::from_rgb(200, 150, 50),
                 "No identities loaded. Please load or create an identity first.",
             );
         } else {
@@ -500,15 +549,96 @@ impl ContactsList {
             } else if filtered_contacts.is_empty() {
                 ui.label("No contacts match your search");
             } else {
+                // Collect avatar URLs that need to be loaded
+                let mut avatars_to_load: Vec<String> = Vec::new();
+
                 for contact in filtered_contacts {
+                    let avatar_url_clone = contact.avatar_url.clone();
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            // Avatar placeholder or actual avatar
+                            // Avatar display
                             ui.vertical(|ui| {
                                 ui.add_space(5.0);
-                                // TODO: Display actual avatar if avatar_url is present
-                                // For now, always show placeholder
-                                ui.label(RichText::new("👤").size(40.0));
+                                const AVATAR_SIZE: f32 = 40.0;
+
+                                if let Some(ref url) = avatar_url_clone {
+                                    if !url.is_empty() {
+                                        let texture_id = format!("contact_avatar_{}", url);
+
+                                        // Check if texture is already cached
+                                        if let Some(texture) = self.avatar_textures.get(&texture_id)
+                                        {
+                                            // Display the cached avatar image
+                                            ui.add(
+                                                egui::Image::new(texture)
+                                                    .fit_to_exact_size(egui::vec2(
+                                                        AVATAR_SIZE,
+                                                        AVATAR_SIZE,
+                                                    ))
+                                                    .corner_radius(AVATAR_SIZE / 2.0),
+                                            );
+                                        } else {
+                                            // Check if image data was loaded by async task
+                                            let data_id = format!("contact_avatar_data_{}", url);
+                                            let color_image = ui.ctx().data_mut(|data| {
+                                                data.get_temp::<ColorImage>(egui::Id::new(&data_id))
+                                            });
+
+                                            if let Some(color_image) = color_image {
+                                                // Create texture from loaded image
+                                                let texture = ui.ctx().load_texture(
+                                                    &texture_id,
+                                                    color_image,
+                                                    egui::TextureOptions::LINEAR,
+                                                );
+
+                                                // Display the image
+                                                ui.add(
+                                                    egui::Image::new(&texture)
+                                                        .fit_to_exact_size(egui::vec2(
+                                                            AVATAR_SIZE,
+                                                            AVATAR_SIZE,
+                                                        ))
+                                                        .corner_radius(AVATAR_SIZE / 2.0),
+                                                );
+
+                                                // Cache the texture and clear loading state
+                                                self.avatar_textures
+                                                    .insert(texture_id.clone(), texture);
+                                                self.avatars_loading.remove(url);
+
+                                                // Clear the temporary data
+                                                ui.ctx().data_mut(|data| {
+                                                    data.remove::<ColorImage>(egui::Id::new(
+                                                        &data_id,
+                                                    ));
+                                                });
+                                            } else if !self.avatars_loading.contains(url) {
+                                                // Queue for loading
+                                                avatars_to_load.push(url.clone());
+                                                // Show spinner while loading
+                                                ui.add(
+                                                    egui::Spinner::new()
+                                                        .size(AVATAR_SIZE)
+                                                        .color(DashColors::DASH_BLUE),
+                                                );
+                                            } else {
+                                                // Show loading indicator
+                                                ui.add(
+                                                    egui::Spinner::new()
+                                                        .size(AVATAR_SIZE)
+                                                        .color(DashColors::DASH_BLUE),
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        // Empty URL, show default emoji
+                                        ui.label(RichText::new("👤").size(AVATAR_SIZE));
+                                    }
+                                } else {
+                                    // No avatar URL, show default emoji
+                                    ui.label(RichText::new("👤").size(AVATAR_SIZE));
+                                }
                             });
 
                             ui.add_space(10.0);
@@ -575,7 +705,37 @@ impl ContactsList {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    // Just two buttons: Pay and View Profile
+                                    // Hide/Unhide button
+                                    let hide_button_text = if contact.is_hidden {
+                                        "Unhide"
+                                    } else {
+                                        "Hide"
+                                    };
+                                    if ui.button(hide_button_text).clicked() {
+                                        let new_hidden = !contact.is_hidden;
+                                        if let Some(identity) = &self.selected_identity {
+                                            let owner_id = identity.identity.id();
+                                            if let Err(e) = self.app_context.db.set_contact_hidden(
+                                                &owner_id,
+                                                &contact.identity_id,
+                                                new_hidden,
+                                            ) {
+                                                self.message = Some((
+                                                    format!("Failed to update contact: {}", e),
+                                                    MessageType::Error,
+                                                ));
+                                            } else {
+                                                // Update the contact in memory
+                                                if let Some(c) =
+                                                    self.contacts.get_mut(&contact.identity_id)
+                                                {
+                                                    c.is_hidden = new_hidden;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Pay button
                                     if ui.button("Pay").clicked() {
                                         action = AppAction::AddScreen(
                                             ScreenType::DashPaySendPayment(
@@ -600,6 +760,11 @@ impl ContactsList {
                         });
                     });
                     ui.add_space(4.0);
+                }
+
+                // Load any avatars that were queued
+                for url in avatars_to_load {
+                    self.load_avatar_texture(ui.ctx(), &url);
                 }
             }
         });

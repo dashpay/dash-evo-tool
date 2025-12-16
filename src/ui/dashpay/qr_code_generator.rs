@@ -126,7 +126,7 @@ impl QRCodeGeneratorScreen {
 
             if identities.is_empty() {
                 ui.colored_label(
-                    DashColors::warning_color(dark_mode),
+                    egui::Color32::from_rgb(200, 150, 50),
                     "No identities loaded. Please load or create an identity first.",
                 );
                 return;
@@ -326,8 +326,7 @@ impl ScreenLike for QRCodeGeneratorScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let mut popup =
-                        InfoPopup::new("About Contact QR Codes", QR_CODE_INFO_TEXT);
+                    let mut popup = InfoPopup::new("About Contact QR Codes", QR_CODE_INFO_TEXT);
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }

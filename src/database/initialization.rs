@@ -4,12 +4,29 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 18;
+pub const DEFAULT_DB_VERSION: u16 = 19;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+        // First, ensure all required columns exist in tables that may have been
+        // created with an older schema. This must happen before any queries that
+        // depend on these columns (like db_schema_version which needs database_version).
+        {
+            let conn = self.conn.lock().unwrap();
+            // Check if settings table exists before trying to ensure columns
+            let settings_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )?;
+            if settings_exists {
+                self.ensure_settings_columns_exist(&conn)?;
+            }
+            self.ensure_wallet_columns_exist(&conn)?;
+        }
+
         // Check if this is the first time setup by looking for entries in the settings table.
         if self.is_first_time_setup()? {
             self.create_tables()?;
@@ -34,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            19 => {
+                self.initialize_platform_address_balances_table(tx)?;
+            }
             18 => {
                 self.initialize_single_key_wallet_table(tx)?;
             }
@@ -238,7 +258,10 @@ impl Database {
             disable_zmq INTEGER DEFAULT 0,
             theme_preference TEXT DEFAULT 'System',
             core_backend_mode INTEGER DEFAULT 1,
-            database_version INTEGER NOT NULL
+            database_version INTEGER NOT NULL,
+            onboarding_completed INTEGER DEFAULT 0,
+            show_evonode_tools INTEGER DEFAULT 0,
+            user_mode TEXT DEFAULT 'Advanced'
         )",
             [],
         )?;
@@ -450,11 +473,33 @@ impl Database {
         self.set_db_version(DEFAULT_DB_VERSION)
     }
     fn set_db_version(&self, version: u16) -> rusqlite::Result<()> {
+        // Default start_root_screen to 20 (RootScreenDashPayProfile)
         self.execute(
             "INSERT INTO settings (id, network, start_root_screen, database_version)
-             VALUES (1, ?, 0, ?)
+             VALUES (1, ?, 20, ?)
              ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
             params![DEFAULT_NETWORK, version],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Create platform_address_balances table (version 19).
+    fn initialize_platform_address_balances_table(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS platform_address_balances (
+                seed_hash BLOB NOT NULL,
+                address TEXT NOT NULL,
+                balance INTEGER NOT NULL DEFAULT 0,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                network TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (seed_hash, address, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
         )?;
         Ok(())
     }

@@ -1,22 +1,21 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::ScreenLike;
-use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
-use eframe::egui::Context;
-
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+use eframe::egui::Context;
 use eframe::emath::Align;
-use egui::{Color32, ComboBox, Direction, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
+use egui::{Color32, ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -57,6 +56,7 @@ pub struct AddNewWalletScreen {
     error: Option<String>,
     pub app_context: Arc<AppContext>,
     use_password_for_app: bool,
+    wallet_created: bool,
 }
 
 impl AddNewWalletScreen {
@@ -73,6 +73,7 @@ impl AddNewWalletScreen {
             error: None,
             app_context: app_context.clone(),
             use_password_for_app: true,
+            wallet_created: false,
         }
     }
 
@@ -180,15 +181,52 @@ impl AddNewWalletScreen {
                 self.app_context.handle_wallet_unlocked(&wallet_arc);
             }
 
-            Ok(AppAction::GoToMainScreen) // Navigate back to the main screen after saving
+            self.wallet_created = true;
+            Ok(AppAction::None) // Show success screen instead of navigating away
         } else {
             Ok(AppAction::None) // No action if no seed phrase exists
         }
     }
 
+    fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Wallet Created Successfully!".to_string(),
+            vec![
+                ("View Wallet".to_string(), AppAction::GoToMainScreen),
+                (
+                    "Create Platform Identity".to_string(),
+                    AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenIdentities,
+                        Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(&self.app_context)),
+                    ),
+                ),
+            ],
+        );
+
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "create_another_wallet" {
+                self.seed_phrase = None;
+                self.password = String::new();
+                self.entropy_grid = U256EntropyGrid::new();
+                self.alias_input = String::new();
+                self.wrote_it_down = false;
+                self.password_strength = 0.0;
+                self.estimated_time_to_crack = String::new();
+                self.error = None;
+                self.wallet_created = false;
+                return AppAction::None;
+            }
+        }
+
+        action
+    }
+
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
         ui.add_space(15.0); // Add spacing from the top
-        ui.vertical_centered(|ui| {
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.add_space(-6.0);
             // Center the language selector and generate button
             ui.horizontal(|ui| {
                 ui.label("Language:");
@@ -224,16 +262,14 @@ impl AddNewWalletScreen {
                         );
                     });
 
-                ui.add_space(20.0);
-
                 let generate_button = egui::Button::new(
                     RichText::new("Generate")
                         .strong()
-                        .size(18.0)
+                        .size(12.0)
                         .color(Color32::WHITE),
                 )
-                .min_size(Vec2::new(120.0, 35.0))
-                .fill(Color32::from_rgb(0, 128, 255)) // Blue background like other buttons
+                .min_size(Vec2::new(100.0, 20.0))
+                .fill(Color32::from_rgb(0, 128, 255)) // Blue background
                 .corner_radius(5.0);
 
                 if ui.add(generate_button).clicked() {
@@ -241,29 +277,30 @@ impl AddNewWalletScreen {
                 }
             });
 
-            ui.add_space(10.0);
+            // Only show the seed phrase box after generation
+            if let Some(mnemonic) = &self.seed_phrase {
+                ui.add_space(10.0);
 
-            // Create a container with a fixed width (limited to 600px max to prevent overflow)
-            let available_width = ui.available_width();
-            let frame_width = (available_width * 0.65).min(600.0);
-            ui.allocate_ui_with_layout(
-                Vec2::new(frame_width, 260.0), // Set width and height of the container
-                egui::Layout::top_down(egui::Align::Center),
-                |ui| {
-                    Frame::new()
-                        .fill(Color32::WHITE)
-                        .stroke(Stroke::new(1.0, Color32::BLACK))
-                        .corner_radius(5.0)
-                        .inner_margin(Margin::same(10))
-                        .show(ui, |ui| {
-                            let columns = 4; // Reduced from 6 to 4 for better fit
-                            let rows = 24 / columns;
+                // Create a container with a fixed width (limited to 600px max to prevent overflow)
+                let available_width = ui.available_width();
+                let frame_width = (available_width * 0.65).min(600.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(frame_width, 260.0), // Set width and height of the container
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        Frame::new()
+                            .fill(Color32::WHITE)
+                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .corner_radius(5.0)
+                            .inner_margin(Margin::same(10))
+                            .show(ui, |ui| {
+                                let columns = 4; // Reduced from 6 to 4 for better fit
+                                let rows = 24 / columns;
 
-                            // Calculate the size of each grid cell with padding
-                            let column_width = (frame_width - 20.0) / columns as f32; // Account for inner margin
-                            let row_height = 240.0 / rows as f32; // Reduced height for padding
+                                // Calculate the size of each grid cell with padding
+                                let column_width = (frame_width - 20.0) / columns as f32; // Account for inner margin
+                                let row_height = 240.0 / rows as f32; // Reduced height for padding
 
-                            if let Some(mnemonic) = &self.seed_phrase {
                                 Grid::new("seed_phrase_grid")
                                     .num_columns(columns)
                                     .spacing((0.0, 0.0))
@@ -292,19 +329,10 @@ impl AddNewWalletScreen {
                                             }
                                         }
                                     });
-                            } else {
-                                let word_text = RichText::new("Seed Phrase").size(40.0).monospace();
-
-                                ui.with_layout(
-                                    Layout::centered_and_justified(Direction::LeftToRight),
-                                    |ui| {
-                                        ui.label(word_text);
-                                    },
-                                );
-                            }
-                        });
-                },
-            );
+                            });
+                    },
+                );
+            }
         });
     }
 }
@@ -330,16 +358,26 @@ impl ScreenLike for AddNewWalletScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
+            // Show success screen if wallet was created
+            if self.wallet_created {
+                inner_action = self.show_success(ui);
+                return inner_action;
+            }
+
             // Add the scroll area to make the content scrollable both vertically and horizontally
             egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
                 .show(ui, |ui| {
                     ui.add_space(10.0);
-                    ui.heading("Follow these steps to create your wallet!");
+                    ui.heading("Follow these steps to create your wallet.");
+                    ui.add_space(10.0);
+                    ui.separator();
                     ui.add_space(5.0);
 
                     self.entropy_grid.ui(ui);
 
+                    ui.add_space(10.0);
+                    ui.separator();
                     ui.add_space(5.0);
 
                     ui.heading("2. Select your desired seed phrase language and press \"Generate\".");
@@ -349,6 +387,8 @@ impl ScreenLike for AddNewWalletScreen {
                         return;
                     }
 
+                    ui.add_space(10.0);
+                    ui.separator();
                     ui.add_space(10.0);
 
                     ui.heading(
@@ -366,7 +406,9 @@ impl ScreenLike for AddNewWalletScreen {
                         return;
                     }
 
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
                     ui.heading("4. Select a wallet name to remember it. (This will not go to the blockchain)");
 
@@ -377,7 +419,9 @@ impl ScreenLike for AddNewWalletScreen {
                         ui.text_edit_singleline(&mut self.alias_input);
                     });
 
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
                     ui.heading("5. Add a password that must be used to unlock the wallet. (Optional but recommended)");
 
@@ -440,41 +484,34 @@ impl ScreenLike for AddNewWalletScreen {
                         self.estimated_time_to_crack
                     ));
 
-                    // if self.app_context.password_info.is_none() {
-                    //     ui.add_space(10.0);
-                    //     ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
-                    // }
-
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
                     ui.heading("6. Save the wallet.");
-                    ui.add_space(5.0);
+                    ui.add_space(10.0);
 
-                    // Centered "Save Wallet" button at the bottom
-                    ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
-                        let save_button = egui::Button::new(
-                            RichText::new("Save Wallet").strong().size(30.0).color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
-                        )
-                            .min_size(Vec2::new(300.0, 60.0))
-                            .corner_radius(10.0)
-                            .stroke(Stroke::new(1.5, Color32::WHITE))
-                            .sense(if self.wrote_it_down && self.seed_phrase.is_some() {
-                                egui::Sense::click()
-                            } else {
-                                egui::Sense::hover()
-                            });
+                    // Save Wallet button styled like Load Identity button
+                    let mut new_style = (**ui.style()).clone();
+                    new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    ui.set_style(new_style);
+                    let save_button = egui::Button::new(
+                        RichText::new("Save Wallet").color(Color32::WHITE),
+                    )
+                        .fill(Color32::from_rgb(0, 128, 255))
+                        .frame(true)
+                        .corner_radius(3.0);
 
-                        if ui.add(save_button).clicked() {
-                            match self.save_wallet() {
-                                Ok(save_wallet_action) => {
-                                    inner_action = save_wallet_action;
-                                }
-                                Err(e) => {
-                                    self.error = Some(e)
-                                }
+                    if ui.add(save_button).clicked() {
+                        match self.save_wallet() {
+                            Ok(save_wallet_action) => {
+                                inner_action = save_wallet_action;
+                            }
+                            Err(e) => {
+                                self.error = Some(e)
                             }
                         }
-                    });
+                    }
                 });
 
             inner_action

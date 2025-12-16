@@ -8,7 +8,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::{
-    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -89,12 +89,8 @@ impl ContactRequests {
 
             // Get wallet for the selected identity
             let mut error_message = None;
-            new_self.selected_wallet = get_selected_wallet(
-                &identities[0],
-                Some(&app_context),
-                None,
-                &mut error_message,
-            );
+            new_self.selected_wallet =
+                get_selected_wallet(&identities[0], Some(&app_context), None, &mut error_message);
 
             // Load requests from database for this identity
             new_self.load_requests_from_database();
@@ -319,7 +315,7 @@ impl ContactRequests {
 
         if identities.is_empty() {
             ui.colored_label(
-                egui::Color32::from_rgb(255, 165, 0),
+                egui::Color32::from_rgb(200, 150, 50),
                 "No identities loaded. Please load or create an identity first.",
             );
         }
@@ -635,7 +631,9 @@ impl ScreenLike for ContactRequests {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully, UI will update on next frame
                 }

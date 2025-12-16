@@ -273,6 +273,34 @@ impl Database {
         Ok(())
     }
 
+    /// Ensures all required columns exist in wallet-related tables.
+    /// This handles the case where old tables exist with missing columns.
+    pub fn ensure_wallet_columns_exist(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if wallet_addresses table exists before trying to add columns
+        let wallet_addresses_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet_addresses'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if wallet_addresses_exists {
+            self.add_address_total_received_column(conn)?;
+        }
+
+        // Check if wallet table exists and add balance columns if needed
+        let wallet_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if wallet_exists {
+            self.add_wallet_balance_columns(conn)?;
+        }
+
+        Ok(())
+    }
+
     /// Update the total_received for an address.
     pub fn update_address_total_received(
         &self,

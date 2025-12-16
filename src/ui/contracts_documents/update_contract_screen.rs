@@ -261,41 +261,23 @@ impl UpdateDataContractScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Successfully updated data contract.".to_string(),
+            vec![
+                ("Back to Contracts screen".to_string(), AppAction::GoToMainScreen),
+                ("Update another contract".to_string(), AppAction::Custom("update_another".to_string())),
+            ],
+        );
 
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            if let Some(error_message) = &self.error_message {
-                if error_message.contains("proof error logged, contract inserted into the database")
-                {
-                    ui.heading("⚠");
-                    ui.heading("Transaction succeeded but received a proof error.");
-                    ui.add_space(10.0);
-                    ui.label("Please check if the contract was updated correctly.");
-                    ui.label(
-                        "If it was, this is just a Platform proofs bug and no need for concern.",
-                    );
-                    ui.label("Either way, please report to Dash Core Group.");
-                }
-            } else {
-                ui.heading("🎉");
-                ui.heading("Successfully updated data contract.");
-            }
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Contracts screen").clicked() {
-                action = AppAction::GoToMainScreen;
-            }
-            ui.add_space(5.0);
-
-            if ui.button("Update another contract").clicked() {
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "update_another" {
                 self.contract_json_input = String::new();
                 self.broadcast_status = BroadcastStatus::Idle;
+                return AppAction::None;
             }
-        });
+        }
 
         action
     }

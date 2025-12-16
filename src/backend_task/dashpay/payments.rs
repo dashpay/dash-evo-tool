@@ -36,15 +36,18 @@ pub enum PaymentStatus {
     Failed(String),
 }
 
-/// Get the next unused address index for a contact
+/// Get the next unused address index for a contact and increment it
+/// Uses the database to track address indices per contact relationship
 async fn get_next_address_index(
-    _app_context: &Arc<AppContext>,
-    _identity_id: &Identifier,
-    _contact_id: &Identifier,
+    app_context: &Arc<AppContext>,
+    identity_id: &Identifier,
+    contact_id: &Identifier,
 ) -> Result<u32, String> {
-    // TODO: Query local database for highest used index
-    // For now, return 0 (first address)
-    Ok(0)
+    // Get and increment the send index from database
+    app_context
+        .db
+        .get_and_increment_send_index(identity_id, contact_id)
+        .map_err(|e| format!("Failed to get address index from database: {}", e))
 }
 
 /// Derive a payment address for a contact from their encrypted extended public key
@@ -197,36 +200,96 @@ pub async fn derive_contact_payment_address(
     Ok((address, address_index))
 }
 
-/// Send a payment to a contact using Dash Core RPC
+/// Send a payment to a contact using the wallet's SPV capabilities
+/// (Legacy function - preserved for reference)
+#[allow(dead_code)]
 pub async fn send_payment_to_contact(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     from_identity: QualifiedIdentity,
     to_contact_id: Identifier,
-    amount_duffs: u64,
+    amount_dash: f64,
     memo: Option<String>,
 ) -> Result<BackendTaskSuccessResult, String> {
-    // Derive the payment address for the contact
+    send_payment_to_contact_impl(
+        app_context,
+        sdk,
+        from_identity,
+        to_contact_id,
+        amount_dash,
+        memo,
+    )
+    .await
+}
+
+/// Send a payment to a contact using the wallet's SPV capabilities
+/// This is the main implementation called from the DashPay task handler
+pub async fn send_payment_to_contact_impl(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    from_identity: QualifiedIdentity,
+    to_contact_id: Identifier,
+    amount_dash: f64,
+    memo: Option<String>,
+) -> Result<BackendTaskSuccessResult, String> {
+    use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+    // Convert Dash to duffs (1 Dash = 100,000,000 duffs)
+    let amount_duffs = (amount_dash * 100_000_000.0).round() as u64;
+
+    // Get a wallet from the identity's associated wallets
+    let wallet = from_identity
+        .associated_wallets
+        .values()
+        .next()
+        .ok_or_else(|| "No wallet associated with this identity".to_string())?
+        .clone();
+
+    // Check wallet is unlocked
+    {
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+        if !wallet_guard.is_open() {
+            return Err("Wallet must be unlocked to send a payment".to_string());
+        }
+    }
+
+    // Derive the payment address for the contact from their encrypted extended public key
     let (to_address, address_index) =
         derive_contact_payment_address(app_context, sdk, &from_identity, to_contact_id).await?;
 
-    eprintln!(
-        "DEBUG: Derived payment address {} (index {}) for contact {}",
+    tracing::info!(
+        "Derived DashPay payment address {} (index {}) for contact {}",
         to_address,
         address_index,
         to_contact_id.to_string(Encoding::Base58)
     );
 
-    // Convert duffs to Dash for RPC
-    let amount_dash = amount_duffs as f64 / 100_000_000.0;
+    // Build the payment request
+    let request = WalletPaymentRequest {
+        recipients: vec![PaymentRecipient {
+            address: to_address.to_string(),
+            amount_duffs,
+        }],
+        subtract_fee_from_amount: false,
+        memo: memo.clone(),
+    };
 
-    // TODO: Use Dash Core RPC to send the payment
-    // This would require:
-    // 1. Access to the Core wallet RPC
-    // 2. Ensuring the wallet has funds
-    // 3. Creating and broadcasting the transaction
+    // Send the payment using the existing wallet infrastructure
+    let result = app_context
+        .run_core_task(CoreTask::SendWalletPayment {
+            wallet: wallet.clone(),
+            request,
+        })
+        .await?;
 
-    // For now, we'll create a payment record for local storage
+    // Extract txid from result
+    let txid = match &result {
+        BackendTaskSuccessResult::WalletPayment { txid, .. } => txid.clone(),
+        _ => "unknown".to_string(),
+    };
+
+    // Store payment record in local database
     let payment = PaymentRecord {
         id: format!(
             "{}_{}",
@@ -238,21 +301,32 @@ pub async fn send_payment_to_contact(
         ),
         from_identity: from_identity.identity.id(),
         to_identity: to_contact_id,
-        from_address: None, // Would be filled from Core wallet
+        from_address: None,
         to_address: to_address.clone(),
         amount: amount_duffs,
-        tx_id: None, // Would be filled after broadcast
-        memo,
+        tx_id: Some(txid.clone()),
+        memo: memo.clone(),
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs(),
-        status: PaymentStatus::Pending,
+        status: PaymentStatus::Broadcast,
         address_index,
     };
-
-    // TODO: Store payment record in local database
     store_payment_record(app_context, &payment).await?;
+
+    // Save to database using the db interface
+    let _ = app_context.db.save_payment(
+        &txid,
+        &from_identity.identity.id(),
+        &to_contact_id,
+        amount_duffs as i64,
+        memo.as_deref(),
+        "sent",
+    );
+
+    // Convert to Dash for display
+    let amount_dash = amount_duffs as f64 / 100_000_000.0;
 
     Ok(BackendTaskSuccessResult::DashPayPaymentSent(
         to_contact_id.to_string(Encoding::Base58),

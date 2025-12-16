@@ -11,7 +11,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
@@ -147,41 +147,24 @@ impl AddContactScreen {
     }
 
     fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Contact Request Sent Successfully!".to_string(),
+            vec![
+                ("Send Another Request".to_string(), AppAction::Custom("send_another".to_string())),
+                ("Back to Contacts".to_string(), AppAction::PopScreenAndRefresh),
+                ("Back to DashPay".to_string(), AppAction::PopScreen),
+            ],
+        );
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Contact Request Sent Successfully!");
-
-            ui.add_space(20.0);
-
-            if let ContactRequestStatus::Success(ref msg) = self.status {
-                ui.label(RichText::new(msg).size(14.0));
-            }
-
-            ui.add_space(30.0);
-
-            if ui.button("Send Another Request").clicked() {
-                // Reset the form to send another request
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "send_another" {
                 self.status = ContactRequestStatus::NotStarted;
                 self.selected_key = None;
-                action = AppAction::Refresh;
+                return AppAction::Refresh;
             }
-
-            ui.add_space(10.0);
-
-            if ui.button("Back to Contacts").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-
-            ui.add_space(10.0);
-
-            if ui.button("Back to DashPay").clicked() {
-                action = AppAction::PopScreen;
-            }
-        });
+        }
 
         action
     }
@@ -256,7 +239,7 @@ impl ScreenLike for AddContactScreen {
 
             if identities.is_empty() {
                 ui.colored_label(
-                    egui::Color32::from_rgb(255, 165, 0),
+                    egui::Color32::from_rgb(200, 150, 50),
                     "No identities loaded. Please load or create an identity first.",
                 );
                 return inner_action;
@@ -551,7 +534,9 @@ impl ScreenLike for AddContactScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully, UI will update on next frame
                 }

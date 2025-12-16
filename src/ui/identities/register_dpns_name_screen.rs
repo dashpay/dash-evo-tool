@@ -128,27 +128,23 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Successfully registered DPNS name.".to_string(),
+            vec![
+                ("Back to DPNS screen".to_string(), AppAction::PopScreenAndRefresh),
+                ("Register another name".to_string(), AppAction::Custom("register_another".to_string())),
+            ],
+        );
 
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Successfully registered DPNS name.");
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to DPNS screen").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-            ui.add_space(5.0);
-
-            if ui.button("Register another name").clicked() {
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "register_another" {
                 self.name_input = String::new();
                 self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+                return AppAction::None;
             }
-        });
+        }
 
         action
     }

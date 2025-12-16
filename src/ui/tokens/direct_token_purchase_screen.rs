@@ -310,21 +310,11 @@ impl PurchaseTokenScreen {
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Purchase Successful!");
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Tokens").clicked() {
-                // Pop this screen and refresh
-                action = AppAction::PopScreenAndRefresh;
-            }
-        });
-        action
+        crate::ui::helpers::show_success_screen(
+            ui,
+            "Purchase Successful!".to_string(),
+            vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+        )
     }
 }
 

@@ -7,7 +7,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::{
-    try_open_wallet_no_password, wallet_needs_unlock, WalletUnlockPopup, WalletUnlockResult,
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, ScreenLike};
@@ -142,7 +142,7 @@ impl QRScannerScreen {
 
             if identities.is_empty() {
                 ui.colored_label(
-                    egui::Color32::from_rgb(255, 165, 0),
+                    egui::Color32::from_rgb(200, 150, 50),
                     "No identities loaded. Please load or create an identity first.",
                 );
                 return;
@@ -330,7 +330,9 @@ impl ScreenLike for QRScannerScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet unlocked successfully, UI will update on next frame
                 }

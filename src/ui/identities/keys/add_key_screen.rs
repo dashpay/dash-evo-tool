@@ -188,33 +188,28 @@ impl AddKeyScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Successfully added key.".to_string(),
+            vec![
+                ("Back to Identities Screen".to_string(), AppAction::PopScreenAndRefresh),
+                ("Add another key".to_string(), AppAction::Custom("add_another".to_string())),
+            ],
+        );
 
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Successfully added key.");
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Identities Screen").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-            ui.add_space(5.0);
-
-            if ui.button("Add another key").clicked() {
-                action = AppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::RefreshIdentity(self.identity.clone()),
-                ));
+        // Handle the custom action to reset the form and refresh identity
+        if let AppAction::Custom(ref s) = action {
+            if s == "add_another" {
                 self.private_key_input = String::new();
                 self.contract_id_input = String::new();
                 self.document_type_input = String::new();
                 self.enable_contract_bounds = false;
                 self.add_key_status = AddKeyStatus::NotStarted;
+                return AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::RefreshIdentity(self.identity.clone()),
+                ));
             }
-        });
+        }
 
         action
     }

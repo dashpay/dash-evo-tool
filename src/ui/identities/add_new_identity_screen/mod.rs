@@ -17,7 +17,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult,
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
@@ -1018,7 +1018,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     return;
                 }
                 ui.add_space(10.0);
-                ui.heading("Follow these steps to create your identity!");
+                ui.heading("Follow these steps to create your identity.");
                 ui.add_space(15.0);
 
                 let mut step_number = 1;
@@ -1163,8 +1163,7 @@ impl ScreenLike for AddNewIdentityScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let mut popup =
-                        InfoPopup::new("Identity Information", &show_pop_up_info_text);
+                    let mut popup = InfoPopup::new("Identity Information", &show_pop_up_info_text);
                     if popup.show(ui).inner {
                         self.show_pop_up_info = None;
                     }
@@ -1174,9 +1173,9 @@ impl ScreenLike for AddNewIdentityScreen {
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open() {
             if let Some(wallet) = &self.selected_wallet {
-                let result =
-                    self.wallet_unlock_popup
-                        .show(ctx, wallet, &self.app_context);
+                let result = self
+                    .wallet_unlock_popup
+                    .show(ctx, wallet, &self.app_context);
                 if result == WalletUnlockResult::Unlocked {
                     // Wallet was unlocked, update dependencies
                     self.update_wallet(wallet.clone());

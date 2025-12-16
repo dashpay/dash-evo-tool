@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -11,6 +12,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
@@ -20,7 +22,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const PAYMENT_GUIDELINES_INFO_TEXT: &str = "Payment Guidelines:\n\n\
     Payments to contacts use encrypted payment channels.\n\n\
@@ -39,6 +41,11 @@ pub struct SendPaymentScreen {
     message: Option<(String, MessageType)>,
     sending: bool,
     show_info_popup: bool,
+    payment_success: bool,
+    tx_id: Option<String>,
+    // Wallet unlock
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl SendPaymentScreen {
@@ -47,6 +54,13 @@ impl SendPaymentScreen {
         from_identity: QualifiedIdentity,
         to_contact_id: Identifier,
     ) -> Self {
+        // Get wallet from identity's associated wallets
+        let selected_wallet = from_identity
+            .associated_wallets
+            .values()
+            .next()
+            .cloned();
+
         Self {
             app_context: app_context.clone(),
             from_identity,
@@ -58,6 +72,10 @@ impl SendPaymentScreen {
             message: None,
             sending: false,
             show_info_popup: false,
+            payment_success: false,
+            tx_id: None,
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
         }
     }
 
@@ -67,32 +85,82 @@ impl SendPaymentScreen {
         self.to_contact_name = Some("alice.dash".to_string());
     }
 
-    fn send_payment(&mut self) {
-        // TODO: Implement actual payment sending via backend
-        self.sending = true;
-
+    fn send_payment(&mut self) -> AppAction {
         // Validate amount
         if self.amount.value() == 0 {
             self.display_message("Please enter an amount", MessageType::Error);
-            self.sending = false;
-            return;
+            return AppAction::None;
         }
 
-        // Mock successful send
-        self.display_message(
-            &format!("Payment of {} sent successfully", self.amount),
-            MessageType::Success,
-        );
+        // Check wallet is available and unlocked
+        let wallet_check = if let Some(wallet) = &self.selected_wallet {
+            match wallet.read() {
+                Ok(guard) => {
+                    if guard.is_open() {
+                        Ok(())
+                    } else {
+                        Err("Wallet must be unlocked to send a payment".to_string())
+                    }
+                }
+                Err(e) => Err(format!("Failed to access wallet: {}", e)),
+            }
+        } else {
+            Err("No wallet associated with this identity".to_string())
+        };
 
-        // Clear form
-        self.amount_input = None;
-        self.amount = Amount::new_dash(0.0);
-        self.memo.clear();
-        self.sending = false;
+        if let Err(e) = wallet_check {
+            self.display_message(&e, MessageType::Error);
+            return AppAction::None;
+        }
+
+        // Get amount in Dash (convert from duffs)
+        let amount_dash = match self.amount.dash_to_duffs() {
+            Ok(duffs) => duffs as f64 / 100_000_000.0,
+            Err(e) => {
+                self.display_message(&format!("Invalid amount: {}", e), MessageType::Error);
+                return AppAction::None;
+            }
+        };
+
+        self.sending = true;
+
+        // Fire the backend task
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::SendPaymentToContact {
+                identity: self.from_identity.clone(),
+                contact_id: self.to_contact_id,
+                amount_dash,
+                memo: if self.memo.is_empty() { None } else { Some(self.memo.clone()) },
+            },
+        )))
+    }
+
+    fn show_success(&self, ui: &mut Ui) -> AppAction {
+        crate::ui::helpers::show_success_screen(
+            ui,
+            format!(
+                "Payment of {} sent successfully!{}",
+                self.amount,
+                if let Some(tx_id) = &self.tx_id {
+                    format!("\n\nTransaction ID: {}", tx_id)
+                } else {
+                    String::new()
+                }
+            ),
+            vec![
+                ("Back to DashPay".to_string(), AppAction::GoToMainScreen),
+                ("Send Another Payment".to_string(), AppAction::PopScreen),
+            ],
+        )
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        // Show success screen if payment was successful
+        if self.payment_success {
+            return self.show_success(ui);
+        }
 
         // Header
         ui.horizontal(|ui| {
@@ -119,6 +187,33 @@ impl SendPaymentScreen {
             ui.separator();
         }
 
+        // Check wallet unlock
+        let (wallet_open_error, needs_unlock) = if let Some(wallet) = &self.selected_wallet {
+            let open_err = try_open_wallet_no_password(wallet).err();
+            let needs = wallet_needs_unlock(wallet);
+            (open_err, needs)
+        } else {
+            (None, false)
+        };
+
+        if let Some(e) = wallet_open_error {
+            self.display_message(&e, MessageType::Error);
+        }
+
+        if needs_unlock {
+            ui.add_space(10.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 150, 50),
+                "Wallet is locked. Please unlock to send a payment.",
+            );
+            ui.add_space(8.0);
+            if ui.button("Unlock Wallet").clicked() {
+                self.wallet_unlock_popup.open();
+            }
+            ui.add_space(10.0);
+            return AppAction::None;
+        }
+
         ScrollArea::vertical().show(ui, |ui| {
             ui.group(|ui| {
                 // From identity
@@ -136,17 +231,25 @@ impl SendPaymentScreen {
                     );
                 });
 
-                // Balance
+                // Wallet Balance (from wallet, not identity)
                 ui.horizontal(|ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.label(
-                        RichText::new("Balance:")
+                        RichText::new("Wallet Balance:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    let balance_dash = self.from_identity.identity.balance() as f64 * 1e-11;
+                    let balance_dash = if let Some(wallet) = &self.selected_wallet {
+                        if let Ok(wallet_guard) = wallet.read() {
+                            wallet_guard.confirmed_balance_duffs() as f64 / 100_000_000.0
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
                     ui.label(
-                        RichText::new(format!("{:.6} Dash", balance_dash))
+                        RichText::new(format!("{:.8} DASH", balance_dash))
                             .color(DashColors::text_primary(dark_mode)),
                     );
                 });
@@ -175,18 +278,26 @@ impl SendPaymentScreen {
 
                 ui.separator();
 
-                // Amount input
-                let _dark_mode = ui.ctx().style().visuals.dark_mode;
-                let balance = self.from_identity.identity.balance();
+                // Amount input - use wallet balance for max
+                let max_balance = if let Some(wallet) = &self.selected_wallet {
+                    if let Ok(wallet_guard) = wallet.read() {
+                        wallet_guard.confirmed_balance_duffs()
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
                 let amount_input = self.amount_input.get_or_insert_with(|| {
                     AmountInput::new(&self.amount)
                         .with_hint_text("Enter amount in Dash")
                         .with_max_button(true)
-                        .with_max_amount(Some(balance))
+                        .with_max_amount(Some(max_balance))
                         .with_label("Amount:")
                 });
                 // Update max amount in case balance changed
-                amount_input.set_max_amount(Some(balance));
+                amount_input.set_max_amount(Some(max_balance));
                 let response = amount_input.show(ui);
                 if response.inner.has_changed()
                     && let Some(new_amount) = response.inner.changed_value()
@@ -241,7 +352,7 @@ impl SendPaymentScreen {
                                     MessageType::Error,
                                 );
                             } else {
-                                self.send_payment();
+                                action = self.send_payment();
                             }
                         }
 
@@ -304,11 +415,38 @@ impl ScreenLike for SendPaymentScreen {
                 });
         }
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open() {
+            if let Some(wallet) = &self.selected_wallet {
+                let result = self.wallet_unlock_popup.show(ctx, wallet, &self.app_context);
+                if result == WalletUnlockResult::Unlocked {
+                    // Wallet unlocked successfully
+                }
+            }
+        }
+
         action
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.display_message(message, message_type);
+        self.sending = false;
+        self.message = Some((message.to_string(), message_type));
+    }
+
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        self.sending = false;
+        match result {
+            BackendTaskSuccessResult::DashPayPaymentSent(recipient, address, amount) => {
+                // Extract txid from the address (or we could modify the result to include it)
+                self.payment_success = true;
+                self.tx_id = Some(format!("Sent to {}", address));
+                self.message = Some((
+                    format!("Payment of {} DASH sent to {}", amount, recipient),
+                    MessageType::Success,
+                ));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -498,7 +636,7 @@ impl PaymentHistory {
 
         if identities.is_empty() {
             ui.colored_label(
-                egui::Color32::from_rgb(255, 165, 0),
+                egui::Color32::from_rgb(200, 150, 50),
                 "No identities loaded. Please load or create an identity first.",
             );
         }

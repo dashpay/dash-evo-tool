@@ -259,7 +259,7 @@ pub async fn send_payment(
     sdk: &Sdk,
     from_identity: QualifiedIdentity,
     to_contact_id: Identifier,
-    amount: u64,
+    amount_dash: f64,
     memo: Option<String>,
 ) -> Result<BackendTaskSuccessResult, String> {
     // Use the new payments module to send payment
@@ -268,7 +268,7 @@ pub async fn send_payment(
         sdk,
         from_identity,
         to_contact_id,
-        amount,
+        amount_dash,
         memo,
     )
     .await

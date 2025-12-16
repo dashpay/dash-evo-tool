@@ -128,4 +128,26 @@ impl crate::database::Database {
         )?;
         Ok(())
     }
+
+    /// Toggle or set the hidden status for a contact
+    /// Creates a new entry if one doesn't exist
+    pub fn set_contact_hidden(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+        is_hidden: bool,
+    ) -> rusqlite::Result<()> {
+        // First try to load existing info to preserve nickname and notes
+        let (nickname, notes, _) =
+            self.load_contact_private_info(owner_identity_id, contact_identity_id)?;
+
+        // Save with updated hidden status
+        self.save_contact_private_info(
+            owner_identity_id,
+            contact_identity_id,
+            &nickname,
+            &notes,
+            is_hidden,
+        )
+    }
 }

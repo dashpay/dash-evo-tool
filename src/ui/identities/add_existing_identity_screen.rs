@@ -644,22 +644,23 @@ impl AddExistingIdentityScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let success_text = self
+            .success_message
+            .clone()
+            .unwrap_or_else(|| "Successfully loaded identity.".to_string());
 
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            success_text,
+            vec![
+                ("Load Another".to_string(), AppAction::Custom("load_another".to_string())),
+                ("Back to Identities Screen".to_string(), AppAction::PopScreenAndRefresh),
+            ],
+        );
 
-            ui.heading("🎉");
-            let success_text = self
-                .success_message
-                .clone()
-                .unwrap_or_else(|| "Successfully loaded identity.".to_string());
-            ui.label(RichText::new(success_text));
-
-            ui.add_space(20.0);
-
-            if ui.button("Load Another").clicked() {
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "load_another" {
                 self.identity_id_input.clear();
                 self.alias_input.clear();
                 self.voting_private_key_input.clear();
@@ -672,14 +673,9 @@ impl AddExistingIdentityScreen {
                 self.add_identity_status = AddIdentityStatus::NotStarted;
                 self.backend_message = None;
                 self.success_message = None;
+                return AppAction::None;
             }
-            ui.add_space(5.0);
-
-            if ui.button("Back to Identities Screen").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-            ui.add_space(5.0);
-        });
+        }
 
         action
     }

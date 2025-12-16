@@ -309,47 +309,14 @@ impl DestroyFrozenFundsScreen {
     }
     /// Simple “Success” screen
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            if self.group_action_id.is_some() {
-                // This destroy is already initiated by the group, we are just signing it
-                ui.heading("Group Destroy Frozen Funds Signing Successful.");
-            } else if !self.is_unilateral_group_member && self.group.is_some() {
-                ui.heading("Group Action to Destroy Frozen Funds Initiated.");
-            } else {
-                ui.heading("Frozen Funds Destroyed Successfully.");
-            }
-
-            ui.add_space(20.0);
-
-            if self.group_action_id.is_some() {
-                if ui.button("Back to Group Actions").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-                if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenMyTokenBalances,
-                    );
-                }
-            } else {
-                if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-
-                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
-                    action = AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                        Screen::GroupActionsScreen(GroupActionsScreen::new(
-                            &self.app_context.clone(),
-                        )),
-                    );
-                }
-            }
-        });
-        action
+        crate::ui::helpers::show_group_token_success_screen(
+            ui,
+            "Destroy Frozen Funds",
+            self.group_action_id.is_some(),
+            self.is_unilateral_group_member,
+            self.group.is_some(),
+            &self.app_context,
+        )
     }
 }
 

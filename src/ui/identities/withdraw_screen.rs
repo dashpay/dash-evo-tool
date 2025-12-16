@@ -240,25 +240,11 @@ impl WithdrawalScreen {
     }
 
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Successfully withdrew from identity");
-
-            ui.add_space(20.0);
-
-            // Display the "Back to Identities" button
-            if ui.button("Back to Identities").clicked() {
-                // Handle navigation back to the identities screen
-                action = AppAction::PopScreenAndRefresh;
-            }
-        });
-
-        action
+        crate::ui::helpers::show_success_screen(
+            ui,
+            "Successfully withdrew from identity".to_string(),
+            vec![("Back to Identities".to_string(), AppAction::PopScreenAndRefresh)],
+        )
     }
 }
 

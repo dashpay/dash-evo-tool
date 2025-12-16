@@ -86,6 +86,7 @@ pub mod theme;
 pub mod tokens;
 pub mod tools;
 pub(crate) mod wallets;
+pub mod welcome_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[allow(clippy::enum_variant_names)]

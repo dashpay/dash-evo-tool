@@ -4,7 +4,8 @@ use crate::{
     app::AppAction,
     context::AppContext,
     model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
-    ui::{Screen, identities::keys::add_key_screen::AddKeyScreen},
+    ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
+    ui::contracts_documents::group_actions_screen::GroupActionsScreen,
 };
 use arboard::Clipboard;
 use dash_sdk::{
@@ -745,6 +746,62 @@ pub fn show_success_screen(
         for button in action_buttons {
             if ui.button(button.0).clicked() {
                 action = button.1;
+            }
+        }
+        ui.add_space(100.0);
+    });
+    action
+}
+
+/// Shows a success screen for group token actions (mint, burn, pause, resume, freeze, unfreeze, etc.)
+/// Handles the three cases:
+/// 1. Group action signing (group_action_id is Some) - shows "Back to Group Actions" and "Back to Tokens"
+/// 2. Group action initiated (has_group && !is_unilateral) - shows "Back to Tokens" and "Go to Group Actions"
+/// 3. Normal action - shows just "Back to Tokens"
+pub fn show_group_token_success_screen(
+    ui: &mut Ui,
+    action_name: &str,
+    is_group_action_signing: bool,
+    is_unilateral_group_member: bool,
+    has_group: bool,
+    app_context: &Arc<AppContext>,
+) -> AppAction {
+    let mut action = AppAction::None;
+    ui.vertical_centered(|ui| {
+        ui.add_space(100.0);
+        ui.heading("🎉");
+
+        // Determine the success message based on the action type
+        if is_group_action_signing {
+            ui.heading(format!("Group {} Signing Successful.", action_name));
+        } else if !is_unilateral_group_member && has_group {
+            ui.heading(format!("Group {} Initiated.", action_name));
+        } else {
+            ui.heading(format!("{} Successful.", action_name));
+        }
+
+        ui.add_space(20.0);
+
+        // Show appropriate buttons based on the action type
+        if is_group_action_signing {
+            if ui.button("Back to Group Actions").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+            if ui.button("Back to Tokens").clicked() {
+                action = AppAction::SetMainScreenThenGoToMainScreen(
+                    RootScreenType::RootScreenMyTokenBalances,
+                );
+            }
+        } else {
+            if ui.button("Back to Tokens").clicked() {
+                action = AppAction::PopScreenAndRefresh;
+            }
+
+            if !is_unilateral_group_member && has_group && ui.button("Go to Group Actions").clicked() {
+                action = AppAction::PopThenAddScreenToMainScreen(
+                    RootScreenType::RootScreenDocumentQuery,
+                    Screen::GroupActionsScreen(GroupActionsScreen::new(app_context)),
+                );
             }
         }
         ui.add_space(100.0);

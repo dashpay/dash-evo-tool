@@ -159,38 +159,27 @@ impl AddTokenByIdScreen {
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Token Added Successfully".to_string(),
+            vec![
+                ("Add another token".to_string(), AppAction::Custom("add_another".to_string())),
+                ("Back to Tokens screen".to_string(), AppAction::PopScreenAndRefresh),
+            ],
+        );
 
-            ui.heading("🎉");
-            ui.heading(
-                RichText::new("Token Added Successfully")
-                    .color(Color32::from_rgb(0, 150, 0))
-                    .size(24.0),
-            );
-
-            ui.add_space(10.0);
-            if let Some(token) = &self.selected_token {
-                ui.label(format!(
-                    "'{}' has been added to your tokens.",
-                    token.token_name
-                ));
-            }
-
-            ui.add_space(20.0);
-            if ui.button("Add another token").clicked() {
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "add_another" {
                 self.status = AddTokenStatus::Idle;
                 self.contract_or_token_id_input.clear();
                 self.fetched_contract = None;
                 self.selected_token = None;
                 self.try_token_id_next = false;
+                return AppAction::None;
             }
+        }
 
-            if ui.button("Back to Tokens screen").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-        });
         action
     }
 

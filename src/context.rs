@@ -1637,9 +1637,43 @@ impl AppContext {
 
                 wallet
                     .address_balances
-                    .entry(address)
+                    .entry(address.clone())
                     .and_modify(|balance| *balance += tx_out.value)
                     .or_insert(tx_out.value);
+
+                // Check if this is a DashPay contact payment
+                if let Ok(Some((owner_id, contact_id, address_index))) =
+                    self.db.get_dashpay_address_mapping(&address)
+                {
+                    // Update the highest receive index if needed
+                    if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id) {
+                        if address_index >= indices.highest_receive_index {
+                            let _ = self.db.update_highest_receive_index(
+                                &owner_id,
+                                &contact_id,
+                                address_index + 1,
+                            );
+                        }
+                    }
+
+                    // Save the payment record
+                    let _ = self.db.save_payment(
+                        &tx.txid().to_string(),
+                        &contact_id, // from contact
+                        &owner_id,   // to us
+                        tx_out.value as i64,
+                        None, // memo not available for incoming
+                        "received",
+                    );
+
+                    tracing::info!(
+                        "DashPay payment received: {} duffs from contact {} to address {} (index {})",
+                        tx_out.value,
+                        contact_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                        address,
+                        address_index
+                    );
+                }
             }
         }
         if matches!(

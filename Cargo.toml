@@ -47,6 +47,7 @@ directories = "6.0.0"
 rusqlite = { version = "0.37.0", features = ["functions"] }
 dark-light = "2.0.0"
 image = { version = "0.25.6", default-features = false, features = ["png", "jpeg"] }
+resvg = "0.45"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 bitflags = "2.9.1"
 libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }

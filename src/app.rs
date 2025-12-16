@@ -28,6 +28,7 @@ use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
+use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
 use crate::utils::tasks::TaskManager;
@@ -81,6 +82,10 @@ pub struct AppState {
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
+    /// Whether to show the welcome/onboarding screen
+    pub show_welcome_screen: bool,
+    /// The welcome screen instance (only created if needed)
+    pub welcome_screen: Option<WelcomeScreen>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +140,15 @@ pub enum AppAction {
     BackendTask(BackendTask),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
+    /// Mark onboarding as complete, hide welcome screen, and optionally navigate
+    OnboardingComplete {
+        /// The main screen to show
+        main_screen: RootScreenType,
+        /// Optional sub-screen to push onto the stack
+        add_screen: Option<Box<crate::ui::ScreenType>>,
+        /// The network to switch to
+        network: Network,
+    },
 }
 
 impl BitOrAssign for AppAction {
@@ -166,6 +180,7 @@ impl AppState {
         let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
+        let onboarding_completed = settings.onboarding_completed;
 
         let subtasks = Arc::new(TaskManager::new());
         let mainnet_app_context = match AppContext::new(
@@ -487,7 +502,7 @@ impl AppState {
             None
         };
 
-        Self {
+        let mut app_state = Self {
             main_screens: [
                 (
                     RootScreenType::RootScreenIdentities,
@@ -608,7 +623,21 @@ impl AppState {
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
             subtasks,
+            show_welcome_screen: !onboarding_completed,
+            welcome_screen: None,
+        };
+
+        // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
+        if app_state.show_welcome_screen {
+            app_state.welcome_screen = Some(WelcomeScreen::new(
+                app_state.mainnet_app_context.clone(),
+                app_state.testnet_app_context.clone(),
+                app_state.devnet_app_context.clone(),
+                app_state.local_app_context.clone(),
+            ));
         }
+
+        app_state
     }
 
     /// Allows enabling or disabling animations globally for the app.
@@ -784,8 +813,15 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
-                            self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                            // Forward to welcome screen if showing
+                            if self.show_welcome_screen {
+                                if let Some(welcome_screen) = &mut self.welcome_screen {
+                                    welcome_screen.display_task_result(unboxed_message);
+                                }
+                            } else {
+                                self.visible_screen_mut()
+                                    .display_task_result(unboxed_message);
+                            }
                         }
                     }
                 }
@@ -936,7 +972,16 @@ impl App for AppState {
             }
         }
 
-        let action = self.visible_screen_mut().ui(ctx);
+        // Show welcome screen if onboarding not completed
+        let action = if self.show_welcome_screen {
+            if let Some(welcome_screen) = &mut self.welcome_screen {
+                welcome_screen.ui(ctx)
+            } else {
+                AppAction::None
+            }
+        } else {
+            self.visible_screen_mut().ui(ctx)
+        };
 
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
@@ -1007,6 +1052,26 @@ impl App for AppState {
                     .ok();
             }
             AppAction::Custom(_) => {}
+            AppAction::OnboardingComplete {
+                main_screen,
+                add_screen,
+                network,
+            } => {
+                self.show_welcome_screen = false;
+                self.welcome_screen = None;
+                // Switch to the selected network first
+                self.change_network(network);
+                self.selected_main_screen = main_screen;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context()
+                    .update_settings(main_screen)
+                    .ok();
+                // If there's an additional screen to push, create and push it
+                if let Some(screen_type) = add_screen {
+                    let screen = screen_type.create_screen(self.current_app_context());
+                    self.screen_stack.push(screen);
+                }
+            }
         }
     }
 

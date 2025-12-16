@@ -3,13 +3,15 @@ use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
 };
+use dash_sdk::dpp::key_wallet::dip9::{DASHPAY_ROOT_PATH_MAINNET, DASHPAY_ROOT_PATH_TESTNET, FEATURE_PURPOSE_DASHPAY};
+use dash_sdk::dpp::key_wallet::gap_limit::{GapLimit, DEFAULT_SPECIAL_GAP_LIMIT};
 use dash_sdk::platform::Identifier;
 use std::str::FromStr;
 
 // Import our DIP-14 compliant derivation functions
 use super::dip14_derivation::derive_dashpay_incoming_xpub_dip14;
 
-/// DashPay auto-accept proof feature index
+/// DashPay auto-accept proof feature index - use the constant from dip9 if available
 const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
 
 /// Derive the DashPay incoming funds extended public key for a contact relationship

@@ -1,6 +1,7 @@
 use crate::database::Database;
 use crate::database::initialization::DEFAULT_DB_VERSION;
 use crate::model::password_info::PasswordInfo;
+use crate::model::settings::UserMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
@@ -197,6 +198,80 @@ impl Database {
         Ok(())
     }
 
+    /// Adds onboarding-related columns to the settings table.
+    pub fn add_onboarding_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // Check and add onboarding_completed column
+        let onboarding_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='onboarding_completed'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !onboarding_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN onboarding_completed INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
+
+        // Check and add show_evonode_tools column
+        let evonode_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='show_evonode_tools'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !evonode_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN show_evonode_tools INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
+
+        // Check and add user_mode column (Beginner or Advanced)
+        let user_mode_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='user_mode'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !user_mode_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN user_mode TEXT DEFAULT 'Advanced';",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Updates the onboarding completed flag in the settings table.
+    pub fn update_onboarding_completed(&self, completed: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET onboarding_completed = ? WHERE id = 1",
+            rusqlite::params![completed],
+        )?;
+        Ok(())
+    }
+
+    /// Updates the show_evonode_tools flag in the settings table.
+    pub fn update_show_evonode_tools(&self, show: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET show_evonode_tools = ? WHERE id = 1",
+            rusqlite::params![show],
+        )?;
+        Ok(())
+    }
+
+    /// Updates the user mode (Beginner/Advanced) in the settings table.
+    pub fn update_user_mode(&self, mode: &str) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET user_mode = ? WHERE id = 1",
+            rusqlite::params![mode],
+        )?;
+        Ok(())
+    }
+
     /// Updates the database version in the settings table.
     pub fn update_database_version(&self, new_version: u16, conn: &Connection) -> Result<()> {
         // Ensure the database version is updated
@@ -206,6 +281,32 @@ impl Database {
              WHERE id = 1",
             params![new_version],
         )?;
+
+        Ok(())
+    }
+
+    /// Ensures all required columns exist in the settings table.
+    /// This handles the case where an old database has a settings table with missing columns.
+    pub fn ensure_settings_columns_exist(&self, conn: &Connection) -> Result<()> {
+        self.add_custom_dash_qt_columns(conn)?;
+        self.add_theme_preference_column(conn)?;
+        self.add_disable_zmq_column(conn)?;
+        self.add_core_backend_mode_column(conn)?;
+        self.add_onboarding_columns(conn)?;
+
+        // Ensure database_version column exists
+        let version_column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='database_version'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !version_column_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN database_version INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
 
         Ok(())
     }
@@ -226,12 +327,15 @@ impl Database {
             bool,
             ThemeMode,
             u8,
+            bool,     // onboarding_completed
+            bool,     // show_evonode_tools
+            UserMode, // user_mode
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode FROM settings WHERE id = 1",
+            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode, onboarding_completed, show_evonode_tools, user_mode FROM settings WHERE id = 1",
         )?;
 
         let result = stmt.query_row([], |row| {
@@ -245,6 +349,9 @@ impl Database {
             let disable_zmq: Option<bool> = row.get(7)?;
             let theme_preference: Option<String> = row.get(8)?;
             let core_backend_mode: Option<u8> = row.get(9)?;
+            let onboarding_completed: Option<bool> = row.get(10)?;
+            let show_evonode_tools: Option<bool> = row.get(11)?;
+            let user_mode: Option<String> = row.get(12)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -272,6 +379,13 @@ impl Database {
                 _ => ThemeMode::System,                     // Default to System for unknown values
             };
 
+            // Parse user mode
+            let user_mode = match user_mode.as_deref() {
+                Some("Beginner") => UserMode::Beginner,
+                Some("Advanced") | None => UserMode::Advanced, // Default to Advanced
+                _ => UserMode::Advanced,
+            };
+
             Ok((
                 parsed_network,
                 root_screen_type,
@@ -281,6 +395,9 @@ impl Database {
                 disable_zmq.unwrap_or(false),
                 theme_mode,
                 core_backend_mode.unwrap_or(1), // Default to SPV (1)
+                onboarding_completed.unwrap_or(false),
+                show_evonode_tools.unwrap_or(false),
+                user_mode,
             ))
         });
 

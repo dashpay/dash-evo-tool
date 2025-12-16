@@ -1,6 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::ScreenLike;
+use crate::ui::{RootScreenType, Screen, ScreenLike};
+use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
+use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -16,7 +18,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
-use egui::{Color32, ComboBox, Direction, Grid, Layout, RichText, Stroke, Ui, Vec2};
+use egui::{Color32, ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -32,6 +34,7 @@ pub struct ImportMnemonicScreen {
     error: Option<String>,
     pub app_context: Arc<AppContext>,
     use_password_for_app: bool,
+    wallet_imported: bool,
 }
 
 impl ImportMnemonicScreen {
@@ -47,6 +50,7 @@ impl ImportMnemonicScreen {
             error: None,
             app_context: app_context.clone(),
             use_password_for_app: true,
+            wallet_imported: false,
         }
     }
     fn save_wallet(&mut self) -> Result<AppAction, String> {
@@ -149,10 +153,57 @@ impl ImportMnemonicScreen {
                 self.app_context.handle_wallet_unlocked(&wallet_arc);
             }
 
-            Ok(AppAction::GoToMainScreen) // Navigate back to the main screen after saving
+            self.wallet_imported = true;
+            Ok(AppAction::None) // Show success screen instead of navigating away
         } else {
             Ok(AppAction::None) // No action if no seed phrase exists
         }
+    }
+
+    fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Wallet Imported Successfully!".to_string(),
+            vec![
+                ("Go to Wallet".to_string(), AppAction::GoToMainScreen),
+                (
+                    "Create Identity".to_string(),
+                    AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenIdentities,
+                        Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(&self.app_context)),
+                    ),
+                ),
+                (
+                    "Load Existing Identity".to_string(),
+                    AppAction::PopThenAddScreenToMainScreen(
+                        RootScreenType::RootScreenIdentities,
+                        Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(&self.app_context)),
+                    ),
+                ),
+                (
+                    "Import Another Wallet".to_string(),
+                    AppAction::Custom("import_another_wallet".to_string()),
+                ),
+            ],
+        );
+
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action {
+            if s == "import_another_wallet" {
+                self.seed_phrase_words = vec!["".to_string(); 24];
+                self.selected_seed_phrase_length = 12;
+                self.seed_phrase = None;
+                self.password = String::new();
+                self.alias_input = String::new();
+                self.password_strength = 0.0;
+                self.estimated_time_to_crack = String::new();
+                self.error = None;
+                self.wallet_imported = false;
+                return AppAction::None;
+            }
+        }
+
+        action
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
@@ -264,13 +315,20 @@ impl ScreenLike for ImportMnemonicScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
+            // Show success screen if wallet was imported
+            if self.wallet_imported {
+                inner_action = self.show_success(ui);
+                return inner_action;
+            }
+
             // Add the scroll area to make the content scrollable both vertically and horizontally
             egui::ScrollArea::both()
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
                 .show(ui, |ui| {
                     ui.add_space(10.0);
                     ui.heading("Follow these steps to import your wallet.");
-
+                    ui.add_space(10.0);
+                    ui.separator();
                     ui.add_space(5.0);
 
                     ui.heading("1. Select the seed phrase length and enter all words.");
@@ -312,7 +370,9 @@ impl ScreenLike for ImportMnemonicScreen {
                         return;
                     }
 
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
                     ui.heading("2. Select a wallet name to remember it. (This will not go to the blockchain)");
 
@@ -323,7 +383,9 @@ impl ScreenLike for ImportMnemonicScreen {
                         ui.text_edit_singleline(&mut self.alias_input);
                     });
 
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
                     ui.heading("3. Add a password that must be used to unlock the wallet. (Optional but recommended)");
 
@@ -391,36 +453,34 @@ impl ScreenLike for ImportMnemonicScreen {
                     //     ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
                     // }
 
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
                     ui.heading("4. Save the wallet.");
-                    ui.add_space(5.0);
+                    ui.add_space(10.0);
 
-                    // Centered "Save Wallet" button at the bottom
-                    ui.with_layout(Layout::centered_and_justified(Direction::TopDown), |ui| {
-                        let save_button = egui::Button::new(
-                            RichText::new("Save Wallet").strong().size(30.0),
-                        )
-                            .min_size(Vec2::new(300.0, 60.0))
-                            .corner_radius(10.0)
-                            .stroke(Stroke::new(1.5, Color32::WHITE))
-                            .sense(if self.seed_phrase.is_some() {
-                                egui::Sense::click()
-                            } else {
-                                egui::Sense::hover()
-                            });
+                    // Save Wallet button styled like Load Identity button
+                    let mut new_style = (**ui.style()).clone();
+                    new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    ui.set_style(new_style);
+                    let save_button = egui::Button::new(
+                        RichText::new("Save Wallet").color(Color32::WHITE),
+                    )
+                        .fill(Color32::from_rgb(0, 128, 255))
+                        .frame(true)
+                        .corner_radius(3.0);
 
-                        if ui.add(save_button).clicked() {
-                            match self.save_wallet() {
-                                Ok(save_wallet_action) => {
-                                    inner_action = save_wallet_action;
-                                }
-                                Err(e) => {
-                                    self.error = Some(e)
-                                }
+                    if ui.add(save_button).clicked() {
+                        match self.save_wallet() {
+                            Ok(save_wallet_action) => {
+                                inner_action = save_wallet_action;
+                            }
+                            Err(e) => {
+                                self.error = Some(e)
                             }
                         }
-                    });
+                    }
                 });
 
             inner_action

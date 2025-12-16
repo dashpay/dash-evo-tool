@@ -14,6 +14,7 @@ pub mod encryption;
 pub mod encryption_tests;
 pub mod errors;
 pub mod hd_derivation;
+pub mod incoming_payments;
 pub mod payments;
 pub mod profile;
 pub mod validation;
@@ -71,6 +72,12 @@ pub enum DashPayTask {
     LoadPaymentHistory {
         identity: QualifiedIdentity,
     },
+    SendPaymentToContact {
+        identity: QualifiedIdentity,
+        contact_id: Identifier,
+        amount_dash: f64,
+        memo: Option<String>,
+    },
     UpdateContactInfo {
         identity: QualifiedIdentity,
         contact_id: Identifier,
@@ -78,6 +85,10 @@ pub enum DashPayTask {
         note: Option<String>,
         is_hidden: bool,
         accepted_accounts: Vec<u32>,
+    },
+    /// Register DashPay receiving addresses for incoming payment detection
+    RegisterDashPayAddresses {
+        identity: QualifiedIdentity,
     },
 }
 
@@ -170,6 +181,22 @@ impl AppContext {
                 // For now, return empty payment history until SPV client is available
                 Ok(BackendTaskSuccessResult::DashPayPaymentHistory(Vec::new()))
             }
+            DashPayTask::SendPaymentToContact {
+                identity,
+                contact_id,
+                amount_dash,
+                memo,
+            } => {
+                payments::send_payment_to_contact_impl(
+                    self,
+                    sdk,
+                    identity,
+                    contact_id,
+                    amount_dash,
+                    memo,
+                )
+                .await
+            }
             DashPayTask::UpdateContactInfo {
                 identity,
                 contact_id,
@@ -189,6 +216,24 @@ impl AppContext {
                     accepted_accounts,
                 )
                 .await
+            }
+            DashPayTask::RegisterDashPayAddresses { identity } => {
+                let result = incoming_payments::register_dashpay_addresses_for_identity(
+                    self,
+                    &identity,
+                )
+                .await?;
+
+                Ok(BackendTaskSuccessResult::Message(format!(
+                    "Registered {} DashPay addresses for {} contacts{}",
+                    result.addresses_registered,
+                    result.contacts_processed,
+                    if result.errors.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({} errors)", result.errors.len())
+                    }
+                )))
             }
         }
     }

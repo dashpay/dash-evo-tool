@@ -61,6 +61,20 @@ pub struct StoredPayment {
     pub confirmed_at: Option<i64>,
 }
 
+/// DashPay contact address index tracking per DIP-0015
+/// Tracks address indices used for sending/receiving payments per contact relationship
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactAddressIndex {
+    pub owner_identity_id: Vec<u8>,
+    pub contact_identity_id: Vec<u8>,
+    /// Next address index to use when sending TO this contact
+    pub next_send_index: u32,
+    /// Highest address index seen when receiving FROM this contact (for bloom filter)
+    pub highest_receive_index: u32,
+    /// Number of addresses registered in bloom filter for this contact
+    pub bloom_registered_count: u32,
+}
+
 impl crate::database::Database {
     /// Initialize all DashPay-related database tables using a transaction
     pub fn init_dashpay_tables_in_tx(&self, tx: &rusqlite::Connection) -> rusqlite::Result<()> {
@@ -155,6 +169,43 @@ impl crate::database::Database {
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_payments_to
              ON dashpay_payments(to_identity_id)",
+            [],
+        )?;
+
+        // Contact address index tracking table (DIP-0015)
+        // Tracks address indices per contact for payment derivation
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS dashpay_contact_address_indices (
+                owner_identity_id BLOB NOT NULL,
+                contact_identity_id BLOB NOT NULL,
+                next_send_index INTEGER DEFAULT 0,
+                highest_receive_index INTEGER DEFAULT 0,
+                bloom_registered_count INTEGER DEFAULT 0,
+                PRIMARY KEY (owner_identity_id, contact_identity_id)
+            )",
+            [],
+        )?;
+
+        // DashPay address mappings for incoming payment detection
+        // Maps addresses to contact relationships for transaction matching
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS dashpay_address_mappings (
+                address TEXT PRIMARY KEY,
+                owner_identity_id BLOB NOT NULL,
+                contact_identity_id BLOB NOT NULL,
+                address_index INTEGER NOT NULL,
+                created_at INTEGER DEFAULT (unixepoch())
+            )",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_owner
+             ON dashpay_address_mappings(owner_identity_id)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_contact
+             ON dashpay_address_mappings(owner_identity_id, contact_identity_id)",
             [],
         )?;
 
@@ -527,6 +578,290 @@ impl crate::database::Database {
             params![&identity_bytes],
         )?;
 
+        // Delete contact address indices
+        self.execute(
+            "DELETE FROM dashpay_contact_address_indices WHERE owner_identity_id = ?1",
+            params![&identity_bytes],
+        )?;
+
+        Ok(())
+    }
+
+    // Contact address index operations (DIP-0015)
+
+    /// Get or create contact address index entry
+    /// Returns (next_send_index, highest_receive_index, bloom_registered_count)
+    pub fn get_contact_address_indices(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+    ) -> rusqlite::Result<ContactAddressIndex> {
+        let conn = self.conn.lock().unwrap();
+
+        // Try to get existing entry
+        let mut stmt = conn.prepare(
+            "SELECT owner_identity_id, contact_identity_id, next_send_index,
+                    highest_receive_index, bloom_registered_count
+             FROM dashpay_contact_address_indices
+             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
+        )?;
+
+        let result = stmt.query_row(
+            params![
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec()
+            ],
+            |row| {
+                Ok(ContactAddressIndex {
+                    owner_identity_id: row.get(0)?,
+                    contact_identity_id: row.get(1)?,
+                    next_send_index: row.get(2)?,
+                    highest_receive_index: row.get(3)?,
+                    bloom_registered_count: row.get(4)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(indices) => Ok(indices),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // Create new entry with defaults
+                Ok(ContactAddressIndex {
+                    owner_identity_id: owner_identity_id.to_buffer().to_vec(),
+                    contact_identity_id: contact_identity_id.to_buffer().to_vec(),
+                    next_send_index: 0,
+                    highest_receive_index: 0,
+                    bloom_registered_count: 0,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get the next send address index for a contact and increment it
+    /// This is used when sending a payment to ensure unique addresses
+    pub fn get_and_increment_send_index(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+    ) -> rusqlite::Result<u32> {
+        let indices = self.get_contact_address_indices(owner_identity_id, contact_identity_id)?;
+        let current_index = indices.next_send_index;
+
+        // Update to next index
+        let sql = "
+            INSERT INTO dashpay_contact_address_indices
+            (owner_identity_id, contact_identity_id, next_send_index)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(owner_identity_id, contact_identity_id)
+            DO UPDATE SET next_send_index = ?3
+        ";
+
+        self.execute(
+            sql,
+            params![
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec(),
+                current_index + 1,
+            ],
+        )?;
+
+        Ok(current_index)
+    }
+
+    /// Update the highest receive index seen for a contact
+    /// Called when we detect an incoming payment at a higher index
+    pub fn update_highest_receive_index(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+        index: u32,
+    ) -> rusqlite::Result<()> {
+        let sql = "
+            INSERT INTO dashpay_contact_address_indices
+            (owner_identity_id, contact_identity_id, highest_receive_index)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(owner_identity_id, contact_identity_id)
+            DO UPDATE SET highest_receive_index = MAX(highest_receive_index, ?3)
+        ";
+
+        self.execute(
+            sql,
+            params![
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec(),
+                index,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update the bloom registered count for a contact
+    /// Called after registering addresses in bloom filter
+    pub fn update_bloom_registered_count(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+        count: u32,
+    ) -> rusqlite::Result<()> {
+        let sql = "
+            INSERT INTO dashpay_contact_address_indices
+            (owner_identity_id, contact_identity_id, bloom_registered_count)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(owner_identity_id, contact_identity_id)
+            DO UPDATE SET bloom_registered_count = ?3
+        ";
+
+        self.execute(
+            sql,
+            params![
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec(),
+                count,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get all contact address indices for an identity
+    /// Useful for registering bloom filters on startup
+    pub fn get_all_contact_address_indices(
+        &self,
+        owner_identity_id: &Identifier,
+    ) -> rusqlite::Result<Vec<ContactAddressIndex>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT owner_identity_id, contact_identity_id, next_send_index,
+                    highest_receive_index, bloom_registered_count
+             FROM dashpay_contact_address_indices
+             WHERE owner_identity_id = ?1",
+        )?;
+
+        let indices = stmt
+            .query_map(params![owner_identity_id.to_buffer().to_vec()], |row| {
+                Ok(ContactAddressIndex {
+                    owner_identity_id: row.get(0)?,
+                    contact_identity_id: row.get(1)?,
+                    next_send_index: row.get(2)?,
+                    highest_receive_index: row.get(3)?,
+                    bloom_registered_count: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(indices)
+    }
+
+    // DashPay address mapping operations
+
+    /// Save a DashPay address mapping for incoming payment detection
+    pub fn save_dashpay_address_mapping(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+        address: &dash_sdk::dpp::dashcore::Address,
+        address_index: u32,
+    ) -> rusqlite::Result<()> {
+        let sql = "
+            INSERT OR REPLACE INTO dashpay_address_mappings
+            (address, owner_identity_id, contact_identity_id, address_index, created_at)
+            VALUES (?1, ?2, ?3, ?4, unixepoch())
+        ";
+
+        self.execute(
+            sql,
+            params![
+                address.to_string(),
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec(),
+                address_index,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Look up a DashPay address mapping to find which contact relationship it belongs to
+    /// Returns (owner_identity_id, contact_identity_id, address_index) if found
+    pub fn get_dashpay_address_mapping(
+        &self,
+        address: &dash_sdk::dpp::dashcore::Address,
+    ) -> rusqlite::Result<Option<(Identifier, Identifier, u32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT owner_identity_id, contact_identity_id, address_index
+             FROM dashpay_address_mappings
+             WHERE address = ?1",
+        )?;
+
+        let result = stmt.query_row(params![address.to_string()], |row| {
+            let owner_bytes: Vec<u8> = row.get(0)?;
+            let contact_bytes: Vec<u8> = row.get(1)?;
+            let address_index: u32 = row.get(2)?;
+            Ok((owner_bytes, contact_bytes, address_index))
+        });
+
+        match result {
+            Ok((owner_bytes, contact_bytes, address_index)) => {
+                let owner_id = Identifier::from_bytes(&owner_bytes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let contact_id = Identifier::from_bytes(&contact_bytes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                Ok(Some((owner_id, contact_id, address_index)))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get all DashPay address mappings for an identity
+    pub fn get_all_dashpay_address_mappings(
+        &self,
+        owner_identity_id: &Identifier,
+    ) -> rusqlite::Result<Vec<(String, Identifier, u32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT address, contact_identity_id, address_index
+             FROM dashpay_address_mappings
+             WHERE owner_identity_id = ?1
+             ORDER BY contact_identity_id, address_index",
+        )?;
+
+        let mappings = stmt
+            .query_map(params![owner_identity_id.to_buffer().to_vec()], |row| {
+                let address: String = row.get(0)?;
+                let contact_bytes: Vec<u8> = row.get(1)?;
+                let address_index: u32 = row.get(2)?;
+                Ok((address, contact_bytes, address_index))
+            })?
+            .filter_map(|r| {
+                r.ok().and_then(|(address, contact_bytes, address_index)| {
+                    Identifier::from_bytes(&contact_bytes)
+                        .ok()
+                        .map(|contact_id| (address, contact_id, address_index))
+                })
+            })
+            .collect();
+
+        Ok(mappings)
+    }
+
+    /// Delete all address mappings for a contact relationship
+    pub fn delete_dashpay_address_mappings_for_contact(
+        &self,
+        owner_identity_id: &Identifier,
+        contact_identity_id: &Identifier,
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "DELETE FROM dashpay_address_mappings
+             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
+            params![
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec(),
+            ],
+        )?;
         Ok(())
     }
 }

@@ -616,13 +616,7 @@ impl AppContext {
 
         // Execute the transfer - qualified_identity is consumed here as the signer
         let (address_infos, new_balance) = identity
-            .transfer_credits_to_addresses(
-                sdk,
-                outputs,
-                signing_key,
-                qualified_identity.clone(),
-                None,
-            )
+            .transfer_credits_to_addresses(sdk, outputs, signing_key, &qualified_identity, None)
             .await
             .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
 

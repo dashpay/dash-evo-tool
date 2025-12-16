@@ -482,7 +482,7 @@ impl AppContext {
 
         // Send to Platform using address funding and wait for response
         match identity
-            .put_with_address_funding(&sdk, inputs, &qualified_identity, &wallet_clone, None)
+            .put_with_address_funding(&sdk, inputs, None, &qualified_identity, &wallet_clone, None)
             .await
         {
             Ok((updated_identity, address_infos)) => {

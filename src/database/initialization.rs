@@ -272,6 +272,7 @@ impl Database {
                 balance INTEGER,
                 path_reference INTEGER NOT NULL,
                 path_type INTEGER NOT NULL,
+                total_received INTEGER DEFAULT 0,
                 PRIMARY KEY (seed_hash, address),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",

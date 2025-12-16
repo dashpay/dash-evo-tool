@@ -194,16 +194,44 @@ impl ContactsList {
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Header section
-        ui.heading("My Contacts");
-
-        ui.separator();
-
         // Identity selector
         let identities = self
             .app_context
             .load_local_qualified_identities()
             .unwrap_or_default();
+
+        // Header section with identity selector on the right
+        ui.horizontal(|ui| {
+            ui.heading("My Contacts");
+
+            if !identities.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let response = ui.add(
+                        IdentitySelector::new(
+                            "contacts_identity_selector",
+                            &mut self.selected_identity_string,
+                            &identities,
+                        )
+                        .selected_identity(&mut self.selected_identity)
+                        .unwrap()
+                        .width(300.0)
+                        .other_option(false),
+                    );
+
+                    if response.changed() {
+                        // Clear contacts when identity changes
+                        self.contacts.clear();
+                        self.message = None;
+                        self.loading = false;
+
+                        // Load contacts from database for the newly selected identity
+                        self.load_contacts_from_database();
+                    }
+                });
+            }
+        });
+
+        ui.separator();
 
         if identities.is_empty() {
             ui.colored_label(
@@ -211,35 +239,6 @@ impl ContactsList {
                 "No identities loaded. Please load or create an identity first.",
             );
         } else {
-            // Identity selector
-            ui.horizontal(|ui| {
-                let response = ui.add(
-                    IdentitySelector::new(
-                        "contacts_identity_selector",
-                        &mut self.selected_identity_string,
-                        &identities,
-                    )
-                    .selected_identity(&mut self.selected_identity)
-                    .unwrap()
-                    .label("Identity:")
-                    .width(300.0)
-                    .other_option(false),
-                );
-
-                if response.changed() {
-                    // Clear contacts when identity changes
-                    self.contacts.clear();
-                    self.message = None;
-                    self.loading = false;
-
-                    // Load contacts from database for the newly selected identity
-                    self.load_contacts_from_database();
-                }
-            });
-
-            ui.add_space(5.0);
-            ui.separator();
-
             // Only show search/filter/sort controls if there are contacts
             if !self.contacts.is_empty() {
                 // Search bar

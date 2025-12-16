@@ -419,68 +419,70 @@ impl ProfileScreen {
             action = *pending;
         }
 
-        // Header
-        ui.heading("My DashPay Profile");
-        ui.separator();
-
         // Identity selector or no identities message
         let identities = self
             .app_context
             .load_local_qualified_identities()
             .unwrap_or_default();
 
+        // Header with identity selector on the right
+        ui.horizontal(|ui| {
+            ui.heading("My DashPay Profile");
+
+            if !identities.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let response = ui.add(
+                        IdentitySelector::new(
+                            "profile_identity_selector",
+                            &mut self.selected_identity_string,
+                            &identities,
+                        )
+                        .selected_identity(&mut self.selected_identity)
+                        .unwrap()
+                        .width(300.0)
+                        .other_option(false), // Disable "Other" option
+                    );
+
+                    if response.changed() {
+                        // Reset state when identity changes
+                        self.profile = None;
+                        self.profile_load_attempted = false;
+                        self.loading = false;
+                        self.editing = false;
+                        self.validation_errors.clear();
+                        self.has_unsaved_changes = false;
+                        self.message = None;
+                        self.avatar_loading = false;
+                        self.avatar_textures.clear();
+
+                        // Update wallet for the newly selected identity
+                        if let Some(identity) = &self.selected_identity {
+                            let mut error_message = None;
+                            self.selected_wallet = get_selected_wallet(
+                                identity,
+                                Some(&self.app_context),
+                                None,
+                                &mut error_message,
+                            );
+                        } else {
+                            self.selected_wallet = None;
+                        }
+
+                        // Load profile from database for the newly selected identity
+                        self.load_profile_from_database();
+                    }
+                });
+            }
+        });
+
+        ui.separator();
+
         if identities.is_empty() {
             ui.colored_label(
                 egui::Color32::from_rgb(255, 165, 0),
                 "No identities loaded. Please load or create an identity first.",
             );
-        } else {
-            ui.horizontal(|ui| {
-                let response = ui.add(
-                    IdentitySelector::new(
-                        "profile_identity_selector",
-                        &mut self.selected_identity_string,
-                        &identities,
-                    )
-                    .selected_identity(&mut self.selected_identity)
-                    .unwrap()
-                    .label("Identity:")
-                    .width(300.0)
-                    .other_option(false), // Disable "Other" option
-                );
-
-                if response.changed() {
-                    // Reset state when identity changes
-                    self.profile = None;
-                    self.profile_load_attempted = false;
-                    self.loading = false;
-                    self.editing = false;
-                    self.validation_errors.clear();
-                    self.has_unsaved_changes = false;
-                    self.message = None;
-                    self.avatar_loading = false;
-                    self.avatar_textures.clear();
-
-                    // Update wallet for the newly selected identity
-                    if let Some(identity) = &self.selected_identity {
-                        let mut error_message = None;
-                        self.selected_wallet = get_selected_wallet(
-                            identity,
-                            Some(&self.app_context),
-                            None,
-                            &mut error_message,
-                        );
-                    } else {
-                        self.selected_wallet = None;
-                    }
-
-                    // Load profile from database for the newly selected identity
-                    self.load_profile_from_database();
-                }
-            });
         }
-
-        ui.separator();
 
         // Show message if any
         if let Some((message, message_type)) = &self.message {

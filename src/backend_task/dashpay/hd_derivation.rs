@@ -3,8 +3,6 @@ use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
 };
-use dash_sdk::dpp::key_wallet::dip9::{DASHPAY_ROOT_PATH_MAINNET, DASHPAY_ROOT_PATH_TESTNET, FEATURE_PURPOSE_DASHPAY};
-use dash_sdk::dpp::key_wallet::gap_limit::{GapLimit, DEFAULT_SPECIAL_GAP_LIMIT};
 use dash_sdk::platform::Identifier;
 use std::str::FromStr;
 

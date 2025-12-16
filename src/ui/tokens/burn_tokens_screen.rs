@@ -5,7 +5,6 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
@@ -37,7 +36,7 @@ use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_w
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::{MessageType, Screen, ScreenLike};
 
 use super::tokens_screen::IdentityTokenInfo;
 

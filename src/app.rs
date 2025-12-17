@@ -627,9 +627,8 @@ impl AppState {
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
         if app_state.show_welcome_screen {
-            app_state.welcome_screen = Some(WelcomeScreen::new(
-                app_state.mainnet_app_context.clone(),
-            ));
+            app_state.welcome_screen =
+                Some(WelcomeScreen::new(app_state.mainnet_app_context.clone()));
         } else {
             // Auto-start SPV sync if onboarding is completed and backend mode is SPV
             let current_context = app_state.current_app_context();

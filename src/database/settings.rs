@@ -285,6 +285,45 @@ impl Database {
         Ok(())
     }
 
+    /// Adds the use_local_spv_node column to the settings table.
+    pub fn add_use_local_spv_node_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        let column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='use_local_spv_node'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !column_exists {
+            // Default to false - use DNS seed discovery by default
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN use_local_spv_node INTEGER DEFAULT 0;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Updates the use_local_spv_node flag in the settings table.
+    pub fn update_use_local_spv_node(&self, use_local: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET use_local_spv_node = ? WHERE id = 1",
+            rusqlite::params![use_local],
+        )?;
+        Ok(())
+    }
+
+    /// Gets the use_local_spv_node flag from the settings table.
+    pub fn get_use_local_spv_node(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<bool> = conn.query_row(
+            "SELECT use_local_spv_node FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result.unwrap_or(false))
+    }
+
     /// Ensures all required columns exist in the settings table.
     /// This handles the case where an old database has a settings table with missing columns.
     pub fn ensure_settings_columns_exist(&self, conn: &Connection) -> Result<()> {
@@ -293,6 +332,7 @@ impl Database {
         self.add_disable_zmq_column(conn)?;
         self.add_core_backend_mode_column(conn)?;
         self.add_onboarding_columns(conn)?;
+        self.add_use_local_spv_node_column(conn)?;
 
         // Ensure database_version column exists
         let version_column_exists: bool = conn.query_row(

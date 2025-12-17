@@ -217,6 +217,10 @@ impl AppContext {
             }
         };
 
+        // Load the use_local_spv_node setting and apply to SPV manager
+        let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
+        spv_manager.set_use_local_node(use_local_spv_node);
+
         // Load the core backend mode from settings, defaulting to SPV if not set
         let saved_core_backend_mode = db
             .get_settings()

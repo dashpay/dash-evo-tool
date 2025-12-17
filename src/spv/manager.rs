@@ -23,6 +23,7 @@ use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 use tokio::sync::RwLock as AsyncRwLock;
@@ -116,6 +117,8 @@ pub struct SpvManager {
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
     // signal channel to trigger external reconcile on wallet-related events
     reconcile_tx: Mutex<Option<mpsc::Sender<()>>>,
+    // Whether to use local Dash Core node instead of DNS seed discovery
+    use_local_node: Arc<std::sync::atomic::AtomicBool>,
     // Cancellation token for clean shutdown
     stop_token: Mutex<Option<CancellationToken>>,
     // Channel to send requests to the SPV runtime thread
@@ -167,11 +170,23 @@ impl SpvManager {
             progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
+            use_local_node: Arc::new(AtomicBool::new(false)),
             stop_token: Mutex::new(None),
             request_tx: Mutex::new(None),
         });
 
         Ok(manager)
+    }
+
+    /// Set whether to use local Dash Core node for SPV sync instead of DNS seed discovery.
+    /// Note: This only takes effect when starting a new SPV sync session.
+    pub fn set_use_local_node(&self, use_local: bool) {
+        self.use_local_node.store(use_local, Ordering::SeqCst);
+    }
+
+    /// Get whether to use local Dash Core node for SPV sync.
+    pub fn use_local_node(&self) -> bool {
+        self.use_local_node.load(Ordering::SeqCst)
     }
 
     /// Async status method for getting full details including progress
@@ -1032,19 +1047,21 @@ impl SpvManager {
             .with_validation_mode(ValidationMode::Full)
             .with_start_height(start_height);
 
-        // Pin peers when running against local nodes to avoid random peers.
+        // Configure peer discovery based on network type and user preference.
+        // Devnet/Regtest always need explicit peers since they're local networks.
+        // Mainnet/Testnet can use DNS seed discovery (default) or local node.
         if self.network == Network::Devnet || self.network == Network::Regtest {
+            // Local networks always need explicit peer configuration
             if let Some(peer) = self.primary_peer_socket() {
                 config.add_peer(peer);
             }
-        } else if self.network == Network::Testnet || self.network == Network::Dash {
-            // For testnet testing, connect only to local Dash Core at 127.0.0.1:19999
-            if let Ok(mut it) = "127.0.0.1:19999".to_socket_addrs()
-                && let Some(peer) = it.next()
-            {
+        } else if self.use_local_node() {
+            // User has chosen to use their local Dash Core node
+            if let Some(peer) = self.primary_peer_socket() {
                 config.add_peer(peer);
             }
         }
+        // Otherwise, no peers are added and SPV will use DNS seed discovery
 
         let network_manager = PeerNetworkManager::new(&config)
             .await

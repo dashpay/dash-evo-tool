@@ -62,6 +62,7 @@ pub struct NetworkChooserScreen {
     db_clear_message: Option<DatabaseClearMessage>,
     user_mode: crate::model::settings::UserMode,
     show_evonode_tools: bool,
+    use_local_spv_node: bool,
 }
 
 impl NetworkChooserScreen {
@@ -103,6 +104,10 @@ impl NetworkChooserScreen {
         let custom_dash_qt_path = settings.dash_qt_path;
         let user_mode = settings.user_mode;
         let show_evonode_tools = settings.show_evonode_tools;
+        let use_local_spv_node = mainnet_app_context
+            .db
+            .get_use_local_spv_node()
+            .unwrap_or(false);
 
         let mut backend_modes = HashMap::new();
         backend_modes.insert(Network::Dash, mainnet_app_context.core_backend_mode());
@@ -152,6 +157,7 @@ impl NetworkChooserScreen {
             db_clear_message: None,
             user_mode,
             show_evonode_tools,
+            use_local_spv_node,
         }
     }
 
@@ -867,6 +873,70 @@ impl NetworkChooserScreen {
                             .italics(),
                     );
                 });
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                // SPV Peer Source
+                ui.label(
+                    egui::RichText::new("SPV Peer Source")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Choose how SPV finds peers for blockchain sync on mainnet/testnet.",
+                    )
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if StyledCheckbox::new(&mut self.use_local_spv_node, "Use local Dash Core node")
+                        .show(ui)
+                        .clicked()
+                    {
+                        // Save to database
+                        let _ = self
+                            .mainnet_app_context
+                            .db
+                            .update_use_local_spv_node(self.use_local_spv_node);
+
+                        // Update all network contexts
+                        self.mainnet_app_context
+                            .spv_manager()
+                            .set_use_local_node(self.use_local_spv_node);
+                        if let Some(ref ctx) = self.testnet_app_context {
+                            ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
+                        }
+                        if let Some(ref ctx) = self.devnet_app_context {
+                            ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
+                        }
+                        if let Some(ref ctx) = self.local_app_context {
+                            ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new(if self.use_local_spv_node {
+                            "Connect to local node at 127.0.0.1"
+                        } else {
+                            "Use DNS seed discovery (default)"
+                        })
+                        .color(DashColors::TEXT_SECONDARY)
+                        .italics(),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Note: Changes take effect on next SPV sync start. Devnet/local networks always use configured host.",
+                    )
+                    .size(11.0)
+                    .color(DashColors::text_secondary(dark_mode))
+                    .italics(),
+                );
 
                 ui.add_space(12.0);
                 ui.separator();

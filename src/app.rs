@@ -1078,17 +1078,9 @@ impl App for AppState {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Signal all background tasks to cancel
-        tracing::debug!("App received on_exit event, cancelling all background tasks");
-
-        // if ctx.input(|i| i.viewport().close_requested()) {
-        if !self.subtasks.cancellation_token.is_cancelled() {
-            self.subtasks.shutdown().unwrap_or_else(|e| {
-                tracing::debug!("Failed to shutdown subtasks: {}", e);
-            });
-        } else {
-            tracing::debug!("Shutdown already in progress, ignoring close request");
-        }
-        // }
+        // Signal all background tasks to cancel - don't wait for graceful shutdown
+        // to ensure immediate app exit
+        tracing::debug!("App received on_exit event, signalling cancellation");
+        self.subtasks.cancellation_token.cancel();
     }
 }

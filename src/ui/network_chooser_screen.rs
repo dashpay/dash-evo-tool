@@ -515,8 +515,8 @@ impl NetworkChooserScreen {
                 }
             });
 
-            if current_backend_mode == CoreBackendMode::Spv {
-                if let Some(snap) = snapshot.as_ref()
+            if current_backend_mode == CoreBackendMode::Spv
+                && let Some(snap) = snapshot.as_ref()
                     && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
                 {
                     ui.add_space(10.0);
@@ -525,8 +525,6 @@ impl NetworkChooserScreen {
 
                     self.render_spv_sync_progress(ui, snap);
                 }
-
-            }
         });
 
         // Advanced Settings section with clean dropdown

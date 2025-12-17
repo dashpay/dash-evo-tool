@@ -418,8 +418,8 @@ impl ScreenLike for SendPaymentScreen {
         }
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -427,7 +427,6 @@ impl ScreenLike for SendPaymentScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }
@@ -439,17 +438,14 @@ impl ScreenLike for SendPaymentScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.sending = false;
-        match result {
-            BackendTaskSuccessResult::DashPayPaymentSent(recipient, address, amount) => {
-                // Extract txid from the address (or we could modify the result to include it)
-                self.payment_success = true;
-                self.tx_id = Some(format!("Sent to {}", address));
-                self.message = Some((
-                    format!("Payment of {} DASH sent to {}", amount, recipient),
-                    MessageType::Success,
-                ));
-            }
-            _ => {}
+        if let BackendTaskSuccessResult::DashPayPaymentSent(recipient, address, amount) = result {
+            // Extract txid from the address (or we could modify the result to include it)
+            self.payment_success = true;
+            self.tx_id = Some(format!("Sent to {}", address));
+            self.message = Some((
+                format!("Payment of {} DASH sent to {}", amount, recipient),
+                MessageType::Success,
+            ));
         }
     }
 }

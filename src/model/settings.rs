@@ -113,6 +113,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Creates a new Settings instance
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         network: Network,
         root_screen_type: RootScreenType,

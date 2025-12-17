@@ -1651,15 +1651,13 @@ impl AppContext {
                 {
                     // Update the highest receive index if needed
                     if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id)
-                    {
-                        if address_index >= indices.highest_receive_index {
+                        && address_index >= indices.highest_receive_index {
                             let _ = self.db.update_highest_receive_index(
                                 &owner_id,
                                 &contact_id,
                                 address_index + 1,
                             );
                         }
-                    }
 
                     // Save the payment record
                     let _ = self.db.save_payment(

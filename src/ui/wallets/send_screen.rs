@@ -715,11 +715,10 @@ impl WalletSendScreen {
                 if amount_str.trim().is_empty() {
                     continue;
                 }
-                if let Ok(amount) = Self::parse_amount_to_credits(amount_str) {
-                    if amount > 0 {
+                if let Ok(amount) = Self::parse_amount_to_credits(amount_str)
+                    && amount > 0 {
                         inputs.insert(*platform_addr, amount);
                     }
-                }
             }
         } else {
             // Simple mode: auto-distribute output amount across sources
@@ -768,8 +767,8 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        if !wallet_is_open {
-            if let Some(wallet) = &self.selected_wallet {
+        if !wallet_is_open
+            && let Some(wallet) = &self.selected_wallet {
                 if let Err(e) = try_open_wallet_no_password(wallet) {
                     self.error_message = Some(e);
                 }
@@ -787,7 +786,6 @@ impl WalletSendScreen {
                     return AppAction::None;
                 }
             }
-        }
 
         // Platform addresses list
         let platform_addresses = self.get_platform_addresses();
@@ -890,8 +888,8 @@ impl WalletSendScreen {
 
                             // Show amount input in advanced mode for selected addresses
                             // Re-check the index after potential modification above
-                            if advanced_mode {
-                                if let Some(current_idx) = self
+                            if advanced_mode
+                                && let Some(current_idx) = self
                                     .platform_source_addresses
                                     .iter()
                                     .position(|(_, p, _, _)| p == platform_addr)
@@ -915,7 +913,6 @@ impl WalletSendScreen {
                                             format!("{:.8}", max_dash);
                                     }
                                 }
-                            }
                         });
                     }
 
@@ -1127,8 +1124,8 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        if !wallet_is_open {
-            if let Some(wallet) = &self.selected_wallet {
+        if !wallet_is_open
+            && let Some(wallet) = &self.selected_wallet {
                 if let Err(e) = try_open_wallet_no_password(wallet) {
                     self.error_message = Some(e);
                 }
@@ -1146,7 +1143,6 @@ impl WalletSendScreen {
                     return AppAction::None;
                 }
             }
-        }
 
         // Recipients
         self.render_recipients(ui);
@@ -1248,8 +1244,8 @@ impl ScreenLike for WalletSendScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -1257,7 +1253,6 @@ impl ScreenLike for WalletSendScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

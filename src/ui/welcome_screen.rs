@@ -53,7 +53,7 @@ impl WelcomeScreen {
                             egui::vec2(content_width, ui.available_height()),
                         );
 
-                        ui.allocate_ui_at_rect(content_rect, |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                             ui.set_min_width(content_width);
                             ui.set_max_width(content_width);
 

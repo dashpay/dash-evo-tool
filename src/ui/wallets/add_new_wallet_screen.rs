@@ -205,8 +205,8 @@ impl AddNewWalletScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "create_another_wallet" {
+        if let AppAction::Custom(ref s) = action
+            && s == "create_another_wallet" {
                 self.seed_phrase = None;
                 self.password = String::new();
                 self.entropy_grid = U256EntropyGrid::new();
@@ -218,7 +218,6 @@ impl AddNewWalletScreen {
                 self.wallet_created = false;
                 return AppAction::None;
             }
-        }
 
         action
     }

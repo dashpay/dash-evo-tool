@@ -657,8 +657,8 @@ impl ScreenLike for MintTokensScreen {
         action |= central_panel_action;
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -666,7 +666,6 @@ impl ScreenLike for MintTokensScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

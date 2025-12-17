@@ -146,13 +146,12 @@ impl RegisterDpnsNameScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "register_another" {
+        if let AppAction::Custom(ref s) = action
+            && s == "register_another" {
                 self.name_input = String::new();
                 self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
                 return AppAction::None;
             }
-        }
 
         action
     }
@@ -242,8 +241,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            if self.selected_wallet.is_some() {
-                if let Some(wallet) = &self.selected_wallet {
+            if self.selected_wallet.is_some()
+                && let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
                         self.error_message = Some(e);
                     }
@@ -260,7 +259,6 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         return;
                     }
                 }
-            }
 
             // Input for the name
             ui.heading("2. Enter the Name to Register:");
@@ -412,8 +410,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -421,7 +419,6 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

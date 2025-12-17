@@ -164,13 +164,12 @@ impl AddContactScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "send_another" {
+        if let AppAction::Custom(ref s) = action
+            && s == "send_another" {
                 self.status = ContactRequestStatus::NotStarted;
                 self.selected_key = None;
                 return AppAction::Refresh;
             }
-        }
 
         action
     }
@@ -538,8 +537,8 @@ impl ScreenLike for AddContactScreen {
         }
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -547,7 +546,6 @@ impl ScreenLike for AddContactScreen {
                     // Wallet unlocked successfully, UI will update on next frame
                 }
             }
-        }
 
         action
     }

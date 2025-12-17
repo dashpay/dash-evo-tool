@@ -206,8 +206,8 @@ impl AddKeyScreen {
         );
 
         // Handle the custom action to reset the form and refresh identity
-        if let AppAction::Custom(ref s) = action {
-            if s == "add_another" {
+        if let AppAction::Custom(ref s) = action
+            && s == "add_another" {
                 self.private_key_input = String::new();
                 self.contract_id_input = String::new();
                 self.document_type_input = String::new();
@@ -217,7 +217,6 @@ impl AddKeyScreen {
                     IdentityTask::RefreshIdentity(self.identity.clone()),
                 ));
             }
-        }
 
         action
     }
@@ -288,8 +287,8 @@ impl ScreenLike for AddKeyScreen {
                 return inner_action;
             }
 
-            if self.selected_wallet.is_some() {
-                if let Some(wallet) = &self.selected_wallet {
+            if self.selected_wallet.is_some()
+                && let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
                         self.error_message = Some(e);
                     }
@@ -306,7 +305,6 @@ impl ScreenLike for AddKeyScreen {
                         return inner_action;
                     }
                 }
-            }
 
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
@@ -529,8 +527,8 @@ impl ScreenLike for AddKeyScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -538,7 +536,6 @@ impl ScreenLike for AddKeyScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

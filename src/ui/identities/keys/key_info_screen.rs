@@ -497,8 +497,8 @@ impl ScreenLike for KeyInfoScreen {
                     }
                 }
 
-                if self.view_wallet_unlock {
-                    if let Some(wallet) = &self.selected_wallet {
+                if self.view_wallet_unlock
+                    && let Some(wallet) = &self.selected_wallet {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
                             self.error_message = Some(e);
                         }
@@ -516,7 +516,6 @@ impl ScreenLike for KeyInfoScreen {
                             self.wallet_open = true;
                         }
                     }
-                }
 
                 // Show the remove private key confirmation popup
                 if self.show_confirm_remove_private_key {
@@ -530,8 +529,8 @@ impl ScreenLike for KeyInfoScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -539,7 +538,6 @@ impl ScreenLike for KeyInfoScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {

@@ -279,13 +279,12 @@ impl UpdateDataContractScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "update_another" {
+        if let AppAction::Custom(ref s) = action
+            && s == "update_another" {
                 self.contract_json_input = String::new();
                 self.broadcast_status = BroadcastStatus::Idle;
                 return AppAction::None;
             }
-        }
 
         action
     }
@@ -489,8 +488,8 @@ impl ScreenLike for UpdateDataContractScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -498,7 +497,6 @@ impl ScreenLike for UpdateDataContractScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

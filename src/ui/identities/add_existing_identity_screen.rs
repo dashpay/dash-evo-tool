@@ -665,8 +665,8 @@ impl AddExistingIdentityScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "load_another" {
+        if let AppAction::Custom(ref s) = action
+            && s == "load_another" {
                 self.identity_id_input.clear();
                 self.alias_input.clear();
                 self.voting_private_key_input.clear();
@@ -681,7 +681,6 @@ impl AddExistingIdentityScreen {
                 self.success_message = None;
                 return AppAction::None;
             }
-        }
 
         action
     }
@@ -839,8 +838,8 @@ impl ScreenLike for AddExistingIdentityScreen {
         }
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -848,7 +847,6 @@ impl ScreenLike for AddExistingIdentityScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

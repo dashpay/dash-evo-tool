@@ -58,7 +58,7 @@ impl AppContext {
         // Step 4: Calculate actual balances from UTXOs and update wallet
         // Group UTXOs by address and sum their values
         let mut address_balances: HashMap<Address, u64> = HashMap::new();
-        for (_outpoint, tx_out) in &utxo_map {
+        for tx_out in utxo_map.values() {
             if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
                 *address_balances.entry(address).or_insert(0) += tx_out.value;
             }

@@ -421,8 +421,8 @@ impl SingleKeyWalletSendScreen {
 
                     ui.add_space(10.0);
 
-                    if ui.button("Unlock").clicked() {
-                        if let Some(wallet) = &self.selected_wallet {
+                    if ui.button("Unlock").clicked()
+                        && let Some(wallet) = &self.selected_wallet {
                             let mut wallet_guard = wallet.write().unwrap();
                             match wallet_guard.open(&self.wallet_password) {
                                 Ok(_) => {
@@ -434,7 +434,6 @@ impl SingleKeyWalletSendScreen {
                                 }
                             }
                         }
-                    }
                 });
 
                 if let Some(error) = &self.error_message {

@@ -1499,8 +1499,8 @@ impl ScreenLike for DocumentActionScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -1508,7 +1508,6 @@ impl ScreenLike for DocumentActionScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

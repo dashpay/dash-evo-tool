@@ -190,8 +190,8 @@ impl ImportMnemonicScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "import_another_wallet" {
+        if let AppAction::Custom(ref s) = action
+            && s == "import_another_wallet" {
                 self.seed_phrase_words = vec!["".to_string(); 24];
                 self.selected_seed_phrase_length = 12;
                 self.seed_phrase = None;
@@ -203,7 +203,6 @@ impl ImportMnemonicScreen {
                 self.wallet_imported = false;
                 return AppAction::None;
             }
-        }
 
         action
     }

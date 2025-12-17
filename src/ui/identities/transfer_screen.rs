@@ -561,8 +561,8 @@ impl ScreenLike for TransferScreen {
                     )));
                 }
             } else {
-                if self.selected_wallet.is_some() {
-                    if let Some(wallet) = &self.selected_wallet {
+                if self.selected_wallet.is_some()
+                    && let Some(wallet) = &self.selected_wallet {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
                             self.error_message = Some(e);
                         }
@@ -579,7 +579,6 @@ impl ScreenLike for TransferScreen {
                             return inner_action;
                         }
                     }
-                }
 
                 // Select the key to sign with
                 ui.heading("1. Select the key to sign the transaction with");
@@ -721,8 +720,8 @@ impl ScreenLike for TransferScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -730,7 +729,6 @@ impl ScreenLike for TransferScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         action
     }

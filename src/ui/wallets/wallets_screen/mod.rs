@@ -169,30 +169,26 @@ impl WalletsBalancesScreen {
                 .and_then(|g| *g);
 
             // If we have a persisted single key selection, try to find it
-            if let Some(sk_hash) = selected_sk_hash {
-                if let Ok(sk_wallets) = app_context.single_key_wallets.read() {
-                    if let Some(wallet) = sk_wallets.get(&sk_hash) {
+            if let Some(sk_hash) = selected_sk_hash
+                && let Ok(sk_wallets) = app_context.single_key_wallets.read()
+                    && let Some(wallet) = sk_wallets.get(&sk_hash) {
                         return Self::create_with_selection(
                             app_context,
                             None,
                             Some(wallet.clone()),
                         );
                     }
-                }
-            }
 
             // If we have a persisted HD wallet selection, try to find it
-            if let Some(hd_hash) = selected_hd_hash {
-                if let Ok(wallets) = app_context.wallets.read() {
-                    if let Some(wallet) = wallets.get(&hd_hash) {
+            if let Some(hd_hash) = selected_hd_hash
+                && let Ok(wallets) = app_context.wallets.read()
+                    && let Some(wallet) = wallets.get(&hd_hash) {
                         return Self::create_with_selection(
                             app_context,
                             Some(wallet.clone()),
                             None,
                         );
                     }
-                }
-            }
 
             // Default: try HD wallet first, then single key wallet
             let hd_wallet = app_context.wallets.read().unwrap().values().next().cloned();
@@ -249,14 +245,12 @@ impl WalletsBalancesScreen {
         // Check if HD wallet selection is still valid
         if let Some(wallet_arc) = &self.selected_wallet {
             let seed_hash = wallet_arc.read().ok().map(|w| w.seed_hash());
-            if let Some(hash) = seed_hash {
-                if let Ok(wallets) = self.app_context.wallets.read() {
-                    if wallets.contains_key(&hash) {
+            if let Some(hash) = seed_hash
+                && let Ok(wallets) = self.app_context.wallets.read()
+                    && wallets.contains_key(&hash) {
                         self.selected_account = None;
                         return;
                     }
-                }
-            }
             // HD wallet no longer valid
             self.selected_wallet = None;
         }
@@ -264,36 +258,32 @@ impl WalletsBalancesScreen {
         // Check if single key wallet selection is still valid
         if let Some(wallet_arc) = &self.selected_single_key_wallet {
             let key_hash = wallet_arc.read().ok().map(|w| w.key_hash());
-            if let Some(hash) = key_hash {
-                if let Ok(wallets) = self.app_context.single_key_wallets.read() {
-                    if wallets.contains_key(&hash) {
+            if let Some(hash) = key_hash
+                && let Ok(wallets) = self.app_context.single_key_wallets.read()
+                    && wallets.contains_key(&hash) {
                         self.selected_account = None;
                         return;
                     }
-                }
-            }
             // Single key wallet no longer valid
             self.selected_single_key_wallet = None;
         }
 
         // No valid selection, pick a new one (HD wallet first, then single key)
-        if let Ok(wallets) = self.app_context.wallets.read() {
-            if let Some(wallet) = wallets.values().next().cloned() {
+        if let Ok(wallets) = self.app_context.wallets.read()
+            && let Some(wallet) = wallets.values().next().cloned() {
                 self.selected_wallet = Some(wallet);
                 self.selected_single_key_wallet = None;
                 self.selected_account = None;
                 return;
             }
-        }
 
-        if let Ok(wallets) = self.app_context.single_key_wallets.read() {
-            if let Some(wallet) = wallets.values().next().cloned() {
+        if let Ok(wallets) = self.app_context.single_key_wallets.read()
+            && let Some(wallet) = wallets.values().next().cloned() {
                 self.selected_single_key_wallet = Some(wallet);
                 self.selected_wallet = None;
                 self.selected_account = None;
                 return;
             }
-        }
 
         self.selected_account = None;
     }
@@ -465,13 +455,12 @@ impl WalletsBalancesScreen {
                                             self.selected_wallet = Some(w.clone());
                                             self.selected_single_key_wallet = None;
                                             // Persist selection to AppContext
-                                            if let Ok(hash) = w.read().map(|g| g.seed_hash()) {
-                                                if let Ok(mut guard) =
+                                            if let Ok(hash) = w.read().map(|g| g.seed_hash())
+                                                && let Ok(mut guard) =
                                                     self.app_context.selected_wallet_hash.lock()
                                                 {
                                                     *guard = Some(hash);
                                                 }
-                                            }
                                             if let Ok(mut guard) =
                                                 self.app_context.selected_single_key_hash.lock()
                                             {
@@ -482,13 +471,12 @@ impl WalletsBalancesScreen {
                                             self.selected_single_key_wallet = Some(w.clone());
                                             self.selected_wallet = None;
                                             // Persist selection to AppContext
-                                            if let Ok(hash) = w.read().map(|g| g.key_hash) {
-                                                if let Ok(mut guard) =
+                                            if let Ok(hash) = w.read().map(|g| g.key_hash)
+                                                && let Ok(mut guard) =
                                                     self.app_context.selected_single_key_hash.lock()
                                                 {
                                                     *guard = Some(hash);
                                                 }
-                                            }
                                             if let Ok(mut guard) =
                                                 self.app_context.selected_wallet_hash.lock()
                                             {
@@ -609,11 +597,10 @@ impl WalletsBalancesScreen {
                                 self.show_sk_unlock_dialog = true;
                             }
                         }
-                        if should_lock_sk_wallet {
-                            if let Ok(mut wallet) = wallet_arc.write() {
+                        if should_lock_sk_wallet
+                            && let Ok(mut wallet) = wallet_arc.write() {
                                 wallet.private_key_data.close();
                             }
-                        }
 
                         ui.add_space(8.0);
 
@@ -2791,7 +2778,7 @@ impl WalletsBalancesScreen {
         let utxos: Vec<_> = wallet
             .utxos
             .iter()
-            .map(|(o, t)| (o.clone(), t.clone()))
+            .map(|(o, t)| (*o, t.clone()))
             .collect();
         drop(wallet);
 
@@ -3099,8 +3086,8 @@ impl ScreenLike for WalletsBalancesScreen {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
-                        if let Some(wallet_arc) = &self.selected_wallet {
-                            if let Ok(wallet) = wallet_arc.read() {
+                        if let Some(wallet_arc) = &self.selected_wallet
+                            && let Ok(wallet) = wallet_arc.read() {
                                 if let Some(alias) = &wallet.alias {
                                     ui.label(format!(
                                         "Wallet \"{}\" is locked. Please enter the password to unlock it:",
@@ -3110,7 +3097,6 @@ impl ScreenLike for WalletsBalancesScreen {
                                     ui.label("This wallet is locked. Please enter the password to unlock it:");
                                 }
                             }
-                        }
 
                         ui.add_space(10.0);
 
@@ -3203,8 +3189,8 @@ impl ScreenLike for WalletsBalancesScreen {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
-                        if let Some(wallet_arc) = &self.selected_single_key_wallet {
-                            if let Ok(wallet) = wallet_arc.read() {
+                        if let Some(wallet_arc) = &self.selected_single_key_wallet
+                            && let Ok(wallet) = wallet_arc.read() {
                                 if let Some(alias) = &wallet.alias {
                                     ui.label(format!(
                                         "Wallet \"{}\" is locked. Please enter the password to unlock it:",
@@ -3214,7 +3200,6 @@ impl ScreenLike for WalletsBalancesScreen {
                                     ui.label("This wallet is locked. Please enter the password to unlock it:");
                                 }
                             }
-                        }
 
                         ui.add_space(10.0);
 
@@ -3396,27 +3381,23 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh_on_arrival(&mut self) {
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
-        if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
-            if let Some(seed_hash) = pending.take() {
-                if let Ok(wallets) = self.app_context.wallets.read() {
-                    if let Some(wallet) = wallets.get(&seed_hash) {
+        if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock()
+            && let Some(seed_hash) = pending.take()
+                && let Ok(wallets) = self.app_context.wallets.read()
+                    && let Some(wallet) = wallets.get(&seed_hash) {
                         self.selected_wallet = Some(wallet.clone());
                         self.selected_single_key_wallet = None; // Clear SK selection
                         self.selected_account = None;
                         return;
                     }
-                }
-            }
-        }
 
         // If no wallet of either type is selected but wallets exist, select the first HD wallet
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
-            if let Ok(wallets) = self.app_context.wallets.read() {
-                if let Some(wallet) = wallets.values().next().cloned() {
+            if let Ok(wallets) = self.app_context.wallets.read()
+                && let Some(wallet) = wallets.values().next().cloned() {
                     self.selected_wallet = Some(wallet);
                     return;
                 }
-            }
             // If no HD wallets, try single key wallets
             if let Ok(wallets) = self.app_context.single_key_wallets.read() {
                 self.selected_single_key_wallet = wallets.values().next().cloned();

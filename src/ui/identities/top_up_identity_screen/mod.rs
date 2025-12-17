@@ -628,8 +628,8 @@ impl ScreenLike for TopUpIdentityScreen {
         });
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ctx, wallet, &self.app_context);
@@ -637,7 +637,6 @@ impl ScreenLike for TopUpIdentityScreen {
                     // Wallet unlocked successfully
                 }
             }
-        }
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {

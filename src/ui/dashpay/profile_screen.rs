@@ -965,8 +965,8 @@ impl ProfileScreen {
         }
 
         // Show wallet unlock popup if open
-        if self.wallet_unlock_popup.is_open() {
-            if let Some(wallet) = &self.selected_wallet {
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet {
                 let result = self
                     .wallet_unlock_popup
                     .show(ui.ctx(), wallet, &self.app_context);
@@ -974,7 +974,6 @@ impl ProfileScreen {
                     // Wallet unlocked successfully, UI will update on next frame
                 }
             }
-        }
 
         action
     }

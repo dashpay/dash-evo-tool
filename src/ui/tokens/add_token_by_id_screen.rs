@@ -175,8 +175,8 @@ impl AddTokenByIdScreen {
         );
 
         // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action {
-            if s == "add_another" {
+        if let AppAction::Custom(ref s) = action
+            && s == "add_another" {
                 self.status = AddTokenStatus::Idle;
                 self.contract_or_token_id_input.clear();
                 self.fetched_contract = None;
@@ -184,7 +184,6 @@ impl AddTokenByIdScreen {
                 self.try_token_id_next = false;
                 return AppAction::None;
             }
-        }
 
         action
     }

@@ -904,58 +904,56 @@ impl ScreenLike for ContactsList {
                 self.has_loaded = true;
                 self.message = None;
             }
-            BackendTaskSuccessResult::DashPayContactProfile(profile_doc) => {
+            BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Extract profile information from the document
-                if let Some(doc) = profile_doc {
-                    use dash_sdk::dpp::document::DocumentV0Getters;
-                    let properties = doc.properties();
-                    let contact_id = doc.owner_id();
+                use dash_sdk::dpp::document::DocumentV0Getters;
+                let properties = doc.properties();
+                let contact_id = doc.owner_id();
 
-                    let display_name = properties
-                        .get("displayName")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let display_name = properties
+                    .get("displayName")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    let bio = properties
-                        .get("bio")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let bio = properties
+                    .get("bio")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    let avatar_url = properties
-                        .get("avatarUrl")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let avatar_url = properties
+                    .get("avatarUrl")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    let public_message = properties
-                        .get("publicMessage")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let public_message = properties
+                    .get("publicMessage")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    // Update the contact with profile information
-                    if let Some(contact) = self.contacts.get_mut(&contact_id) {
-                        if let Some(name) = &display_name {
-                            contact.display_name = Some(name.clone());
-                        }
-                        if let Some(bio_text) = &bio {
-                            contact.bio = Some(bio_text.clone());
-                        }
-                        if let Some(url) = &avatar_url {
-                            contact.avatar_url = Some(url.clone());
-                        }
+                // Update the contact with profile information
+                if let Some(contact) = self.contacts.get_mut(&contact_id) {
+                    if let Some(name) = &display_name {
+                        contact.display_name = Some(name.clone());
+                    }
+                    if let Some(bio_text) = &bio {
+                        contact.bio = Some(bio_text.clone());
+                    }
+                    if let Some(url) = &avatar_url {
+                        contact.avatar_url = Some(url.clone());
+                    }
 
-                        // Save updated profile to database if we have a selected identity
-                        if let Some(identity) = &self.selected_identity {
-                            let owner_id = identity.identity.id();
-                            let _ = self.app_context.db.save_dashpay_contact(
-                                &owner_id,
-                                &contact_id,
-                                contact.username.as_deref(),
-                                contact.display_name.as_deref(),
-                                contact.avatar_url.as_deref(),
-                                public_message.as_deref(),
-                                "accepted",
-                            );
-                        }
+                    // Save updated profile to database if we have a selected identity
+                    if let Some(identity) = &self.selected_identity {
+                        let owner_id = identity.identity.id();
+                        let _ = self.app_context.db.save_dashpay_contact(
+                            &owner_id,
+                            &contact_id,
+                            contact.username.as_deref(),
+                            contact.display_name.as_deref(),
+                            contact.avatar_url.as_deref(),
+                            public_message.as_deref(),
+                            "accepted",
+                        );
                     }
                 }
             }

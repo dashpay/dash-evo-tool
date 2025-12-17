@@ -630,9 +630,12 @@ impl AppState {
             app_state.welcome_screen =
                 Some(WelcomeScreen::new(app_state.mainnet_app_context.clone()));
         } else {
-            // Auto-start SPV sync if onboarding is completed and backend mode is SPV
+            // Auto-start SPV sync if onboarding is completed, backend mode is SPV, and auto-start is enabled
             let current_context = app_state.current_app_context();
-            if current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+            let auto_start_spv = db.get_auto_start_spv().unwrap_or(true);
+            if auto_start_spv
+                && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
+            {
                 if let Err(e) = current_context.start_spv() {
                     tracing::warn!("Failed to auto-start SPV sync: {}", e);
                 } else {
@@ -1063,9 +1066,12 @@ impl App for AppState {
                     let screen = screen_type.create_screen(self.current_app_context());
                     self.screen_stack.push(screen);
                 }
-                // Start SPV sync after onboarding completes
+                // Start SPV sync after onboarding completes (if auto-start is enabled)
                 let current_context = self.current_app_context();
-                if current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+                let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(true);
+                if auto_start_spv
+                    && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
+                {
                     if let Err(e) = current_context.start_spv() {
                         tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
                     } else {

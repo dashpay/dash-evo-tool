@@ -63,6 +63,7 @@ pub struct NetworkChooserScreen {
     user_mode: crate::model::settings::UserMode,
     show_evonode_tools: bool,
     use_local_spv_node: bool,
+    auto_start_spv: bool,
 }
 
 impl NetworkChooserScreen {
@@ -108,6 +109,10 @@ impl NetworkChooserScreen {
             .db
             .get_use_local_spv_node()
             .unwrap_or(false);
+        let auto_start_spv = mainnet_app_context
+            .db
+            .get_auto_start_spv()
+            .unwrap_or(true);
 
         let mut backend_modes = HashMap::new();
         backend_modes.insert(Network::Dash, mainnet_app_context.core_backend_mode());
@@ -158,6 +163,7 @@ impl NetworkChooserScreen {
             user_mode,
             show_evonode_tools,
             use_local_spv_node,
+            auto_start_spv,
         }
     }
 
@@ -937,6 +943,50 @@ impl NetworkChooserScreen {
                     .color(DashColors::text_secondary(dark_mode))
                     .italics(),
                 );
+
+                // Auto-start SPV on startup
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                ui.label(
+                    egui::RichText::new("SPV Auto-Start")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Automatically start SPV sync when the app opens.",
+                    )
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if StyledCheckbox::new(&mut self.auto_start_spv, "Auto-start SPV on startup")
+                        .show(ui)
+                        .clicked()
+                    {
+                        // Save to database
+                        let _ = self
+                            .mainnet_app_context
+                            .db
+                            .update_auto_start_spv(self.auto_start_spv);
+                    }
+                    ui.label(
+                        egui::RichText::new(if self.auto_start_spv {
+                            "Enabled"
+                        } else {
+                            "Disabled"
+                        })
+                        .color(if self.auto_start_spv {
+                            DashColors::DASH_BLUE
+                        } else {
+                            DashColors::text_secondary(dark_mode)
+                        }),
+                    );
+                });
 
                 ui.add_space(12.0);
                 ui.separator();

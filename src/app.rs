@@ -146,8 +146,6 @@ pub enum AppAction {
         main_screen: RootScreenType,
         /// Optional sub-screen to push onto the stack
         add_screen: Option<Box<crate::ui::ScreenType>>,
-        /// The network to switch to
-        network: Network,
     },
 }
 
@@ -631,10 +629,17 @@ impl AppState {
         if app_state.show_welcome_screen {
             app_state.welcome_screen = Some(WelcomeScreen::new(
                 app_state.mainnet_app_context.clone(),
-                app_state.testnet_app_context.clone(),
-                app_state.devnet_app_context.clone(),
-                app_state.local_app_context.clone(),
             ));
+        } else {
+            // Auto-start SPV sync if onboarding is completed and backend mode is SPV
+            let current_context = app_state.current_app_context();
+            if current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+                if let Err(e) = current_context.start_spv() {
+                    tracing::warn!("Failed to auto-start SPV sync: {}", e);
+                } else {
+                    tracing::info!("SPV sync started automatically for {:?}", chosen_network);
+                }
+            }
         }
 
         app_state
@@ -813,15 +818,8 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
-                            // Forward to welcome screen if showing
-                            if self.show_welcome_screen {
-                                if let Some(welcome_screen) = &mut self.welcome_screen {
-                                    welcome_screen.display_task_result(unboxed_message);
-                                }
-                            } else {
-                                self.visible_screen_mut()
-                                    .display_task_result(unboxed_message);
-                            }
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
                         }
                     }
                 }
@@ -1055,12 +1053,9 @@ impl App for AppState {
             AppAction::OnboardingComplete {
                 main_screen,
                 add_screen,
-                network,
             } => {
                 self.show_welcome_screen = false;
                 self.welcome_screen = None;
-                // Switch to the selected network first
-                self.change_network(network);
                 self.selected_main_screen = main_screen;
                 self.active_root_screen_mut().refresh_on_arrival();
                 self.current_app_context().update_settings(main_screen).ok();
@@ -1068,6 +1063,15 @@ impl App for AppState {
                 if let Some(screen_type) = add_screen {
                     let screen = screen_type.create_screen(self.current_app_context());
                     self.screen_stack.push(screen);
+                }
+                // Start SPV sync after onboarding completes
+                let current_context = self.current_app_context();
+                if current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+                    if let Err(e) = current_context.start_spv() {
+                        tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
+                    } else {
+                        tracing::info!("SPV sync started after onboarding");
+                    }
                 }
             }
         }

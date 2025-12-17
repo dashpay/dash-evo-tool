@@ -514,12 +514,6 @@ impl NetworkChooserScreen {
                     self.render_spv_sync_progress(ui, snap);
                 }
 
-                if let Some(snap) = snapshot.as_ref() {
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                    app_action |= self.render_spv_maintenance_controls(ui, snap);
-                }
             }
         });
 
@@ -938,6 +932,16 @@ impl NetworkChooserScreen {
 
                 if self.db_clear_dialog.is_some() {
                     app_action |= self.show_database_clear_confirmation(ui);
+                }
+
+                // SPV Maintenance section
+                let current_backend_mode = self.current_app_context().core_backend_mode();
+                if current_backend_mode == CoreBackendMode::Spv {
+                    let snapshot = self.current_app_context().spv_manager().status();
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+                    app_action |= self.render_spv_maintenance_controls(ui, &snapshot);
                 }
             });
         });

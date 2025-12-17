@@ -481,34 +481,42 @@ impl NetworkChooserScreen {
                         ui.colored_label(DashColors::DASH_BLUE, "Connected");
                     }
                 } else {
-                    let connect_button =
-                        egui::Button::new(egui::RichText::new("Connect").color(DashColors::WHITE))
-                            .fill(DashColors::DASH_BLUE)
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(Shape::RADIUS_MD)
-                            .min_size(egui::vec2(120.0, 36.0));
+                    // Don't show Connect button for Local network in RPC mode
+                    // (there's no Dash-Qt to start for local/regtest)
+                    let show_connect_button = !(self.current_network == Network::Regtest
+                        && current_backend_mode == CoreBackendMode::Rpc);
 
-                    if ui.add(connect_button).clicked() {
-                        if current_backend_mode == CoreBackendMode::Spv {
-                            if let Err(err) = self.current_app_context().start_spv() {
-                                app_action =
-                                    AppAction::Custom(format!("Failed to start SPV: {}", err));
-                            }
-                        } else {
-                            // Core mode connect
-                            let settings =
-                                self.current_app_context().get_settings().ok().flatten();
-                            let dash_qt_path = settings
-                                .and_then(|s| s.dash_qt_path)
-                                .or_else(|| self.custom_dash_qt_path.clone());
-                            if let Some(path) = dash_qt_path {
-                                app_action = AppAction::BackendTask(BackendTask::CoreTask(
-                                    CoreTask::StartDashQT(
-                                        self.current_network,
-                                        path,
-                                        self.overwrite_dash_conf,
-                                    ),
-                                ));
+                    if show_connect_button {
+                        let connect_button = egui::Button::new(
+                            egui::RichText::new("Connect").color(DashColors::WHITE),
+                        )
+                        .fill(DashColors::DASH_BLUE)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(Shape::RADIUS_MD)
+                        .min_size(egui::vec2(120.0, 36.0));
+
+                        if ui.add(connect_button).clicked() {
+                            if current_backend_mode == CoreBackendMode::Spv {
+                                if let Err(err) = self.current_app_context().start_spv() {
+                                    app_action =
+                                        AppAction::Custom(format!("Failed to start SPV: {}", err));
+                                }
+                            } else {
+                                // Core mode connect
+                                let settings =
+                                    self.current_app_context().get_settings().ok().flatten();
+                                let dash_qt_path = settings
+                                    .and_then(|s| s.dash_qt_path)
+                                    .or_else(|| self.custom_dash_qt_path.clone());
+                                if let Some(path) = dash_qt_path {
+                                    app_action = AppAction::BackendTask(BackendTask::CoreTask(
+                                        CoreTask::StartDashQT(
+                                            self.current_network,
+                                            path,
+                                            self.overwrite_dash_conf,
+                                        ),
+                                    ));
+                                }
                             }
                         }
                     }

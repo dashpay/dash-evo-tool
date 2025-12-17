@@ -90,17 +90,34 @@ pub struct AddNewIdentityScreen {
     )>,
     /// Amount input for Platform address funding (DASH)
     platform_funding_amount_input: String,
+    /// Whether to show advanced options
+    show_advanced_options: bool,
 }
 
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
+        Self::new_with_wallet(app_context, None)
+    }
+
+    pub fn new_with_wallet(
+        app_context: &Arc<AppContext>,
+        wallet_seed_hash: Option<[u8; 32]>,
+    ) -> Self {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &app_context.wallets.read().unwrap();
-            if let Some(wallet) = wallets.values().next() {
-                // Automatically select the only available wallet
-                selected_wallet = Some(wallet.clone());
+            // If a specific wallet seed hash is provided, use that wallet
+            if let Some(seed_hash) = wallet_seed_hash {
+                if let Some(wallet) = wallets.get(&seed_hash) {
+                    selected_wallet = Some(wallet.clone());
+                }
+            }
+            // Otherwise, select the first available wallet
+            if selected_wallet.is_none() {
+                if let Some(wallet) = wallets.values().next() {
+                    selected_wallet = Some(wallet.clone());
+                }
             }
         }
 
@@ -131,6 +148,7 @@ impl AddNewIdentityScreen {
             successful_qualified_identity_id: None,
             selected_platform_address_for_funding: None,
             platform_funding_amount_input: "0.5".to_string(),
+            show_advanced_options: false,
         };
 
         if let Some(wallet) = selected_wallet {
@@ -1011,6 +1029,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
+
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};
                 if step == WalletFundedScreenStep::Success {
@@ -1018,7 +1037,14 @@ impl ScreenLike for AddNewIdentityScreen {
                     return;
                 }
                 ui.add_space(10.0);
-                ui.heading("Follow these steps to create your identity.");
+
+                // Heading with checkbox on the same line
+                ui.horizontal(|ui| {
+                    ui.heading("Follow these steps to create your identity.");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Show Advanced Options");
+                    });
+                });
                 ui.add_space(15.0);
 
                 let mut step_number = 1;
@@ -1055,68 +1081,71 @@ impl ScreenLike for AddNewIdentityScreen {
                     return;
                 }
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
+                // Only show identity index and key selection in advanced mode
+                if self.show_advanced_options {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
-                // Display the heading with an info icon that shows a tooltip on hover
-                ui.horizontal(|ui| {
-                    let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                    let wallet = wallet_guard.read().unwrap();
-                    if wallet.identities.is_empty() {
+                    // Display the heading with an info icon that shows a tooltip on hover
+                    ui.horizontal(|ui| {
+                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
+                        let wallet = wallet_guard.read().unwrap();
+                        if wallet.identities.is_empty() {
+                            ui.heading(format!(
+                                "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
+                                step_number
+                            ));
+                        } else {
+                            ui.heading(format!(
+                                "{}. Choose an identity index for the wallet. Leaving this {} is recommended.",
+                                step_number,
+                                self.next_identity_id(),
+                            ));
+                        }
+
+
+                        // Create info icon button with tooltip
+                        let response = crate::ui::helpers::info_icon_button(ui, "The identity index is an internal reference within the wallet. The wallet's seed phrase can always be used to recover any identity, including this one, by using the same index.");
+
+                        // Check if the label was clicked
+                        if response.clicked() {
+                            self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet's seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
+                        }
+                    });
+
+                    step_number += 1;
+
+                    ui.add_space(8.0);
+
+                    self.render_identity_index_input(ui);
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Display the heading with an info icon that shows a tooltip on hover
+                    ui.horizontal(|ui| {
                         ui.heading(format!(
-                            "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
+                            "{}. Choose what keys you want to add to this new identity.",
                             step_number
                         ));
-                    } else {
-                        ui.heading(format!(
-                            "{}. Choose an identity index for the wallet. Leaving this {} is recommended.",
-                            step_number,
-                            self.next_identity_id(),
-                        ));
-                    }
 
+                        // Create info icon button with tooltip
+                        let response = crate::ui::helpers::info_icon_button(ui, "Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
 
-                    // Create info icon button with tooltip
-                    let response = crate::ui::helpers::info_icon_button(ui, "The identity index is an internal reference within the wallet. The wallet's seed phrase can always be used to recover any identity, including this one, by using the same index.");
+                        // Check if the label was clicked
+                        if response.clicked() {
+                            self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
+                        }
+                    });
 
-                    // Check if the label was clicked
-                    if response.clicked() {
-                        self.show_pop_up_info = Some("The identity index is an internal reference within the wallet. The wallet’s seed phrase can always be used to recover any identity, including this one, by using the same index.".to_string());
-                    }
-                });
+                    step_number += 1;
 
-                step_number += 1;
+                    ui.add_space(8.0);
 
-                ui.add_space(8.0);
-
-                self.render_identity_index_input(ui);
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Display the heading with an info icon that shows a tooltip on hover
-                ui.horizontal(|ui| {
-                    ui.heading(format!(
-                        "{}. Choose what keys you want to add to this new identity.",
-                        step_number
-                    ));
-
-                    // Create info icon button with tooltip
-                    let response = crate::ui::helpers::info_icon_button(ui, "Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.");
-
-                    // Check if the label was clicked
-                    if response.clicked() {
-                        self.show_pop_up_info = Some("Keys allow an identity to perform actions on the Blockchain. They are contained in your wallet and allow you to prove that the action you are making is really coming from yourself.".to_string());
-                    }
-                });
-
-                step_number += 1;
-
-                ui.add_space(8.0);
-
-                self.render_key_selection(ui);
+                    self.render_key_selection(ui);
+                }
 
                 ui.add_space(10.0);
                 ui.separator();

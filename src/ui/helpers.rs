@@ -730,11 +730,49 @@ pub fn show_success_screen(
     success_message: String,
     action_buttons: Vec<(String, AppAction)>,
 ) -> AppAction {
+    show_success_screen_with_info(ui, success_message, action_buttons, None)
+}
+
+/// Shows a success screen with an optional info section above the buttons.
+/// The info section takes a title and description that will be displayed in a centered box.
+pub fn show_success_screen_with_info(
+    ui: &mut Ui,
+    success_message: String,
+    action_buttons: Vec<(String, AppAction)>,
+    info_section: Option<(&str, &str)>,
+) -> AppAction {
     let mut action = AppAction::None;
+    let dark_mode = ui.ctx().style().visuals.dark_mode;
+
     ui.vertical_centered(|ui| {
-        ui.add_space(100.0);
+        ui.add_space(if info_section.is_some() { 60.0 } else { 100.0 });
         ui.heading("🎉");
         ui.heading(success_message);
+
+        // Optional info section (above buttons)
+        if let Some((title, description)) = info_section {
+            ui.add_space(24.0);
+
+            let description_width = 500.0_f32.min(ui.available_width() - 40.0);
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(description_width, 0.0),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(16.0)
+                            .strong()
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(description)
+                            .size(14.0)
+                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                    );
+                },
+            );
+        }
 
         ui.add_space(20.0);
         for button in action_buttons {
@@ -742,7 +780,8 @@ pub fn show_success_screen(
                 action = button.1;
             }
         }
-        ui.add_space(100.0);
+
+        ui.add_space(if info_section.is_some() { 60.0 } else { 100.0 });
     });
     action
 }

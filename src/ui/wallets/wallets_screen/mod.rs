@@ -2881,12 +2881,8 @@ impl ScreenLike for WalletsBalancesScreen {
         self.check_message_expiration();
         let mut right_buttons = vec![
             (
-                "Import Mnemonic",
+                "Import Wallet",
                 DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
-            ),
-            (
-                "Import Private Key",
-                DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportPrivateKey)),
             ),
             (
                 "Create Wallet",

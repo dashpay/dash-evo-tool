@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -23,10 +24,15 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportType {
+    Mnemonic,
+    PrivateKey,
+}
+
 pub struct ImportMnemonicScreen {
-    seed_phrase_words: Vec<String>,
-    selected_seed_phrase_length: usize,
-    seed_phrase: Option<Mnemonic>,
+    // Common fields
+    import_type: ImportType,
     password: String,
     alias_input: String,
     password_strength: f64,
@@ -35,23 +41,122 @@ pub struct ImportMnemonicScreen {
     pub app_context: Arc<AppContext>,
     use_password_for_app: bool,
     wallet_imported: bool,
+    show_advanced_options: bool,
+
+    // Mnemonic-specific fields
+    seed_phrase_words: Vec<String>,
+    selected_seed_phrase_length: usize,
+    seed_phrase: Option<Mnemonic>,
+
+    // Private key-specific fields
+    private_key_input: String,
+    parsed_single_key_wallet: Option<SingleKeyWallet>,
 }
 
 impl ImportMnemonicScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
-            seed_phrase_words: vec!["".to_string(); 24],
-            selected_seed_phrase_length: 12,
-            seed_phrase: None,
+            // Common fields
+            import_type: ImportType::Mnemonic,
             password: String::new(),
             alias_input: String::new(),
             password_strength: 0.0,
-            estimated_time_to_crack: "".to_string(),
+            estimated_time_to_crack: String::new(),
             error: None,
             app_context: app_context.clone(),
             use_password_for_app: true,
             wallet_imported: false,
+            show_advanced_options: false,
+
+            // Mnemonic-specific fields
+            seed_phrase_words: vec!["".to_string(); 24],
+            selected_seed_phrase_length: 12,
+            seed_phrase: None,
+
+            // Private key-specific fields
+            private_key_input: String::new(),
+            parsed_single_key_wallet: None,
         }
+    }
+
+    fn try_parse_private_key(&mut self) {
+        let input = self.private_key_input.trim();
+        if input.is_empty() {
+            self.parsed_single_key_wallet = None;
+            self.error = None;
+            return;
+        }
+
+        // Try to parse as WIF first, then as hex
+        let result = SingleKeyWallet::from_wif(input, None, None)
+            .or_else(|_| SingleKeyWallet::from_hex(input, self.app_context.network, None, None));
+
+        match result {
+            Ok(wallet) => {
+                self.parsed_single_key_wallet = Some(wallet);
+                self.error = None;
+            }
+            Err(e) => {
+                self.parsed_single_key_wallet = None;
+                self.error = Some(format!("Invalid private key: {}", e));
+            }
+        }
+    }
+
+    fn save_private_key_wallet(&mut self) -> Result<AppAction, String> {
+        let input = self.private_key_input.trim();
+        if input.is_empty() {
+            return Err("Please enter a private key".to_string());
+        }
+
+        // Parse the key with password and alias
+        let password = if self.password.is_empty() {
+            None
+        } else {
+            Some(self.password.as_str())
+        };
+
+        // Generate default wallet name if none provided
+        let alias = if self.alias_input.trim().is_empty() {
+            let existing_wallet_count = self
+                .app_context
+                .single_key_wallets
+                .read()
+                .map(|w| w.len())
+                .unwrap_or(0);
+            Some(format!("Key {}", existing_wallet_count + 1))
+        } else {
+            Some(self.alias_input.clone())
+        };
+
+        // Try WIF first, then hex
+        let wallet = SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
+            SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
+        })?;
+
+        let key_hash = wallet.key_hash();
+
+        // Store in database
+        self.app_context
+            .db
+            .store_single_key_wallet(&wallet, self.app_context.network)
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    "This key has already been imported.".to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
+
+        // Add to app context
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        if let Ok(mut single_key_wallets) = self.app_context.single_key_wallets.write() {
+            single_key_wallets.insert(key_hash, wallet_arc);
+            self.app_context.has_wallet.store(true, Ordering::Relaxed);
+        }
+
+        self.wallet_imported = true;
+        Ok(AppAction::None)
     }
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
@@ -92,6 +197,19 @@ impl ImportMnemonicScreen {
             // Compute the seed hash
             let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
+            // Generate default wallet name if none provided
+            let wallet_alias = if self.alias_input.trim().is_empty() {
+                let existing_wallet_count = self
+                    .app_context
+                    .wallets
+                    .read()
+                    .map(|w| w.len())
+                    .unwrap_or(0);
+                format!("Wallet {}", existing_wallet_count + 1)
+            } else {
+                self.alias_input.clone()
+            };
+
             let wallet = Wallet {
                 wallet_seed: WalletSeed::Open(OpenWalletSeed {
                     seed,
@@ -110,7 +228,7 @@ impl ImportMnemonicScreen {
                 known_addresses: Default::default(),
                 watched_addresses: Default::default(),
                 unused_asset_locks: Default::default(),
-                alias: Some(self.alias_input.clone()),
+                alias: Some(wallet_alias),
                 identities: Default::default(),
                 utxos: Default::default(),
                 transactions: Vec::new(),
@@ -161,48 +279,62 @@ impl ImportMnemonicScreen {
     }
 
     fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let action = crate::ui::helpers::show_success_screen(
-            ui,
-            "Wallet Imported Successfully!".to_string(),
-            vec![
-                ("Go to Wallet".to_string(), AppAction::GoToMainScreen),
-                (
-                    "Create Identity".to_string(),
-                    AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenIdentities,
-                        Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(&self.app_context)),
-                    ),
+        let title = match self.import_type {
+            ImportType::Mnemonic => "Wallet Imported Successfully!",
+            ImportType::PrivateKey => "Key Imported Successfully!",
+        };
+
+        let mut buttons = vec![("Go to Wallet Screen".to_string(), AppAction::GoToMainScreen)];
+
+        // Only show identity options for HD wallets (mnemonic import)
+        if self.import_type == ImportType::Mnemonic {
+            buttons.push((
+                "Create Identity".to_string(),
+                AppAction::PopThenAddScreenToMainScreen(
+                    RootScreenType::RootScreenIdentities,
+                    Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(&self.app_context)),
                 ),
-                (
-                    "Load Existing Identity".to_string(),
-                    AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenIdentities,
-                        Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(
-                            &self.app_context,
-                        )),
-                    ),
+            ));
+            buttons.push((
+                "Load Existing Identity".to_string(),
+                AppAction::PopThenAddScreenToMainScreen(
+                    RootScreenType::RootScreenIdentities,
+                    Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(
+                        &self.app_context,
+                    )),
                 ),
-                (
-                    "Import Another Wallet".to_string(),
-                    AppAction::Custom("import_another_wallet".to_string()),
-                ),
-            ],
-        );
+            ));
+        }
+
+        buttons.push((
+            "Import Another Wallet".to_string(),
+            AppAction::Custom("import_another_wallet".to_string()),
+        ));
+
+        let action = crate::ui::helpers::show_success_screen(ui, title.to_string(), buttons);
 
         // Handle the custom action to reset the form
         if let AppAction::Custom(ref s) = action
-            && s == "import_another_wallet" {
-                self.seed_phrase_words = vec!["".to_string(); 24];
-                self.selected_seed_phrase_length = 12;
-                self.seed_phrase = None;
-                self.password = String::new();
-                self.alias_input = String::new();
-                self.password_strength = 0.0;
-                self.estimated_time_to_crack = String::new();
-                self.error = None;
-                self.wallet_imported = false;
-                return AppAction::None;
-            }
+            && s == "import_another_wallet"
+        {
+            // Reset mnemonic fields
+            self.seed_phrase_words = vec!["".to_string(); 24];
+            self.selected_seed_phrase_length = 12;
+            self.seed_phrase = None;
+
+            // Reset private key fields
+            self.private_key_input = String::new();
+            self.parsed_single_key_wallet = None;
+
+            // Reset common fields
+            self.password = String::new();
+            self.alias_input = String::new();
+            self.password_strength = 0.0;
+            self.estimated_time_to_crack = String::new();
+            self.error = None;
+            self.wallet_imported = false;
+            return AppAction::None;
+        }
 
         action
     }
@@ -293,6 +425,63 @@ impl ImportMnemonicScreen {
                 });
         });
     }
+
+    fn render_private_key_input(&mut self, ui: &mut Ui, step: u32) {
+        ui.heading(format!(
+            "{}. Enter your private key (WIF or 64-character hex format)",
+            step
+        ));
+        ui.add_space(8.0);
+
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let response = ui.add_sized(
+            Vec2::new(ui.available_width() - 20.0, 40.0),
+            egui::TextEdit::singleline(&mut self.private_key_input)
+                .hint_text("Enter private key (WIF: 51-52 chars, or hex: 64 chars)")
+                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .password(true),
+        );
+
+        if response.changed() {
+            self.try_parse_private_key();
+        }
+
+        // Show parsed address preview
+        if let Some(ref wallet) = self.parsed_single_key_wallet {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label("Derived Address:");
+                ui.label(
+                    RichText::new(wallet.address.to_string())
+                        .monospace()
+                        .color(Color32::from_rgb(100, 200, 100)),
+                );
+            });
+        }
+
+        // Show error if any
+        if let Some(ref err) = self.error {
+            ui.add_space(5.0);
+            ui.colored_label(Color32::from_rgb(255, 100, 100), err);
+        }
+    }
+
+    fn render_import_type_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Import Type:");
+            ui.selectable_value(
+                &mut self.import_type,
+                ImportType::Mnemonic,
+                "Seed Phrase (HD Wallet)",
+            );
+            ui.selectable_value(
+                &mut self.import_type,
+                ImportType::PrivateKey,
+                "Private Key (Single Address)",
+            );
+        });
+    }
 }
 
 impl ScreenLike for ImportMnemonicScreen {
@@ -302,7 +491,7 @@ impl ScreenLike for ImportMnemonicScreen {
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
-                ("Import Mnemonic", AppAction::None),
+                ("Import Wallet", AppAction::None),
             ],
             vec![],
         );
@@ -327,68 +516,103 @@ impl ScreenLike for ImportMnemonicScreen {
                 .auto_shrink([false; 2]) // Prevent shrinking when content is less than the available area
                 .show(ui, |ui| {
                     ui.add_space(10.0);
-                    ui.heading("Follow these steps to import your wallet.");
+                    ui.horizontal(|ui| {
+                        ui.heading("Follow these steps to import your wallet.");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(&mut self.show_advanced_options, "Show Advanced Options");
+                        });
+                    });
                     ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(5.0);
 
-                    ui.heading("1. Select the seed phrase length and enter all words.");
-                    self.render_seed_phrase_input(ui);
+                    // Track step number based on whether advanced options are shown
+                    let mut step = 1;
 
-                    // Check seed phrase validity whenever all words are filled
-                    if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                        match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
-                            Ok(mnemonic) => {
-                                self.seed_phrase = Some(mnemonic);
-                                // Clear any existing seed phrase error
+                    // Import type selection (only show when advanced options is checked)
+                    if self.show_advanced_options {
+                        ui.heading(format!("{}. Select what you want to import.", step));
+                        ui.add_space(10.0);
+                        self.render_import_type_selection(ui);
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        step += 1;
+                    } else {
+                        // Reset to mnemonic when advanced options is hidden
+                        self.import_type = ImportType::Mnemonic;
+                    }
+
+                    // Different UI based on import type
+                    match self.import_type {
+                        ImportType::Mnemonic => {
+                            ui.heading(format!("{}. Select the seed phrase length and enter all words.", step));
+                            self.render_seed_phrase_input(ui);
+
+                            // Check seed phrase validity whenever all words are filled
+                            if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
+                                match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                                    Ok(mnemonic) => {
+                                        self.seed_phrase = Some(mnemonic);
+                                        // Clear any existing seed phrase error
+                                        if let Some(ref mut error) = self.error
+                                            && error.contains("Invalid seed phrase") {
+                                                self.error = None;
+                                            }
+                                    }
+                                    Err(_) => {
+                                        self.seed_phrase = None;
+                                        self.error = Some("Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.".to_string());
+                                    }
+                                }
+                            } else {
+                                // Clear seed phrase and error if not all words are filled
+                                self.seed_phrase = None;
                                 if let Some(ref mut error) = self.error
                                     && error.contains("Invalid seed phrase") {
                                         self.error = None;
                                     }
                             }
-                            Err(_) => {
-                                self.seed_phrase = None;
-                                self.error = Some("Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.".to_string());
+
+                            // Display error message if seed phrase is invalid
+                            if let Some(ref error_msg) = self.error
+                                && error_msg.contains("Invalid seed phrase") {
+                                    ui.add_space(10.0);
+                                    ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
+                                }
+
+                            if self.seed_phrase.is_none() {
+                                return;
                             }
                         }
-                    } else {
-                        // Clear seed phrase and error if not all words are filled
-                        self.seed_phrase = None;
-                        if let Some(ref mut error) = self.error
-                            && error.contains("Invalid seed phrase") {
-                                self.error = None;
+                        ImportType::PrivateKey => {
+                            self.render_private_key_input(ui, step);
+
+                            if self.parsed_single_key_wallet.is_none() {
+                                return;
                             }
-                    }
-
-                    // Display error message if seed phrase is invalid
-                    if let Some(ref error_msg) = self.error
-                        && error_msg.contains("Invalid seed phrase") {
-                            ui.add_space(10.0);
-                            ui.colored_label(Color32::from_rgb(255, 100, 100), error_msg);
                         }
-
-                    if self.seed_phrase.is_none() {
-                        return;
                     }
+                    step += 1;
 
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("2. Select a wallet name to remember it. (This will not go to the blockchain)");
+                    ui.heading(format!("{}. Enter a name to remember it by. (This will not go on the blockchain)", step));
 
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Wallet Name:");
+                        ui.label("Name:");
                         ui.text_edit_singleline(&mut self.alias_input);
                     });
+
+                    step += 1;
 
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("3. Add a password that must be used to unlock the wallet. (Optional but recommended)");
+                    ui.heading(format!("{}. Add a password to encrypt. (Optional but recommended)", step));
 
                     ui.add_space(8.0);
 
@@ -454,28 +678,43 @@ impl ScreenLike for ImportMnemonicScreen {
                     //     ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
                     // }
 
+                    step += 1;
+
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("4. Save the wallet.");
+                    let button_text = match self.import_type {
+                        ImportType::Mnemonic => format!("{}. Save the wallet.", step),
+                        ImportType::PrivateKey => format!("{}. Import the key.", step),
+                    };
+                    ui.heading(button_text);
                     ui.add_space(10.0);
 
-                    // Save Wallet button styled like Load Identity button
+                    // Save button
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
+
+                    let button_label = match self.import_type {
+                        ImportType::Mnemonic => "Save Wallet",
+                        ImportType::PrivateKey => "Import Key",
+                    };
                     let save_button = egui::Button::new(
-                        RichText::new("Save Wallet").color(Color32::WHITE),
+                        RichText::new(button_label).color(Color32::WHITE),
                     )
                         .fill(Color32::from_rgb(0, 128, 255))
                         .frame(true)
                         .corner_radius(3.0);
 
                     if ui.add(save_button).clicked() {
-                        match self.save_wallet() {
-                            Ok(save_wallet_action) => {
-                                inner_action = save_wallet_action;
+                        let result = match self.import_type {
+                            ImportType::Mnemonic => self.save_wallet(),
+                            ImportType::PrivateKey => self.save_private_key_wallet(),
+                        };
+                        match result {
+                            Ok(save_action) => {
+                                inner_action = save_action;
                             }
                             Err(e) => {
                                 self.error = Some(e)

@@ -39,7 +39,6 @@ use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
-use crate::ui::wallets::import_private_key_screen::ImportPrivateKeyScreen;
 use crate::ui::wallets::send_screen::WalletSendScreen;
 use crate::ui::wallets::single_key_send_screen::SingleKeyWalletSendScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
@@ -235,7 +234,6 @@ pub enum ScreenType {
     AddNewIdentity,
     WalletsBalances,
     ImportMnemonic,
-    ImportPrivateKey,
     AddNewWallet,
     WalletSendScreen(Arc<RwLock<Wallet>>),
     SingleKeyWalletSendScreen(Arc<RwLock<SingleKeyWallet>>),
@@ -324,7 +322,6 @@ impl PartialEq for ScreenType {
             (ScreenType::AddNewIdentity, ScreenType::AddNewIdentity) => true,
             (ScreenType::WalletsBalances, ScreenType::WalletsBalances) => true,
             (ScreenType::ImportMnemonic, ScreenType::ImportMnemonic) => true,
-            (ScreenType::ImportPrivateKey, ScreenType::ImportPrivateKey) => true,
             (ScreenType::AddNewWallet, ScreenType::AddNewWallet) => true,
             (ScreenType::AddExistingIdentity, ScreenType::AddExistingIdentity) => true,
             (ScreenType::TransitionVisualizer, ScreenType::TransitionVisualizer) => true,
@@ -479,9 +476,6 @@ impl ScreenType {
             }
             ScreenType::ImportMnemonic => {
                 Screen::ImportMnemonicScreen(ImportMnemonicScreen::new(app_context))
-            }
-            ScreenType::ImportPrivateKey => {
-                Screen::ImportPrivateKeyScreen(ImportPrivateKeyScreen::new(app_context))
             }
             ScreenType::WalletSendScreen(wallet) => {
                 Screen::WalletSendScreen(WalletSendScreen::new(app_context, wallet.clone()))
@@ -669,7 +663,6 @@ pub enum Screen {
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
     ImportMnemonicScreen(ImportMnemonicScreen),
-    ImportPrivateKeyScreen(ImportPrivateKeyScreen),
     AddNewIdentityScreen(AddNewIdentityScreen),
     AddExistingIdentityScreen(AddExistingIdentityScreen),
     KeyInfoScreen(KeyInfoScreen),
@@ -753,7 +746,6 @@ impl Screen {
                 screen.update_selected_wallet_for_network();
             }
             Screen::ImportMnemonicScreen(screen) => screen.app_context = app_context,
-            Screen::ImportPrivateKeyScreen(screen) => screen.app_context = app_context,
             Screen::WalletSendScreen(screen) => screen.app_context = app_context,
             Screen::SingleKeyWalletSendScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
@@ -892,7 +884,6 @@ impl Screen {
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportMnemonicScreen(_) => ScreenType::ImportMnemonic,
-            Screen::ImportPrivateKeyScreen(_) => ScreenType::ImportPrivateKey,
             Screen::WalletSendScreen(screen) => {
                 ScreenType::WalletSendScreen(screen.selected_wallet.clone().unwrap())
             }
@@ -1004,7 +995,6 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.refresh(),
             Screen::AddNewWalletScreen(screen) => screen.refresh(),
             Screen::ImportMnemonicScreen(screen) => screen.refresh(),
-            Screen::ImportPrivateKeyScreen(screen) => screen.refresh(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh(),
             Screen::TopUpIdentityScreen(screen) => screen.refresh(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh(),
@@ -1068,7 +1058,6 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewWalletScreen(screen) => screen.refresh_on_arrival(),
             Screen::ImportMnemonicScreen(screen) => screen.refresh_on_arrival(),
-            Screen::ImportPrivateKeyScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddNewIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::TopUpIdentityScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddExistingIdentityScreen(screen) => screen.refresh_on_arrival(),
@@ -1132,7 +1121,6 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.ui(ctx),
             Screen::AddNewWalletScreen(screen) => screen.ui(ctx),
             Screen::ImportMnemonicScreen(screen) => screen.ui(ctx),
-            Screen::ImportPrivateKeyScreen(screen) => screen.ui(ctx),
             Screen::AddNewIdentityScreen(screen) => screen.ui(ctx),
             Screen::TopUpIdentityScreen(screen) => screen.ui(ctx),
             Screen::AddExistingIdentityScreen(screen) => screen.ui(ctx),
@@ -1196,7 +1184,6 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewWalletScreen(screen) => screen.display_message(message, message_type),
             Screen::ImportMnemonicScreen(screen) => screen.display_message(message, message_type),
-            Screen::ImportPrivateKeyScreen(screen) => screen.display_message(message, message_type),
             Screen::AddNewIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::TopUpIdentityScreen(screen) => screen.display_message(message, message_type),
             Screen::AddExistingIdentityScreen(screen) => {
@@ -1300,9 +1287,6 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::ImportMnemonicScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::ImportPrivateKeyScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
             Screen::AddNewIdentityScreen(screen) => {
@@ -1458,7 +1442,6 @@ impl ScreenLike for Screen {
             Screen::DocumentQueryScreen(screen) => screen.pop_on_success(),
             Screen::AddNewWalletScreen(screen) => screen.pop_on_success(),
             Screen::ImportMnemonicScreen(screen) => screen.pop_on_success(),
-            Screen::ImportPrivateKeyScreen(screen) => screen.pop_on_success(),
             Screen::AddNewIdentityScreen(screen) => screen.pop_on_success(),
             Screen::TopUpIdentityScreen(screen) => screen.pop_on_success(),
             Screen::AddExistingIdentityScreen(screen) => screen.pop_on_success(),

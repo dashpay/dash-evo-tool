@@ -527,7 +527,7 @@ impl SpvManager {
         };
 
         let llmq_type = LLMQType::from(quorum_type as u8);
-        let qh = QuorumHash::from_byte_array(quorum_hash);
+        let qh = QuorumHash::from_byte_array(quorum_hash).reverse();
 
         tracing::debug!(
             "SPV quorum public key lookup in progress: type={}, hash={}, height={}",
@@ -558,13 +558,7 @@ impl SpvManager {
                             hex::encode(quorum_hash),
                             e
                         );
-                        format!(
-                            "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
-                            core_chain_locked_height,
-                            quorum_type,
-                            hex::encode(quorum_hash),
-                            e
-                        )
+                        e.to_string()
                     })
             })
         })

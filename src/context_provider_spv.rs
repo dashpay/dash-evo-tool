@@ -95,9 +95,7 @@ impl ContextProvider for SpvProvider {
 
         spv_manager
             .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
-            .map_err(|e| {
-                ContextProviderError::Generic(format!("SPV quorum key lookup failed: {}", e))
-            })
+            .map_err(|e| ContextProviderError::Generic(e))
     }
 
     fn get_platform_activation_height(

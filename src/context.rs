@@ -383,6 +383,7 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
+            self.queue_platform_address_sync(seed_hash);
         }
     }
 
@@ -426,6 +427,19 @@ impl AppContext {
         self.subtasks.spawn_sync(async move {
             if let Err(error) = spv.unload_wallet(seed_hash).await {
                 tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to unload SPV wallet");
+            }
+        });
+    }
+
+    fn queue_platform_address_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync(async move {
+            if let Err(error) = ctx.fetch_platform_address_balances(seed_hash).await {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash),
+                    %error,
+                    "Failed to sync Platform address balances"
+                );
             }
         });
     }
@@ -482,15 +496,12 @@ impl AppContext {
         })
     }
 
-    /// Fetch Platform address balances and nonces from Platform
+    /// Fetch Platform address balances using privacy-preserving sync with WalletAddressProvider
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
-        use dash_sdk::dpp::address_funds::PlatformAddress;
-        use dash_sdk::platform::FetchMany;
-        use dash_sdk::query_types::AddressInfo as SdkAddressInfo;
-        use std::collections::BTreeSet;
+        use crate::model::wallet::WalletAddressProvider;
 
         let wallet_arc = {
             let wallets = self.wallets.read().unwrap();
@@ -500,76 +511,63 @@ impl AppContext {
                 .ok_or_else(|| "Wallet not found".to_string())?
         };
 
-        // Get all Platform addresses from the wallet
-        let platform_addresses: Vec<(Address, PlatformAddress)> = {
+        // Create provider (requires wallet to be open)
+        let mut provider = {
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
-            wallet.platform_addresses(self.network)
+            WalletAddressProvider::new(&wallet, self.network)?
         };
 
-        if platform_addresses.is_empty() {
-            return Ok(BackendTaskSuccessResult::PlatformAddressBalances {
-                seed_hash,
-                balances: std::collections::BTreeMap::new(),
-            });
-        }
-
-        // Create a set of PlatformAddresses for the query
-        let address_set: BTreeSet<PlatformAddress> =
-            platform_addresses.iter().map(|(_, pa)| *pa).collect();
-
-        // Fetch from Platform using the SDK
+        // Sync using SDK's privacy-preserving method
         let sdk = {
             let guard = self.sdk.read().map_err(|e| e.to_string())?;
             guard.clone()
         };
-        let address_infos = SdkAddressInfo::fetch_many(&sdk, address_set)
+        let result = sdk
+            .sync_address_balances(&mut provider, None)
             .await
-            .map_err(|e| format!("Failed to fetch Platform address info: {}", e))?;
+            .map_err(|e| format!("Failed to sync Platform addresses: {}", e))?;
 
-        // Update wallet and database with the fetched balances
-        let mut balances = std::collections::BTreeMap::new();
-        {
+        tracing::info!(
+            "Platform address sync complete: found={}, absent={}, highest_index={:?}",
+            result.found.len(),
+            result.absent.len(),
+            result.highest_found_index
+        );
+
+        // Apply results to wallet and persist
+        let balances = {
             let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
-            let wallet_seed_hash = wallet.seed_hash();
+            provider.apply_results_to_wallet(&mut wallet);
 
-            for (core_addr, platform_addr) in &platform_addresses {
-                // address_infos.get() returns Option<&Option<AddressInfo>>
-                // Flatten to get the actual AddressInfo if it exists
-                if let Some(Some(info)) = address_infos.get(platform_addr) {
-                    tracing::info!(
-                        "Platform address {} ({:?}): balance={}, nonce={}",
-                        core_addr,
-                        platform_addr,
-                        info.balance,
-                        info.nonce
-                    );
-
-                    // Update in-memory wallet state
-                    wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
-
-                    // Update database
-                    if let Err(e) = self.db.set_platform_address_info(
-                        &wallet_seed_hash,
-                        core_addr,
-                        info.balance,
-                        info.nonce,
-                        &self.network,
-                    ) {
-                        tracing::warn!("Failed to store Platform address info in database: {}", e);
-                    }
-
-                    balances.insert(core_addr.to_string(), (info.balance, info.nonce));
-                } else {
-                    tracing::info!(
-                        "Platform address {} ({:?}): not found on Platform",
-                        core_addr,
-                        platform_addr
-                    );
-                    // Address not found on Platform (never funded) - set to 0
-                    balances.insert(core_addr.to_string(), (0, 0));
+            // Persist to database
+            for (address, balance) in provider.found_balances() {
+                let nonce = wallet
+                    .platform_address_info
+                    .get(address)
+                    .map(|info| info.nonce)
+                    .unwrap_or(0);
+                if let Err(e) =
+                    self.db
+                        .set_platform_address_info(&seed_hash, address, *balance, nonce, &self.network)
+                {
+                    tracing::warn!("Failed to persist Platform address info: {}", e);
                 }
             }
-        }
+
+            // Return balances for result (nonce preserved from existing info or 0)
+            provider
+                .found_balances()
+                .iter()
+                .map(|(addr, bal)| {
+                    let nonce = wallet
+                        .platform_address_info
+                        .get(addr)
+                        .map(|info| info.nonce)
+                        .unwrap_or(0);
+                    (addr.to_string(), (*bal, nonce))
+                })
+                .collect()
+        };
 
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {
             seed_hash,

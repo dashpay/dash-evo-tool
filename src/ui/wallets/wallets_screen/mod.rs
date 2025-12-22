@@ -1359,6 +1359,25 @@ impl WalletsBalancesScreen {
             {
                 action |= self.open_withdraw_platform_dialog();
             }
+
+            // Refresh Platform balances button
+            if ui
+                .button(
+                    RichText::new("Refresh Platform Balances")
+                        .color(DashColors::text_primary(dark_mode)),
+                )
+                .on_hover_text("Sync Platform address balances from network")
+                .clicked()
+            {
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Ok(wallet_guard) = wallet.read() {
+                        let seed_hash = wallet_guard.seed_hash();
+                        action |= AppAction::BackendTask(BackendTask::WalletTask(
+                            WalletTask::FetchPlatformAddressBalances { seed_hash },
+                        ));
+                    }
+                }
+            }
         });
         action
     }

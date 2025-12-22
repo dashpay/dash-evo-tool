@@ -637,12 +637,10 @@ impl SpvManager {
         };
 
         let mut wm = self.wallet.write().await;
-        let network = Self::wallet_network(self.network);
 
         let result = wm
             .get_receive_address(
                 &wallet_id,
-                network,
                 account_index,
                 AccountTypePreference::BIP44,
                 true,
@@ -657,9 +655,7 @@ impl SpvManager {
             let info = wm
                 .get_wallet_info(&wallet_id)
                 .ok_or_else(|| "wallet info missing".to_string())?;
-            let collection = info
-                .accounts(network)
-                .ok_or_else(|| "Account collection not found".to_string())?;
+            let collection = info.accounts();
             let account = collection
                 .standard_bip44_accounts
                 .get(&account_index)

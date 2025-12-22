@@ -840,10 +840,7 @@ impl AppContext {
         wallet_info: &ManagedWalletInfo,
         wallet_arc: &Arc<RwLock<Wallet>>,
     ) {
-        let net = self.wallet_network_key();
-        let Some(collection) = wallet_info.accounts(net) else {
-            return;
-        };
+        let collection = wallet_info.accounts();
 
         let mut inserted = 0u32;
         for account in collection.all_accounts() {
@@ -1031,37 +1028,33 @@ impl AppContext {
 
                 // If address unknown to DET, try to register using SPV metadata
                 if !known_addresses.contains(&address) {
-                    let net = self.wallet_network_key();
-                    if let Some(collection) = wallet_info.accounts(net) {
-                        let mut registered = false;
-                        for acc in collection.all_accounts() {
-                            if let Some(ai) = acc.get_address_info(&address) {
-                                let account_type = acc.account_type.to_account_type();
-                                let (path_reference, path_type) =
-                                    Self::spv_account_metadata(&account_type).unwrap_or((
-                                        DerivationPathReference::BIP44,
-                                        DerivationPathType::CLEAR_FUNDS,
-                                    ));
+                    let collection = wallet_info.accounts();
+                    let mut registered = false;
+                    for acc in collection.all_accounts() {
+                        if let Some(ai) = acc.get_address_info(&address) {
+                            let account_type = acc.account_type.to_account_type();
+                            let (path_reference, path_type) =
+                                Self::spv_account_metadata(&account_type).unwrap_or((
+                                    DerivationPathReference::BIP44,
+                                    DerivationPathType::CLEAR_FUNDS,
+                                ));
 
-                                if let Ok(inserted) = self.register_spv_address(
-                                    &wallet_arc,
-                                    address.clone(),
-                                    ai.path.clone(),
-                                    path_type,
-                                    path_reference,
-                                ) {
-                                    if inserted {
-                                        known_addresses.insert(address.clone());
-                                    }
-                                    registered = true;
+                            if let Ok(inserted) = self.register_spv_address(
+                                &wallet_arc,
+                                address.clone(),
+                                ai.path.clone(),
+                                path_type,
+                                path_reference,
+                            ) {
+                                if inserted {
+                                    known_addresses.insert(address.clone());
                                 }
-                                break;
+                                registered = true;
                             }
+                            break;
                         }
-                        if !registered {
-                            continue;
-                        }
-                    } else {
+                    }
+                    if !registered {
                         continue;
                     }
                 }

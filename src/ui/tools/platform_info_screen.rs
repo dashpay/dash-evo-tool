@@ -308,6 +308,9 @@ impl ScreenLike for PlatformInfoScreen {
                     self.active_tasks.clear(); // Clear any remaining active tasks
                     self.error_message = None;
                 }
+                PlatformInfoTaskResult::AddressBalance { .. } => {
+                    // This result is handled by AddressBalanceScreen, not here
+                }
             }
         }
     }

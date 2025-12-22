@@ -12,6 +12,7 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
+use dash_sdk::platform::address_sync::{AddressIndex, AddressKey, AddressProvider};
 
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -1935,5 +1936,208 @@ impl Signer<PlatformAddress> for Wallet {
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Regtest))
             .is_ok()
+    }
+}
+
+/// Default gap limit for HD wallet address scanning
+const DEFAULT_GAP_LIMIT: AddressIndex = 20;
+
+/// Provider for wallet Platform addresses that implements AddressProvider for SDK address sync.
+///
+/// This struct tracks the state needed for the SDK's privacy-preserving address balance
+/// synchronization. It can derive new Platform addresses on-demand to support HD wallet
+/// gap limit behavior.
+///
+/// # Usage
+/// ```ignore
+/// let mut provider = WalletAddressProvider::new(&wallet, network)?;
+/// let result = sdk.sync_address_balances(&mut provider, None).await?;
+/// provider.apply_results_to_wallet(&mut wallet);
+/// ```
+pub struct WalletAddressProvider {
+    /// Network for address derivation
+    network: Network,
+    /// Gap limit for HD wallet scanning
+    gap_limit: AddressIndex,
+    /// Seed bytes for deriving new addresses (64 bytes)
+    seed: [u8; 64],
+    /// Account index for Platform payment addresses (default 0)
+    account: u32,
+    /// Key class for Platform payment addresses (default 0)
+    key_class: u32,
+    /// Map of index to (AddressKey, CoreAddress) for pending addresses
+    pending: BTreeMap<AddressIndex, (AddressKey, Address)>,
+    /// Set of indices that have been resolved (found or absent)
+    resolved: BTreeSet<AddressIndex>,
+    /// Highest index found with a non-zero balance
+    highest_found: Option<AddressIndex>,
+    /// Results: address -> balance for addresses found with balance
+    found_balances: BTreeMap<Address, u64>,
+}
+
+impl WalletAddressProvider {
+    /// Create a new WalletAddressProvider from a wallet.
+    ///
+    /// This initializes the provider with Platform payment addresses up to the gap limit.
+    /// The wallet must be open (unlocked) to access the seed for address derivation.
+    ///
+    /// # Errors
+    /// Returns an error if the wallet is closed/locked.
+    pub fn new(wallet: &Wallet, network: Network) -> Result<Self, String> {
+        Self::with_gap_limit(wallet, network, DEFAULT_GAP_LIMIT)
+    }
+
+    /// Create a new WalletAddressProvider with a custom gap limit.
+    ///
+    /// # Errors
+    /// Returns an error if the wallet is closed/locked.
+    pub fn with_gap_limit(
+        wallet: &Wallet,
+        network: Network,
+        gap_limit: AddressIndex,
+    ) -> Result<Self, String> {
+        let seed = *wallet.seed_bytes()?;
+
+        let mut provider = Self {
+            network,
+            gap_limit,
+            seed,
+            account: 0,
+            key_class: 0,
+            pending: BTreeMap::new(),
+            resolved: BTreeSet::new(),
+            highest_found: None,
+            found_balances: BTreeMap::new(),
+        };
+
+        // Bootstrap initial addresses (0 to gap_limit - 1)
+        provider.ensure_addresses_up_to(gap_limit.saturating_sub(1))?;
+
+        Ok(provider)
+    }
+
+    /// Get the network this provider was created for.
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
+    /// Get the found balances after sync is complete.
+    ///
+    /// Returns a map of Core Address -> balance (in credits).
+    pub fn found_balances(&self) -> &BTreeMap<Address, u64> {
+        &self.found_balances
+    }
+
+    /// Apply the sync results to a wallet, updating Platform address info.
+    ///
+    /// This updates the wallet's `platform_address_info` with the balances found during sync.
+    /// Note: This does not update nonces - those should be fetched separately if needed.
+    pub fn apply_results_to_wallet(&self, wallet: &mut Wallet) {
+        for (address, balance) in &self.found_balances {
+            // Get existing nonce or default to 0
+            let nonce = wallet
+                .platform_address_info
+                .get(address)
+                .map(|info| info.nonce)
+                .unwrap_or(0);
+
+            wallet.set_platform_address_info(address.clone(), *balance, nonce);
+        }
+    }
+
+    /// Derive a Platform address at the given index.
+    fn derive_address_at_index(&self, index: AddressIndex) -> Result<(AddressKey, Address), String> {
+        let derivation_path =
+            DerivationPath::platform_payment_path(self.network, self.account, self.key_class, index);
+
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(&self.seed, self.network)
+            .map_err(|e| e.to_string())?;
+
+        let secp = Secp256k1::new();
+        let private_key = extended_private_key.to_priv();
+        let public_key = private_key.public_key(&secp);
+
+        // Create P2PKH address
+        let address = Address::p2pkh(&public_key, self.network);
+
+        // Convert to PlatformAddress to get the key
+        let platform_addr = PlatformAddress::try_from(address.clone())
+            .map_err(|e| format!("Failed to convert to PlatformAddress: {}", e))?;
+        let key = platform_addr.to_bytes();
+
+        Ok((key, address))
+    }
+
+    /// Ensure we have addresses derived up to and including the given index.
+    fn ensure_addresses_up_to(&mut self, max_index: AddressIndex) -> Result<(), String> {
+        let current_max = self.pending.keys().max().copied();
+
+        let start = current_max.map(|m| m + 1).unwrap_or(0);
+        for index in start..=max_index {
+            if !self.pending.contains_key(&index) && !self.resolved.contains(&index) {
+                let (key, address) = self.derive_address_at_index(index)?;
+                self.pending.insert(index, (key, address));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extend pending addresses based on gap limit after finding an address.
+    fn extend_for_gap_limit(&mut self, found_index: AddressIndex) -> Result<(), String> {
+        let new_end = found_index.saturating_add(self.gap_limit);
+        self.ensure_addresses_up_to(new_end)
+    }
+}
+
+impl AddressProvider for WalletAddressProvider {
+    fn gap_limit(&self) -> AddressIndex {
+        self.gap_limit
+    }
+
+    fn pending_addresses(&self) -> Vec<(AddressIndex, AddressKey)> {
+        self.pending
+            .iter()
+            .filter(|(index, _)| !self.resolved.contains(index))
+            .map(|(index, (key, _))| (*index, key.clone()))
+            .collect()
+    }
+
+    fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], balance: u64) {
+        self.resolved.insert(index);
+
+        if balance > 0 {
+            // Update highest found
+            self.highest_found = Some(
+                self.highest_found
+                    .map(|h| h.max(index))
+                    .unwrap_or(index),
+            );
+
+            // Store the balance result
+            if let Some((_, core_address)) = self.pending.get(&index) {
+                self.found_balances.insert(core_address.clone(), balance);
+            }
+
+            // Extend the address range based on gap limit
+            if let Err(e) = self.extend_for_gap_limit(index) {
+                tracing::warn!("Failed to extend addresses for gap limit: {}", e);
+            }
+        }
+    }
+
+    fn on_address_absent(&mut self, index: AddressIndex, _key: &[u8]) {
+        self.resolved.insert(index);
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending
+            .keys()
+            .any(|index| !self.resolved.contains(index))
+    }
+
+    fn highest_found_index(&self) -> Option<AddressIndex> {
+        self.highest_found
     }
 }

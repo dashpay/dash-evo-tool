@@ -424,7 +424,6 @@ impl AppContext {
 
             match wm.create_unsigned_payment_transaction(
                 wallet_id,
-                network,
                 DEFAULT_BIP44_ACCOUNT_INDEX,
                 Some(AccountTypePreference::BIP44),
                 scaled_recipients,
@@ -465,16 +464,14 @@ impl AppContext {
         &self,
         wm: &mut WalletManager<ManagedWalletInfo>,
         wallet_id: &WalletId,
-        network: WalletNetwork,
+        _network: WalletNetwork,
         account_index: u32,
         current_height: u32,
     ) -> Result<u64, String> {
         let managed_info = wm
             .get_wallet_info(wallet_id)
             .ok_or_else(|| "Wallet info unavailable".to_string())?;
-        let collection = managed_info
-            .accounts(network)
-            .ok_or_else(|| "Account collection not found".to_string())?;
+        let collection = managed_info.accounts();
         let account = collection
             .standard_bip44_accounts
             .get(&account_index)
@@ -483,7 +480,7 @@ impl AppContext {
         let mut spendable_total = 0u64;
         let mut spendable_inputs = 0usize;
         for utxo in account.utxos.values() {
-            if utxo.is_spendable(current_height) {
+            if (*utxo).is_spendable(current_height) {
                 spendable_total = spendable_total.saturating_add(utxo.value());
                 spendable_inputs += 1;
             }
@@ -504,17 +501,13 @@ impl AppContext {
         wallet_id: &WalletId,
         tx: Transaction,
     ) -> Result<Transaction, String> {
-        let network = self.wallet_network_key();
-
         let wallet = wm
             .get_wallet(wallet_id)
             .ok_or_else(|| "Wallet object not found".to_string())?;
         let managed_info = wm
             .get_wallet_info(wallet_id)
             .ok_or_else(|| "Wallet info unavailable".to_string())?;
-        let accounts = managed_info
-            .accounts(network)
-            .ok_or_else(|| "Account collection not found".to_string())?;
+        let accounts = managed_info.accounts();
         let account = accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
@@ -542,13 +535,14 @@ impl AppContext {
 
         for (input, (sighash, address)) in tx_signed.input.iter_mut().zip(signing_data.into_iter())
         {
-            let message = Message::from_digest(sighash.into());
+            let digest: [u8; 32] = sighash.into();
+            let message = Message::from_digest(digest);
 
             let addr_info = account
                 .get_address_info(&address)
                 .ok_or_else(|| "Address metadata missing".to_string())?;
             let secret_key = wallet
-                .derive_private_key(network, &addr_info.path)
+                .derive_private_key(&addr_info.path)
                 .map_err(|e| format!("Failed to derive private key: {e}"))?;
             let private_key = PrivateKey {
                 compressed: true,

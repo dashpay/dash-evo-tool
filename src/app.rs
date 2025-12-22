@@ -19,6 +19,7 @@ use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
+use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
@@ -234,6 +235,7 @@ impl AppState {
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
+        let mut address_balance_screen = AddressBalanceScreen::new(&mainnet_app_context);
         let mut grovestark_screen = GroveSTARKScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
@@ -293,6 +295,7 @@ impl AppState {
             wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
             proof_log_screen = ProofLogScreen::new(testnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
+            address_balance_screen = AddressBalanceScreen::new(testnet_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(testnet_app_context);
             contracts_dashpay_screen =
                 DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
@@ -331,6 +334,7 @@ impl AppState {
             wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
             proof_log_screen = ProofLogScreen::new(devnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
+            address_balance_screen = AddressBalanceScreen::new(devnet_app_context);
             tokens_balances_screen =
                 TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
@@ -365,6 +369,7 @@ impl AppState {
             masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
             proof_log_screen = ProofLogScreen::new(local_app_context);
             platform_info_screen = PlatformInfoScreen::new(local_app_context);
+            address_balance_screen = AddressBalanceScreen::new(local_app_context);
             contracts_dashpay_screen =
                 DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
             tokens_balances_screen =
@@ -549,6 +554,10 @@ impl AppState {
                 (
                     RootScreenType::RootScreenToolsPlatformInfoScreen,
                     Screen::PlatformInfoScreen(platform_info_screen),
+                ),
+                (
+                    RootScreenType::RootScreenToolsAddressBalanceScreen,
+                    Screen::AddressBalanceScreen(address_balance_screen),
                 ),
                 (
                     RootScreenType::RootScreenToolsGroveSTARKScreen,

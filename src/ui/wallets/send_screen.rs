@@ -180,11 +180,21 @@ impl WalletSendScreen {
             }
         }
 
-        // Filter to only addresses with positive balance and return
-        address_map
-            .into_values()
-            .filter(|(_, _, balance, _)| *balance > 0)
-            .map(|(addr, platform_addr, balance, _)| (addr, platform_addr, balance))
+        // Filter to only addresses with positive balance, sort by canonical string, and return
+        let mut result: Vec<_> = address_map
+            .into_iter()
+            .filter(|(_, (_, _, balance, _))| *balance > 0)
+            .map(|(canonical_str, (addr, platform_addr, balance, _))| {
+                (canonical_str, addr, platform_addr, balance)
+            })
+            .collect();
+
+        // Sort by canonical address string for consistent ordering
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+
+        result
+            .into_iter()
+            .map(|(_, addr, platform_addr, balance)| (addr, platform_addr, balance))
             .collect()
     }
 

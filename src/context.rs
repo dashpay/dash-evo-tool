@@ -444,6 +444,338 @@ impl AppContext {
         });
     }
 
+    /// Queue automatic discovery of identities derived from a wallet.
+    /// Checks identity indices 0 through max_identity_index for existing identities on the network.
+    pub fn queue_wallet_identity_discovery(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        max_identity_index: u32,
+    ) {
+        let ctx = Arc::clone(self);
+        let wallet_clone = Arc::clone(wallet);
+        self.subtasks.spawn_sync(async move {
+            if let Err(error) = ctx
+                .discover_identities_from_wallet(&wallet_clone, max_identity_index)
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    "Failed to discover identities from wallet"
+                );
+            }
+        });
+    }
+
+    /// Discover and load identities derived from a wallet by checking the network.
+    async fn discover_identities_from_wallet(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        max_identity_index: u32,
+    ) -> Result<(), String> {
+        use dash_sdk::platform::Fetch;
+        use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
+
+        const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
+
+        let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+
+        tracing::info!(
+            seed = %hex::encode(seed_hash),
+            "Starting identity discovery for wallet (checking indices 0..{})",
+            max_identity_index
+        );
+
+        let mut found_count = 0;
+
+        for identity_index in 0..=max_identity_index {
+            // Try to find an identity at this index by checking authentication keys
+            let mut fetched_identity = None;
+            let mut matched_key_index = None;
+
+            for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
+                let public_key = {
+                    let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+                    match wallet_guard.identity_authentication_ecdsa_public_key(
+                        self.network,
+                        identity_index,
+                        key_index,
+                    ) {
+                        Ok(key) => key,
+                        Err(e) => {
+                            tracing::debug!("Could not derive key at index {}/{}: {}", identity_index, key_index, e);
+                            continue;
+                        }
+                    }
+                };
+
+                let key_hash = public_key.pubkey_hash().into();
+                let query = NonUniquePublicKeyHashQuery {
+                    key_hash,
+                    after: None,
+                };
+
+                match dash_sdk::platform::Identity::fetch(&sdk, query).await {
+                    Ok(Some(identity)) => {
+                        fetched_identity = Some(identity);
+                        matched_key_index = Some(key_index);
+                        break;
+                    }
+                    Ok(None) => continue,
+                    Err(e) => {
+                        tracing::debug!(
+                            "Error querying identity at index {}/{}: {}",
+                            identity_index, key_index, e
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            // If we found an identity, process and store it
+            if let Some(identity) = fetched_identity {
+                let identity_id = identity.id();
+                tracing::info!(
+                    identity_id = %identity_id,
+                    identity_index,
+                    key_index = ?matched_key_index,
+                    "Discovered identity from wallet"
+                );
+
+                // Check if we already have this identity stored
+                let already_exists = {
+                    let wallets = self.wallets.read().map_err(|e| e.to_string())?;
+                    let existing = self.db.get_identity_by_id(
+                        &identity_id,
+                        self,
+                        &wallets,
+                    );
+                    existing.is_ok() && existing.unwrap().is_some()
+                };
+
+                if already_exists {
+                    tracing::info!(
+                        identity_id = %identity_id,
+                        "Identity already loaded, skipping"
+                    );
+                    continue;
+                }
+
+                // Build qualified identity with wallet key derivation paths
+                match self.build_qualified_identity_from_wallet(
+                    &sdk,
+                    identity,
+                    wallet,
+                    identity_index,
+                ).await {
+                    Ok(qualified_identity) => {
+                        // Store the identity
+                        if let Err(e) = self.insert_local_qualified_identity(
+                            &qualified_identity,
+                            &Some((seed_hash, identity_index)),
+                        ) {
+                            tracing::warn!(
+                                identity_id = %identity_id,
+                                error = %e,
+                                "Failed to store discovered identity"
+                            );
+                        } else {
+                            // Add to wallet's identities map
+                            if let Ok(mut wallet_guard) = wallet.write() {
+                                wallet_guard.identities.insert(identity_index, qualified_identity.identity.clone());
+                            }
+                            found_count += 1;
+                            tracing::info!(
+                                identity_id = %identity_id,
+                                "Successfully loaded discovered identity"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            identity_id = %identity_id,
+                            error = %e,
+                            "Failed to build qualified identity"
+                        );
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            seed = %hex::encode(seed_hash),
+            found_count,
+            "Identity discovery complete"
+        );
+
+        Ok(())
+    }
+
+    /// Build a QualifiedIdentity from a fetched Identity with wallet key derivation paths
+    async fn build_qualified_identity_from_wallet(
+        &self,
+        sdk: &dash_sdk::Sdk,
+        identity: dash_sdk::platform::Identity,
+        wallet: &Arc<RwLock<Wallet>>,
+        identity_index: u32,
+    ) -> Result<crate::model::qualified_identity::QualifiedIdentity, String> {
+        use crate::model::qualified_identity::{
+            IdentityType, PrivateKeyTarget, QualifiedIdentity, IdentityStatus,
+        };
+        use crate::model::qualified_identity::encrypted_key_storage::{
+            PrivateKeyData, WalletDerivationPath,
+        };
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::identity::KeyType;
+        use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
+
+        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+
+        // Get the highest key ID in the identity to know how many keys to derive
+        let highest_key_id = identity
+            .public_keys()
+            .keys()
+            .max()
+            .copied()
+            .unwrap_or(0);
+        let derive_up_to = highest_key_id.saturating_add(6); // Add buffer for future keys
+
+        // Derive authentication keys from wallet and build lookup maps
+        let mut public_key_to_index: std::collections::BTreeMap<Vec<u8>, u32> = std::collections::BTreeMap::new();
+        let mut public_key_hash_to_index: std::collections::BTreeMap<[u8; 20], u32> = std::collections::BTreeMap::new();
+
+        {
+            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            for key_index in 0..=derive_up_to {
+                if let Ok(public_key) = wallet_guard.identity_authentication_ecdsa_public_key(
+                    self.network,
+                    identity_index,
+                    key_index,
+                ) {
+                    public_key_to_index.insert(public_key.to_bytes().to_vec(), key_index);
+                    public_key_hash_to_index.insert(public_key.pubkey_hash().into(), key_index);
+                }
+            }
+        }
+
+        // Match identity keys with wallet derivation paths
+        let private_keys_map: std::collections::BTreeMap<_, _> = identity
+            .public_keys()
+            .iter()
+            .filter_map(|(key_id, identity_key)| {
+                // Try to match by full public key or by hash
+                let matched_index = match identity_key.key_type() {
+                    KeyType::ECDSA_SECP256K1 => {
+                        public_key_to_index.get(identity_key.data().as_slice()).copied()
+                    }
+                    KeyType::ECDSA_HASH160 => {
+                        let hash: [u8; 20] = identity_key.data().as_slice().try_into().ok()?;
+                        public_key_hash_to_index.get(&hash).copied()
+                    }
+                    _ => None,
+                }?;
+
+                let derivation_path = DerivationPath::identity_authentication_path(
+                    self.network,
+                    KeyDerivationType::ECDSA,
+                    identity_index,
+                    matched_index,
+                );
+
+                let wallet_derivation_path = WalletDerivationPath {
+                    wallet_seed_hash: seed_hash,
+                    derivation_path,
+                };
+
+                Some((
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, *key_id),
+                    (
+                        QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                            identity_key.clone(),
+                            Some(wallet_derivation_path.clone()),
+                        ),
+                        PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
+                    ),
+                ))
+            })
+            .collect();
+
+        // Fetch DPNS names for this identity
+        let dpns_names = {
+            use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
+            use dash_sdk::drive::query::{WhereClause, WhereOperator};
+            use dash_sdk::dpp::platform_value::Value;
+            use dash_sdk::dpp::document::DocumentV0Getters;
+
+            let query = DocumentQuery {
+                data_contract: self.dpns_contract.clone(),
+                document_type_name: "domain".to_string(),
+                where_clauses: vec![WhereClause {
+                    field: "records.identity".to_string(),
+                    operator: WhereOperator::Equal,
+                    value: Value::Identifier(identity.id().into()),
+                }],
+                order_by_clauses: vec![],
+                limit: 100,
+                start: None,
+            };
+
+            match Document::fetch_many(sdk, query).await {
+                Ok(document_map) => {
+                    document_map
+                        .values()
+                        .filter_map(|maybe_doc| {
+                            maybe_doc.as_ref().and_then(|doc| {
+                                let name = doc
+                                    .get("label")
+                                    .map(|label| label.to_str().unwrap_or_default());
+                                let acquired_at = doc
+                                    .created_at()
+                                    .into_iter()
+                                    .chain(doc.transferred_at())
+                                    .max();
+
+                                match (name, acquired_at) {
+                                    (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
+                                        name: name.to_string(),
+                                        acquired_at,
+                                    }),
+                                    _ => None,
+                                }
+                            })
+                        })
+                        .collect::<Vec<DPNSNameInfo>>()
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch DPNS names for identity: {}", e);
+                    Vec::new()
+                }
+            }
+        };
+
+        // Build the qualified identity
+        let mut associated_wallets = std::collections::BTreeMap::new();
+        associated_wallets.insert(seed_hash, Arc::clone(wallet));
+
+        Ok(QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: private_keys_map.into(),
+            dpns_names,
+            associated_wallets,
+            wallet_index: Some(identity_index),
+            top_ups: Default::default(),
+            status: IdentityStatus::Unknown,
+            network: self.network,
+        })
+    }
+
     pub fn bootstrap_loaded_wallets(self: &Arc<Self>) {
         let wallets: Vec<_> = {
             let guard = self.wallets.read().unwrap();
@@ -776,6 +1108,162 @@ impl AppContext {
         self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash })
+    }
+
+    /// Fund a platform address directly from wallet UTXOs.
+    /// Creates an asset lock, broadcasts it, waits for confirmation, then funds the destination.
+    pub(crate) async fn fund_platform_address_from_wallet_utxos(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        amount: u64,
+        destination: dash_sdk::dpp::address_funds::PlatformAddress,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::dashcore_rpc::RpcApi;
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use dash_sdk::dpp::prelude::AssetLockProof;
+        use dash_sdk::platform::transition::top_up_address::TopUpAddress;
+        use std::time::Duration;
+
+        // Step 1: Create the asset lock transaction
+        let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+
+            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+
+            // Try to create the asset lock transaction, reload UTXOs if needed
+            match wallet.generic_asset_lock_transaction(
+                self.network,
+                amount,
+                true, // allow_take_fee_from_amount
+                Some(self),
+            ) {
+                Ok((tx, private_key, address, _change, utxos)) => {
+                    (tx, private_key, address, utxos)
+                }
+                Err(_) => {
+                    // Reload UTXOs and try again
+                    wallet
+                        .reload_utxos(
+                            &self
+                                .core_client
+                                .read()
+                                .expect("Core client lock was poisoned"),
+                            self.network,
+                            Some(self),
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                    let (tx, private_key, address, _change, utxos) = wallet
+                        .generic_asset_lock_transaction(
+                            self.network,
+                            amount,
+                            true,
+                            Some(self),
+                        )?;
+                    (tx, private_key, address, utxos)
+                }
+            }
+        };
+
+        let tx_id = asset_lock_transaction.txid();
+
+        // Step 2: Register this transaction as waiting for finality
+        {
+            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            proofs.insert(tx_id, None);
+        }
+
+        // Step 3: Broadcast the transaction
+        self.core_client
+            .read()
+            .expect("Core client lock was poisoned")
+            .send_raw_transaction(&asset_lock_transaction)
+            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
+
+        // Step 4: Remove used UTXOs from wallet
+        {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+
+            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            wallet.utxos.retain(|_, utxo_map| {
+                utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
+                !utxo_map.is_empty()
+            });
+
+            for utxo in used_utxos.keys() {
+                self.db
+                    .drop_utxo(utxo, &self.network.to_string())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Step 5: Wait for asset lock proof (InstantLock or ChainLock)
+        let asset_lock_proof: AssetLockProof;
+        loop {
+            {
+                let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                if let Some(Some(proof)) = proofs.get(&tx_id) {
+                    asset_lock_proof = proof.clone();
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        // Step 6: Clean up the finality tracking
+        {
+            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            proofs.remove(&tx_id);
+        }
+
+        // Step 7: Get wallet and SDK for the platform funding operation
+        let (wallet, sdk) = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+            (wallet, sdk)
+        };
+
+        // Step 8: Fund the destination platform address
+        let mut outputs = std::collections::BTreeMap::new();
+        outputs.insert(destination, None); // None means use all available funds
+
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+
+        outputs
+            .top_up(
+                &sdk,
+                asset_lock_proof,
+                asset_lock_private_key,
+                fee_strategy,
+                &wallet,
+                None,
+            )
+            .await
+            .map_err(|e| format!("Failed to fund platform address: {}", e))?;
+
+        // Step 9: Refresh platform address balances
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
     }
 
     fn register_spv_address(

@@ -76,6 +76,54 @@ impl Wallet {
         )
     }
 
+    /// Create an asset lock transaction with a randomly generated one-time key.
+    /// This is used for generic platform address funding (not identity-specific).
+    #[allow(clippy::type_complexity)]
+    pub fn generic_asset_lock_transaction(
+        &mut self,
+        network: Network,
+        amount: u64,
+        allow_take_fee_from_amount: bool,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<
+        (
+            Transaction,
+            PrivateKey,
+            Address,
+            Option<Address>,
+            BTreeMap<OutPoint, (TxOut, Address)>,
+        ),
+        String,
+    > {
+        use rand::rngs::OsRng;
+
+        // Generate a random private key for the asset lock
+        let secp = Secp256k1::new();
+        let (secret_key, _) = secp.generate_keypair(&mut OsRng);
+        let private_key = PrivateKey::new(secret_key, network);
+        let public_key = private_key.public_key(&secp);
+
+        // The asset lock address is where the proof will be tied to
+        let asset_lock_address = Address::p2pkh(&public_key, network);
+
+        let (tx, returned_private_key, change_address, used_utxos) = self
+            .asset_lock_transaction_from_private_key(
+                network,
+                amount,
+                allow_take_fee_from_amount,
+                private_key,
+                register_addresses,
+            )?;
+
+        Ok((
+            tx,
+            returned_private_key,
+            asset_lock_address,
+            change_address,
+            used_utxos,
+        ))
+    }
+
     #[allow(clippy::type_complexity)]
     fn asset_lock_transaction_from_private_key(
         &mut self,

@@ -1,5 +1,6 @@
 mod add_key_to_identity;
 mod load_identity;
+mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
 mod refresh_identity;
 mod refresh_loaded_identities_dpns_names;
@@ -259,6 +260,8 @@ pub enum IdentityTask {
     #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
+    /// Search for an identity by its DPNS name (without .dash suffix)
+    SearchIdentityByDpnsName(String),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
     /// Top up an identity from Platform addresses
@@ -497,6 +500,9 @@ impl AppContext {
                 self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
                     .await
             }
+            IdentityTask::SearchIdentityByDpnsName(dpns_name) => {
+                self.load_identity_by_dpns_name(sdk, dpns_name).await
+            }
             IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
@@ -591,8 +597,8 @@ impl AppContext {
         let mut updated_identity = qualified_identity.clone();
         updated_identity.identity.set_balance(new_balance);
 
-        // Store the updated identity
-        self.insert_local_qualified_identity(&updated_identity, &None)
+        // Store the updated identity (use update to preserve wallet association)
+        self.update_local_qualified_identity(&updated_identity)
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(updated_identity))
@@ -639,8 +645,8 @@ impl AppContext {
         let mut updated_identity = qualified_identity;
         updated_identity.identity.set_balance(new_balance);
 
-        // Store the updated identity
-        self.insert_local_qualified_identity(&updated_identity, &None)
+        // Store the updated identity (use update to preserve wallet association)
+        self.update_local_qualified_identity(&updated_identity)
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
         Ok(BackendTaskSuccessResult::TransferredCredits)

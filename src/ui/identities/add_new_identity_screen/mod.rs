@@ -55,9 +55,9 @@ impl fmt::Display for FundingMethod {
         let output = match self {
             FundingMethod::NoSelection => "Select funding method",
             FundingMethod::AddressWithQRCode => "Address with QR Code",
-            FundingMethod::UseWalletBalance => "Use Wallet Balance",
-            FundingMethod::UseUnusedAssetLock => "Use Unused Asset Lock (recommended)",
-            FundingMethod::UsePlatformAddress => "Use Platform Address",
+            FundingMethod::UseWalletBalance => "Wallet Balance",
+            FundingMethod::UseUnusedAssetLock => "Unused Asset Lock (recommended)",
+            FundingMethod::UsePlatformAddress => "Platform Address",
         };
         write!(f, "{}", output)
     }
@@ -508,7 +508,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Evo Funding Locks (recommended)",
+                            "Unused Evo Funding Locks (recommended)",
                         )
                         .changed()
                 {
@@ -523,7 +523,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
+                            "Wallet Balance",
                         )
                         .changed()
                 {
@@ -561,7 +561,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Use Platform Address ",
+                            "Platform Address",
                         )
                         .changed()
                 {
@@ -1201,15 +1201,16 @@ impl ScreenLike for AddNewIdentityScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet was unlocked, update dependencies
-                    self.update_wallet(wallet.clone());
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet was unlocked, update dependencies
+                self.update_wallet(wallet.clone());
             }
+        }
 
         action
     }

@@ -43,4 +43,13 @@ pub enum WalletTask {
         /// Core fee per byte
         core_fee_per_byte: u32,
     },
+    /// Fund a platform address directly from wallet UTXOs
+    /// Creates asset lock, broadcasts, waits for proof, then funds platform address
+    FundPlatformAddressFromWalletUtxos {
+        seed_hash: WalletSeedHash,
+        /// Amount in duffs to lock
+        amount: u64,
+        /// Destination platform address to fund
+        destination: PlatformAddress,
+    },
 }

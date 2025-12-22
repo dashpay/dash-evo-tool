@@ -240,7 +240,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Asset Locks",
+                            "Unused Asset Locks",
                         )
                         .changed()
                     {
@@ -254,7 +254,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
+                            "Wallet Balance",
                         )
                         .changed()
                     {
@@ -268,7 +268,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Use Platform Address",
+                            "Platform Address",
                         )
                         .changed()
                     {
@@ -629,14 +629,15 @@ impl ScreenLike for TopUpIdentityScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {

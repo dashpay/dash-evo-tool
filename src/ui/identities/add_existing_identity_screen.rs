@@ -61,6 +61,7 @@ fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
 enum LoadIdentityMode {
     ByIdentityId,
     ByWallet,
+    ByDpnsName,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,6 +99,7 @@ pub struct AddExistingIdentityScreen {
     backend_message: Option<String>,
     wallet_search_mode: WalletIdentitySearchMode,
     success_message: Option<String>,
+    dpns_name_input: String,
 }
 
 impl AddExistingIdentityScreen {
@@ -129,6 +131,7 @@ impl AddExistingIdentityScreen {
             backend_message: None,
             wallet_search_mode: WalletIdentitySearchMode::SpecificIndex,
             success_message: None,
+            dpns_name_input: String::new(),
         }
     }
 
@@ -583,6 +586,55 @@ impl AddExistingIdentityScreen {
         action
     }
 
+    fn render_by_dpns_name(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        ui.label("Enter a DPNS name to look up the associated identity.");
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.label("DPNS Name:");
+            ui.text_edit_singleline(&mut self.dpns_name_input);
+            ui.label(".dash");
+        });
+
+        ui.add_space(5.0);
+        ui.label("Example: Enter \"alice\" to look up \"alice.dash\"");
+        ui.add_space(10.0);
+
+        // Load Identity button
+        let mut new_style = (**ui.style()).clone();
+        new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        ui.set_style(new_style);
+        let button = egui::Button::new(RichText::new("Search by DPNS Name").color(Color32::WHITE))
+            .fill(Color32::from_rgb(0, 128, 255))
+            .frame(true)
+            .corner_radius(3.0);
+
+        let name_trimmed = self.dpns_name_input.trim();
+        let is_valid = !name_trimmed.is_empty() && name_trimmed.len() >= 3;
+
+        if ui.add_enabled(is_valid, button).clicked() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs();
+            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            self.backend_message = None;
+            self.success_message = None;
+
+            action = AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::SearchIdentityByDpnsName(name_trimmed.to_string()),
+            ));
+        }
+
+        if !is_valid && !name_trimmed.is_empty() {
+            ui.colored_label(Color32::GRAY, "Name must be at least 3 characters.");
+        }
+
+        action
+    }
+
     fn load_identity_clicked(&mut self) -> AppAction {
         let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
             self.selected_wallet
@@ -674,6 +726,7 @@ impl AddExistingIdentityScreen {
                 self.payout_address_private_key_input.clear();
                 self.keys_input = vec![String::new(), String::new(), String::new()];
                 self.identity_index_input.clear();
+                self.dpns_name_input.clear();
                 self.error_message = None;
                 self.show_pop_up_info = None;
                 self.add_identity_status = AddIdentityStatus::NotStarted;
@@ -752,6 +805,13 @@ impl ScreenLike for AddExistingIdentityScreen {
                                 "By Wallet",
                             )
                             .changed();
+                        mode_changed |= ui
+                            .selectable_value(
+                                &mut self.mode,
+                                LoadIdentityMode::ByDpnsName,
+                                "By DPNS Name",
+                            )
+                            .changed();
                     });
                     ui.add_space(10.0);
 
@@ -772,6 +832,9 @@ impl ScreenLike for AddExistingIdentityScreen {
                                 wallets.len()
                             };
                             inner_action |= self.render_by_wallet(ui, wallets_len);
+                        }
+                        LoadIdentityMode::ByDpnsName => {
+                            inner_action |= self.render_by_dpns_name(ui);
                         }
                     }
 

@@ -27,6 +27,16 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+/// Check if two networks use the same address format.
+/// Testnet, Devnet, and Regtest all use testnet-style addresses.
+fn networks_address_compatible(a: &Network, b: &Network) -> bool {
+    match (a, b) {
+        (Network::Dash, Network::Dash) => true,
+        (Network::Testnet | Network::Devnet | Network::Regtest, Network::Testnet | Network::Devnet | Network::Regtest) => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum DerivationPathReference {
     Unknown = 0,
@@ -1503,7 +1513,7 @@ impl Wallet {
         subtract_fee_from_amount: bool,
         register_addresses: Option<&AppContext>,
     ) -> Result<Transaction, String> {
-        if recipient.network() != &network {
+        if !networks_address_compatible(recipient.network(), &network) {
             return Err(format!(
                 "Recipient address network ({}) does not match wallet network ({})",
                 recipient.network(),
@@ -1618,7 +1628,7 @@ impl Wallet {
 
         // Validate all recipients are on the correct network
         for (recipient, _) in recipients {
-            if recipient.network() != &network {
+            if !networks_address_compatible(recipient.network(), &network) {
                 return Err(format!(
                     "Recipient address network ({}) does not match wallet network ({})",
                     recipient.network(),
@@ -1812,12 +1822,40 @@ impl Wallet {
     }
 
     /// Update Platform address info (balance and nonce)
+    ///
+    /// This method handles the case where the same platform address may be represented
+    /// by different Address objects. It normalizes by comparing PlatformAddress bytes
+    /// and removes any duplicate entries before inserting.
     pub fn set_platform_address_info(
         &mut self,
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
     ) {
+        // Convert the incoming address to PlatformAddress for canonical comparison
+        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
+            let canonical_bytes = platform_addr.to_bytes();
+
+            // Find and remove any existing entry that represents the same platform address
+            // but might have a different Address representation
+            let keys_to_remove: Vec<Address> = self
+                .platform_address_info
+                .keys()
+                .filter(|existing_addr| {
+                    if let Ok(existing_platform) = PlatformAddress::try_from((*existing_addr).clone()) {
+                        existing_platform.to_bytes() == canonical_bytes && *existing_addr != &address
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect();
+
+            for key in keys_to_remove {
+                self.platform_address_info.remove(&key);
+            }
+        }
+
         self.platform_address_info
             .insert(address, PlatformAddressInfo { balance, nonce });
     }

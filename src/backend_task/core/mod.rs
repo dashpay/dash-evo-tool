@@ -29,6 +29,16 @@ use std::sync::{Arc, RwLock};
 
 const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
 
+/// Check if two networks use the same address format.
+/// Testnet, Devnet, and Regtest all use testnet-style addresses.
+fn networks_address_compatible(a: &Network, b: &Network) -> bool {
+    match (a, b) {
+        (Network::Dash, Network::Dash) => true,
+        (Network::Testnet | Network::Devnet | Network::Regtest, Network::Testnet | Network::Devnet | Network::Regtest) => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CoreTask {
     #[allow(dead_code)] // May be used for getting single chain lock
@@ -386,7 +396,7 @@ impl AppContext {
                 .map_err(|e| format!("Invalid address {}: {e}", recipient.address))?
                 .assume_checked();
 
-            if addr.network() != &self.network {
+            if !networks_address_compatible(addr.network(), &self.network) {
                 return Err(format!(
                     "Recipient address {} uses {} but wallet network is {}",
                     recipient.address,

@@ -375,6 +375,14 @@ impl AppContext {
                 )
                 .await
             }
+            WalletTask::FundPlatformAddressFromWalletUtxos {
+                seed_hash,
+                amount,
+                destination,
+            } => {
+                self.fund_platform_address_from_wallet_utxos(seed_hash, amount, destination)
+                    .await
+            }
         }
     }
 }

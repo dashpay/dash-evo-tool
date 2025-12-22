@@ -51,6 +51,9 @@ pub struct ImportMnemonicScreen {
     // Private key-specific fields
     private_key_input: String,
     parsed_single_key_wallet: Option<SingleKeyWallet>,
+
+    // Identity discovery options
+    identity_scan_count: u32,
 }
 
 impl ImportMnemonicScreen {
@@ -76,6 +79,9 @@ impl ImportMnemonicScreen {
             // Private key-specific fields
             private_key_input: String::new(),
             parsed_single_key_wallet: None,
+
+            // Identity discovery options
+            identity_scan_count: 5,
         }
     }
 
@@ -271,6 +277,12 @@ impl ImportMnemonicScreen {
                 self.app_context.handle_wallet_unlocked(&wallet_arc);
             }
 
+            // Auto-discover identities derived from this wallet
+            if self.identity_scan_count > 0 {
+                self.app_context
+                    .queue_wallet_identity_discovery(&wallet_arc, self.identity_scan_count - 1);
+            }
+
             self.wallet_imported = true;
             Ok(AppAction::None) // Show success screen instead of navigating away
         } else {
@@ -333,6 +345,7 @@ impl ImportMnemonicScreen {
             self.estimated_time_to_crack = String::new();
             self.error = None;
             self.wallet_imported = false;
+            self.identity_scan_count = 5;
             return AppAction::None;
         }
 
@@ -536,6 +549,23 @@ impl ScreenLike for ImportMnemonicScreen {
                         ui.separator();
                         ui.add_space(10.0);
                         step += 1;
+
+                        // Identity scan count option (only for mnemonic/HD wallets)
+                        if self.import_type == ImportType::Mnemonic {
+                            ui.heading(format!("{}. Configure identity auto-discovery.", step));
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Identity indices to scan:");
+                                ui.add(egui::DragValue::new(&mut self.identity_scan_count)
+                                    .range(0..=20)
+                                    .speed(0.1));
+                                ui.label("(0 to disable)");
+                            });
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(10.0);
+                            step += 1;
+                        }
                     } else {
                         // Reset to mnemonic when advanced options is hidden
                         self.import_type = ImportType::Mnemonic;

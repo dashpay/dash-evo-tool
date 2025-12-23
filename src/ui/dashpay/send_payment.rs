@@ -452,7 +452,7 @@ impl ScreenLike for SendPaymentScreen {
 
 // Payment History Component (used in main DashPay screen)
 pub struct PaymentHistory {
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     payments: Vec<PaymentRecord>,

@@ -294,6 +294,24 @@ impl KeyStorage {
                         wallet_seed_hash,
                         derivation_path,
                     }) => {
+                        tracing::debug!(
+                            stored_wallet_seed_hash = %hex::encode(wallet_seed_hash),
+                            derivation_path = %derivation_path,
+                            num_wallets = wallets.len(),
+                            "Looking up wallet for key derivation"
+                        );
+
+                        // Log available wallet seed hashes
+                        for wallet in wallets {
+                            if let Ok(wallet_ref) = wallet.read() {
+                                tracing::debug!(
+                                    wallet_seed_hash = %hex::encode(wallet_ref.seed_hash()),
+                                    matches = (wallet_ref.seed_hash() == *wallet_seed_hash),
+                                    "Available wallet"
+                                );
+                            }
+                        }
+
                         let derived_key = Wallet::derive_private_key_in_arc_rw_lock_slice(
                             wallets,
                             *wallet_seed_hash,

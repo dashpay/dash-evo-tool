@@ -191,6 +191,187 @@ impl TransactionType {
     }
 }
 
+/// Key chooser that filters keys based on transaction type and dev mode.
+/// Use this when you already have a specific identity and just need to select a key.
+pub fn add_key_chooser(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+) -> AppAction {
+    add_key_chooser_with_doc_type(ui, app_context, identity, selected_key, transaction_type, None)
+}
+
+/// Key chooser that filters keys based on transaction type, document type and dev mode.
+/// Use this when you already have a specific identity and just need to select a key.
+pub fn add_key_chooser_with_doc_type(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    document_type: Option<&DocumentType>,
+) -> AppAction {
+    let is_dev_mode = app_context.is_developer_mode();
+    let mut action = AppAction::None;
+
+    let allowed_purposes = transaction_type.allowed_purposes();
+    let allowed_security_levels: Vec<SecurityLevel> = match (transaction_type, document_type) {
+        (TransactionType::DocumentAction, Some(doc_type)) => {
+            let required_level = doc_type.security_level_requirement();
+            let allowed_levels = SecurityLevel::CRITICAL as u8..=required_level as u8;
+            [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]
+                .into_iter()
+                .filter(|level| allowed_levels.contains(&(*level as u8)))
+                .collect()
+        }
+        _ => transaction_type.allowed_security_levels(),
+    };
+
+    // Check for keys with private keys loaded
+    let has_suitable_keys_with_private = identity
+        .private_keys
+        .identity_public_keys()
+        .iter()
+        .any(|key_ref| {
+            let key = &key_ref.1.identity_public_key;
+            let basic_ok = allowed_purposes.contains(&key.purpose())
+                && allowed_security_levels.contains(&key.security_level());
+
+            if transaction_type == TransactionType::ContactRequest {
+                basic_ok && key.key_type() == KeyType::ECDSA_SECP256K1
+            } else {
+                basic_ok
+            }
+        });
+
+    // Check if there are eligible public keys without private keys
+    let has_eligible_public_keys_without_private = identity
+        .identity
+        .public_keys()
+        .iter()
+        .any(|(_, pub_key)| {
+            let basic_ok = allowed_purposes.contains(&pub_key.purpose())
+                && allowed_security_levels.contains(&pub_key.security_level());
+
+            let type_ok = if transaction_type == TransactionType::ContactRequest {
+                pub_key.key_type() == KeyType::ECDSA_SECP256K1
+            } else {
+                true
+            };
+
+            let has_private = identity
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
+
+            basic_ok && type_ok && !has_private
+        });
+
+    if !is_dev_mode && !has_suitable_keys_with_private {
+        // Show message and buttons when no suitable keys
+        ui.group(|ui| {
+            ui.set_min_width(220.0);
+            ui.vertical(|ui| {
+                ui.label("No eligible key. This transaction type requires:");
+                if transaction_type == TransactionType::ContactRequest {
+                    ui.label("ECDSA secp256k1 key");
+                } else {
+                    ui.label(format!("{} key", transaction_type.label()));
+                }
+
+                if has_eligible_public_keys_without_private {
+                    ui.label(
+                        "This Identity has an eligible public key but the private key isn't loaded.",
+                    );
+                }
+
+                ui.add_space(5.0);
+
+                if ui.button("Add New Key to Identity").clicked() {
+                    action = AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                        identity.clone(),
+                        app_context,
+                    )));
+                }
+            });
+        });
+    } else {
+        // Show key combo box
+        ui.horizontal(|ui| {
+            ui.label("Key:");
+            ComboBox::from_id_salt("key_chooser_combo")
+                .width(300.0)
+                .selected_text(
+                    selected_key
+                        .as_ref()
+                        .map(|k| {
+                            format!(
+                                "Key {} | {} | {} | {}",
+                                k.id(),
+                                k.purpose(),
+                                k.security_level(),
+                                k.key_type()
+                            )
+                        })
+                        .unwrap_or_else(|| "Select Key...".into()),
+                )
+                .show_ui(ui, |kui| {
+                    for key_ref in identity.private_keys.identity_public_keys() {
+                        let key = &key_ref.1.identity_public_key;
+
+                        let is_allowed = if is_dev_mode {
+                            true
+                        } else {
+                            let basic_requirements = allowed_purposes.contains(&key.purpose())
+                                && allowed_security_levels.contains(&key.security_level());
+
+                            if transaction_type == TransactionType::ContactRequest {
+                                basic_requirements && key.key_type() == KeyType::ECDSA_SECP256K1
+                            } else {
+                                basic_requirements
+                            }
+                        };
+
+                        if is_allowed {
+                            let label = if is_dev_mode
+                                && (!allowed_purposes.contains(&key.purpose())
+                                    || !allowed_security_levels.contains(&key.security_level()))
+                            {
+                                format!(
+                                    "Key {} | {} | {} | {} [DEV]",
+                                    key.id(),
+                                    key.purpose(),
+                                    key.security_level(),
+                                    key.key_type()
+                                )
+                            } else {
+                                format!(
+                                    "Key {} | {} | {} | {}",
+                                    key.id(),
+                                    key.purpose(),
+                                    key.security_level(),
+                                    key.key_type()
+                                )
+                            };
+
+                            if kui
+                                .selectable_label(selected_key.as_ref() == Some(key), label)
+                                .clicked()
+                            {
+                                *selected_key = Some(key.clone());
+                            }
+                        }
+                    }
+                });
+        });
+    }
+
+    action
+}
+
 /// Identity key chooser that filters keys based on transaction type and dev mode
 pub fn add_identity_key_chooser<'a, T>(
     ui: &mut Ui,

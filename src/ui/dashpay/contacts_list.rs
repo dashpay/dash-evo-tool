@@ -5,6 +5,7 @@ use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::dashpay::contact_requests::ContactRequests;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -45,8 +46,15 @@ pub enum SortOrder {
     AccountRef, // Sort by account reference number
 }
 
+/// Tab for the combined Contacts screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactsTab {
+    Contacts,
+    Requests,
+}
+
 pub struct ContactsList {
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     contacts: BTreeMap<Identifier, Contact>,
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
@@ -59,6 +67,10 @@ pub struct ContactsList {
     sort_order: SortOrder,
     avatar_textures: BTreeMap<String, TextureHandle>, // Cache for avatar textures by URL
     avatars_loading: HashSet<String>,                 // Track which avatars are being loaded
+    /// Current active tab
+    active_tab: ContactsTab,
+    /// Embedded contact requests component
+    pub contact_requests: ContactRequests,
 }
 
 impl ContactsList {
@@ -77,6 +89,8 @@ impl ContactsList {
             sort_order: SortOrder::Name,
             avatar_textures: BTreeMap::new(),
             avatars_loading: HashSet::new(),
+            active_tab: ContactsTab::Contacts,
+            contact_requests: ContactRequests::new(app_context.clone()),
         };
 
         // Auto-select first identity on creation if available
@@ -172,6 +186,15 @@ impl ContactsList {
         self.trigger_fetch_contacts()
     }
 
+    pub fn trigger_fetch_requests(&mut self) -> AppAction {
+        self.contact_requests.trigger_fetch_requests()
+    }
+
+    /// Set the active tab
+    pub fn set_active_tab(&mut self, tab: ContactsTab) {
+        self.active_tab = tab;
+    }
+
     pub fn refresh(&mut self) -> AppAction {
         // Don't clear contacts - preserve loaded state
         // Only clear temporary states
@@ -191,6 +214,9 @@ impl ContactsList {
         if self.selected_identity.is_some() && self.contacts.is_empty() {
             self.load_contacts_from_database();
         }
+
+        // Also refresh contact requests
+        let _ = self.contact_requests.refresh();
 
         AppAction::None
     }
@@ -240,6 +266,7 @@ impl ContactsList {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         // Identity selector
         let identities = self
@@ -249,7 +276,7 @@ impl ContactsList {
 
         // Header section with identity selector on the right
         ui.horizontal(|ui| {
-            ui.heading("My Contacts");
+            ui.heading("Contacts");
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -275,6 +302,10 @@ impl ContactsList {
 
                         // Load contacts from database for the newly selected identity
                         self.load_contacts_from_database();
+
+                        // Sync selected identity to contact_requests
+                        self.contact_requests
+                            .set_selected_identity(self.selected_identity.clone());
                     }
                 });
             }
@@ -282,11 +313,80 @@ impl ContactsList {
 
         ui.separator();
 
+        // Tab bar
+        ui.horizontal(|ui| {
+            let contacts_tab = egui::Button::new(
+                RichText::new("My Contacts").color(if self.active_tab == ContactsTab::Contacts {
+                    DashColors::WHITE
+                } else {
+                    DashColors::text_primary(dark_mode)
+                }),
+            )
+            .fill(if self.active_tab == ContactsTab::Contacts {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::glass_white(dark_mode)
+            })
+            .stroke(if self.active_tab == ContactsTab::Contacts {
+                egui::Stroke::NONE
+            } else {
+                egui::Stroke::new(1.0, DashColors::border(dark_mode))
+            })
+            .corner_radius(egui::CornerRadius::same(4))
+            .min_size(egui::Vec2::new(120.0, 28.0));
+
+            if ui.add(contacts_tab).clicked() {
+                self.active_tab = ContactsTab::Contacts;
+            }
+
+            ui.add_space(8.0);
+
+            // Get pending request count for badge
+            let pending_count = self.contact_requests.pending_incoming_count();
+            let requests_label = if pending_count > 0 {
+                format!("Requests ({})", pending_count)
+            } else {
+                "Requests".to_string()
+            };
+
+            let requests_tab = egui::Button::new(
+                RichText::new(requests_label).color(if self.active_tab == ContactsTab::Requests {
+                    DashColors::WHITE
+                } else {
+                    DashColors::text_primary(dark_mode)
+                }),
+            )
+            .fill(if self.active_tab == ContactsTab::Requests {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::glass_white(dark_mode)
+            })
+            .stroke(if self.active_tab == ContactsTab::Requests {
+                egui::Stroke::NONE
+            } else {
+                egui::Stroke::new(1.0, DashColors::border(dark_mode))
+            })
+            .corner_radius(egui::CornerRadius::same(4))
+            .min_size(egui::Vec2::new(120.0, 28.0));
+
+            if ui.add(requests_tab).clicked() {
+                self.active_tab = ContactsTab::Requests;
+            }
+        });
+
+        ui.add_space(8.0);
+
         if identities.is_empty() {
             ui.colored_label(
                 egui::Color32::from_rgb(200, 150, 50),
                 "No identities loaded. Please load or create an identity first.",
             );
+        } else if self.active_tab == ContactsTab::Requests {
+            // Sync identity before rendering (in case it wasn't synced yet)
+            self.contact_requests
+                .set_selected_identity(self.selected_identity.clone());
+            // Render the contact requests tab without its own header
+            action |= self.contact_requests.render_embedded(ui);
         } else {
             // Only show search/filter/sort controls if there are contacts
             if !self.contacts.is_empty() {
@@ -539,7 +639,7 @@ impl ContactsList {
         });
 
         // Contacts list
-        ScrollArea::vertical().show(ui, |ui| {
+        ScrollArea::vertical().id_salt("contacts_list_scroll").show(ui, |ui| {
             if self.contacts.is_empty() {
                 if self.has_loaded {
                     ui.label("No contacts found");

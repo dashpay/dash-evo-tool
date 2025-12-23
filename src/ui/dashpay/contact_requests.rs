@@ -39,7 +39,7 @@ enum RequestTab {
 }
 
 pub struct ContactRequests {
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     incoming_requests: BTreeMap<Identifier, ContactRequest>,
     outgoing_requests: BTreeMap<Identifier, ContactRequest>,
     accepted_requests: HashSet<Identifier>,
@@ -97,6 +97,47 @@ impl ContactRequests {
         }
 
         new_self
+    }
+
+    /// Set the selected identity from an external source (e.g., when embedded in ContactsList)
+    pub fn set_selected_identity(&mut self, identity: Option<QualifiedIdentity>) {
+        let identity_changed = match (&self.selected_identity, &identity) {
+            (Some(current), Some(new)) => current.identity.id() != new.identity.id(),
+            (None, Some(_)) | (Some(_), None) => true,
+            (None, None) => false,
+        };
+
+        if identity_changed {
+            self.selected_identity = identity.clone();
+            if let Some(id) = &identity {
+                self.selected_identity_string = id
+                    .identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+                // Update wallet for the newly selected identity
+                let mut error_message = None;
+                self.selected_wallet =
+                    get_selected_wallet(id, Some(&self.app_context), None, &mut error_message);
+            } else {
+                self.selected_identity_string.clear();
+                self.selected_wallet = None;
+            }
+
+            // Clear the requests when identity changes
+            self.incoming_requests.clear();
+            self.outgoing_requests.clear();
+            self.message = None;
+            self.has_fetched_requests = false;
+
+            // Load requests from database for the newly selected identity
+            self.load_requests_from_database();
+        }
+    }
+
+    /// Render without the header and identity selector (for use when embedded in another component)
+    pub fn render_embedded(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_content(ui, false)
     }
 
     fn load_requests_from_database(&mut self) {
@@ -174,6 +215,16 @@ impl ContactRequests {
         AppAction::None
     }
 
+    /// Returns the count of pending incoming requests (not yet accepted or rejected)
+    pub fn pending_incoming_count(&self) -> usize {
+        self.incoming_requests
+            .keys()
+            .filter(|id| {
+                !self.accepted_requests.contains(*id) && !self.rejected_requests.contains(*id)
+            })
+            .count()
+    }
+
     pub fn fetch_all_requests(&mut self) -> AppAction {
         self.trigger_fetch_requests()
     }
@@ -205,6 +256,10 @@ impl ContactRequests {
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_content(ui, true)
+    }
+
+    fn render_content(&mut self, ui: &mut Ui, show_header: bool) -> AppAction {
         let mut action = AppAction::None;
 
         // Handle accept confirmation dialog
@@ -266,58 +321,60 @@ impl ContactRequests {
             .load_local_qualified_identities()
             .unwrap_or_default();
 
-        // Header with identity selector on the right
-        ui.horizontal(|ui| {
-            ui.heading("Contact Requests");
+        // Header with identity selector on the right (only shown when not embedded)
+        if show_header {
+            ui.horizontal(|ui| {
+                ui.heading("Contact Requests");
 
-            if !identities.is_empty() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let response = ui.add(
-                        IdentitySelector::new(
-                            "requests_identity_selector",
-                            &mut self.selected_identity_string,
-                            &identities,
-                        )
-                        .selected_identity(&mut self.selected_identity)
-                        .unwrap()
-                        .width(300.0)
-                        .other_option(false), // Disable "Other" option
-                    );
+                if !identities.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let response = ui.add(
+                            IdentitySelector::new(
+                                "requests_identity_selector",
+                                &mut self.selected_identity_string,
+                                &identities,
+                            )
+                            .selected_identity(&mut self.selected_identity)
+                            .unwrap()
+                            .width(300.0)
+                            .other_option(false), // Disable "Other" option
+                        );
 
-                    if response.changed() {
-                        // Clear the requests when identity changes
-                        self.incoming_requests.clear();
-                        self.outgoing_requests.clear();
-                        self.message = None;
-                        self.has_fetched_requests = false;
+                        if response.changed() {
+                            // Clear the requests when identity changes
+                            self.incoming_requests.clear();
+                            self.outgoing_requests.clear();
+                            self.message = None;
+                            self.has_fetched_requests = false;
 
-                        // Update wallet for the newly selected identity
-                        if let Some(identity) = &self.selected_identity {
-                            let mut error_message = None;
-                            self.selected_wallet = get_selected_wallet(
-                                identity,
-                                Some(&self.app_context),
-                                None,
-                                &mut error_message,
-                            );
-                        } else {
-                            self.selected_wallet = None;
+                            // Update wallet for the newly selected identity
+                            if let Some(identity) = &self.selected_identity {
+                                let mut error_message = None;
+                                self.selected_wallet = get_selected_wallet(
+                                    identity,
+                                    Some(&self.app_context),
+                                    None,
+                                    &mut error_message,
+                                );
+                            } else {
+                                self.selected_wallet = None;
+                            }
+
+                            // Load requests from database for the newly selected identity
+                            self.load_requests_from_database();
                         }
+                    });
+                }
+            });
 
-                        // Load requests from database for the newly selected identity
-                        self.load_requests_from_database();
-                    }
-                });
+            ui.separator();
+
+            if identities.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 150, 50),
+                    "No identities loaded. Please load or create an identity first.",
+                );
             }
-        });
-
-        ui.separator();
-
-        if identities.is_empty() {
-            ui.colored_label(
-                egui::Color32::from_rgb(200, 150, 50),
-                "No identities loaded. Please load or create an identity first.",
-            );
         }
 
         // Show error message if any
@@ -378,7 +435,7 @@ impl ContactRequests {
                         }
                     });
                 } else {
-                    ScrollArea::vertical().show(ui, |ui| {
+                    ScrollArea::vertical().id_salt("incoming_requests_scroll").show(ui, |ui| {
                     if !self.has_fetched_requests {
                         ui.label("No contact requests loaded");
                     } else if self.incoming_requests.is_empty() {
@@ -540,7 +597,7 @@ impl ContactRequests {
                         }
                     });
                 } else {
-                    ScrollArea::vertical().show(ui, |ui| {
+                    ScrollArea::vertical().id_salt("outgoing_requests_scroll").show(ui, |ui| {
                     if !self.has_fetched_requests {
                         ui.label("No contact requests loaded");
                     } else if self.outgoing_requests.is_empty() {

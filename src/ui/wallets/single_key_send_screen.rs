@@ -371,16 +371,6 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                     });
-
-                    if !wallet.is_open() {
-                        ui.add_space(5.0);
-                        ui.label(
-                            RichText::new("Wallet is locked. Unlock below to send.")
-                                .color(DashColors::text_secondary(dark_mode))
-                                .italics()
-                                .size(12.0),
-                        );
-                    }
                 });
         }
     }
@@ -422,18 +412,19 @@ impl SingleKeyWalletSendScreen {
                     ui.add_space(10.0);
 
                     if ui.button("Unlock").clicked()
-                        && let Some(wallet) = &self.selected_wallet {
-                            let mut wallet_guard = wallet.write().unwrap();
-                            match wallet_guard.open(&self.wallet_password) {
-                                Ok(_) => {
-                                    self.error_message = None;
-                                    self.wallet_password.clear();
-                                }
-                                Err(e) => {
-                                    self.error_message = Some(format!("Failed to unlock: {}", e));
-                                }
+                        && let Some(wallet) = &self.selected_wallet
+                    {
+                        let mut wallet_guard = wallet.write().unwrap();
+                        match wallet_guard.open(&self.wallet_password) {
+                            Ok(_) => {
+                                self.error_message = None;
+                                self.wallet_password.clear();
+                            }
+                            Err(e) => {
+                                self.error_message = Some(format!("Failed to unlock: {}", e));
                             }
                         }
+                    }
                 });
 
                 if let Some(error) = &self.error_message {

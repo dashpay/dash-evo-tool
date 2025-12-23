@@ -110,7 +110,6 @@ pub enum RootScreenType {
     RootScreenToolsContractVisualizerScreen,
     RootScreenToolsPlatformInfoScreen,
     RootScreenDashPayContacts,
-    RootScreenDashPayRequests,
     RootScreenDashPayProfile,
     RootScreenDashPayPayments,
     RootScreenDashPayProfileSearch,
@@ -142,7 +141,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsContractVisualizerScreen => 16,
             RootScreenType::RootScreenToolsPlatformInfoScreen => 17,
             RootScreenType::RootScreenDashPayContacts => 18,
-            RootScreenType::RootScreenDashPayRequests => 19,
+            // 19 used to be RootScreenDashPayRequests (now consolidated into Contacts)
             RootScreenType::RootScreenDashPayProfile => 20,
             RootScreenType::RootScreenDashPayPayments => 21,
             RootScreenType::RootScreenDashPayProfileSearch => 22,
@@ -175,7 +174,7 @@ impl RootScreenType {
             16 => Some(RootScreenType::RootScreenToolsContractVisualizerScreen),
             17 => Some(RootScreenType::RootScreenToolsPlatformInfoScreen),
             18 => Some(RootScreenType::RootScreenDashPayContacts),
-            19 => Some(RootScreenType::RootScreenDashPayRequests),
+            // 19 used to be RootScreenDashPayRequests (now consolidated into Contacts)
             20 => Some(RootScreenType::RootScreenDashPayProfile),
             21 => Some(RootScreenType::RootScreenDashPayPayments),
             22 => Some(RootScreenType::RootScreenDashPayProfileSearch),
@@ -218,7 +217,6 @@ impl From<RootScreenType> for ScreenType {
             }
             RootScreenType::RootScreenToolsPlatformInfoScreen => ScreenType::PlatformInfo,
             RootScreenType::RootScreenDashPayContacts => ScreenType::DashPayContacts,
-            RootScreenType::RootScreenDashPayRequests => ScreenType::DashPayRequests,
             RootScreenType::RootScreenDashPayProfile => ScreenType::DashPayProfile,
             RootScreenType::RootScreenDashPayPayments => ScreenType::DashPayPayments,
             RootScreenType::RootScreenDashPayProfileSearch => ScreenType::DashPayProfileSearch,
@@ -299,7 +297,6 @@ pub enum ScreenType {
 
     // DashPay Screens
     DashPayContacts,
-    DashPayRequests,
     DashPayProfile,
     DashPayPayments,
     DashPayAddContact,
@@ -386,7 +383,6 @@ impl PartialEq for ScreenType {
             (ScreenType::SetTokenPriceScreen(a), ScreenType::SetTokenPriceScreen(b)) => a == b,
             // DashPay Screens
             (ScreenType::DashPayContacts, ScreenType::DashPayContacts) => true,
-            (ScreenType::DashPayRequests, ScreenType::DashPayRequests) => true,
             (ScreenType::DashPayProfile, ScreenType::DashPayProfile) => true,
             (ScreenType::DashPayPayments, ScreenType::DashPayPayments) => true,
             (ScreenType::DashPayAddContact, ScreenType::DashPayAddContact) => true,
@@ -613,9 +609,6 @@ impl ScreenType {
             ScreenType::DashPayContacts => {
                 Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Contacts))
             }
-            ScreenType::DashPayRequests => {
-                Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Requests))
-            }
             ScreenType::DashPayProfile => {
                 Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Profile))
             }
@@ -795,7 +788,13 @@ impl Screen {
             Screen::SetTokenPriceScreen(screen) => screen.app_context = app_context,
 
             // DashPay Screens
-            Screen::DashPayScreen(screen) => screen.app_context = app_context,
+            Screen::DashPayScreen(screen) => {
+                screen.app_context = app_context.clone();
+                screen.contacts_list.app_context = app_context.clone();
+                screen.contacts_list.contact_requests.app_context = app_context.clone();
+                screen.profile_screen.app_context = app_context.clone();
+                screen.payment_history.app_context = app_context;
+            }
             Screen::DashPayAddContactScreen(screen) => screen.app_context = app_context,
             Screen::DashPayContactDetailsScreen(screen) => screen.app_context = app_context,
             Screen::DashPayContactProfileViewerScreen(screen) => screen.app_context = app_context,
@@ -976,7 +975,6 @@ impl Screen {
             // DashPay Screens
             Screen::DashPayScreen(screen) => match screen.dashpay_subscreen {
                 DashPaySubscreen::Contacts => ScreenType::DashPayContacts,
-                DashPaySubscreen::Requests => ScreenType::DashPayRequests,
                 DashPaySubscreen::Profile => ScreenType::DashPayProfile,
                 DashPaySubscreen::Payments => ScreenType::DashPayPayments,
                 DashPaySubscreen::ProfileSearch => ScreenType::DashPayProfileSearch,

@@ -2965,6 +2965,16 @@ impl ScreenLike for TokensScreen {
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::FetchedTokenBalances => {
+                // Refresh my_tokens to show updated balances
+                self.my_tokens = my_tokens(
+                    &self.app_context,
+                    &self.identities,
+                    &self.all_known_tokens,
+                    &self.token_pricing_data,
+                );
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
             _ => {}
         }
     }

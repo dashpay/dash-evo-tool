@@ -9,7 +9,6 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use egui::{Context, Ui};
 use std::sync::Arc;
 
-use super::contact_requests::ContactRequests;
 use super::contacts_list::ContactsList;
 use super::profile_screen::ProfileScreen;
 use super::send_payment::PaymentHistory;
@@ -17,7 +16,6 @@ use super::send_payment::PaymentHistory;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashPaySubscreen {
     Contacts,
-    Requests,
     Profile,
     Payments,
     ProfileSearch,
@@ -26,10 +24,9 @@ pub enum DashPaySubscreen {
 pub struct DashPayScreen {
     pub app_context: Arc<AppContext>,
     pub dashpay_subscreen: DashPaySubscreen,
-    contacts_list: ContactsList,
-    contact_requests: ContactRequests,
-    profile_screen: ProfileScreen,
-    payment_history: PaymentHistory,
+    pub contacts_list: ContactsList,
+    pub profile_screen: ProfileScreen,
+    pub payment_history: PaymentHistory,
 }
 
 impl DashPayScreen {
@@ -38,7 +35,6 @@ impl DashPayScreen {
             app_context: app_context.clone(),
             dashpay_subscreen,
             contacts_list: ContactsList::new(app_context.clone()),
-            contact_requests: ContactRequests::new(app_context.clone()),
             profile_screen: ProfileScreen::new(app_context.clone()),
             payment_history: PaymentHistory::new(app_context.clone()),
         }
@@ -47,7 +43,6 @@ impl DashPayScreen {
     fn render_subscreen(&mut self, ui: &mut Ui) -> AppAction {
         match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => self.contacts_list.render(ui),
-            DashPaySubscreen::Requests => self.contact_requests.render(ui),
             DashPaySubscreen::Profile => self.profile_screen.render(ui),
             DashPaySubscreen::Payments => self.payment_history.render(ui),
             DashPaySubscreen::ProfileSearch => {
@@ -64,10 +59,7 @@ impl ScreenLike for DashPayScreen {
         match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => {
                 self.contacts_list.refresh();
-            } // Ignore return value for now
-            DashPaySubscreen::Requests => {
-                self.contact_requests.refresh();
-            } // Ignore return value for now
+            }
             DashPaySubscreen::Profile => self.profile_screen.refresh(),
             DashPaySubscreen::Payments => self.payment_history.refresh(),
             DashPaySubscreen::ProfileSearch => {
@@ -87,8 +79,8 @@ impl ScreenLike for DashPayScreen {
         let right_buttons = match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => vec![
                 (
-                    "Refresh Contacts",
-                    DesiredAppAction::Custom("fetch_contacts".to_string()),
+                    "Refresh",
+                    DesiredAppAction::Custom("fetch_contacts_and_requests".to_string()),
                 ),
                 (
                     "Send Contact Request",
@@ -103,10 +95,6 @@ impl ScreenLike for DashPayScreen {
                     )),
                 ),
             ],
-            DashPaySubscreen::Requests => vec![(
-                "Refresh Contacts",
-                DesiredAppAction::Custom("fetch_requests".to_string()),
-            )],
             DashPaySubscreen::Profile => vec![(
                 "Refresh Profiles",
                 DesiredAppAction::Custom("load_profile".to_string()),
@@ -138,11 +126,16 @@ impl ScreenLike for DashPayScreen {
         // Handle custom actions from top panel buttons
         if let AppAction::Custom(command) = &action {
             match command.as_str() {
-                "fetch_contacts" => {
-                    action = self.contacts_list.trigger_fetch_contacts();
-                }
-                "fetch_requests" => {
-                    action = self.contact_requests.trigger_fetch_requests();
+                "fetch_contacts_and_requests" => {
+                    // Fetch both contacts and requests
+                    let contacts_action = self.contacts_list.trigger_fetch_contacts();
+                    let requests_action = self.contacts_list.trigger_fetch_requests();
+                    // Return the first non-none action (or combine them if needed)
+                    action = if contacts_action != AppAction::None {
+                        contacts_action
+                    } else {
+                        requests_action
+                    };
                 }
                 "load_profile" => {
                     action = self.profile_screen.trigger_load_profile();
@@ -160,9 +153,6 @@ impl ScreenLike for DashPayScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => self.contacts_list.display_message(message, message_type),
-            DashPaySubscreen::Requests => {
-                self.contact_requests.display_message(message, message_type)
-            }
             DashPaySubscreen::Profile => self.profile_screen.display_message(message, message_type),
             DashPaySubscreen::Payments => {
                 self.payment_history.display_message(message, message_type)
@@ -175,9 +165,14 @@ impl ScreenLike for DashPayScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match self.dashpay_subscreen {
-            DashPaySubscreen::Profile => self.profile_screen.display_task_result(result),
-            DashPaySubscreen::Requests => self.contact_requests.display_task_result(result),
-            DashPaySubscreen::Contacts => self.contacts_list.display_task_result(result),
+            DashPaySubscreen::Profile => self.profile_screen.display_task_result(result.clone()),
+            DashPaySubscreen::Contacts => {
+                // Forward to both contacts list and embedded contact requests
+                self.contacts_list.display_task_result(result.clone());
+                self.contacts_list
+                    .contact_requests
+                    .display_task_result(result);
+            }
             DashPaySubscreen::Payments => self.payment_history.display_task_result(result),
             DashPaySubscreen::ProfileSearch => {
                 // ProfileSearch is a separate screen, not embedded here

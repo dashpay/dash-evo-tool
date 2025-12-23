@@ -363,6 +363,45 @@ impl Database {
         Ok(result.unwrap_or(true)) // Default to true
     }
 
+    /// Adds the close_dash_qt_on_exit column to the settings table.
+    pub fn add_close_dash_qt_on_exit_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        let column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='close_dash_qt_on_exit'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !column_exists {
+            // Default to true - close Dash-Qt on exit by default
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN close_dash_qt_on_exit INTEGER DEFAULT 1;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Updates the close_dash_qt_on_exit flag in the settings table.
+    pub fn update_close_dash_qt_on_exit(&self, close_on_exit: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET close_dash_qt_on_exit = ? WHERE id = 1",
+            rusqlite::params![close_on_exit],
+        )?;
+        Ok(())
+    }
+
+    /// Gets the close_dash_qt_on_exit flag from the settings table.
+    pub fn get_close_dash_qt_on_exit(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<bool> = conn.query_row(
+            "SELECT close_dash_qt_on_exit FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result.unwrap_or(true)) // Default to true
+    }
+
     /// Ensures all required columns exist in the settings table.
     /// This handles the case where an old database has a settings table with missing columns.
     pub fn ensure_settings_columns_exist(&self, conn: &Connection) -> Result<()> {
@@ -373,6 +412,7 @@ impl Database {
         self.add_onboarding_columns(conn)?;
         self.add_use_local_spv_node_column(conn)?;
         self.add_auto_start_spv_column(conn)?;
+        self.add_close_dash_qt_on_exit_column(conn)?;
 
         // Ensure database_version column exists
         let version_column_exists: bool = conn.query_row(
@@ -410,12 +450,13 @@ impl Database {
             bool,     // onboarding_completed
             bool,     // show_evonode_tools
             UserMode, // user_mode
+            bool,     // close_dash_qt_on_exit
         )>,
     > {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode, onboarding_completed, show_evonode_tools, user_mode FROM settings WHERE id = 1",
+            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode, onboarding_completed, show_evonode_tools, user_mode, close_dash_qt_on_exit FROM settings WHERE id = 1",
         )?;
 
         let result = stmt.query_row([], |row| {
@@ -432,6 +473,7 @@ impl Database {
             let onboarding_completed: Option<bool> = row.get(10)?;
             let show_evonode_tools: Option<bool> = row.get(11)?;
             let user_mode: Option<String> = row.get(12)?;
+            let close_dash_qt_on_exit: Option<bool> = row.get(13)?;
 
             // Combine the password-related fields if all are present, otherwise set to None
             let password_data = match (password_check, main_password_salt, main_password_nonce) {
@@ -478,6 +520,7 @@ impl Database {
                 onboarding_completed.unwrap_or(false),
                 show_evonode_tools.unwrap_or(false),
                 user_mode,
+                close_dash_qt_on_exit.unwrap_or(true), // Default to true
             ))
         });
 

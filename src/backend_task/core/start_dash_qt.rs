@@ -3,6 +3,7 @@ use crate::context::AppContext;
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::process::{Child, Command};
 
 impl AppContext {
@@ -53,6 +54,7 @@ impl AppContext {
 
         // Spawn a task to wait for the Dash-Qt process to exit
         let cancel = self.subtasks.cancellation_token.clone();
+        let db = Arc::clone(&self.db);
         self.subtasks.spawn_sync(async move {
             let mut dash_qt = command
                 .spawn()
@@ -76,13 +78,18 @@ impl AppContext {
                     };
                 },
                 _ = cancel.cancelled() => {
-                    tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
-                    signal_term(&dash_qt)
-                        .unwrap_or_else(|e| tracing::error!(error=?e, "Failed to send SIGTERM to dash-qt"));
-                    let status = dash_qt.wait().await
-                        .inspect_err(|e| tracing::error!(error=?e, "Failed to wait for dash-qt process to exit"));
-                    tracing::debug!(?status, "dash-qt process stopped gracefully");
-
+                    // Check the setting to determine if we should close Dash-Qt
+                    let should_close = db.get_close_dash_qt_on_exit().unwrap_or(true);
+                    if should_close {
+                        tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
+                        signal_term(&dash_qt)
+                            .unwrap_or_else(|e| tracing::error!(error=?e, "Failed to send SIGTERM to dash-qt"));
+                        let status = dash_qt.wait().await
+                            .inspect_err(|e| tracing::error!(error=?e, "Failed to wait for dash-qt process to exit"));
+                        tracing::debug!(?status, "dash-qt process stopped gracefully");
+                    } else {
+                        tracing::debug!("dash-qt process was cancelled, but close_dash_qt_on_exit is disabled - leaving Dash-Qt running");
+                    }
                 }
             }
         });

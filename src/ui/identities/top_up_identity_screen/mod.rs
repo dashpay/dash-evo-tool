@@ -9,8 +9,11 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -46,6 +49,7 @@ pub struct TopUpIdentityScreen {
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
+    funding_amount_input: Option<AmountInput>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     copied_to_clipboard: Option<Option<String>>,
     error_message: Option<String>,
@@ -68,6 +72,7 @@ impl TopUpIdentityScreen {
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "".to_string(),
             funding_amount_exact: None,
+            funding_amount_input: None,
             funding_utxo: None,
             copied_to_clipboard: None,
             error_message: None,
@@ -171,6 +176,7 @@ impl TopUpIdentityScreen {
             self.funding_address = None;
             self.funding_asset_lock = None;
             self.funding_utxo = None;
+            self.funding_amount_input = None;
             self.copied_to_clipboard = None;
 
             if let Some(method) = step_update_method {
@@ -356,27 +362,37 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount (DASH):");
+        // Get max amount from the selected wallet's balance (in Duffs, convert to Credits)
+        let max_amount_duffs = self
+            .wallet
+            .as_ref()
+            .map(|w| w.read().unwrap().total_balance_duffs())
+            .unwrap_or(0);
+        // Convert Duffs to Credits (1 Duff = 1000 Credits)
+        let max_amount_credits = max_amount_duffs as u64 * 1000;
 
-            // Render the text input field for the funding amount
-            let amount_input = ui
-                .add(egui::TextEdit::singleline(&mut self.funding_amount).desired_width(100.0))
-                .lost_focus();
-
-            self.funding_amount_exact = self.funding_amount.parse::<f64>().ok().map(|f| {
-                (f * 1e8) as u64 // Convert the amount to Duffs
-            });
-
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if amount_input && enter_pressed {
-                // Optional: Validate the input when Enter is pressed
-                if self.funding_amount.parse::<f64>().is_err() {
-                    ui.label("Invalid amount. Please enter a valid number.");
-                }
-            }
+        // Lazy initialization of the AmountInput component
+        let amount_input = self.funding_amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::new_dash(0.0))
+                .with_label("Amount:")
+                .with_max_button(true)
+                .with_max_amount(Some(max_amount_credits))
         });
+
+        // Update max amount in case wallet balance changed
+        amount_input.set_max_amount(Some(max_amount_credits));
+
+        let response = amount_input.show(ui);
+
+        // Update the funding_amount_exact from the parsed amount
+        if let Some(amount) = response.inner.parsed_amount {
+            // Amount.value() returns credits, convert to duffs (divide by 1000)
+            self.funding_amount_exact = Some(amount.value() / 1000);
+            // Keep the string in sync for backward compatibility
+            self.funding_amount = format!("{}", amount.value() as f64 / 100_000_000_000.0);
+        } else {
+            self.funding_amount_exact = None;
+        }
 
         ui.add_space(10.0);
     }
@@ -404,6 +420,7 @@ impl ScreenLike for TopUpIdentityScreen {
             self.funding_utxo = None;
             self.funding_amount.clear();
             self.funding_amount_exact = None;
+            self.funding_amount_input = None;
             self.copied_to_clipboard = None;
             self.error_message = None;
 
@@ -560,23 +577,28 @@ impl ScreenLike for TopUpIdentityScreen {
                     || funding_method == FundingMethod::AddressWithQRCode
                     || funding_method == FundingMethod::UsePlatformAddress
                 {
-                    ui.horizontal(|ui| {
-                        ui.heading(format!(
-                            "{}. Choose the wallet to use to top up this identity.",
-                            step_number
-                        ));
+                    // Check if there's more than one wallet to show selection UI
+                    let wallet_count = self.app_context.wallets.read().unwrap().len();
+
+                    if wallet_count > 1 {
+                        ui.horizontal(|ui| {
+                            ui.heading(format!(
+                                "{}. Choose the wallet to use to top up this identity.",
+                                step_number
+                            ));
+                            ui.add_space(10.0);
+
+                            // Add info icon with hover tooltip and click popup
+                            if crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP)
+                                .clicked()
+                            {
+                                self.show_pop_up_info = Some(WALLET_SELECTION_TOOLTIP.to_string());
+                            }
+                        });
+                        step_number += 1;
+
                         ui.add_space(10.0);
-
-                        // Add info icon with hover tooltip and click popup
-                        if crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP)
-                            .clicked()
-                        {
-                            self.show_pop_up_info = Some(WALLET_SELECTION_TOOLTIP.to_string());
-                        }
-                    });
-                    step_number += 1;
-
-                    ui.add_space(10.0);
+                    }
 
                     self.render_wallet_selection(ui);
 
@@ -602,9 +624,11 @@ impl ScreenLike for TopUpIdentityScreen {
                         }
                     }
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
+                    if wallet_count > 1 {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                    }
                 }
 
                 match funding_method {

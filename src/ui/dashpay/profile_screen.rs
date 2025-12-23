@@ -64,7 +64,7 @@ impl ValidationError {
 }
 
 pub struct ProfileScreen {
-    app_context: Arc<AppContext>,
+    pub app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     profile: Option<DashPayProfile>,

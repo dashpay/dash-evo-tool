@@ -116,7 +116,7 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
-        ("Dashpay", RootScreenType::RootScreenDashpay, "dashpay.png"),
+        ("Dashpay", RootScreenType::RootScreenDashPayProfile, "dashpay.png"),
         (
             "Identities",
             RootScreenType::RootScreenIdentities,
@@ -192,7 +192,49 @@ pub fn add_left_panel(
                                         ui.vertical_centered(|ui| {
                                             for (label, screen_type, icon_path) in buttons.iter() {
                                                 let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
-                                                let is_selected = selected_screen == *screen_type;
+                                                // Check if this button's category is selected
+                                                let is_selected = match *screen_type {
+                                                    // DashPay: check if any DashPay subscreen is selected
+                                                    RootScreenType::RootScreenDashPayProfile => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenDashpay
+                                                            | RootScreenType::RootScreenDashPayProfile
+                                                            | RootScreenType::RootScreenDashPayContacts
+                                                            | RootScreenType::RootScreenDashPayPayments
+                                                            | RootScreenType::RootScreenDashPayProfileSearch
+                                                    ),
+                                                    // Tokens: check if any Tokens subscreen is selected
+                                                    RootScreenType::RootScreenMyTokenBalances => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenMyTokenBalances
+                                                            | RootScreenType::RootScreenTokenSearch
+                                                            | RootScreenType::RootScreenTokenCreator
+                                                    ),
+                                                    // Tools: check if any Tools subscreen is selected
+                                                    RootScreenType::RootScreenToolsPlatformInfoScreen => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenToolsPlatformInfoScreen
+                                                            | RootScreenType::RootScreenToolsProofLogScreen
+                                                            | RootScreenType::RootScreenToolsTransitionVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsDocumentVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsProofVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsMasternodeListDiffScreen
+                                                            | RootScreenType::RootScreenToolsContractVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsGroveSTARKScreen
+                                                            | RootScreenType::RootScreenToolsAddressBalanceScreen
+                                                    ),
+                                                    // Contracts: check if any Contracts/DPNS subscreen is selected
+                                                    RootScreenType::RootScreenDocumentQuery => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenDocumentQuery
+                                                            | RootScreenType::RootScreenDPNSActiveContests
+                                                            | RootScreenType::RootScreenDPNSPastContests
+                                                            | RootScreenType::RootScreenDPNSOwnedNames
+                                                            | RootScreenType::RootScreenDPNSScheduledVotes
+                                                    ),
+                                                    // All other screens: exact match
+                                                    _ => selected_screen == *screen_type,
+                                                };
 
                                                 let button_color = if is_selected {
                                                     Color32::WHITE

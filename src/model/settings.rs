@@ -41,6 +41,8 @@ pub struct Settings {
     pub show_evonode_tools: bool,
     /// User experience mode (Beginner or Advanced)
     pub user_mode: UserMode,
+    /// Whether to automatically close Dash-Qt when DET exits
+    pub close_dash_qt_on_exit: bool,
 }
 
 impl
@@ -56,6 +58,7 @@ impl
         bool,     // onboarding_completed
         bool,     // show_evonode_tools
         UserMode, // user_mode
+        bool,     // close_dash_qt_on_exit
     )> for Settings
 {
     /// Converts a tuple into a Settings instance
@@ -74,6 +77,7 @@ impl
             bool,
             bool,
             UserMode,
+            bool,
         ),
     ) -> Self {
         Self::new(
@@ -88,6 +92,7 @@ impl
             tuple.8,
             tuple.9,
             tuple.10,
+            tuple.11,
         )
     }
 }
@@ -107,6 +112,7 @@ impl Default for Settings {
             false,                // onboarding not completed
             false,                // don't show evonode tools by default
             UserMode::Advanced,   // default to advanced mode
+            true,                 // close Dash-Qt on exit by default
         )
     }
 }
@@ -126,6 +132,7 @@ impl Settings {
         onboarding_completed: bool,
         show_evonode_tools: bool,
         user_mode: UserMode,
+        close_dash_qt_on_exit: bool,
     ) -> Self {
         Self {
             network,
@@ -139,6 +146,7 @@ impl Settings {
             onboarding_completed,
             show_evonode_tools,
             user_mode,
+            close_dash_qt_on_exit,
         }
     }
 }

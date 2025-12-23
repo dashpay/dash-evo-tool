@@ -40,7 +40,6 @@ pub fn add_contracts_subscreen_chooser_panel(ctx: &Context, app_context: &AppCon
             | ui::RootScreenType::RootScreenDPNSScheduledVotes => ContractsSubscreen::DPNS,
             ui::RootScreenType::RootScreenDashpay
             | ui::RootScreenType::RootScreenDashPayContacts
-            | ui::RootScreenType::RootScreenDashPayRequests
             | ui::RootScreenType::RootScreenDashPayProfile
             | ui::RootScreenType::RootScreenDashPayPayments
             | ui::RootScreenType::RootScreenDashPayProfileSearch => ContractsSubscreen::Dashpay,

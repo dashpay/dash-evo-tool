@@ -384,6 +384,8 @@ impl AppContext {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
             self.queue_platform_address_sync(seed_hash);
+            // In RPC mode, also refresh Core UTXOs
+            self.queue_core_wallet_refresh(wallet.clone());
         }
     }
 
@@ -440,6 +442,32 @@ impl AppContext {
                     %error,
                     "Failed to sync Platform address balances"
                 );
+            }
+        });
+    }
+
+    /// Queue a Core wallet UTXO refresh (only effective in RPC mode)
+    fn queue_core_wallet_refresh(self: &Arc<Self>, wallet: Arc<RwLock<Wallet>>) {
+        // Only refresh in RPC mode - SPV mode handles this differently
+        if self.core_backend_mode() != crate::spv::CoreBackendMode::Rpc {
+            return;
+        }
+
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync(async move {
+            // Run the synchronous refresh_wallet_info in a blocking context
+            let result = tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet)).await;
+
+            match result {
+                Ok(Ok(_)) => {
+                    tracing::debug!("Successfully refreshed Core wallet UTXOs on unlock");
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "Failed to refresh Core wallet UTXOs on unlock");
+                }
+                Err(join_error) => {
+                    tracing::warn!(%join_error, "Task panicked while refreshing Core wallet UTXOs");
+                }
             }
         });
     }
@@ -503,7 +531,12 @@ impl AppContext {
                     ) {
                         Ok(key) => key,
                         Err(e) => {
-                            tracing::debug!("Could not derive key at index {}/{}: {}", identity_index, key_index, e);
+                            tracing::debug!(
+                                "Could not derive key at index {}/{}: {}",
+                                identity_index,
+                                key_index,
+                                e
+                            );
                             continue;
                         }
                     }
@@ -525,7 +558,9 @@ impl AppContext {
                     Err(e) => {
                         tracing::debug!(
                             "Error querying identity at index {}/{}: {}",
-                            identity_index, key_index, e
+                            identity_index,
+                            key_index,
+                            e
                         );
                         continue;
                     }
@@ -545,11 +580,7 @@ impl AppContext {
                 // Check if we already have this identity stored
                 let already_exists = {
                     let wallets = self.wallets.read().map_err(|e| e.to_string())?;
-                    let existing = self.db.get_identity_by_id(
-                        &identity_id,
-                        self,
-                        &wallets,
-                    );
+                    let existing = self.db.get_identity_by_id(&identity_id, self, &wallets);
                     existing.is_ok() && existing.unwrap().is_some()
                 };
 
@@ -562,12 +593,10 @@ impl AppContext {
                 }
 
                 // Build qualified identity with wallet key derivation paths
-                match self.build_qualified_identity_from_wallet(
-                    &sdk,
-                    identity,
-                    wallet,
-                    identity_index,
-                ).await {
+                match self
+                    .build_qualified_identity_from_wallet(&sdk, identity, wallet, identity_index)
+                    .await
+                {
                     Ok(qualified_identity) => {
                         // Store the identity
                         if let Err(e) = self.insert_local_qualified_identity(
@@ -582,7 +611,9 @@ impl AppContext {
                         } else {
                             // Add to wallet's identities map
                             if let Ok(mut wallet_guard) = wallet.write() {
-                                wallet_guard.identities.insert(identity_index, qualified_identity.identity.clone());
+                                wallet_guard
+                                    .identities
+                                    .insert(identity_index, qualified_identity.identity.clone());
                             }
                             found_count += 1;
                             tracing::info!(
@@ -619,32 +650,29 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         identity_index: u32,
     ) -> Result<crate::model::qualified_identity::QualifiedIdentity, String> {
-        use crate::model::qualified_identity::{
-            IdentityType, PrivateKeyTarget, QualifiedIdentity, IdentityStatus,
-        };
         use crate::model::qualified_identity::encrypted_key_storage::{
             PrivateKeyData, WalletDerivationPath,
         };
         use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use crate::model::qualified_identity::{
+            IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+        };
+        use dash_sdk::dpp::identity::KeyType;
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-        use dash_sdk::dpp::identity::KeyType;
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 
         let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
 
         // Get the highest key ID in the identity to know how many keys to derive
-        let highest_key_id = identity
-            .public_keys()
-            .keys()
-            .max()
-            .copied()
-            .unwrap_or(0);
+        let highest_key_id = identity.public_keys().keys().max().copied().unwrap_or(0);
         let derive_up_to = highest_key_id.saturating_add(6); // Add buffer for future keys
 
         // Derive authentication keys from wallet and build lookup maps
-        let mut public_key_to_index: std::collections::BTreeMap<Vec<u8>, u32> = std::collections::BTreeMap::new();
-        let mut public_key_hash_to_index: std::collections::BTreeMap<[u8; 20], u32> = std::collections::BTreeMap::new();
+        let mut public_key_to_index: std::collections::BTreeMap<Vec<u8>, u32> =
+            std::collections::BTreeMap::new();
+        let mut public_key_hash_to_index: std::collections::BTreeMap<[u8; 20], u32> =
+            std::collections::BTreeMap::new();
 
         {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
@@ -667,9 +695,9 @@ impl AppContext {
             .filter_map(|(key_id, identity_key)| {
                 // Try to match by full public key or by hash
                 let matched_index = match identity_key.key_type() {
-                    KeyType::ECDSA_SECP256K1 => {
-                        public_key_to_index.get(identity_key.data().as_slice()).copied()
-                    }
+                    KeyType::ECDSA_SECP256K1 => public_key_to_index
+                        .get(identity_key.data().as_slice())
+                        .copied(),
                     KeyType::ECDSA_HASH160 => {
                         let hash: [u8; 20] = identity_key.data().as_slice().try_into().ok()?;
                         public_key_hash_to_index.get(&hash).copied()
@@ -704,10 +732,10 @@ impl AppContext {
 
         // Fetch DPNS names for this identity
         let dpns_names = {
-            use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
-            use dash_sdk::drive::query::{WhereClause, WhereOperator};
-            use dash_sdk::dpp::platform_value::Value;
             use dash_sdk::dpp::document::DocumentV0Getters;
+            use dash_sdk::dpp::platform_value::Value;
+            use dash_sdk::drive::query::{WhereClause, WhereOperator};
+            use dash_sdk::platform::{Document, DocumentQuery, FetchMany};
 
             let query = DocumentQuery {
                 data_contract: self.dpns_contract.clone(),
@@ -723,31 +751,29 @@ impl AppContext {
             };
 
             match Document::fetch_many(sdk, query).await {
-                Ok(document_map) => {
-                    document_map
-                        .values()
-                        .filter_map(|maybe_doc| {
-                            maybe_doc.as_ref().and_then(|doc| {
-                                let name = doc
-                                    .get("label")
-                                    .map(|label| label.to_str().unwrap_or_default());
-                                let acquired_at = doc
-                                    .created_at()
-                                    .into_iter()
-                                    .chain(doc.transferred_at())
-                                    .max();
+                Ok(document_map) => document_map
+                    .values()
+                    .filter_map(|maybe_doc| {
+                        maybe_doc.as_ref().and_then(|doc| {
+                            let name = doc
+                                .get("label")
+                                .map(|label| label.to_str().unwrap_or_default());
+                            let acquired_at = doc
+                                .created_at()
+                                .into_iter()
+                                .chain(doc.transferred_at())
+                                .max();
 
-                                match (name, acquired_at) {
-                                    (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                        name: name.to_string(),
-                                        acquired_at,
-                                    }),
-                                    _ => None,
-                                }
-                            })
+                            match (name, acquired_at) {
+                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
+                                    name: name.to_string(),
+                                    acquired_at,
+                                }),
+                                _ => None,
+                            }
                         })
-                        .collect::<Vec<DPNSNameInfo>>()
-                }
+                    })
+                    .collect::<Vec<DPNSNameInfo>>(),
                 Err(e) => {
                     tracing::warn!("Failed to fetch DPNS names for identity: {}", e);
                     Vec::new()
@@ -854,6 +880,7 @@ impl AppContext {
             let guard = self.sdk.read().map_err(|e| e.to_string())?;
             guard.clone()
         };
+
         let result = sdk
             .sync_address_balances(&mut provider, None)
             .await
@@ -878,10 +905,13 @@ impl AppContext {
                     .get(address)
                     .map(|info| info.nonce)
                     .unwrap_or(0);
-                if let Err(e) =
-                    self.db
-                        .set_platform_address_info(&seed_hash, address, *balance, nonce, &self.network)
-                {
+                if let Err(e) = self.db.set_platform_address_info(
+                    &seed_hash,
+                    address,
+                    *balance,
+                    nonce,
+                    &self.network,
+                ) {
                     tracing::warn!("Failed to persist Platform address info: {}", e);
                 }
             }
@@ -1143,9 +1173,7 @@ impl AppContext {
                 true, // allow_take_fee_from_amount
                 Some(self),
             ) {
-                Ok((tx, private_key, address, _change, utxos)) => {
-                    (tx, private_key, address, utxos)
-                }
+                Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
                 Err(_) => {
                     // Reload UTXOs and try again
                     wallet
@@ -1160,12 +1188,7 @@ impl AppContext {
                         .map_err(|e| e.to_string())?;
 
                     let (tx, private_key, address, _change, utxos) = wallet
-                        .generic_asset_lock_transaction(
-                            self.network,
-                            amount,
-                            true,
-                            Some(self),
-                        )?;
+                        .generic_asset_lock_transaction(self.network, amount, true, Some(self))?;
                     (tx, private_key, address, utxos)
                 }
             }
@@ -1206,6 +1229,21 @@ impl AppContext {
                 self.db
                     .drop_utxo(utxo, &self.network.to_string())
                     .map_err(|e| e.to_string())?;
+            }
+
+            // Update address_balances for affected addresses
+            let affected_addresses: std::collections::BTreeSet<_> = used_utxos
+                .values()
+                .map(|(_, addr)| addr.clone())
+                .collect();
+            for address in affected_addresses {
+                // Recalculate balance from remaining UTXOs for this address
+                let new_balance = wallet
+                    .utxos
+                    .get(&address)
+                    .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+                    .unwrap_or(0);
+                let _ = wallet.update_address_balance(&address, new_balance, self);
             }
         }
 
@@ -2130,13 +2168,14 @@ impl AppContext {
                 {
                     // Update the highest receive index if needed
                     if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id)
-                        && address_index >= indices.highest_receive_index {
-                            let _ = self.db.update_highest_receive_index(
-                                &owner_id,
-                                &contact_id,
-                                address_index + 1,
-                            );
-                        }
+                        && address_index >= indices.highest_receive_index
+                    {
+                        let _ = self.db.update_highest_receive_index(
+                            &owner_id,
+                            &contact_id,
+                            address_index + 1,
+                        );
+                    }
 
                     // Save the payment record
                     let _ = self.db.save_payment(

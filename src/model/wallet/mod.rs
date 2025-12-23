@@ -814,6 +814,12 @@ impl Wallet {
             identity_index,
             key_index,
         );
+        tracing::debug!(
+            identity_index = identity_index,
+            key_index = key_index,
+            path = %derivation_path,
+            "Generated identity authentication ECDSA derivation path"
+        );
         let extended_public_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
@@ -1397,14 +1403,25 @@ impl Wallet {
         ))
     }
 
-    /// Generate a Platform receive address .
-    /// Either returns an existing unused Platform address or generates a new one.
+    /// Generate a Platform receive address.
+    /// Either returns an existing Platform address or generates a new one.
     pub fn platform_receive_address(
         &mut self,
         network: Network,
-        skip_known_addresses_with_no_funds: bool,
+        skip_known_addresses: bool,
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
+        // If not skipping known addresses, return first existing one
+        // This doesn't require the wallet to be unlocked
+        if !skip_known_addresses {
+            for (path, info) in &self.watched_addresses {
+                if path.is_platform_payment(network) {
+                    return Ok(info.address.clone());
+                }
+            }
+        }
+
+        // Need to generate a new address - this requires the wallet to be unlocked
         let seed = *self.seed_bytes()?;
         let secp = Secp256k1::new();
         let account = 0u32;
@@ -1423,23 +1440,6 @@ impl Wallet {
                 })
             })
             .collect();
-
-        // If skipping known addresses with no funds, try to find one with zero balance
-        if !skip_known_addresses_with_no_funds {
-            // Return first existing address with zero balance
-            for (path, info) in &self.watched_addresses {
-                if path.is_platform_payment(network) {
-                    if let Some(addr_info) = self.platform_address_info.get(&info.address) {
-                        if addr_info.balance == 0 {
-                            return Ok(info.address.clone());
-                        }
-                    } else {
-                        // No balance info means zero balance
-                        return Ok(info.address.clone());
-                    }
-                }
-            }
-        }
 
         // Generate a new Platform address at the next index
         let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);

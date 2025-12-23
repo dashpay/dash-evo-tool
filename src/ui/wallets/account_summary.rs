@@ -131,6 +131,22 @@ impl AccountCategory {
             AccountCategory::Other(_) => None,
         }
     }
+
+    /// Returns true if this account category is for key derivation/proofs only
+    /// and does not hold funds (balance is always N/A).
+    pub fn is_key_only(&self) -> bool {
+        matches!(
+            self,
+            AccountCategory::IdentityRegistration
+                | AccountCategory::IdentityTopup
+                | AccountCategory::IdentityInvitation
+                | AccountCategory::IdentitySystem
+                | AccountCategory::ProviderVoting
+                | AccountCategory::ProviderOwner
+                | AccountCategory::ProviderOperator
+                | AccountCategory::ProviderPlatform
+        )
+    }
 }
 
 #[derive(Clone, Debug)]

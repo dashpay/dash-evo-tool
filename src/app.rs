@@ -250,8 +250,6 @@ impl AppState {
         // Create DashPay screens
         let mut dashpay_contacts_screen =
             DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Contacts);
-        let mut dashpay_requests_screen =
-            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Requests);
         let mut dashpay_profile_screen =
             DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
         let mut dashpay_payments_screen =
@@ -307,8 +305,6 @@ impl AppState {
                 TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
             dashpay_contacts_screen =
                 DashPayScreen::new(testnet_app_context, DashPaySubscreen::Contacts);
-            dashpay_requests_screen =
-                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Requests);
             dashpay_profile_screen =
                 DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
             dashpay_payments_screen =
@@ -343,8 +339,6 @@ impl AppState {
                 TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
             dashpay_contacts_screen =
                 DashPayScreen::new(devnet_app_context, DashPaySubscreen::Contacts);
-            dashpay_requests_screen =
-                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Requests);
             dashpay_profile_screen =
                 DashPayScreen::new(devnet_app_context, DashPaySubscreen::Profile);
             dashpay_payments_screen =
@@ -380,8 +374,6 @@ impl AppState {
                 TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
             dashpay_contacts_screen =
                 DashPayScreen::new(local_app_context, DashPaySubscreen::Contacts);
-            dashpay_requests_screen =
-                DashPayScreen::new(local_app_context, DashPaySubscreen::Requests);
             dashpay_profile_screen =
                 DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
             dashpay_payments_screen =
@@ -596,10 +588,6 @@ impl AppState {
                     Screen::DashPayScreen(dashpay_contacts_screen),
                 ),
                 (
-                    RootScreenType::RootScreenDashPayRequests,
-                    Screen::DashPayScreen(dashpay_requests_screen),
-                ),
-                (
                     RootScreenType::RootScreenDashPayProfile,
                     Screen::DashPayScreen(dashpay_profile_screen),
                 ),
@@ -650,6 +638,13 @@ impl AppState {
                 } else {
                     tracing::info!("SPV sync started automatically for {:?}", chosen_network);
                 }
+            }
+
+            // Refresh ALL main screens so they load data properly
+            // This ensures screens like DashPay Profile have identities loaded
+            // even if they're not the initially selected screen
+            for screen in app_state.main_screens.values_mut() {
+                screen.refresh_on_arrival();
             }
         }
 

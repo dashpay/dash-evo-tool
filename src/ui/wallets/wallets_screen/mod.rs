@@ -13,6 +13,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::DashColors;
@@ -60,18 +61,21 @@ pub struct WalletsBalancesScreen {
     refreshing: bool,
     show_rename_dialog: bool,
     rename_input: String,
-    show_unlock_dialog: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
-    wallet_password: String,
-    show_password: bool,
-    error_message: Option<String>,
+    sk_wallet_password: String,
+    sk_show_password: bool,
+    sk_error_message: Option<String>,
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
     send_dialog: SendDialogState,
     receive_dialog: ReceiveDialogState,
     fund_platform_dialog: FundPlatformAddressDialogState,
+    private_key_dialog: PrivateKeyDialogState,
     selected_account: Option<(AccountCategory, Option<u32>)>,
+    /// Pending refresh of platform address balances (triggered after transfers)
+    pending_platform_balance_refresh: Option<WalletSeedHash>,
 }
 
 // Define a struct to hold the address data
@@ -115,8 +119,10 @@ struct ReceiveDialogState {
     is_open: bool,
     /// Selected address type (Core or Platform)
     address_type: ReceiveAddressType,
-    /// Core address (single)
-    core_address: Option<String>,
+    /// Core addresses with balances: (address, balance_duffs)
+    core_addresses: Vec<(String, u64)>,
+    /// Currently selected Core address index
+    selected_core_index: usize,
     /// Platform addresses with balances: (display_address, balance_credits)
     platform_addresses: Vec<(String, u64)>,
     /// Currently selected Platform address index
@@ -140,6 +146,22 @@ struct FundPlatformAddressDialogState {
     is_processing: bool,
 }
 
+/// State for the Private Key dialog
+#[derive(Default)]
+struct PrivateKeyDialogState {
+    is_open: bool,
+    /// The address being displayed
+    address: String,
+    /// The private key in WIF format
+    private_key_wif: String,
+    /// Whether to show the private key (hidden by default)
+    show_key: bool,
+    /// Pending derivation path (when wallet needs unlock first)
+    pending_derivation_path: Option<DerivationPath>,
+    /// Pending address string (when wallet needs unlock first)
+    pending_address: Option<String>,
+}
+
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         // Try to restore previously selected wallet from AppContext
@@ -158,24 +180,18 @@ impl WalletsBalancesScreen {
             // If we have a persisted single key selection, try to find it
             if let Some(sk_hash) = selected_sk_hash
                 && let Ok(sk_wallets) = app_context.single_key_wallets.read()
-                    && let Some(wallet) = sk_wallets.get(&sk_hash) {
-                        return Self::create_with_selection(
-                            app_context,
-                            None,
-                            Some(wallet.clone()),
-                        );
-                    }
+                && let Some(wallet) = sk_wallets.get(&sk_hash)
+            {
+                return Self::create_with_selection(app_context, None, Some(wallet.clone()));
+            }
 
             // If we have a persisted HD wallet selection, try to find it
             if let Some(hd_hash) = selected_hd_hash
                 && let Ok(wallets) = app_context.wallets.read()
-                    && let Some(wallet) = wallets.get(&hd_hash) {
-                        return Self::create_with_selection(
-                            app_context,
-                            Some(wallet.clone()),
-                            None,
-                        );
-                    }
+                && let Some(wallet) = wallets.get(&hd_hash)
+            {
+                return Self::create_with_selection(app_context, Some(wallet.clone()), None);
+            }
 
             // Default: try HD wallet first, then single key wallet
             let hd_wallet = app_context.wallets.read().unwrap().values().next().cloned();
@@ -211,18 +227,20 @@ impl WalletsBalancesScreen {
             refreshing: false,
             show_rename_dialog: false,
             rename_input: String::new(),
-            show_unlock_dialog: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
-            wallet_password: String::new(),
-            show_password: false,
-            error_message: None,
+            sk_wallet_password: String::new(),
+            sk_show_password: false,
+            sk_error_message: None,
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
             send_dialog: SendDialogState::default(),
             receive_dialog: ReceiveDialogState::default(),
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
+            private_key_dialog: PrivateKeyDialogState::default(),
             selected_account: None,
+            pending_platform_balance_refresh: None,
         }
     }
 
@@ -232,10 +250,11 @@ impl WalletsBalancesScreen {
             let seed_hash = wallet_arc.read().ok().map(|w| w.seed_hash());
             if let Some(hash) = seed_hash
                 && let Ok(wallets) = self.app_context.wallets.read()
-                    && wallets.contains_key(&hash) {
-                        self.selected_account = None;
-                        return;
-                    }
+                && wallets.contains_key(&hash)
+            {
+                self.selected_account = None;
+                return;
+            }
             // HD wallet no longer valid
             self.selected_wallet = None;
         }
@@ -245,30 +264,33 @@ impl WalletsBalancesScreen {
             let key_hash = wallet_arc.read().ok().map(|w| w.key_hash());
             if let Some(hash) = key_hash
                 && let Ok(wallets) = self.app_context.single_key_wallets.read()
-                    && wallets.contains_key(&hash) {
-                        self.selected_account = None;
-                        return;
-                    }
+                && wallets.contains_key(&hash)
+            {
+                self.selected_account = None;
+                return;
+            }
             // Single key wallet no longer valid
             self.selected_single_key_wallet = None;
         }
 
         // No valid selection, pick a new one (HD wallet first, then single key)
         if let Ok(wallets) = self.app_context.wallets.read()
-            && let Some(wallet) = wallets.values().next().cloned() {
-                self.selected_wallet = Some(wallet);
-                self.selected_single_key_wallet = None;
-                self.selected_account = None;
-                return;
-            }
+            && let Some(wallet) = wallets.values().next().cloned()
+        {
+            self.selected_wallet = Some(wallet);
+            self.selected_single_key_wallet = None;
+            self.selected_account = None;
+            return;
+        }
 
         if let Ok(wallets) = self.app_context.single_key_wallets.read()
-            && let Some(wallet) = wallets.values().next().cloned() {
-                self.selected_single_key_wallet = Some(wallet);
-                self.selected_wallet = None;
-                self.selected_account = None;
-                return;
-            }
+            && let Some(wallet) = wallets.values().next().cloned()
+        {
+            self.selected_single_key_wallet = Some(wallet);
+            self.selected_wallet = None;
+            self.selected_account = None;
+            return;
+        }
 
         self.selected_account = None;
     }
@@ -443,9 +465,9 @@ impl WalletsBalancesScreen {
                                             if let Ok(hash) = w.read().map(|g| g.seed_hash())
                                                 && let Ok(mut guard) =
                                                     self.app_context.selected_wallet_hash.lock()
-                                                {
-                                                    *guard = Some(hash);
-                                                }
+                                            {
+                                                *guard = Some(hash);
+                                            }
                                             if let Ok(mut guard) =
                                                 self.app_context.selected_single_key_hash.lock()
                                             {
@@ -459,9 +481,9 @@ impl WalletsBalancesScreen {
                                             if let Ok(hash) = w.read().map(|g| g.key_hash)
                                                 && let Ok(mut guard) =
                                                     self.app_context.selected_single_key_hash.lock()
-                                                {
-                                                    *guard = Some(hash);
-                                                }
+                                            {
+                                                *guard = Some(hash);
+                                            }
                                             if let Ok(mut guard) =
                                                 self.app_context.selected_wallet_hash.lock()
                                             {
@@ -506,7 +528,7 @@ impl WalletsBalancesScreen {
                                     should_lock_wallet = true;
                                 }
                             } else if ui.button("Unlock").clicked() {
-                                self.show_unlock_dialog = true;
+                                self.wallet_unlock_popup.open();
                             }
                         }
                         if should_lock_wallet {
@@ -582,10 +604,9 @@ impl WalletsBalancesScreen {
                                 self.show_sk_unlock_dialog = true;
                             }
                         }
-                        if should_lock_sk_wallet
-                            && let Ok(mut wallet) = wallet_arc.write() {
-                                wallet.private_key_data.close();
-                            }
+                        if should_lock_sk_wallet && let Ok(mut wallet) = wallet_arc.write() {
+                            wallet.private_key_data.close();
+                        }
 
                         ui.add_space(8.0);
 
@@ -909,12 +930,35 @@ impl WalletsBalancesScreen {
                         });
                         row.col(|ui| {
                             if ui.button("View Key").clicked() {
-                                match self.derive_private_key_wif(&data.derivation_path) {
-                                    Ok(key) => self.display_message(
-                                        &format!("{}\n{}", data.address, key),
-                                        MessageType::Info,
-                                    ),
-                                    Err(err) => self.display_message(&err, MessageType::Error),
+                                // Check if wallet is locked first
+                                let wallet_locked = self
+                                    .selected_wallet
+                                    .as_ref()
+                                    .map(|w| {
+                                        w.read()
+                                            .map(|g| g.uses_password && !g.is_open())
+                                            .unwrap_or(false)
+                                    })
+                                    .unwrap_or(false);
+
+                                if wallet_locked {
+                                    // Store pending info and show unlock popup
+                                    self.private_key_dialog.pending_derivation_path =
+                                        Some(data.derivation_path.clone());
+                                    self.private_key_dialog.pending_address =
+                                        Some(data.address.to_string());
+                                    self.wallet_unlock_popup.open();
+                                } else {
+                                    match self.derive_private_key_wif(&data.derivation_path) {
+                                        Ok(key) => {
+                                            self.private_key_dialog.is_open = true;
+                                            self.private_key_dialog.address =
+                                                data.address.to_string();
+                                            self.private_key_dialog.private_key_wif = key;
+                                            self.private_key_dialog.show_key = false;
+                                        }
+                                        Err(err) => self.display_message(&err, MessageType::Error),
+                                    }
                                 }
                             }
                         });
@@ -1035,9 +1079,7 @@ impl WalletsBalancesScreen {
 
                 self.show_rename_dialog = false;
                 self.rename_input.clear();
-                self.wallet_password.clear();
-                self.show_password = false;
-                self.error_message = None;
+                self.wallet_unlock_popup.close();
                 self.refreshing = false;
 
                 self.display_message(
@@ -1069,7 +1111,7 @@ impl WalletsBalancesScreen {
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .show(ui, |ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
+                    ui.heading(RichText::new("Unused Asset Locks").color(DashColors::text_primary(dark_mode)));
                     ui.add_space(10.0);
 
                     if wallet.unused_asset_locks.is_empty() {
@@ -1078,12 +1120,6 @@ impl WalletsBalancesScreen {
                             ui.label(RichText::new("No asset locks found").color(Color32::GRAY).size(14.0));
                             ui.add_space(10.0);
                             ui.label(RichText::new("Asset locks are special transactions that can be used to create identities or fund Platform addresses").color(Color32::GRAY).size(12.0));
-                            ui.add_space(15.0);
-                            if ui.button("Search for asset locks").clicked() {
-                                app_action = AppAction::BackendTask(BackendTask::CoreTask(
-                                    CoreTask::RefreshWalletInfo(arc_wallet.clone()),
-                                ))
-                            };
                             ui.add_space(20.0);
                         });
                     } else {
@@ -1316,8 +1352,6 @@ impl WalletsBalancesScreen {
     fn render_wallet_overview(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let total = wallet.total_balance_duffs();
-        let confirmed = wallet.confirmed_balance_duffs();
-        let _unconfirmed = wallet.unconfirmed_balance_duffs();
         let platform = Self::platform_balance_duffs(wallet);
 
         ui.horizontal(|ui| {
@@ -1325,10 +1359,6 @@ impl WalletsBalancesScreen {
                 "Core balance: {}",
                 Self::format_dash(total)
             )));
-            ui.label(
-                RichText::new(format!("(Confirmed: {})", Self::format_dash(confirmed)))
-                    .color(DashColors::text_secondary(dark_mode)),
-            );
         });
         ui.label(
             RichText::new(format!("Platform balance: {}", Self::format_dash(platform)))
@@ -1370,7 +1400,6 @@ impl WalletsBalancesScreen {
             {
                 action |= self.open_receive_dialog(ctx);
             }
-
         });
         action
     }
@@ -1385,88 +1414,72 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        for summary in summaries {
-            let is_selected = self
-                .selected_account
-                .as_ref()
-                .map(|(cat, idx)| cat == &summary.category && *idx == summary.index)
-                .unwrap_or(false);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let fill = if is_selected {
-                DashColors::glass_blue(dark_mode)
-            } else {
-                ui.visuals().extreme_bg_color
-            };
-            let stroke_color = if is_selected {
-                DashColors::DASH_BLUE
-            } else {
-                DashColors::border_light(dark_mode)
-            };
+        // Find the currently selected summary
+        let selected_summary = self.selected_account.as_ref().and_then(|(cat, idx)| {
+            summaries
+                .iter()
+                .find(|s| &s.category == cat && s.index == *idx)
+        });
 
-            let response = Frame::group(ui.style())
-                .fill(fill)
-                .stroke(egui::Stroke::new(
-                    if is_selected { 2.0 } else { 1.0 },
-                    stroke_color,
-                ))
-                .inner_margin(Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(&summary.label)
-                                .strong()
-                                .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode))
-                                .size(16.0),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Show Platform credits for Platform Payment accounts
-                            if summary.category == AccountCategory::PlatformPayment {
-                                // Display Platform credits (convert to DASH equivalent)
-                                let credits_as_dash =
-                                    summary.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                                ui.label(
-                                    RichText::new(format!("{:.8} DASH", credits_as_dash))
-                                        .strong()
-                                        .color(DashColors::text_primary(
-                                            ui.ctx().style().visuals.dark_mode,
-                                        )),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new(Self::format_dash(summary.confirmed_balance))
-                                        .strong()
-                                        .color(DashColors::text_primary(
-                                            ui.ctx().style().visuals.dark_mode,
-                                        )),
-                                );
-                            }
-                        });
-                    });
+        // Build the selected text for the dropdown
+        let selected_text = selected_summary
+            .map(|s| {
+                if s.category.is_key_only() {
+                    s.label.clone()
+                } else if s.category == AccountCategory::PlatformPayment {
+                    let credits_as_dash = s.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                    format!("{} - {:.4} DASH", s.label, credits_as_dash)
+                } else {
+                    format!("{} - {}", s.label, Self::format_dash(s.confirmed_balance))
+                }
+            })
+            .unwrap_or_else(|| "Select an account".to_string());
 
-                    if let Some(description) = summary.category.description() {
-                        ui.label(
-                            RichText::new(description)
-                                .color(DashColors::text_secondary(dark_mode))
-                                .italics(),
-                        );
+        // Account dropdown selector
+        ComboBox::from_id_salt("account_selector")
+            .selected_text(&selected_text)
+            .width(ui.available_width() - 16.0)
+            .show_ui(ui, |ui| {
+                for summary in summaries {
+                    let is_selected = self
+                        .selected_account
+                        .as_ref()
+                        .map(|(cat, idx)| cat == &summary.category && *idx == summary.index)
+                        .unwrap_or(false);
+
+                    let label = if summary.category.is_key_only() {
+                        summary.label.clone()
+                    } else if summary.category == AccountCategory::PlatformPayment {
+                        let credits_as_dash =
+                            summary.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                        format!("{} - {:.4} DASH", summary.label, credits_as_dash)
+                    } else {
+                        format!(
+                            "{} - {}",
+                            summary.label,
+                            Self::format_dash(summary.confirmed_balance)
+                        )
+                    };
+
+                    if ui.selectable_label(is_selected, &label).clicked() {
+                        self.selected_account = Some((summary.category.clone(), summary.index));
                     }
+                }
+            });
 
-                    ui.label(format!(
-                        "Addresses: {} ({} receive / {} change)",
-                        summary.total_addresses,
-                        summary.external_addresses,
-                        summary.internal_addresses
-                    ));
-                })
-                .response
-                .interact(egui::Sense::click());
-
-            if response.clicked() {
-                self.selected_account = Some((summary.category.clone(), summary.index));
+        // Show description of the selected account below the dropdown
+        if let Some(summary) = selected_summary {
+            if let Some(description) = summary.category.description() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(description)
+                        .color(DashColors::text_secondary(dark_mode))
+                        .italics()
+                        .size(12.0),
+                );
             }
-
-            ui.add_space(6.0);
         }
     }
 
@@ -1637,18 +1650,27 @@ impl WalletsBalancesScreen {
                         action |= self.render_action_buttons(ui, ctx);
                         ui.add_space(10.0);
                         ui.separator();
-                        self.render_transactions_section(ui);
-                        ui.add_space(10.0);
-                        ui.separator();
                         self.render_accounts_section(ui, &summaries);
                         ui.add_space(10.0);
                         ui.separator();
                         ui.add_space(10.0);
+                        let addresses_heading = self
+                            .selected_account
+                            .as_ref()
+                            .map(|(category, index)| {
+                                format!("Addresses ({})", category.label(*index))
+                            })
+                            .unwrap_or_else(|| "Addresses".to_string());
                         ui.heading(
-                            RichText::new("Addresses").color(DashColors::text_primary(dark_mode)),
+                            RichText::new(addresses_heading)
+                                .color(DashColors::text_primary(dark_mode)),
                         );
                         ui.add_space(8.0);
                         action |= self.render_address_table(ui);
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        self.render_transactions_section(ui);
 
                         ui.add_space(14.0);
                         self.render_bottom_options(ui);
@@ -1719,7 +1741,11 @@ impl WalletsBalancesScreen {
 
         // Determine current address based on selected type
         let current_address = match self.receive_dialog.address_type {
-            ReceiveAddressType::Core => self.receive_dialog.core_address.clone(),
+            ReceiveAddressType::Core => self
+                .receive_dialog
+                .core_addresses
+                .get(self.receive_dialog.selected_core_index)
+                .map(|(addr, _)| addr.clone()),
             ReceiveAddressType::Platform => self
                 .receive_dialog
                 .platform_addresses
@@ -1830,22 +1856,65 @@ impl WalletsBalancesScreen {
 
                     match self.receive_dialog.address_type {
                         ReceiveAddressType::Core => {
-                            // Core address display
-                            if let Some(address) = &self.receive_dialog.core_address.clone() {
+                            // Core address selector (if multiple addresses)
+                            if self.receive_dialog.core_addresses.len() > 1 {
+                                ui.horizontal(|ui| {
+                                    ui.label("Address:");
+                                    ComboBox::from_id_salt("core_addr_selector")
+                                        .selected_text(
+                                            self.receive_dialog
+                                                .core_addresses
+                                                .get(self.receive_dialog.selected_core_index)
+                                                .map(|(addr, balance)| {
+                                                    let balance_dash = *balance as f64 / 1e8;
+                                                    format!(
+                                                        "{}... ({:.4} DASH)",
+                                                        &addr[..12.min(addr.len())],
+                                                        balance_dash
+                                                    )
+                                                })
+                                                .unwrap_or_default(),
+                                        )
+                                        .show_ui(ui, |ui| {
+                                            for (idx, (addr, balance)) in
+                                                self.receive_dialog.core_addresses.iter().enumerate()
+                                            {
+                                                let balance_dash = *balance as f64 / 1e8;
+                                                let label = format!(
+                                                    "{}... ({:.4} DASH)",
+                                                    &addr[..12.min(addr.len())],
+                                                    balance_dash
+                                                );
+                                                if ui
+                                                    .selectable_label(
+                                                        idx == self.receive_dialog.selected_core_index,
+                                                        label,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.receive_dialog.selected_core_index = idx;
+                                                    // Clear QR so it regenerates
+                                                    self.receive_dialog.qr_texture = None;
+                                                    self.receive_dialog.qr_address = None;
+                                                }
+                                            }
+                                        });
+                                });
+                                ui.add_space(5.0);
+                            }
+
+                            // Show selected Core address
+                            if let Some((address, balance)) = self
+                                .receive_dialog
+                                .core_addresses
+                                .get(self.receive_dialog.selected_core_index)
+                                .cloned()
+                            {
                                 ui.label(
-                                    RichText::new(address)
+                                    RichText::new(&address)
                                         .monospace()
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
-
-                                // Get balance for this address from wallet
-                                let balance = self.selected_wallet.as_ref().and_then(|w| {
-                                    w.read().ok().and_then(|wallet| {
-                                        address.parse::<Address<_>>().ok().and_then(|addr| {
-                                            wallet.address_balances.get(&addr.assume_checked()).copied()
-                                        })
-                                    })
-                                }).unwrap_or(0);
 
                                 let balance_dash = balance as f64 / 1e8;
                                 ui.label(
@@ -1860,7 +1929,7 @@ impl WalletsBalancesScreen {
 
                                 ui.horizontal(|ui| {
                                     if ui.button("Copy Address").clicked() {
-                                        if let Err(err) = copy_text_to_clipboard(address) {
+                                        if let Err(err) = copy_text_to_clipboard(&address) {
                                             copy_status = Some(format!("Error: {}", err));
                                         } else {
                                             copy_status = Some("Address copied!".to_string());
@@ -1879,8 +1948,10 @@ impl WalletsBalancesScreen {
                                 if generate_new {
                                     if let Some(wallet) = &self.selected_wallet {
                                         match self.generate_new_core_receive_address(wallet) {
-                                            Ok(new_addr) => {
-                                                self.receive_dialog.core_address = Some(new_addr);
+                                            Ok((new_addr, new_balance)) => {
+                                                self.receive_dialog.core_addresses.push((new_addr, new_balance));
+                                                self.receive_dialog.selected_core_index =
+                                                    self.receive_dialog.core_addresses.len() - 1;
                                                 self.receive_dialog.qr_texture = None;
                                                 self.receive_dialog.qr_address = None;
                                                 self.receive_dialog.status = Some("New address generated!".to_string());
@@ -2060,15 +2131,21 @@ impl WalletsBalancesScreen {
     }
 
     /// Generate a new Core receive address for the wallet
+    /// Returns (address_string, balance_duffs)
     fn generate_new_core_receive_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, u64), String> {
         let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
         let address = wallet_guard
             .receive_address(self.app_context.network, true, Some(&self.app_context))
             .map_err(|e| e.to_string())?;
-        Ok(address.to_string())
+        let balance = wallet_guard
+            .address_balances
+            .get(&address)
+            .copied()
+            .unwrap_or(0);
+        Ok((address.to_string(), balance))
     }
 
     /// Render the Fund Platform Address from Asset Lock dialog
@@ -2198,6 +2275,143 @@ impl WalletsBalancesScreen {
             self.fund_platform_dialog = FundPlatformAddressDialogState::default();
         }
         action
+    }
+
+    /// Render the Private Key dialog
+    fn render_private_key_dialog(&mut self, ctx: &Context) {
+        if !self.private_key_dialog.is_open {
+            return;
+        }
+
+        let dark_mode = ctx.style().visuals.dark_mode;
+        let mut open = self.private_key_dialog.is_open;
+
+        // Draw dark overlay behind the dialog
+        if open {
+            let screen_rect = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("private_key_dialog_overlay"),
+            ));
+            painter.rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
+        }
+
+        egui::Window::new("Private Key")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .frame(egui::Frame {
+                inner_margin: egui::Margin::same(20),
+                outer_margin: egui::Margin::same(0),
+                corner_radius: egui::CornerRadius::same(8),
+                shadow: egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                },
+                fill: ctx.style().visuals.window_fill,
+                stroke: egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                ),
+            })
+            .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(5.0);
+
+                    // Address label
+                    ui.label(
+                        RichText::new("Address")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0),
+                    );
+                    ui.add_space(5.0);
+
+                    // Address value
+                    ui.label(
+                        RichText::new(&self.private_key_dialog.address)
+                            .monospace()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    ui.add_space(5.0);
+
+                    // Copy address button
+                    if ui.button("Copy Address").clicked() {
+                        let _ = copy_text_to_clipboard(&self.private_key_dialog.address);
+                    }
+
+                    ui.add_space(15.0);
+                    ui.separator();
+                    ui.add_space(15.0);
+
+                    // Private key label
+                    ui.label(
+                        RichText::new("Private Key (WIF)")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0),
+                    );
+                    ui.add_space(5.0);
+
+                    // Private key value (hidden by default)
+                    if self.private_key_dialog.show_key {
+                        ui.label(
+                            RichText::new(&self.private_key_dialog.private_key_wif)
+                                .monospace()
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("••••••••••••••••••••••••••••••••••••••••••••••••••••")
+                                .monospace()
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Show/Hide and Copy buttons
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(if self.private_key_dialog.show_key {
+                                "Hide Key"
+                            } else {
+                                "Show Key"
+                            })
+                            .clicked()
+                        {
+                            self.private_key_dialog.show_key = !self.private_key_dialog.show_key;
+                        }
+
+                        if ui.button("Copy Key").clicked() {
+                            let _ =
+                                copy_text_to_clipboard(&self.private_key_dialog.private_key_wif);
+                        }
+                    });
+
+                    ui.add_space(15.0);
+
+                    // Warning message
+                    ui.label(
+                        RichText::new("Keep your private key secure. Never share it with anyone.")
+                            .color(DashColors::error_color(dark_mode))
+                            .size(11.0)
+                            .italics(),
+                    );
+                });
+            });
+
+        self.private_key_dialog.is_open = open;
+        if !self.private_key_dialog.is_open {
+            self.private_key_dialog = PrivateKeyDialogState::default();
+        }
     }
 
     /// Prepare the backend task for funding a Platform address from asset lock
@@ -2336,7 +2550,7 @@ impl WalletsBalancesScreen {
     fn open_receive_dialog(&mut self, _ctx: &Context) -> AppAction {
         let Some(wallet) = self.selected_wallet.clone() else {
             self.receive_dialog.status = Some("Select a wallet first".to_string());
-            self.receive_dialog.core_address = None;
+            self.receive_dialog.core_addresses.clear();
             self.receive_dialog.platform_addresses.clear();
             self.receive_dialog.qr_texture = None;
             self.receive_dialog.qr_address = None;
@@ -2348,34 +2562,59 @@ impl WalletsBalancesScreen {
         self.receive_dialog.qr_texture = None;
         self.receive_dialog.qr_address = None;
 
-        // Load Platform addresses
+        // Load Core addresses (works with locked wallet - uses existing addresses)
+        self.load_core_addresses_for_receive(&wallet);
+
+        // Load Platform addresses (works with locked wallet - uses existing addresses)
         self.load_platform_addresses_for_receive(&wallet);
 
-        // Handle Core address - SPV mode needs async request
-        if self.app_context.core_backend_mode() == CoreBackendMode::Spv {
-            let seed_hash = match wallet.read() {
-                Ok(guard) => guard.seed_hash(),
-                Err(err) => {
-                    self.receive_dialog.status = Some(err.to_string());
-                    return AppAction::None;
-                }
-            };
-
-            self.receive_dialog.core_address = None;
-            self.receive_dialog.status = Some("Requesting Core address...".to_string());
-
-            return AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ));
-        }
-
-        // RPC mode - get Core address synchronously
-        match self.prepare_core_receive_address(&wallet) {
-            Ok(()) => self.receive_dialog.status = None,
-            Err(err) => self.receive_dialog.status = Some(err),
-        }
-
         AppAction::None
+    }
+
+    /// Load Core addresses into the receive dialog
+    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        let wallet_guard = match wallet.read() {
+            Ok(guard) => guard,
+            Err(err) => {
+                self.receive_dialog.status = Some(err.to_string());
+                return;
+            }
+        };
+
+        // Collect all BIP44 external (receive) addresses with their balances
+        let network = self.app_context.network;
+        let core_addresses: Vec<(String, u64)> = wallet_guard
+            .watched_addresses
+            .iter()
+            .filter(|(path, _)| path.is_bip44_external(network))
+            .map(|(_, info)| {
+                let balance = wallet_guard
+                    .address_balances
+                    .get(&info.address)
+                    .copied()
+                    .unwrap_or(0);
+                (info.address.to_string(), balance)
+            })
+            .collect();
+
+        drop(wallet_guard);
+
+        if core_addresses.is_empty() {
+            // Generate a new Core address if none exists
+            match self.generate_new_core_receive_address(wallet) {
+                Ok((address, balance)) => {
+                    self.receive_dialog.core_addresses = vec![(address, balance)];
+                    self.receive_dialog.selected_core_index = 0;
+                }
+                Err(err) => {
+                    self.receive_dialog.status = Some(err);
+                    self.receive_dialog.core_addresses.clear();
+                }
+            }
+        } else {
+            self.receive_dialog.core_addresses = core_addresses;
+            self.receive_dialog.selected_core_index = 0;
+        }
     }
 
     /// Load Platform addresses into the receive dialog
@@ -2465,23 +2704,6 @@ impl WalletsBalancesScreen {
         Ok(private_key.to_wif())
     }
 
-    fn prepare_core_receive_address(&mut self, wallet: &Arc<RwLock<Wallet>>) -> Result<(), String> {
-        let address = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-            wallet_guard.receive_address(
-                self.app_context.network,
-                false,
-                Some(&self.app_context),
-            )?
-        };
-
-        let address_str = address.to_string();
-        self.receive_dialog.core_address = Some(address_str);
-        self.receive_dialog.qr_texture = None;
-        self.receive_dialog.qr_address = None;
-        Ok(())
-    }
-
     fn lock_selected_wallet(&mut self) {
         let Some(wallet_arc) = self.selected_wallet.clone() else {
             return;
@@ -2531,11 +2753,7 @@ impl WalletsBalancesScreen {
         let balance_duffs = wallet.total_balance_duffs();
         let balance_dash = balance_duffs as f64 * 1e-8;
         let utxo_count = wallet.utxos.len();
-        let utxos: Vec<_> = wallet
-            .utxos
-            .iter()
-            .map(|(o, t)| (*o, t.clone()))
-            .collect();
+        let utxos: Vec<_> = wallet.utxos.iter().map(|(o, t)| (*o, t.clone())).collect();
         drop(wallet);
 
         let text_color = DashColors::text_primary(dark_mode);
@@ -2570,7 +2788,8 @@ impl WalletsBalancesScreen {
                             .button(RichText::new("Receive").color(text_color))
                             .clicked()
                         {
-                            self.receive_dialog.core_address = Some(address.clone());
+                            self.receive_dialog.core_addresses = vec![(address.clone(), balance_duffs)];
+                            self.receive_dialog.selected_core_index = 0;
                             self.receive_dialog.is_open = true;
                         }
                     });
@@ -2635,6 +2854,16 @@ impl WalletsBalancesScreen {
 impl ScreenLike for WalletsBalancesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_message_expiration();
+
+        // Check for pending platform balance refresh (triggered after transfers)
+        let pending_refresh_action = if let Some(seed_hash) = self.pending_platform_balance_refresh.take() {
+            AppAction::BackendTask(BackendTask::WalletTask(
+                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
+            ))
+        } else {
+            AppAction::None
+        };
+
         let mut right_buttons = vec![
             (
                 "Import Wallet",
@@ -2757,6 +2986,7 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= self.render_send_dialog(ctx);
         action |= self.render_receive_dialog(ctx);
         action |= self.render_fund_platform_dialog(ctx);
+        self.render_private_key_dialog(ctx);
 
         // Rename dialog
         if self.show_rename_dialog {
@@ -2828,106 +3058,36 @@ impl ScreenLike for WalletsBalancesScreen {
                 });
         }
 
-        // Unlock dialog
-        if self.show_unlock_dialog {
-            let mut close_dialog = false;
-            egui::Window::new("Unlock Wallet")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        if let Some(wallet_arc) = &self.selected_wallet
-                            && let Ok(wallet) = wallet_arc.read() {
-                                if let Some(alias) = &wallet.alias {
-                                    ui.label(format!(
-                                        "Wallet \"{}\" is locked. Please enter the password to unlock it:",
-                                        alias
-                                    ));
-                                } else {
-                                    ui.label("This wallet is locked. Please enter the password to unlock it:");
+        // HD Wallet unlock popup
+        if let Some(wallet_arc) = &self.selected_wallet.clone() {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet_arc, &self.app_context);
+            match result {
+                WalletUnlockResult::Unlocked => {
+                    // Check if we were trying to view a private key
+                    if let Some(path) = self.private_key_dialog.pending_derivation_path.take() {
+                        if let Some(address) = self.private_key_dialog.pending_address.take() {
+                            match self.derive_private_key_wif(&path) {
+                                Ok(key) => {
+                                    self.private_key_dialog.is_open = true;
+                                    self.private_key_dialog.address = address;
+                                    self.private_key_dialog.private_key_wif = key;
+                                    self.private_key_dialog.show_key = false;
+                                }
+                                Err(err) => {
+                                    self.display_message(&err, MessageType::Error);
                                 }
                             }
-
-                        ui.add_space(10.0);
-
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        let mut attempt_unlock = false;
-
-                        ui.horizontal(|ui| {
-                            let password_input = ui.add(
-                                egui::TextEdit::singleline(&mut self.wallet_password)
-                                    .password(!self.show_password)
-                                    .hint_text("Enter password")
-                                    .desired_width(250.0)
-                                    .text_color(DashColors::text_primary(dark_mode))
-                                    .background_color(DashColors::input_background(dark_mode)),
-                            );
-
-                            if password_input.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                attempt_unlock = true;
-                            }
-                        });
-
-                        ui.add_space(5.0);
-
-                        ui.checkbox(&mut self.show_password, "Show Password");
-
-                        ui.add_space(10.0);
-
-                        ui.horizontal(|ui| {
-                            if ui.button("Unlock").clicked() {
-                                attempt_unlock = true;
-                            }
-
-                            if ui.button("Cancel").clicked() {
-                                close_dialog = true;
-                            }
-                        });
-
-                        if attempt_unlock {
-                            if let Some(wallet_arc) = &self.selected_wallet {
-                                let mut wallet = wallet_arc.write().unwrap();
-                                let unlock_result =
-                                    wallet.wallet_seed.open(&self.wallet_password);
-
-                                match unlock_result {
-                                    Ok(_) => {
-                                        self.error_message = None;
-                                        close_dialog = true;
-                                        // Trigger wallet unlocked handling
-                                        drop(wallet);
-                                        self.app_context.handle_wallet_unlocked(wallet_arc);
-                                    }
-                                    Err(_) => {
-                                        if let Some(hint) = wallet.password_hint() {
-                                            self.error_message = Some(format!(
-                                                "Incorrect Password, password hint is {}",
-                                                hint
-                                            ));
-                                        } else {
-                                            self.error_message =
-                                                Some("Incorrect Password".to_string());
-                                        }
-                                    }
-                                }
-                            }
-                            self.wallet_password.clear();
                         }
-
-                        // Display error message if the password was incorrect
-                        if let Some(error_message) = &self.error_message {
-                            ui.add_space(5.0);
-                            ui.colored_label(Color32::RED, error_message);
-                        }
-                    });
-                });
-
-            if close_dialog {
-                self.show_unlock_dialog = false;
-                self.wallet_password.clear();
-                self.error_message = None;
+                    }
+                }
+                WalletUnlockResult::Cancelled => {
+                    // Clear any pending private key view request on cancel
+                    self.private_key_dialog.pending_derivation_path = None;
+                    self.private_key_dialog.pending_address = None;
+                }
+                WalletUnlockResult::Pending => {}
             }
         }
 
@@ -2958,8 +3118,8 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.horizontal(|ui| {
                             let password_input = ui.add(
-                                egui::TextEdit::singleline(&mut self.wallet_password)
-                                    .password(!self.show_password)
+                                egui::TextEdit::singleline(&mut self.sk_wallet_password)
+                                    .password(!self.sk_show_password)
                                     .hint_text("Enter password")
                                     .desired_width(250.0)
                                     .text_color(DashColors::text_primary(dark_mode))
@@ -2975,7 +3135,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(5.0);
 
-                        ui.checkbox(&mut self.show_password, "Show Password");
+                        ui.checkbox(&mut self.sk_show_password, "Show Password");
 
                         ui.add_space(10.0);
 
@@ -2992,24 +3152,24 @@ impl ScreenLike for WalletsBalancesScreen {
                         if attempt_unlock {
                             if let Some(wallet_arc) = &self.selected_single_key_wallet {
                                 let mut wallet = wallet_arc.write().unwrap();
-                                let unlock_result = wallet.open(&self.wallet_password);
+                                let unlock_result = wallet.open(&self.sk_wallet_password);
 
                                 match unlock_result {
                                     Ok(_) => {
-                                        self.error_message = None;
+                                        self.sk_error_message = None;
                                         close_dialog = true;
                                     }
                                     Err(_) => {
-                                        self.error_message =
+                                        self.sk_error_message =
                                             Some("Incorrect Password".to_string());
                                     }
                                 }
                             }
-                            self.wallet_password.clear();
+                            self.sk_wallet_password.clear();
                         }
 
                         // Display error message if the password was incorrect
-                        if let Some(error_message) = &self.error_message {
+                        if let Some(error_message) = &self.sk_error_message {
                             ui.add_space(5.0);
                             ui.colored_label(Color32::RED, error_message);
                         }
@@ -3018,8 +3178,8 @@ impl ScreenLike for WalletsBalancesScreen {
 
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
-                self.wallet_password.clear();
-                self.error_message = None;
+                self.sk_wallet_password.clear();
+                self.sk_error_message = None;
             }
         }
 
@@ -3029,6 +3189,8 @@ impl ScreenLike for WalletsBalancesScreen {
             self.refreshing = true;
         }
 
+        // Combine with pending refresh action
+        action |= pending_refresh_action;
         action
     }
 
@@ -3080,7 +3242,15 @@ impl ScreenLike for WalletsBalancesScreen {
                     && let Ok(wallet) = selected.read()
                     && wallet.seed_hash() == seed_hash
                 {
-                    self.receive_dialog.core_address = Some(address.clone());
+                    // Parse address and get balance
+                    let balance = address
+                        .parse::<Address<_>>()
+                        .ok()
+                        .and_then(|addr| wallet.address_balances.get(&addr.assume_checked()).copied())
+                        .unwrap_or(0);
+                    self.receive_dialog.core_addresses.push((address.clone(), balance));
+                    self.receive_dialog.selected_core_index =
+                        self.receive_dialog.core_addresses.len() - 1;
                     self.receive_dialog.qr_texture = None;
                     self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
@@ -3094,11 +3264,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.fund_platform_dialog.status = Some("Funding successful!".to_string());
                 self.display_message("Platform address funded successfully", MessageType::Success);
             }
-            crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { .. } => {
+            crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash } => {
                 self.display_message(
                     "Platform credits transferred successfully",
                     MessageType::Success,
                 );
+                // Schedule a refresh of platform address balances to update the UI
+                self.pending_platform_balance_refresh = Some(seed_hash);
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
@@ -3131,21 +3303,23 @@ impl ScreenLike for WalletsBalancesScreen {
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
         if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock()
             && let Some(seed_hash) = pending.take()
-                && let Ok(wallets) = self.app_context.wallets.read()
-                    && let Some(wallet) = wallets.get(&seed_hash) {
-                        self.selected_wallet = Some(wallet.clone());
-                        self.selected_single_key_wallet = None; // Clear SK selection
-                        self.selected_account = None;
-                        return;
-                    }
+            && let Ok(wallets) = self.app_context.wallets.read()
+            && let Some(wallet) = wallets.get(&seed_hash)
+        {
+            self.selected_wallet = Some(wallet.clone());
+            self.selected_single_key_wallet = None; // Clear SK selection
+            self.selected_account = None;
+            return;
+        }
 
         // If no wallet of either type is selected but wallets exist, select the first HD wallet
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
             if let Ok(wallets) = self.app_context.wallets.read()
-                && let Some(wallet) = wallets.values().next().cloned() {
-                    self.selected_wallet = Some(wallet);
-                    return;
-                }
+                && let Some(wallet) = wallets.values().next().cloned()
+            {
+                self.selected_wallet = Some(wallet);
+                return;
+            }
             // If no HD wallets, try single key wallets
             if let Ok(wallets) = self.app_context.single_key_wallets.read() {
                 self.selected_single_key_wallet = wallets.values().next().cloned();

@@ -192,7 +192,7 @@ impl AddNewIdentityScreen {
             }
 
             let app_context = &self.app_context;
-            let identity_id_number = self.next_identity_id(); // note: this grabs rlock on the wallet
+            let identity_id_number = self.identity_id_number;
 
             const DEFAULT_KEY_TYPES: [(KeyType, Purpose, SecurityLevel); 3] = [
                 (
@@ -527,11 +527,7 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                 {
-                    if let Some(wallet) = &self.selected_wallet {
-                        let wallet = wallet.read().unwrap();
-                        let max_amount = wallet.total_balance_duffs();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                    }
+                    self.funding_amount = String::new();
                     let mut step = self.step.write().unwrap(); // Write lock on step
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }

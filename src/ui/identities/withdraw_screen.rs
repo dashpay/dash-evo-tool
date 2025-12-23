@@ -15,14 +15,13 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Ui};
@@ -56,6 +55,7 @@ pub struct WithdrawalScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    show_advanced_options: bool,
 }
 
 impl WithdrawalScreen {
@@ -84,23 +84,22 @@ impl WithdrawalScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message,
+            show_advanced_options: false,
         }
     }
 
-    fn render_key_selection(&mut self, ui: &mut Ui) {
-        let mut selected_identity = Some(self.identity.clone());
-        add_identity_key_chooser(
+    fn render_key_selection(&mut self, ui: &mut Ui) -> AppAction {
+        add_key_chooser(
             ui,
             &self.app_context,
-            std::iter::once(&self.identity),
-            &mut selected_identity,
+            &self.identity,
             &mut self.selected_key,
             TransactionType::Withdraw,
-        );
+        )
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0001).max(0.0);
+        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.005).max(0.0);
         let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
 
         // Lazy initialization with basic configuration
@@ -306,7 +305,13 @@ impl ScreenLike for WithdrawalScreen {
                 return inner_action;
             }
 
-            ui.heading("Withdraw Funds");
+            // Heading with checkbox on the same line
+            ui.horizontal(|ui| {
+                ui.heading("Withdraw Funds");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.show_advanced_options, "Show Advanced Options");
+                });
+            });
             ui.add_space(10.0);
 
             let has_keys = if self.app_context.is_developer_mode() {
@@ -381,21 +386,15 @@ impl ScreenLike for WithdrawalScreen {
                     )));
                 }
             } else {
-                // Select the key to sign with
-                ui.heading("1. Select the key to sign with");
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    self.render_key_selection(ui);
-                    ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
-                        .alias
-                        .as_deref()
-                        .unwrap_or_else(|| &identity_id_string);
-                    ui.label(format!("Identity: {}", identity_display));
-                });
+                // Only show key selection in advanced mode
+                if self.show_advanced_options {
+                    ui.heading("Select the key to sign with");
+                    ui.add_space(10.0);
+                    inner_action |= self.render_key_selection(ui);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                }
 
                 // Render wallet unlock component if needed
                 if let Some(selected_key) = self.selected_key.as_ref() {
@@ -435,21 +434,30 @@ impl ScreenLike for WithdrawalScreen {
                     return inner_action;
                 }
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Input the amount to transfer
-                ui.heading("2. Input the amount to withdraw");
+                // Input the amount to withdraw
+                ui.heading("Amount to withdraw (Dash)");
                 ui.add_space(5.0);
+
+                // Display available balance
+                let balance_dash = self.max_amount as f64 / 100_000_000_000.0;
+                ui.horizontal(|ui| {
+                    ui.label("Available Balance:");
+                    ui.label(
+                        RichText::new(format!("{:.4} Dash", balance_dash))
+                            .color(Color32::from_rgb(0, 128, 255))
+                            .strong(),
+                    );
+                });
+                ui.add_space(5.0);
+
                 self.render_amount_input(ui);
 
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Input the ID of the identity to transfer to
-                ui.heading("3. Dash address to withdraw to");
+                // Input the address to withdraw to
+                ui.heading("Dash address to withdraw to");
                 ui.add_space(5.0);
                 self.render_address_input(ui);
 
@@ -526,12 +534,6 @@ impl ScreenLike for WithdrawalScreen {
                         );
                     }
                 }
-
-                if let WithdrawFromIdentityStatus::ErrorMessage(ref error_message) =
-                    self.withdraw_from_identity_status
-                {
-                    ui.label(format!("Error: {}", error_message));
-                }
             }
 
             inner_action
@@ -539,14 +541,15 @@ impl ScreenLike for WithdrawalScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

@@ -261,7 +261,10 @@ impl Database {
             database_version INTEGER NOT NULL,
             onboarding_completed INTEGER DEFAULT 0,
             show_evonode_tools INTEGER DEFAULT 0,
-            user_mode TEXT DEFAULT 'Advanced'
+            user_mode TEXT DEFAULT 'Advanced',
+            use_local_spv_node INTEGER DEFAULT 0,
+            auto_start_spv INTEGER DEFAULT 1,
+            close_dash_qt_on_exit INTEGER DEFAULT 1
         )",
             [],
         )?;

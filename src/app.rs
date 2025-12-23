@@ -728,16 +728,8 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
-        // Preserve the current backend mode before switching
-        let current_backend_mode = self.current_app_context().core_backend_mode();
-
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
-
-        // Sync the backend mode to the new network's context
-        if app_context.core_backend_mode() != current_backend_mode {
-            app_context.set_core_backend_mode(current_backend_mode);
-        }
 
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())

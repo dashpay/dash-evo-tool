@@ -640,6 +640,15 @@ impl AddNewIdentityScreen {
                 .spacing([10.0, 8.0])
                 .min_row_height(26.0)
                 .show(ui, |ui| {
+                    // Header row
+                    ui.label("Key");
+                    ui.label("WIF");
+                    ui.label("Purpose");
+                    ui.label("Type");
+                    ui.label("Security");
+                    ui.label(""); // Empty header for delete button
+                    ui.end_row();
+
                     // Render master key first
                     if let Some((master_key, _)) = self.identity_keys.master_private_key {
                         // Cell 1: Label

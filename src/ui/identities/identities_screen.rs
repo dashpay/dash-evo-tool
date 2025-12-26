@@ -831,7 +831,7 @@ impl IdentitiesScreen {
                         });
 
             // Add space at the bottom so the horizontal scrollbar doesn't cover content
-            ui.add_space(20.0);
+            ui.add_space(15.0);
         });
 
         action

@@ -150,9 +150,12 @@ impl AddNewIdentityScreen {
                 .request_repaint_after(std::time::Duration::from_secs(1));
         }
 
-        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
+        // Get the amount in DASH from the Amount struct
+        let Some(amount) = &self.funding_amount else {
             return AppAction::None;
         };
+
+        let amount_dash = amount.value() as f64 / 100_000_000_000.0; // credits to DASH
 
         if amount_dash <= 0.0 {
             return AppAction::None;

@@ -58,7 +58,8 @@ pub struct TopUpIdentityScreen {
     pub app_context: Arc<AppContext>,
     // Platform address fields
     selected_platform_address: Option<(Address, PlatformAddress, Credits)>,
-    platform_top_up_amount: String,
+    platform_top_up_amount: Option<Amount>,
+    platform_top_up_amount_input: Option<AmountInput>,
 }
 
 impl TopUpIdentityScreen {
@@ -80,7 +81,8 @@ impl TopUpIdentityScreen {
             show_pop_up_info: None,
             app_context: app_context.clone(),
             selected_platform_address: None,
-            platform_top_up_amount: String::new(),
+            platform_top_up_amount: None,
+            platform_top_up_amount_input: None,
         }
     }
 

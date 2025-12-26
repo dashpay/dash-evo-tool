@@ -23,7 +23,6 @@ use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -33,6 +32,10 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
 use egui::{Button, Color32, ComboBox, ScrollArea, Ui};
+
+use crate::model::amount::Amount;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use std::cmp::PartialEq;
 use std::fmt;
 use std::sync::atomic::Ordering;
@@ -71,8 +74,8 @@ pub struct AddNewIdentityScreen {
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
-    funding_amount: String,
-    funding_amount_exact: Option<Duffs>,
+    funding_amount: Option<Amount>,
+    funding_amount_input: Option<AmountInput>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
@@ -88,8 +91,9 @@ pub struct AddNewIdentityScreen {
         dash_sdk::dpp::address_funds::PlatformAddress,
         dash_sdk::dpp::fee::Credits,
     )>,
-    /// Amount input for Platform address funding (DASH)
-    platform_funding_amount_input: String,
+    /// Amount input for Platform address funding
+    platform_funding_amount: Option<Amount>,
+    platform_funding_amount_input: Option<AmountInput>,
     /// Whether to show advanced options
     show_advanced_options: bool,
 }
@@ -129,8 +133,8 @@ impl AddNewIdentityScreen {
             core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
-            funding_amount: "0.5".to_string(),
-            funding_amount_exact: None,
+            funding_amount: None,
+            funding_amount_input: None,
             funding_utxo: None,
             alias_input: String::new(),
             copied_to_clipboard: None,
@@ -147,7 +151,8 @@ impl AddNewIdentityScreen {
             app_context: app_context.clone(),
             successful_qualified_identity_id: None,
             selected_platform_address_for_funding: None,
-            platform_funding_amount_input: "0.5".to_string(),
+            platform_funding_amount: None,
+            platform_funding_amount_input: None,
             show_advanced_options: false,
         };
 
@@ -495,7 +500,8 @@ impl AddNewIdentityScreen {
                 {
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::ChooseFundingMethod;
-                    self.funding_amount = "0.5".to_string();
+                    self.funding_amount = None;
+                    self.funding_amount_input = None;
                 }
 
                 let (has_unused_asset_lock, has_balance) = {
@@ -516,7 +522,8 @@ impl AddNewIdentityScreen {
                         .expect("failed to initialize keys");
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::ReadyToCreate;
-                    self.funding_amount = "0.5".to_string();
+                    self.funding_amount = None;
+                    self.funding_amount_input = None;
                 }
                 if has_balance
                     && ui
@@ -527,7 +534,8 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                 {
-                    self.funding_amount = String::new();
+                    self.funding_amount = None;
+                    self.funding_amount_input = None;
                     let mut step = self.step.write().unwrap(); // Write lock on step
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }
@@ -541,7 +549,8 @@ impl AddNewIdentityScreen {
                 {
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::WaitingOnFunds;
-                    self.funding_amount = "0.5".to_string();
+                    self.funding_amount = None;
+                    self.funding_amount_input = None;
                 }
 
                 // Check if wallet has Platform address balance
@@ -565,7 +574,8 @@ impl AddNewIdentityScreen {
                         .expect("failed to initialize keys");
                     let mut step = self.step.write().unwrap();
                     *step = WalletFundedScreenStep::ReadyToCreate;
-                    self.platform_funding_amount_input = "0.5".to_string();
+                    self.platform_funding_amount = None;
+                    self.platform_funding_amount_input = None;
                     self.selected_platform_address_for_funding = None;
                 }
             });
@@ -726,10 +736,12 @@ impl AddNewIdentityScreen {
                 }
             }
             FundingMethod::UseWalletBalance => {
-                // Parse the funding amount or fall back to the default value
-                let amount = self.funding_amount_exact.unwrap_or_else(|| {
-                    (self.funding_amount.parse::<f64>().unwrap_or(0.0) * 1e8) as u64
-                });
+                // Get the funding amount in duffs from the Amount
+                let amount = self
+                    .funding_amount
+                    .as_ref()
+                    .map(|a| a.value() / 1000) // Convert credits to duffs
+                    .unwrap_or(0);
 
                 if amount == 0 {
                     return AppAction::None;
@@ -798,48 +810,36 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = self.funding_method.read().unwrap();
+        let funding_method = *self.funding_method.read().unwrap();
 
-        ui.horizontal(|ui| {
-            ui.label("Amount (DASH):");
+        // Calculate max amount if using wallet balance
+        let max_amount_credits = if funding_method == FundingMethod::UseWalletBalance {
+            self.selected_wallet.as_ref().map(|wallet| {
+                let wallet = wallet.read().unwrap();
+                // Convert duffs to credits (1 duff = 1000 credits)
+                wallet.total_balance_duffs() * 1000
+            })
+        } else {
+            None
+        };
 
-            // Render the text input field for the funding amount
-            let amount_input = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.funding_amount)
-                        .hint_text("Enter amount (e.g., 0.1234)")
-                        .desired_width(100.0),
-                )
-                .lost_focus();
+        let show_max_button = funding_method == FundingMethod::UseWalletBalance;
 
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if amount_input && enter_pressed {
-                // Optional: Validate the input when Enter is pressed
-                if self.funding_amount.parse::<f64>().is_err() {
-                    ui.label("Invalid amount. Please enter a valid number.");
-                }
-            }
-
-            // Check if the funding method is `UseWalletBalance`
-            if *funding_method == FundingMethod::UseWalletBalance {
-                // Safely access the selected wallet
-                if let Some(wallet) = &self.selected_wallet {
-                    let wallet = wallet.read().unwrap(); // Read lock on the wallet
-                    if ui.button("Max").clicked() {
-                        let max_amount = wallet.total_balance_duffs();
-                        self.funding_amount = format!("{:.4}", max_amount as f64 * 1e-8);
-                        self.funding_amount_exact = Some(max_amount);
-                    }
-                }
-            }
-
-            if self.funding_amount.parse::<f64>().is_err()
-                || self.funding_amount.parse::<f64>().unwrap_or_default() <= 0.0
-            {
-                ui.colored_label(Color32::DARK_RED, "Invalid amount");
-            }
+        let amount_input = self.funding_amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::new_dash(0.0))
+                .with_label("Amount (DASH):")
+                .with_hint_text("Enter amount (e.g., 0.1234)")
+                .with_max_button(show_max_button)
+                .with_desired_width(150.0)
         });
+
+        // Update max amount and max button visibility dynamically
+        amount_input
+            .set_max_amount(max_amount_credits)
+            .set_show_max_button(show_max_button);
+
+        let response = amount_input.show(ui);
+        response.inner.update(&mut self.funding_amount);
 
         ui.add_space(10.0);
     }

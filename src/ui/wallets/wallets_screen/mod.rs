@@ -8,7 +8,8 @@ use crate::model::wallet::{
     DerivationPathHelpers, DerivationPathReference, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::spv::CoreBackendMode;
-use crate::ui::components::component_trait::Component;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -97,7 +98,8 @@ struct AddressData {
 struct SendDialogState {
     is_open: bool,
     address: String,
-    amount: String,
+    amount: Option<Amount>,
+    amount_input: Option<AmountInput>,
     subtract_fee: bool,
     memo: String,
     error: Option<String>,
@@ -1334,11 +1336,6 @@ impl WalletsBalancesScreen {
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
-    fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
-        let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
-        amount.dash_to_duffs()
-    }
-
     fn platform_balance_duffs(wallet: &Wallet) -> u64 {
         // Only sum Platform address balances
         // Identity balances are shown separately on the Identities screen
@@ -1699,8 +1696,18 @@ impl WalletsBalancesScreen {
                 ui.label("Recipient Address");
                 ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text("y..."));
 
-                ui.label("Amount (DASH)");
-                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.amount).hint_text("0.01"));
+                ui.add_space(8.0);
+
+                // Amount input using AmountInput component
+                let amount_input = self.send_dialog.amount_input.get_or_insert_with(|| {
+                    AmountInput::new(Amount::new_dash(0.0))
+                        .with_label("Amount (DASH):")
+                        .with_hint_text("Enter amount (e.g., 0.01)")
+                        .with_desired_width(150.0)
+                });
+
+                let response = amount_input.show(ui);
+                response.inner.update(&mut self.send_dialog.amount);
 
                 ui.checkbox(
                     &mut self.send_dialog.subtract_fee,
@@ -2512,11 +2519,20 @@ impl WalletsBalancesScreen {
             .as_ref()
             .ok_or_else(|| "Select a wallet first".to_string())?;
 
-        let amount = Self::parse_amount_to_duffs(&self.send_dialog.amount)?;
+        let amount_duffs = self
+            .send_dialog
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Enter an amount".to_string())?
+            .dash_to_duffs()?;
+
+        if amount_duffs == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
 
         {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-            if amount > wallet_guard.confirmed_balance_duffs() {
+            if amount_duffs > wallet_guard.confirmed_balance_duffs() {
                 return Err("Insufficient confirmed balance".to_string());
             }
         }
@@ -2529,7 +2545,7 @@ impl WalletsBalancesScreen {
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: self.send_dialog.address.trim().to_string(),
-                amount_duffs: amount,
+                amount_duffs,
             }],
             subtract_fee_from_amount: self.send_dialog.subtract_fee,
             memo: if memo.is_empty() {

@@ -43,9 +43,16 @@ impl AddNewIdentityScreen {
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
 
-        let Ok(_) = self.funding_amount.parse::<f64>() else {
+        // Check if we have a valid amount before showing the button
+        let has_valid_amount = self
+            .funding_amount
+            .as_ref()
+            .map(|a| a.value() > 0)
+            .unwrap_or(false);
+
+        if !has_valid_amount {
             return action;
-        };
+        }
 
         let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 128, 255))

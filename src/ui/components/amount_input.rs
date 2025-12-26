@@ -2,7 +2,7 @@ use crate::model::amount::Amount;
 use crate::ui::components::{Component, ComponentResponse};
 use dash_sdk::dpp::balances::credits::MAX_CREDITS;
 use dash_sdk::dpp::fee::Credits;
-use egui::{InnerResponse, Response, TextEdit, Ui, WidgetText};
+use egui::{Color32, InnerResponse, Response, TextEdit, Ui, WidgetText};
 
 /// Response from the amount input widget
 #[derive(Clone)]
@@ -83,7 +83,7 @@ pub struct AmountInput {
     decimal_places: u8,
     unit_name: Option<String>,
     label: Option<WidgetText>,
-    hint_text: Option<WidgetText>,
+    hint_text: Option<String>,
     max_amount: Option<Credits>,
     min_amount: Option<Credits>,
     show_max_button: bool,
@@ -189,13 +189,13 @@ impl AmountInput {
     }
 
     /// Sets the hint text for the input field.
-    pub fn with_hint_text<T: Into<WidgetText>>(mut self, hint_text: T) -> Self {
+    pub fn with_hint_text(mut self, hint_text: impl Into<String>) -> Self {
         self.hint_text = Some(hint_text.into());
         self
     }
 
     /// Sets the hint text for the input field (mutable reference version).
-    pub fn set_hint_text<T: Into<WidgetText>>(&mut self, hint_text: T) -> &mut Self {
+    pub fn set_hint_text(&mut self, hint_text: impl Into<String>) -> &mut Self {
         self.hint_text = Some(hint_text.into());
         self
     }
@@ -318,7 +318,9 @@ impl AmountInput {
             let mut text_edit = TextEdit::singleline(&mut self.amount_str);
 
             if let Some(hint) = &self.hint_text {
-                text_edit = text_edit.hint_text(hint.clone());
+                // Use RichText with gray color for proper hint text styling
+                let hint_text = egui::RichText::new(hint).color(Color32::GRAY);
+                text_edit = text_edit.hint_text(hint_text);
             }
 
             if let Some(width) = self.desired_width {

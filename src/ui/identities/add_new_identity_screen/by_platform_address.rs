@@ -1,4 +1,7 @@
 use crate::app::AppAction;
+use crate::model::amount::Amount;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
@@ -122,11 +125,11 @@ impl AddNewIdentityScreen {
                         .unwrap_or(false);
 
                     if ui.selectable_label(is_selected, label).clicked() {
-                        // Parse the amount to credits
+                        // Get the amount from the AmountInput component
                         let amount_credits = self
-                            .platform_funding_amount_input
-                            .parse::<f64>()
-                            .map(|dash| (dash * 1e8 * CREDITS_PER_DUFF as f64) as u64)
+                            .platform_funding_amount
+                            .as_ref()
+                            .map(|a| a.value())
                             .unwrap_or(0);
                         self.selected_platform_address_for_funding =
                             Some((*platform_addr, amount_credits.min(*balance)));
@@ -136,47 +139,45 @@ impl AddNewIdentityScreen {
 
         ui.add_space(10.0);
 
-        // Amount input
-        ui.horizontal(|ui| {
-            ui.label("Amount (DASH):");
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.platform_funding_amount_input)
-                    .hint_text("0.5")
-                    .desired_width(100.0),
-            );
-
-            // Update selected amount when text changes
-            if response.changed()
-                && let Some((platform_addr, _)) = self.selected_platform_address_for_funding
-            {
-                let max_balance = platform_addresses
-                    .iter()
-                    .find(|(_, addr, _)| *addr == platform_addr)
-                    .map(|(_, _, balance)| *balance)
-                    .unwrap_or(0);
-
-                let amount_credits = self
-                    .platform_funding_amount_input
-                    .parse::<f64>()
-                    .map(|dash| (dash * 1e8 * CREDITS_PER_DUFF as f64) as u64)
-                    .unwrap_or(0);
-
-                self.selected_platform_address_for_funding =
-                    Some((platform_addr, amount_credits.min(max_balance)));
-            }
-
-            // Max button
-            if let Some((platform_addr, _)) = &self.selected_platform_address_for_funding
-                && let Some((_, _, balance)) = platform_addresses
+        // Get max balance for the selected platform address
+        let max_balance_credits = self
+            .selected_platform_address_for_funding
+            .as_ref()
+            .and_then(|(platform_addr, _)| {
+                platform_addresses
                     .iter()
                     .find(|(_, addr, _)| addr == platform_addr)
-                && ui.small_button("Max").clicked()
-            {
-                let max_dash = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                self.platform_funding_amount_input = format!("{:.8}", max_dash);
-                self.selected_platform_address_for_funding = Some((*platform_addr, *balance));
-            }
+                    .map(|(_, _, balance)| *balance)
+            });
+
+        // Amount input using AmountInput component
+        let amount_input = self.platform_funding_amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::new_dash(0.0))
+                .with_label("Amount (DASH):")
+                .with_hint_text("Enter amount (e.g., 0.5)")
+                .with_max_button(true)
+                .with_desired_width(150.0)
         });
+
+        // Update max amount dynamically based on selected platform address
+        amount_input.set_max_amount(max_balance_credits);
+
+        let response = amount_input.show(ui);
+        response.inner.update(&mut self.platform_funding_amount);
+
+        // Update selected_platform_address_for_funding with the new amount
+        if response.inner.changed
+            && let Some((platform_addr, _)) = self.selected_platform_address_for_funding
+        {
+            let amount_credits = self
+                .platform_funding_amount
+                .as_ref()
+                .map(|a| a.value())
+                .unwrap_or(0);
+            let max_balance = max_balance_credits.unwrap_or(u64::MAX);
+            self.selected_platform_address_for_funding =
+                Some((platform_addr, amount_credits.min(max_balance)));
+        }
 
         // Show selected amount info
         if let Some((_, amount)) = &self.selected_platform_address_for_funding {

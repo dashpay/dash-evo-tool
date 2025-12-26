@@ -217,7 +217,7 @@ impl SingleKeyWalletSendScreen {
                         ui.add_space(5.0);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recipients[i].address)
-                                .hint_text("Enter Dash address (e.g., y...)")
+                                .hint_text(RichText::new("Enter Dash address (e.g., y...)").color(Color32::GRAY))
                                 .desired_width(600.0),
                         );
 
@@ -232,7 +232,7 @@ impl SingleKeyWalletSendScreen {
                         ui.add_space(5.0);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recipients[i].amount)
-                                .hint_text("0.01")
+                                .hint_text(RichText::new("0.01").color(Color32::GRAY))
                                 .desired_width(150.0),
                         );
 

@@ -5,6 +5,8 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -138,7 +140,8 @@ pub struct WalletSendScreen {
     // Unified send fields (simple mode)
     selected_source: Option<SourceSelection>,
     destination_address: String,
-    amount: String,
+    amount: Option<Amount>,
+    amount_input: Option<AmountInput>,
 
     // Advanced mode state
     show_advanced_options: bool,
@@ -170,7 +173,8 @@ impl WalletSendScreen {
             selected_wallet_seed_hash: seed_hash,
             selected_source: Some(SourceSelection::CoreWallet),
             destination_address: String::new(),
-            amount: String::new(),
+            amount: None,
+            amount_input: None,
             show_advanced_options: false,
             advanced_source_type: AdvancedSourceType::Core,
             core_inputs: Vec::new(),
@@ -189,7 +193,8 @@ impl WalletSendScreen {
 
     fn reset_form(&mut self) {
         self.destination_address.clear();
-        self.amount.clear();
+        self.amount = None;
+        self.amount_input = None;
         self.selected_source = Some(SourceSelection::CoreWallet);
         self.advanced_source_type = AdvancedSourceType::Core;
         self.core_inputs.clear();
@@ -368,9 +373,12 @@ impl WalletSendScreen {
         }
 
         // Validate amount
-        let amount_str = self.amount.trim();
-        if amount_str.is_empty() {
-            return Err("Please enter an amount".to_string());
+        let amount = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Please enter an amount".to_string())?;
+        if amount.value() == 0 {
+            return Err("Amount must be greater than 0".to_string());
         }
 
         drop(wallet_guard);
@@ -392,7 +400,11 @@ impl WalletSendScreen {
     }
 
     fn send_core_to_core(&mut self) -> Result<AppAction, String> {
-        let amount_duffs = Self::parse_amount_to_duffs(&self.amount)?;
+        let amount_duffs = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .dash_to_duffs()?;
         if amount_duffs == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
@@ -437,7 +449,11 @@ impl WalletSendScreen {
     }
 
     fn send_core_to_platform(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
-        let amount_duffs = Self::parse_amount_to_duffs(&self.amount)?;
+        let amount_duffs = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .dash_to_duffs()?;
         if amount_duffs == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
@@ -480,7 +496,12 @@ impl WalletSendScreen {
         source_addr: PlatformAddress,
         source_core_addr: Address,
     ) -> Result<AppAction, String> {
-        let amount_credits = Self::parse_amount_to_credits(&self.amount)?;
+        // Amount in credits (Amount stores in credits for DASH with 11 decimal places)
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
         if amount_credits == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
@@ -538,7 +559,12 @@ impl WalletSendScreen {
         source_core_addr: Address,
         network: dash_sdk::dpp::dashcore::Network,
     ) -> Result<AppAction, String> {
-        let amount_credits = Self::parse_amount_to_credits(&self.amount)?;
+        // Amount in credits
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
         if amount_credits == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
@@ -858,23 +884,41 @@ impl WalletSendScreen {
 
         ui.add_space(8.0);
 
+        // Get max amount based on source selection
+        let max_amount_credits = match &self.selected_source {
+            Some(SourceSelection::CoreWallet) => self.selected_wallet.as_ref().map(|w| {
+                let wallet = w.read().unwrap();
+                wallet.total_balance_duffs() * 1000 // duffs to credits
+            }),
+            Some(SourceSelection::PlatformAddress(_, core_addr)) => {
+                self.selected_wallet.as_ref().and_then(|w| {
+                    let wallet = w.read().unwrap();
+                    wallet
+                        .platform_address_info
+                        .get(core_addr)
+                        .map(|info| info.balance)
+                })
+            }
+            None => None,
+        };
+
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
             .corner_radius(5.0)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.amount)
-                            .hint_text("0.0")
-                            .desired_width(150.0),
-                    );
-                    ui.label(
-                        RichText::new("DASH")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
+                let amount_input = self.amount_input.get_or_insert_with(|| {
+                    AmountInput::new(Amount::new_dash(0.0))
+                        .with_hint_text("Enter amount")
+                        .with_max_button(true)
+                        .with_desired_width(150.0)
                 });
+
+                // Update max amount dynamically
+                amount_input.set_max_amount(max_amount_credits);
+
+                let response = amount_input.show(ui);
+                response.inner.update(&mut self.amount);
             });
 
         // Show transaction type hint
@@ -900,7 +944,11 @@ impl WalletSendScreen {
 
         let dest_type = self.detect_address_type(&self.destination_address);
         let has_destination = dest_type != AddressType::Unknown;
-        let has_amount = !self.amount.trim().is_empty();
+        let has_amount = self
+            .amount
+            .as_ref()
+            .map(|a| a.value() > 0)
+            .unwrap_or(false);
         let has_source = self.selected_source.is_some();
 
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult(_));
@@ -1204,7 +1252,9 @@ impl WalletSendScreen {
                             ui.label("Amount:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.core_inputs[idx].amount)
-                                    .hint_text("0.0")
+                                    .hint_text(
+                                        RichText::new("0.0").color(Color32::GRAY),
+                                    )
                                     .desired_width(100.0),
                             );
                             ui.label(
@@ -1332,7 +1382,9 @@ impl WalletSendScreen {
                             ui.label("Amount:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.platform_inputs[idx].amount)
-                                    .hint_text("0.0")
+                                    .hint_text(
+                                        RichText::new("0.0").color(Color32::GRAY),
+                                    )
                                     .desired_width(100.0),
                             );
                             ui.label(
@@ -1435,7 +1487,9 @@ impl WalletSendScreen {
                             ui.label("Amount:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.advanced_outputs[idx].amount)
-                                    .hint_text("0.0")
+                                    .hint_text(
+                                        RichText::new("0.0").color(Color32::GRAY),
+                                    )
                                     .desired_width(100.0),
                             );
                             ui.label(
@@ -1730,7 +1784,10 @@ impl WalletSendScreen {
 
         // Use the simple mode logic by temporarily setting the values
         self.destination_address = output.address.clone();
-        self.amount = output.amount.clone();
+        // Parse the string amount from advanced output to Amount
+        self.amount = Amount::parse(&output.amount, DASH_DECIMAL_PLACES)
+            .ok()
+            .map(|a| a.with_unit_name("DASH"));
         self.selected_source = Some(SourceSelection::CoreWallet);
 
         let wallet = self.selected_wallet.as_ref().ok_or("No wallet")?;

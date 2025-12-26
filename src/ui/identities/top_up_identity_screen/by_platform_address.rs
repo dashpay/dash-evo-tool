@@ -1,7 +1,10 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::model::amount::Amount;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -86,23 +89,33 @@ impl TopUpIdentityScreen {
         ui.heading(format!("{}. Enter the amount to top up.", step_number + 1));
         ui.add_space(10.0);
 
+        // Get max balance for the selected platform address
+        let max_balance_credits = self
+            .selected_platform_address
+            .as_ref()
+            .map(|(_, _, balance)| *balance);
+
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
             .corner_radius(5.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Amount (DASH):")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
-                    ui.add_space(5.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.platform_top_up_amount)
-                            .hint_text("0.01")
-                            .desired_width(150.0),
-                    );
+                    // Amount input using AmountInput component
+                    let amount_input =
+                        self.platform_top_up_amount_input.get_or_insert_with(|| {
+                            AmountInput::new(Amount::new_dash(0.0))
+                                .with_label("Amount (DASH):")
+                                .with_hint_text("Enter amount (e.g., 0.01)")
+                                .with_max_button(true)
+                                .with_desired_width(150.0)
+                        });
+
+                    // Update max amount dynamically based on selected platform address
+                    amount_input.set_max_amount(max_balance_credits);
+
+                    let response = amount_input.show(ui);
+                    response.inner.update(&mut self.platform_top_up_amount);
 
                     if let Some((_, _, balance)) = &self.selected_platform_address {
                         ui.add_space(10.0);
@@ -111,12 +124,6 @@ impl TopUpIdentityScreen {
                                 .color(DashColors::text_secondary(dark_mode))
                                 .size(12.0),
                         );
-
-                        ui.add_space(5.0);
-                        if ui.small_button("Max").clicked() {
-                            let max_dash = *balance as f64 / 1000.0 / 100_000_000.0;
-                            self.platform_top_up_amount = format!("{:.8}", max_dash);
-                        }
                     }
                 });
             });
@@ -124,9 +131,13 @@ impl TopUpIdentityScreen {
         ui.add_space(20.0);
 
         // Top Up button
-        let can_top_up = self.selected_platform_address.is_some()
-            && !self.platform_top_up_amount.is_empty()
-            && self.wallet.is_some();
+        let has_valid_amount = self
+            .platform_top_up_amount
+            .as_ref()
+            .map(|a| a.value() > 0)
+            .unwrap_or(false);
+        let can_top_up =
+            self.selected_platform_address.is_some() && has_valid_amount && self.wallet.is_some();
 
         let step = { *self.step.read().unwrap() };
 
@@ -194,26 +205,6 @@ impl TopUpIdentityScreen {
         format!("{:.8} DASH", dash_equivalent)
     }
 
-    /// Parse amount string to credits
-    fn parse_amount_to_credits(input: &str) -> Result<Credits, String> {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            return Err("Amount is required".to_string());
-        }
-
-        let dash_amount: f64 = trimmed
-            .parse()
-            .map_err(|_| "Invalid amount format".to_string())?;
-
-        if dash_amount <= 0.0 {
-            return Err("Amount must be positive".to_string());
-        }
-
-        // Convert DASH to credits: 1 DASH = 100_000_000 duffs, 1 duff = 1000 credits
-        let credits = (dash_amount * 100_000_000.0 * 1000.0) as Credits;
-        Ok(credits)
-    }
-
     /// Validate and create the top-up task
     fn validate_and_top_up_from_platform(&mut self) -> Result<AppAction, String> {
         let (_, platform_addr, available_balance) = self
@@ -221,7 +212,15 @@ impl TopUpIdentityScreen {
             .clone()
             .ok_or_else(|| "Please select a Platform address".to_string())?;
 
-        let amount = Self::parse_amount_to_credits(&self.platform_top_up_amount)?;
+        let amount = self
+            .platform_top_up_amount
+            .as_ref()
+            .map(|a| a.value())
+            .ok_or_else(|| "Amount is required".to_string())?;
+
+        if amount == 0 {
+            return Err("Amount must be positive".to_string());
+        }
 
         if amount > available_balance {
             return Err(format!(

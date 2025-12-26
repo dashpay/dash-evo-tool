@@ -434,7 +434,7 @@ impl IdentitiesScreen {
                          on \"Load Identity\" at the top right, or",
                     );
                     ui.add_space(1.0);
-                    ui.label("• REGISTER an Identity after creating or importing a wallet.");
+                    ui.label("• CREATE an Identity after creating or importing a wallet.");
 
                     ui.add_space(10.0);
                     ui.separator();
@@ -829,6 +829,9 @@ impl IdentitiesScreen {
                                 });
                             }
                         });
+
+            // Add space at the bottom so the horizontal scrollbar doesn't cover content
+            ui.add_space(20.0);
         });
 
         action

@@ -258,7 +258,10 @@ impl AddNewIdentityScreen {
         let mut index_changed = false; // Track if the index has changed
 
         ui.horizontal(|ui| {
-            ui.label("Identity Index:");
+            ui.vertical(|ui| {
+                ui.add_space(15.0);
+                ui.label("Identity Index:");
+            });
 
             // Check if we have access to the selected wallet
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
@@ -585,7 +588,10 @@ impl AddNewIdentityScreen {
     fn render_key_selection(&mut self, ui: &mut egui::Ui) {
         // Provide the selection toggle for Default or Advanced mode
         ui.horizontal(|ui| {
-            ui.label("Key Selection Mode:");
+            ui.vertical(|ui| {
+                ui.add_space(15.0);
+                ui.label("Key Selection Mode:");
+            });
 
             ComboBox::from_id_salt("key_selection_mode")
                 .selected_text(if self.in_key_selection_advanced_mode {
@@ -616,12 +622,7 @@ impl AddNewIdentityScreen {
 
         // Render additional key options only if "Advanced" mode is selected
         if self.in_key_selection_advanced_mode {
-            // Render the master key input
-            if let Some((master_key, _)) = self.identity_keys.master_private_key {
-                self.render_master_key(ui, master_key);
-            }
-
-            // Render additional keys input (if any) and allow adding more keys
+            // Render all keys in one grid
             self.render_keys_input(ui);
         } else {
             ui.colored_label(Color32::DARK_GREEN, "Default allows for most operations on Platform: updating the identity, interacting with data contracts, transferring credits to other identities, and withdrawing to the Core payment chain. More keys can always be added later.".to_string());
@@ -630,61 +631,138 @@ impl AddNewIdentityScreen {
 
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
         let mut keys_to_remove = vec![];
+        let has_master_key = self.identity_keys.master_private_key.is_some();
+        let has_other_keys = !self.identity_keys.keys_input.is_empty();
 
-        for (i, ((key, _), key_type, purpose, security_level)) in
-            self.identity_keys.keys_input.iter_mut().enumerate()
-        {
-            ui.add_space(5.0);
-            ui.horizontal(|ui| {
-                ui.label(format!(" • Key {}:", i + 1));
-                ui.label(key.to_wif());
+        if has_master_key || has_other_keys {
+            egui::Grid::new("all_keys_grid")
+                .num_columns(6)
+                .spacing([10.0, 8.0])
+                .min_row_height(26.0)
+                .show(ui, |ui| {
+                    // Render master key first
+                    if let Some((master_key, _)) = self.identity_keys.master_private_key {
+                        // Cell 1: Label
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.add_space(8.0);
+                                ui.add(egui::Label::new(" • Master Key:").wrap_mode(egui::TextWrapMode::Extend));
+                            });
+                        });
 
-                // Purpose selection
-                ComboBox::from_id_salt(format!("purpose_combo_{}", i))
-                    .selected_text(format!("{:?}", purpose))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(purpose, Purpose::AUTHENTICATION, "AUTHENTICATION");
-                        ui.selectable_value(purpose, Purpose::TRANSFER, "TRANSFER");
-                    });
+                        // Cell 2: WIF
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.add_space(8.0);
+                                ui.add(egui::Label::new(master_key.to_wif()).wrap_mode(egui::TextWrapMode::Extend));
+                            });
+                        });
 
-                // Key Type selection with conditional filtering
-                ComboBox::from_id_salt(format!("key_type_combo_{}", i))
-                    .selected_text(format!("{:?}", key_type))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
-                        ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
-                        // ui.selectable_value(key_type, KeyType::BLS12_381, "BLS12_381");
-                        // ui.selectable_value(
-                        //     key_type,
-                        //     KeyType::EDDSA_25519_HASH160,
-                        //     "EDDSA_25519_HASH160",
-                        // );
-                    });
+                        // Cell 3: Empty (no purpose for master)
+                        ui.label("");
 
-                // Security Level selection with conditional filtering
-                ComboBox::from_id_salt(format!("security_level_combo_{}", i))
-                    .selected_text(format!("{:?}", security_level))
-                    .show_ui(ui, |ui| {
-                        if *purpose == Purpose::TRANSFER {
-                            // For TRANSFER purpose, security level is locked to CRITICAL
-                            *security_level = SecurityLevel::CRITICAL;
-                            ui.label("Locked to CRITICAL");
-                        } else {
-                            // For AUTHENTICATION, allow all except MASTER
-                            ui.selectable_value(
-                                security_level,
-                                SecurityLevel::CRITICAL,
-                                "CRITICAL",
-                            );
-                            ui.selectable_value(security_level, SecurityLevel::HIGH, "HIGH");
-                            ui.selectable_value(security_level, SecurityLevel::MEDIUM, "MEDIUM");
-                        }
-                    });
+                        // Cell 4: Key Type selection
+                        ui.vertical(|ui| {
+                            ui.add_space(14.0);
+                            ComboBox::from_id_salt("master_key_type")
+                                .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.identity_keys.master_private_key_type,
+                                        KeyType::ECDSA_SECP256K1,
+                                        "ECDSA_SECP256K1",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.identity_keys.master_private_key_type,
+                                        KeyType::ECDSA_HASH160,
+                                        "ECDSA_HASH160",
+                                    );
+                                });
+                        });
 
-                if ui.button("-").clicked() {
-                    keys_to_remove.push(i);
-                }
-            });
+                        // Cell 5: Empty (no security level selector for master)
+                        ui.label("");
+
+                        // Cell 6: Empty (no delete for master)
+                        ui.label("");
+
+                        ui.end_row();
+                    }
+
+                    // Render other keys
+                    for (i, ((key, _), key_type, purpose, security_level)) in
+                        self.identity_keys.keys_input.iter_mut().enumerate()
+                    {
+                        // Cell 1: Key number
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.add_space(8.0);
+                                ui.add(egui::Label::new(format!(" • Key {}:", i + 1)).wrap_mode(egui::TextWrapMode::Extend));
+                            });
+                        });
+
+                        // Cell 2: WIF
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.add_space(8.0);
+                                ui.add(egui::Label::new(key.to_wif()).wrap_mode(egui::TextWrapMode::Extend));
+                            });
+                        });
+
+                        // Cell 3: Purpose selection
+                        ui.vertical(|ui| {
+                            ui.add_space(14.0);
+                            ComboBox::from_id_salt(format!("purpose_combo_{}", i))
+                                .selected_text(format!("{:?}", purpose))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(purpose, Purpose::AUTHENTICATION, "AUTHENTICATION");
+                                    ui.selectable_value(purpose, Purpose::TRANSFER, "TRANSFER");
+                                });
+                        });
+
+                        // Cell 4: Key Type selection
+                        ui.vertical(|ui| {
+                            ui.add_space(14.0);
+                            ComboBox::from_id_salt(format!("key_type_combo_{}", i))
+                                .selected_text(format!("{:?}", key_type))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
+                                    ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
+                                });
+                        });
+
+                        // Cell 5: Security Level selection
+                        ui.vertical(|ui| {
+                            ui.add_space(14.0);
+                            ComboBox::from_id_salt(format!("security_level_combo_{}", i))
+                                .selected_text(format!("{:?}", security_level))
+                                .show_ui(ui, |ui| {
+                                    if *purpose == Purpose::TRANSFER {
+                                        *security_level = SecurityLevel::CRITICAL;
+                                        ui.label("Locked to CRITICAL");
+                                    } else {
+                                        ui.selectable_value(
+                                            security_level,
+                                            SecurityLevel::CRITICAL,
+                                            "CRITICAL",
+                                        );
+                                        ui.selectable_value(security_level, SecurityLevel::HIGH, "HIGH");
+                                        ui.selectable_value(security_level, SecurityLevel::MEDIUM, "MEDIUM");
+                                    }
+                                });
+                        });
+
+                        // Cell 6: Delete button
+                        ui.vertical(|ui| {
+                            ui.add_space(14.0);
+                            if ui.button("-").clicked() {
+                                keys_to_remove.push(i);
+                            }
+                        });
+
+                        ui.end_row();
+                    }
+                });
         }
 
         // Remove keys marked for deletion
@@ -918,27 +996,6 @@ impl AddNewIdentityScreen {
         }
     }
 
-    fn render_master_key(&mut self, ui: &mut egui::Ui, key: PrivateKey) {
-        ui.horizontal(|ui| {
-            ui.label(" • Master Private Key:");
-            ui.label(key.to_wif());
-
-            ComboBox::from_id_salt("master_key_type")
-                .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.identity_keys.master_private_key_type,
-                        KeyType::ECDSA_SECP256K1,
-                        "ECDSA_SECP256K1",
-                    );
-                    ui.selectable_value(
-                        &mut self.identity_keys.master_private_key_type,
-                        KeyType::ECDSA_HASH160,
-                        "ECDSA_HASH160",
-                    );
-                });
-        });
-    }
 }
 
 impl ScreenLike for AddNewIdentityScreen {

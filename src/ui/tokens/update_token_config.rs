@@ -34,7 +34,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
+use egui::{Frame, Margin, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -1052,17 +1052,31 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
                 action |= self.render_token_config_updater(ui);
 
-                if let Some((msg, msg_type, _)) = &self.backend_message {
+                if let Some((msg, msg_type, _)) = self.backend_message.clone() {
                     ui.add_space(10.0);
                     match msg_type {
                         MessageType::Success => {
-                            ui.colored_label(Color32::DARK_GREEN, msg);
+                            ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
                         MessageType::Error => {
-                            ui.colored_label(Color32::DARK_RED, msg);
+                            let error_color = Color32::from_rgb(255, 100, 100);
+                            Frame::new()
+                                .fill(error_color.gamma_multiply(0.1))
+                                .inner_margin(Margin::symmetric(10, 8))
+                                .corner_radius(5.0)
+                                .stroke(egui::Stroke::new(1.0, error_color))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                        ui.add_space(10.0);
+                                        if ui.small_button("Dismiss").clicked() {
+                                            self.backend_message = None;
+                                        }
+                                    });
+                                });
                         }
                         MessageType::Info => {
-                            ui.label(msg);
+                            ui.label(&msg);
                         }
                     };
                 }

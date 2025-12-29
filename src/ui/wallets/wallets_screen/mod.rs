@@ -145,7 +145,11 @@ struct FundPlatformAddressDialogState {
     /// List of Platform addresses available
     platform_addresses: Vec<(String, u64)>,
     status: Option<String>,
+    /// Whether the current status is an error message
+    status_is_error: bool,
     is_processing: bool,
+    /// Whether we should continue funding after the wallet is unlocked
+    pending_fund_after_unlock: bool,
 }
 
 /// State for the Private Key dialog
@@ -1126,15 +1130,22 @@ impl WalletsBalancesScreen {
                         });
                     } else {
                         // Collect Platform addresses for the fund dialog (using DIP-18 Bech32m format)
+                        // Get from known_addresses where path is platform payment
                         let network = self.app_context.network;
                         let platform_addresses: Vec<(String, u64)> = wallet
-                            .platform_address_info
+                            .known_addresses
                             .iter()
-                            .filter_map(|(addr, info)| {
+                            .filter(|(_, path)| path.is_platform_payment(network))
+                            .filter_map(|(addr, _)| {
                                 use dash_sdk::dpp::address_funds::PlatformAddress;
+                                let balance = wallet
+                                    .platform_address_info
+                                    .get(addr)
+                                    .map(|info| info.balance)
+                                    .unwrap_or(0);
                                 PlatformAddress::try_from(addr.clone())
                                     .ok()
-                                    .map(|pa| (pa.to_bech32m_string(network), info.balance))
+                                    .map(|pa| (pa.to_bech32m_string(network), balance))
                             })
                             .collect();
 
@@ -1717,8 +1728,22 @@ impl WalletsBalancesScreen {
                 ui.label("Memo (optional)");
                 ui.add(egui::TextEdit::singleline(&mut self.send_dialog.memo));
 
-                if let Some(error) = &self.send_dialog.error {
-                    ui.colored_label(Color32::DARK_RED, error);
+                if let Some(error) = self.send_dialog.error.clone() {
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.send_dialog.error = None;
+                                }
+                            });
+                        });
                 }
 
                 ui.add_space(8.0);
@@ -2165,13 +2190,43 @@ impl WalletsBalancesScreen {
         let mut open = self.fund_platform_dialog.is_open;
         let dark_mode = ctx.style().visuals.dark_mode;
 
+        // Draw dark overlay behind the popup
+        let screen_rect = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("fund_platform_dialog_overlay"),
+        ));
+        painter.rect_filled(
+            screen_rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+        );
+
         egui::Window::new("Fund Platform Address from Asset Lock")
             .collapsible(false)
             .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
+            .frame(egui::Frame {
+                inner_margin: egui::Margin::same(20),
+                outer_margin: egui::Margin::same(0),
+                corner_radius: egui::CornerRadius::same(8),
+                shadow: egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                },
+                fill: ctx.style().visuals.window_fill,
+                stroke: egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                ),
+            })
             .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+
                 ui.vertical(|ui| {
-                    ui.add_space(5.0);
                     ui.label(
                         RichText::new("Select a Platform address to fund:")
                             .color(DashColors::text_primary(dark_mode)),
@@ -2236,7 +2291,12 @@ impl WalletsBalancesScreen {
 
                     // Status message
                     if let Some(status) = &self.fund_platform_dialog.status {
-                        ui.label(RichText::new(status).color(DashColors::text_secondary(dark_mode)));
+                        let status_color = if self.fund_platform_dialog.status_is_error {
+                            egui::Color32::from_rgb(220, 50, 50)
+                        } else {
+                            DashColors::text_secondary(dark_mode)
+                        };
+                        ui.label(RichText::new(status).color(status_color));
                         ui.add_space(10.0);
                     }
 
@@ -2246,22 +2306,54 @@ impl WalletsBalancesScreen {
                             && self.fund_platform_dialog.selected_asset_lock_index.is_some()
                             && !self.fund_platform_dialog.is_processing;
 
-                        if ui
-                            .add_enabled(
-                                can_fund,
-                                egui::Button::new(if self.fund_platform_dialog.is_processing {
-                                    "Funding..."
-                                } else {
-                                    "Fund Address"
-                                }),
-                            )
-                            .clicked()
-                        {
-                            action = self.prepare_fund_platform_action();
+                        // Cancel button
+                        let cancel_button = egui::Button::new(
+                            RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(1.0, DashColors::text_secondary(dark_mode)))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(cancel_button).clicked() {
+                            self.fund_platform_dialog.is_open = false;
                         }
 
-                        if ui.button("Cancel").clicked() {
-                            self.fund_platform_dialog = FundPlatformAddressDialogState::default();
+                        ui.add_space(8.0);
+
+                        // Fund button
+                        let fund_button = egui::Button::new(
+                            RichText::new(if self.fund_platform_dialog.is_processing {
+                                "Funding..."
+                            } else {
+                                "Fund Address"
+                            })
+                            .color(egui::Color32::WHITE),
+                        )
+                        .fill(if can_fund {
+                            DashColors::DASH_BLUE
+                        } else {
+                            DashColors::text_secondary(dark_mode)
+                        })
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .min_size(egui::Vec2::new(100.0, 32.0));
+
+                        if ui.add_enabled(can_fund, fund_button).clicked() {
+                            // Check if wallet is locked
+                            let is_locked = self
+                                .selected_wallet
+                                .as_ref()
+                                .and_then(|w| w.read().ok())
+                                .map(|w| !w.is_open())
+                                .unwrap_or(false);
+
+                            if is_locked {
+                                // Wallet is locked - open unlock popup and set pending flag
+                                self.fund_platform_dialog.pending_fund_after_unlock = true;
+                                self.wallet_unlock_popup.open();
+                            } else {
+                                action = self.prepare_fund_platform_action();
+                            }
                         }
                     });
 
@@ -2277,7 +2369,10 @@ impl WalletsBalancesScreen {
                 });
             });
 
-        self.fund_platform_dialog.is_open = open;
+        // Only update from `open` if we didn't manually close via cancel button
+        if self.fund_platform_dialog.is_open {
+            self.fund_platform_dialog.is_open = open;
+        }
         if !self.fund_platform_dialog.is_open {
             self.fund_platform_dialog = FundPlatformAddressDialogState::default();
         }
@@ -2428,16 +2523,19 @@ impl WalletsBalancesScreen {
 
         let Some(wallet_arc) = &self.selected_wallet else {
             self.fund_platform_dialog.status = Some("No wallet selected".to_string());
+            self.fund_platform_dialog.status_is_error = true;
             return AppAction::None;
         };
 
         let Some(selected_addr) = &self.fund_platform_dialog.selected_platform_address else {
             self.fund_platform_dialog.status = Some("Select a Platform address".to_string());
+            self.fund_platform_dialog.status_is_error = true;
             return AppAction::None;
         };
 
         let Some(asset_lock_idx) = self.fund_platform_dialog.selected_asset_lock_index else {
             self.fund_platform_dialog.status = Some("No asset lock selected".to_string());
+            self.fund_platform_dialog.status_is_error = true;
             return AppAction::None;
         };
 
@@ -2447,6 +2545,7 @@ impl WalletsBalancesScreen {
                 Ok(guard) => guard,
                 Err(e) => {
                     self.fund_platform_dialog.status = Some(e.to_string());
+                    self.fund_platform_dialog.status_is_error = true;
                     return AppAction::None;
                 }
             };
@@ -2455,6 +2554,7 @@ impl WalletsBalancesScreen {
             let Some((_, addr, _, _, Some(proof))) = asset_lock else {
                 self.fund_platform_dialog.status =
                     Some("Asset lock not found or not ready".to_string());
+                self.fund_platform_dialog.status_is_error = true;
                 return AppAction::None;
             };
 
@@ -2468,6 +2568,7 @@ impl WalletsBalancesScreen {
                     Err(e) => {
                         self.fund_platform_dialog.status =
                             Some(format!("Invalid Bech32m address: {}", e));
+                        self.fund_platform_dialog.status_is_error = true;
                         return AppAction::None;
                     }
                 }
@@ -2483,6 +2584,7 @@ impl WalletsBalancesScreen {
                     Ok(addr) => addr,
                     Err(e) => {
                         self.fund_platform_dialog.status = Some(e);
+                        self.fund_platform_dialog.status_is_error = true;
                         return AppAction::None;
                     }
                 }
@@ -2502,6 +2604,7 @@ impl WalletsBalancesScreen {
 
         self.fund_platform_dialog.is_processing = true;
         self.fund_platform_dialog.status = Some("Processing...".to_string());
+        self.fund_platform_dialog.status_is_error = false;
 
         AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromAssetLock {
@@ -3097,11 +3200,20 @@ impl ScreenLike for WalletsBalancesScreen {
                             }
                         }
                     }
+
+                    // Check if we were trying to fund a Platform address
+                    if self.fund_platform_dialog.pending_fund_after_unlock {
+                        self.fund_platform_dialog.pending_fund_after_unlock = false;
+                        action |= self.prepare_fund_platform_action();
+                    }
                 }
                 WalletUnlockResult::Cancelled => {
                     // Clear any pending private key view request on cancel
                     self.private_key_dialog.pending_derivation_path = None;
                     self.private_key_dialog.pending_address = None;
+
+                    // Clear pending fund request on cancel
+                    self.fund_platform_dialog.pending_fund_after_unlock = false;
                 }
                 WalletUnlockResult::Pending => {}
             }
@@ -3185,9 +3297,23 @@ impl ScreenLike for WalletsBalancesScreen {
                         }
 
                         // Display error message if the password was incorrect
-                        if let Some(error_message) = &self.sk_error_message {
+                        if let Some(error_message) = self.sk_error_message.clone() {
                             ui.add_space(5.0);
-                            ui.colored_label(Color32::RED, error_message);
+                            let error_color = Color32::from_rgb(255, 100, 100);
+                            Frame::new()
+                                .fill(error_color.gamma_multiply(0.1))
+                                .inner_margin(Margin::symmetric(10, 8))
+                                .corner_radius(5.0)
+                                .stroke(egui::Stroke::new(1.0, error_color))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                                        ui.add_space(10.0);
+                                        if ui.small_button("Dismiss").clicked() {
+                                            self.sk_error_message = None;
+                                        }
+                                    });
+                                });
                         }
                     });
                 });
@@ -3213,6 +3339,14 @@ impl ScreenLike for WalletsBalancesScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
             self.refreshing = false;
+
+            // If the fund platform dialog is processing, show error in the dialog instead
+            if self.fund_platform_dialog.is_processing {
+                self.fund_platform_dialog.is_processing = false;
+                self.fund_platform_dialog.status = Some(message.to_string());
+                self.fund_platform_dialog.status_is_error = true;
+                return;
+            }
         }
         self.message = Some((message.to_string(), message_type, Utc::now()))
     }
@@ -3278,6 +3412,7 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
                 self.fund_platform_dialog.is_processing = false;
                 self.fund_platform_dialog.status = Some("Funding successful!".to_string());
+                self.fund_platform_dialog.status_is_error = false;
                 self.display_message("Platform address funded successfully", MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash } => {

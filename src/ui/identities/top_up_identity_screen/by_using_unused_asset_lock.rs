@@ -107,20 +107,18 @@ impl TopUpIdentityScreen {
 
         ui.add_space(20.0);
 
-        if let Some(error_message) = self.error_message.as_ref() {
-            ui.colored_label(Color32::DARK_RED, error_message);
-            ui.add_space(20.0);
+        // Only show status messages if there's no error
+        if self.error_message.is_none() {
+            ui.vertical_centered(|ui| match step {
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
+            });
         }
-
-        ui.vertical_centered(|ui| match step {
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("=> Waiting for Platform acknowledgement <=");
-            }
-            WalletFundedScreenStep::Success => {
-                ui.heading("...Success...");
-            }
-            _ => {}
-        });
 
         ui.add_space(40.0);
         action

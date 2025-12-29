@@ -377,10 +377,7 @@ impl ContactsList {
         ui.add_space(8.0);
 
         if identities.is_empty() {
-            ui.colored_label(
-                egui::Color32::from_rgb(200, 150, 50),
-                "No identities loaded. Please load or create an identity first.",
-            );
+            return super::render_no_identities_card(ui, &self.app_context);
         } else if self.active_tab == ContactsTab::Requests {
             // Sync identity before rendering (in case it wasn't synced yet)
             self.contact_requests

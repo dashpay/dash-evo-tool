@@ -635,10 +635,7 @@ impl PaymentHistory {
         ui.separator();
 
         if identities.is_empty() {
-            ui.colored_label(
-                egui::Color32::from_rgb(200, 150, 50),
-                "No identities loaded. Please load or create an identity first.",
-            );
+            return super::render_no_identities_card(ui, &self.app_context);
         }
 
         // Show message if any
@@ -650,11 +647,6 @@ impl PaymentHistory {
             };
             ui.colored_label(color, message);
             ui.separator();
-        }
-
-        // No identity selected or no identities available
-        if identities.is_empty() {
-            return action;
         }
 
         if self.selected_identity.is_none() {

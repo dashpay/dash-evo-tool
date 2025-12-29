@@ -10,7 +10,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use eframe::egui::{self, Color32, Context, RichText, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -336,7 +336,22 @@ impl ScreenLike for AddContractsScreen {
             match &self.add_contracts_status {
                 AddContractsStatus::NotStarted | AddContractsStatus::ErrorMessage(_) => {
                     if let AddContractsStatus::ErrorMessage(msg) = &self.add_contracts_status {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.add_contracts_status = AddContractsStatus::NotStarted;
+                                    }
+                                });
+                            });
                         ui.add_space(10.0);
                     }
 

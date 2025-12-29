@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context,  RichText, TextEdit, Ui};
+use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
 use crate::ui::theme::DashColors;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -36,7 +36,7 @@ impl TokensScreen {
         ui.label(
             "Create custom tokens on Dash Platform with advanced features and distribution rules",
         );
-        ui.add_space(20.0);
+        ui.add_space(10.0);
 
         egui::ScrollArea::horizontal()
             .show(ui, |ui| {
@@ -714,9 +714,23 @@ impl TokensScreen {
         }
 
         // Show an error if we have one
-        if let Some(err_msg) = &self.token_creator_error_message {
+        if let Some(err_msg) = self.token_creator_error_message.clone() {
             ui.add_space(10.0);
-            ui.colored_label(Color32::DARK_RED, err_msg.to_string());
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", err_msg)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.token_creator_error_message = None;
+                        }
+                    });
+                });
             ui.add_space(10.0);
         }
 

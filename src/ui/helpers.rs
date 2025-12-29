@@ -301,7 +301,10 @@ pub fn add_key_chooser_with_doc_type(
     } else {
         // Show key combo box
         ui.horizontal(|ui| {
-            ui.label("Key:");
+            ui.vertical(|ui| {
+                ui.add_space(15.0);
+                ui.label("Key:");
+            });
             ComboBox::from_id_salt("key_chooser_combo")
                 .width(300.0)
                 .selected_text(

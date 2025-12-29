@@ -2,6 +2,7 @@ use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity};
+use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
@@ -15,6 +16,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         dpns_name: String,
+        selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Normalize the name (convert to lowercase and handle homoglyphs)
         let normalized_name = convert_to_homograph_safe_chars(&dpns_name);
@@ -137,6 +139,19 @@ impl AppContext {
 
         let wallets = self.wallets.read().unwrap().clone();
 
+        // Try to derive keys from wallets if requested
+        let mut encrypted_private_keys = std::collections::BTreeMap::new();
+
+        if let Some((_, _, wallet_private_keys)) =
+            self.match_user_identity_keys_with_wallet(
+                &identity,
+                &wallets,
+                selected_wallet_seed_hash,
+            )?
+        {
+            encrypted_private_keys.extend(wallet_private_keys);
+        }
+
         let qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity: None,
@@ -144,7 +159,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: Some(label),
-            private_keys: KeyStorage::default(),
+            private_keys: encrypted_private_keys.into(),
             dpns_names: owned_dpns_names,
             associated_wallets: wallets
                 .values()

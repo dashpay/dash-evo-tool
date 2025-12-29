@@ -17,7 +17,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, TimestampMillis};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::Context;
+use eframe::egui::{Context, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -375,7 +375,22 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     ));
                 }
                 RegisterDpnsNameStatus::ErrorMessage(msg) => {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+                                }
+                            });
+                        });
                 }
                 RegisterDpnsNameStatus::Complete => {}
             }

@@ -1042,6 +1042,7 @@ impl AppContext {
         >,
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use dash_sdk::dpp::dashcore::OutPoint;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
         // Clone wallet and SDK before the async operation to avoid holding guards across await
@@ -1064,6 +1065,62 @@ impl AppContext {
 
             (wallet, sdk, private_key)
         };
+
+        // Check if we need to convert an old instant lock proof to a chain lock proof
+        use dash_sdk::dashcore_rpc::RpcApi;
+        use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
+        use dash_sdk::platform::Fetch;
+
+        let asset_lock_proof =
+            if let AssetLockProof::Instant(instant_asset_lock_proof) = &asset_lock_proof {
+                // Get the transaction ID from the instant lock proof
+                let tx_id = instant_asset_lock_proof.transaction().txid();
+
+                // Query the core client to check if the transaction has been chain-locked
+                let raw_transaction_info = self
+                    .core_client
+                    .read()
+                    .expect("Core client lock was poisoned")
+                    .get_raw_transaction_info(&tx_id, None)
+                    .map_err(|e| format!("Failed to get transaction info: {}", e))?;
+
+                if raw_transaction_info.chainlock
+                    && raw_transaction_info.height.is_some()
+                    && raw_transaction_info.confirmations.is_some()
+                    && raw_transaction_info.confirmations.unwrap() > 8
+                {
+                    // Transaction has been chain-locked with sufficient confirmations
+                    let tx_block_height = raw_transaction_info.height.unwrap() as u32;
+
+                    // Check if the platform has caught up to this block height
+                    let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
+                        .await
+                        .map_err(|e| format!("Failed to get platform metadata: {}", e))?;
+
+                    if tx_block_height <= metadata.core_chain_locked_height {
+                        // Platform has synced past this block, use chain lock proof
+                        AssetLockProof::Chain(ChainAssetLockProof {
+                            core_chain_locked_height: tx_block_height,
+                            out_point: OutPoint::new(tx_id, 0),
+                        })
+                    } else {
+                        // Platform hasn't verified this Core block yet - can't use chain lock proof
+                        // and instant lock is stale. User needs to wait.
+                        return Err(format!(
+                            "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                            and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
+                            Please wait for Platform to sync with Core chain.",
+                            tx_block_height, metadata.core_chain_locked_height
+                        ));
+                    }
+                } else {
+                    // Use the instant lock proof as-is (transaction is recent)
+                    asset_lock_proof
+                }
+            } else {
+                // Already a chain lock proof, use as-is
+                asset_lock_proof
+            };
 
         // Simple fee strategy: reduce from first output
         let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];

@@ -29,7 +29,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
-use egui::{Color32, RichText, ScrollArea};
+use egui::{Color32, Frame, Margin, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 
 pub struct KeyInfoScreen {
@@ -492,8 +492,22 @@ impl ScreenLike for KeyInfoScreen {
                     }
 
                     // Display error message if validation fails
-                    if let Some(error_message) = &self.error_message {
-                        ui.colored_label(egui::Color32::RED, error_message);
+                    if let Some(error_message) = self.error_message.clone() {
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.error_message = None;
+                                    }
+                                });
+                            });
                     }
                 }
 
@@ -672,8 +686,22 @@ impl KeyInfoScreen {
             self.sign_message();
         }
 
-        if let Some(error_message) = &self.sign_error_message {
-            ui.colored_label(egui::Color32::RED, error_message);
+        if let Some(error_message) = self.sign_error_message.clone() {
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.sign_error_message = None;
+                        }
+                    });
+                });
         }
 
         if let Some(signed_message) = &self.signed_message {

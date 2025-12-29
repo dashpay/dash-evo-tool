@@ -5,7 +5,7 @@ use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
-use egui::{Color32, Ui};
+use egui::Ui;
 use std::sync::Arc;
 
 impl TopUpIdentityScreen {
@@ -137,61 +137,60 @@ impl TopUpIdentityScreen {
 
             ui.add_space(20.0);
 
-            if let Some(error_message) = self.error_message.as_ref() {
-                ui.colored_label(Color32::DARK_RED, error_message);
-                ui.add_space(20.0);
+            // Handle FundsReceived action regardless of error state
+            if step == WalletFundedScreenStep::FundsReceived {
+                let Some(selected_wallet) = &self.wallet else {
+                    return AppAction::None;
+                };
+                if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
+                    let wallet_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
+                    let top_up_index = self
+                        .identity
+                        .top_ups
+                        .keys()
+                        .max()
+                        .cloned()
+                        .map(|i| i + 1)
+                        .unwrap_or_default();
+                    let identity_input = IdentityTopUpInfo {
+                        qualified_identity: self.identity.clone(),
+                        wallet: Arc::clone(selected_wallet),
+                        identity_funding_method: TopUpIdentityFundingMethod::FundWithUtxo(
+                            utxo,
+                            tx_out,
+                            address,
+                            wallet_index,
+                            top_up_index,
+                        ),
+                    };
+
+                    let mut step = self.step.write().unwrap();
+                    *step = WalletFundedScreenStep::WaitingForAssetLock;
+
+                    return AppAction::BackendTask(BackendTask::IdentityTask(
+                        IdentityTask::TopUpIdentity(identity_input),
+                    ));
+                }
             }
 
-            match step {
-                WalletFundedScreenStep::ChooseFundingMethod => {}
-                WalletFundedScreenStep::WaitingOnFunds => {
-                    ui.heading("=> Waiting for funds. <=");
-                }
-                WalletFundedScreenStep::FundsReceived => {
-                    let Some(selected_wallet) = &self.wallet else {
-                        return AppAction::None;
-                    };
-                    if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
-                        let wallet_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
-                        let top_up_index = self
-                            .identity
-                            .top_ups
-                            .keys()
-                            .max()
-                            .cloned()
-                            .map(|i| i + 1)
-                            .unwrap_or_default();
-                        let identity_input = IdentityTopUpInfo {
-                            qualified_identity: self.identity.clone(),
-                            wallet: Arc::clone(selected_wallet),
-                            identity_funding_method: TopUpIdentityFundingMethod::FundWithUtxo(
-                                utxo,
-                                tx_out,
-                                address,
-                                wallet_index,
-                                top_up_index,
-                            ),
-                        };
-
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::WaitingForAssetLock;
-
-                        return AppAction::BackendTask(BackendTask::IdentityTask(
-                            IdentityTask::TopUpIdentity(identity_input),
-                        ));
+            // Only show status messages if there's no error
+            if self.error_message.is_none() {
+                match step {
+                    WalletFundedScreenStep::WaitingOnFunds => {
+                        ui.heading("=> Waiting for funds. <=");
                     }
-                }
-                WalletFundedScreenStep::ReadyToCreate => {}
-                WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading(
-                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                    );
-                }
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("=> Waiting for Platform acknowledgement. <=");
-                }
-                WalletFundedScreenStep::Success => {
-                    ui.heading("...Success...");
+                    WalletFundedScreenStep::WaitingForAssetLock => {
+                        ui.heading(
+                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                        );
+                    }
+                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                        ui.heading("=> Waiting for Platform acknowledgement. <=");
+                    }
+                    WalletFundedScreenStep::Success => {
+                        ui.heading("...Success...");
+                    }
+                    _ => {}
                 }
             }
             AppAction::None

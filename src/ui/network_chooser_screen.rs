@@ -17,7 +17,7 @@ use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncStage};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -414,7 +414,7 @@ impl NetworkChooserScreen {
 
         StyledCard::new().padding(24.0).show(ui, |ui| {
             ui.heading("Connection Status");
-            ui.add_space(20.0);
+            ui.add_space(10.0);
 
             let current_backend_mode = *self
                 .backend_modes
@@ -481,7 +481,7 @@ impl NetworkChooserScreen {
                         }
                     } else {
                         // For Core mode, just show status since it can switch networks freely
-                        ui.colored_label(DashColors::DASH_BLUE, "Connected");
+                        ui.colored_label(DashColors::DASH_BLUE, "✅ Connected");
                     }
                 } else {
                     // Don't show Connect button for Local network in RPC mode
@@ -747,7 +747,22 @@ impl NetworkChooserScreen {
                         });
                     }
                 } else if let Some(ref error) = self.custom_dash_qt_error_message {
-                    ui.colored_label(DashColors::ERROR, error);
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error = error.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&error).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.custom_dash_qt_error_message = None;
+                                }
+                            });
+                        });
                 }
 
                 // Configuration Options

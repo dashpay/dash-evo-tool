@@ -806,7 +806,22 @@ impl GroveSTARKScreen {
 
         // Error Display
         if let Some(error) = &self.gen_error_message {
-            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+            let error_color = egui::Color32::from_rgb(255, 100, 100);
+            let error = error.clone();
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.gen_error_message = None;
+                        }
+                    });
+                });
         }
 
         // Success Display
@@ -871,7 +886,22 @@ impl GroveSTARKScreen {
 
         // Error Display (above the button)
         if let Some(error) = &self.verify_error_message {
-            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+            let error_color = egui::Color32::from_rgb(255, 100, 100);
+            let error = error.clone();
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.verify_error_message = None;
+                        }
+                    });
+                });
         }
 
         // Verify Button

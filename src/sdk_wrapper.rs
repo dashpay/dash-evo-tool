@@ -17,7 +17,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         connect_timeout: Some(Duration::from_secs(1)),
         timeout: Some(Duration::from_secs(10)),
         retries: Some(6),
-        ban_failed_address: Some(false),
+        ban_failed_address: Some(true),
     };
     let platform_version = default_platform_version(&network);
 

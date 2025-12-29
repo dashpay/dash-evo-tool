@@ -359,7 +359,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
-    fn match_user_identity_keys_with_wallet(
+    pub(super) fn match_user_identity_keys_with_wallet(
         &self,
         identity: &Identity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,

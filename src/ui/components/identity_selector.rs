@@ -250,10 +250,13 @@ impl<'a> Widget for IdentitySelector<'a> {
 
             // Text edit field for manual entry (only show if other_option is enabled)
             let text_response = if self.other_option {
-                TextEdit::singleline(self.identity_str).ui(ui)
+                ui.vertical(|ui| {
+                    ui.add_space(13.0);
+                    TextEdit::singleline(self.identity_str).ui(ui)
+                }).inner
             } else {
                 // Create a dummy response that never changes when other_option is disabled
-                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::empty())
+                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
             };
 
             // Handle identity selection updates after combo box and text input

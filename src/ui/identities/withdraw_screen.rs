@@ -22,9 +22,10 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::IdentityPublicKey;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Context, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -46,6 +47,7 @@ pub struct WithdrawalScreen {
     pub identity: QualifiedIdentity,
     selected_key: Option<IdentityPublicKey>,
     withdrawal_address: String,
+    withdrawal_address_error: Option<String>,
     withdrawal_amount: Option<Amount>,
     withdrawal_amount_input: Option<AmountInput>,
     max_amount: u64,
@@ -75,6 +77,7 @@ impl WithdrawalScreen {
             identity,
             selected_key: selected_key.cloned(),
             withdrawal_address: String::new(),
+            withdrawal_address_error: None,
             withdrawal_amount: None,
             withdrawal_amount_input: None,
             max_amount,
@@ -136,7 +139,29 @@ impl WithdrawalScreen {
             ui.horizontal(|ui| {
                 ui.label("Address:");
 
-                ui.text_edit_singleline(&mut self.withdrawal_address);
+                let response = ui.text_edit_singleline(&mut self.withdrawal_address);
+
+                // Validate address when it changes
+                if response.changed() {
+                    if self.withdrawal_address.is_empty() {
+                        self.withdrawal_address_error = None;
+                    } else {
+                        match Address::from_str(&self.withdrawal_address) {
+                            Ok(_) => {
+                                self.withdrawal_address_error = None;
+                            }
+                            Err(_) => {
+                                self.withdrawal_address_error =
+                                    Some("Invalid address".to_string());
+                            }
+                        }
+                    }
+                }
+
+                // Show error next to input
+                if let Some(error) = &self.withdrawal_address_error {
+                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                }
             });
         } else {
             ui.label(format!(
@@ -159,9 +184,8 @@ impl WithdrawalScreen {
             match Address::from_str(&self.withdrawal_address) {
                 Ok(address) => Some(address.assume_checked()),
                 Err(_) => {
-                    self.withdraw_from_identity_status = WithdrawFromIdentityStatus::ErrorMessage(
-                        "Invalid withdrawal address".to_string(),
-                    );
+                    // Error is already shown next to the input field
+                    self.withdrawal_address_error = Some("Invalid address".to_string());
                     self.confirmation_dialog = None;
                     return AppAction::None;
                 }
@@ -386,16 +410,6 @@ impl ScreenLike for WithdrawalScreen {
                     )));
                 }
             } else {
-                // Only show key selection in advanced mode
-                if self.show_advanced_options {
-                    ui.heading("Select the key to sign with");
-                    ui.add_space(10.0);
-                    inner_action |= self.render_key_selection(ui);
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                }
-
                 // Render wallet unlock component if needed
                 if let Some(selected_key) = self.selected_key.as_ref() {
                     // If there is an associated wallet then render the wallet unlock component for it if its locked
@@ -435,8 +449,17 @@ impl ScreenLike for WithdrawalScreen {
                 }
 
                 // Input the amount to withdraw
-                ui.heading("Amount to withdraw (Dash)");
+                ui.heading("1. Amount to withdraw (Dash)");
                 ui.add_space(5.0);
+
+                // Show identity info
+                let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
+                let identity_label = if let Some(alias) = &self.identity.alias {
+                    format!("From: {} ({})", alias, identity_id_string)
+                } else {
+                    format!("From: {}", identity_id_string)
+                };
+                ui.label(identity_label);
 
                 // Display available balance
                 let balance_dash = self.max_amount as f64 / 100_000_000_000.0;
@@ -444,8 +467,6 @@ impl ScreenLike for WithdrawalScreen {
                     ui.label("Available Balance:");
                     ui.label(
                         RichText::new(format!("{:.4} Dash", balance_dash))
-                            .color(Color32::from_rgb(0, 128, 255))
-                            .strong(),
                     );
                 });
                 ui.add_space(5.0);
@@ -457,9 +478,19 @@ impl ScreenLike for WithdrawalScreen {
                 ui.add_space(10.0);
 
                 // Input the address to withdraw to
-                ui.heading("Dash address to withdraw to");
+                ui.heading("2. Dash address to withdraw to");
                 ui.add_space(5.0);
                 self.render_address_input(ui);
+
+                // Only show key selection in advanced mode
+                if self.show_advanced_options {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.heading("3. Select the key to sign with");
+                    inner_action |= self.render_key_selection(ui);
+                }
 
                 ui.add_space(10.0);
 
@@ -471,11 +502,21 @@ impl ScreenLike for WithdrawalScreen {
                     .corner_radius(3.0)
                     .min_size(egui::vec2(60.0, 30.0));
 
-                let ready = self.withdrawal_amount.as_ref().is_some();
+                let has_valid_amount = self.withdrawal_amount.is_some();
+                let has_address_error = self.withdrawal_address_error.is_some();
+                let ready = has_valid_amount && !has_address_error;
+
+                let hover_text = if !has_valid_amount {
+                    "Please enter a valid amount to withdraw"
+                } else if has_address_error {
+                    "Please enter a valid withdrawal address"
+                } else {
+                    ""
+                };
 
                 if ui
                     .add_enabled(ready, button)
-                    .on_disabled_hover_text("Please enter a valid amount to withdraw")
+                    .on_disabled_hover_text(hover_text)
                     .clicked()
                     && self.confirmation_dialog.is_none()
                 {
@@ -525,7 +566,22 @@ impl ScreenLike for WithdrawalScreen {
                         ));
                     }
                     WithdrawFromIdentityStatus::ErrorMessage(msg) => {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.withdraw_from_identity_status = WithdrawFromIdentityStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     WithdrawFromIdentityStatus::Complete => {
                         ui.colored_label(

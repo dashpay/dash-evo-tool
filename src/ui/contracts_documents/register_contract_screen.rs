@@ -19,7 +19,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, TextEdit};
+use eframe::egui::{self, Color32, Context, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -140,6 +140,34 @@ impl RegisterDataContractScreen {
             });
     }
 
+    /// Renders an error message at the top of the screen with a styled bubble
+    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
+        let error_msg = match &self.broadcast_status {
+            BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
+            BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
+            _ => None,
+        };
+
+        if let Some(msg) = error_msg {
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(msg).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.broadcast_status = BroadcastStatus::Idle;
+                        }
+                    });
+                });
+            ui.add_space(10.0);
+        }
+    }
+
     fn ui_parsed_contract(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
 
@@ -149,8 +177,8 @@ impl RegisterDataContractScreen {
             BroadcastStatus::Idle => {
                 ui.label("No contract parsed yet or empty input.");
             }
-            BroadcastStatus::ParsingError(err) => {
-                ui.colored_label(Color32::RED, format!("Parsing error: {err}"));
+            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError(_) => {
+                // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
                 // “Register” button
@@ -196,9 +224,6 @@ impl RegisterDataContractScreen {
                 let elapsed = now - start_time;
                 ui.label("Broadcasted but received proof error. ⚠");
                 ui.label(format!("Fetching contract from Platform and inserting into DET... {elapsed} seconds elapsed."));
-            }
-            BroadcastStatus::BroadcastError(msg) => {
-                ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
             }
             BroadcastStatus::Done => {
                 ui.colored_label(
@@ -318,6 +343,9 @@ impl ScreenLike for RegisterDataContractScreen {
 
             ui.heading("Register Data Contract");
             ui.add_space(10.0);
+
+            // Show error message at the top if there's an error
+            self.render_error_bubble(ui);
 
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {

@@ -261,7 +261,7 @@ impl IdentitiesScreen {
         let identifier_as_string = qualified_identity.identity.id().to_string(encoding);
         ui.add(
             egui::Label::new(identifier_as_string)
-                .sense(egui::Sense::hover())
+                .selectable(true)
                 .truncate(),
         )
         .on_hover_text(helper);
@@ -570,9 +570,8 @@ impl IdentitiesScreen {
                                     row.col(|ui| {
                                         ui.vertical_centered(|ui| {
                                             ui.horizontal_centered(|ui| {
-                                                ui.add_enabled_ui(is_active, |ui| {
-                                                    Self::show_identity_id(ui, qualified_identity);
-                                                });
+                                                // Always allow copying identity ID, even for failed identities
+                                                Self::show_identity_id(ui, qualified_identity);
                                             });
                                         });
                                     });
@@ -624,17 +623,34 @@ impl IdentitiesScreen {
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💸 Withdraw")).on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                                    qualified_identity.clone(),
-                                                                    &self.app_context,
-                                                                )),
-                                                            );
-                                                        }
+                                                        // Minimum balance needed for withdrawal (0.005 DASH fee in credits)
+                                                        let min_withdrawal_balance: u64 = 500_000_000; // 0.005 DASH in credits
+                                                        let can_withdraw = qualified_identity.identity.balance() > min_withdrawal_balance;
+
+                                                        let withdraw_hover = if can_withdraw {
+                                                            "Withdraw credits from this identity to a Dash Core address"
+                                                        } else {
+                                                            "Insufficient balance for withdrawal (need at least 0.005 DASH for fees)"
+                                                        };
+                                                        let width = ui.available_width();
+                                                        ui.scope(|ui| {
+                                                            ui.set_enabled(can_withdraw);
+                                                            if ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"))
+                                                                .on_hover_text(withdraw_hover)
+                                                                .clicked()
+                                                            {
+                                                                action = AppAction::AddScreen(
+                                                                    Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                                        qualified_identity.clone(),
+                                                                        &self.app_context,
+                                                                    )),
+                                                                );
+                                                            }
+                                                        });
 
                                                         if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
                                                             action = AppAction::AddScreen(
@@ -645,14 +661,30 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📤 Transfer")).on_hover_text("Transfer credits from this identity to another identity").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::TransferScreen(TransferScreen::new(
-                                                                    qualified_identity.clone(),
-                                                                    &self.app_context,
-                                                                )),
-                                                            );
-                                                        }
+                                                        // Minimum balance needed for transfer (0.0002 DASH fee in credits)
+                                                        let min_transfer_balance: u64 = 20_000_000;
+                                                        let can_transfer = qualified_identity.identity.balance() > min_transfer_balance;
+
+                                                        let transfer_hover = if can_transfer {
+                                                            "Transfer credits from this identity to another identity"
+                                                        } else {
+                                                            "Insufficient balance for transfer (need at least 0.0002 DASH for fees)"
+                                                        };
+                                                        let width = ui.available_width();
+                                                        ui.scope(|ui| {
+                                                            ui.set_enabled(can_transfer);
+                                                            if ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"))
+                                                                .on_hover_text(transfer_hover)
+                                                                .clicked()
+                                                            {
+                                                                action = AppAction::AddScreen(
+                                                                    Screen::TransferScreen(TransferScreen::new(
+                                                                        qualified_identity.clone(),
+                                                                        &self.app_context,
+                                                                    )),
+                                                                );
+                                                            }
+                                                        });
                                                     });
                                             });
                                             });
@@ -681,40 +713,24 @@ impl IdentitiesScreen {
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
                                                         .show(|ui| {
-                                                            ui.set_min_width(200.0);
+                                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                                             // Main Identity Keys
                                                             if !public_keys.is_empty() {
-                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                                                ui.label(RichText::new("Main Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
-                                                                ui.separator();
-
                                                                 for (key_id, key) in public_keys.iter() {
                                                                     let holding_private_key = qualified_identity.private_keys
                                                                         .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
 
-                                                                    let button_color = if holding_private_key.is_some() {
-                                                                        if dark_mode {
-                                                                            Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
-                                                                        } else {
-                                                                            Color32::from_rgb(167, 232, 232) // Light blue for light mode
-                                                                        }
+                                                                    let key_label = self.format_key_name(key);
+                                                                    let button = if holding_private_key.is_some() {
+                                                                        egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
                                                                     } else {
-                                                                        crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
+                                                                        egui::Button::new(&key_label)
                                                                     };
 
-                                                                    let text_color = if holding_private_key.is_some() {
-                                                                        Color32::BLACK // Black text on light blue background
-                                                                    } else {
-                                                                        crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
-                                                                    };
-
-                                                                    let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
-                                                                        .fill(button_color)
-                                                                        .frame(true);
-
-                                                                    if ui.add(button).clicked() {
+                                                                    if ui.add_sized([ui.available_width(), 0.0], button).clicked() {
                                                                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                                                             qualified_identity.clone(),
                                                                             key.clone(),
@@ -733,35 +749,19 @@ impl IdentitiesScreen {
                                                                     if !public_keys.is_empty() {
                                                                         ui.add_space(5.0);
                                                                     }
-                                                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                                                    ui.label(RichText::new("Voter Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
-                                                                    ui.separator();
 
                                                                     for (key_id, key) in voter_public_keys.iter() {
                                                                         let holding_private_key = qualified_identity.private_keys
                                                                             .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
 
-                                                                        let button_color = if holding_private_key.is_some() {
-                                                                            if dark_mode {
-                                                                                Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
-                                                                            } else {
-                                                                                Color32::from_rgb(167, 232, 232) // Light blue for light mode
-                                                                            }
+                                                                        let key_label = self.format_key_name(key);
+                                                                        let button = if holding_private_key.is_some() {
+                                                                            egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
                                                                         } else {
-                                                                            crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
+                                                                            egui::Button::new(&key_label)
                                                                         };
 
-                                                                        let text_color = if holding_private_key.is_some() {
-                                                                            Color32::BLACK // Black text on light blue background
-                                                                        } else {
-                                                                            crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
-                                                                        };
-
-                                                                        let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
-                                                                            .fill(button_color)
-                                                                            .frame(true);
-
-                                                                        if ui.add(button).clicked() {
+                                                                        if ui.add_sized([ui.available_width(), 0.0], button).clicked() {
                                                                             action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                                                                 qualified_identity.clone(),
                                                                                 key.clone(),
@@ -776,13 +776,7 @@ impl IdentitiesScreen {
 
                                                             // Add Key button
                                                             if qualified_identity.can_sign_with_master_key().is_some() {
-                                                                ui.separator();
-                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                                                let add_button = egui::Button::new("➕ Add Key")
-                                                                    .fill(crate::ui::theme::DashColors::glass_white(dark_mode))
-                                                                    .frame(true);
-
-                                                                    if ui.add(add_button).on_hover_text("Add a new key to this identity").clicked() {
+                                                                if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
                                                                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
@@ -840,23 +834,92 @@ impl IdentitiesScreen {
     fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
         if let Some(identity_to_remove) = self.identity_to_remove.clone() {
             let action = AppAction::None;
+
+            // Draw dark overlay behind the popup
+            let screen_rect = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("confirm_removal_overlay"),
+            ));
+            painter.rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
+
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .frame(egui::Frame {
+                    inner_margin: egui::Margin::same(20),
+                    outer_margin: egui::Margin::same(0),
+                    corner_radius: egui::CornerRadius::same(8),
+                    shadow: egui::epaint::Shadow {
+                        offset: [0, 8],
+                        blur: 16,
+                        spread: 0,
+                        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                    },
+                    fill: ctx.style().visuals.window_fill,
+                    stroke: egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                    ),
+                })
                 .show(ctx, |ui| {
-                    ui.label(format!(
-                        "Are you sure you want to no longer track this {} identity?",
-                        identity_to_remove.identity_type
-                    ));
-                    ui.label(format!(
-                        "Identity ID: {}",
-                        identity_to_remove
-                            .identity
-                            .id()
-                            .to_string(identity_to_remove.identity_type.default_encoding())
-                    ));
+                    ui.set_min_width(350.0);
+
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+                    ui.label(
+                        RichText::new(format!(
+                            "Are you sure you want to no longer track this {} identity?",
+                            identity_to_remove.identity_type
+                        ))
+                        .color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    ui.add_space(8.0);
+
+                    ui.label(
+                        RichText::new(format!(
+                            "Identity ID: {}",
+                            identity_to_remove
+                                .identity
+                                .id()
+                                .to_string(identity_to_remove.identity_type.default_encoding())
+                        ))
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+
+                    ui.add_space(16.0);
+
                     ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
+                        // No button
+                        let no_button = egui::Button::new(
+                            RichText::new("No").color(DashColors::text_primary(dark_mode)),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(1.0, DashColors::text_secondary(dark_mode)))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(no_button).clicked() {
+                            self.identity_to_remove = None;
+                        }
+
+                        ui.add_space(8.0);
+
+                        // Yes button
+                        let yes_button = egui::Button::new(
+                            RichText::new("Yes").color(Color32::WHITE),
+                        )
+                        .fill(Color32::from_rgb(200, 60, 60))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
                             let mut lock = self.identities.lock().unwrap();
                             lock.shift_remove(&identity_id);
@@ -879,9 +942,6 @@ impl IdentitiesScreen {
                                     .ok();
                             }
 
-                            self.identity_to_remove = None;
-                        }
-                        if ui.button("No").clicked() {
                             self.identity_to_remove = None;
                         }
                     });

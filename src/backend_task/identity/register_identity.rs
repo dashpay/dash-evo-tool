@@ -69,11 +69,24 @@ impl AppContext {
                         && raw_transaction_info.confirmations.is_some()
                         && raw_transaction_info.confirmations.unwrap() > 8
                     {
-                        // we should use a chain lock instead
-                        AssetLockProof::Chain(ChainAssetLockProof {
-                            core_chain_locked_height: metadata.core_chain_locked_height,
-                            out_point: OutPoint::new(tx_id, 0),
-                        })
+                        // Transaction is old enough that instant lock may have expired
+                        let tx_block_height = raw_transaction_info.height.unwrap() as u32;
+
+                        if tx_block_height <= metadata.core_chain_locked_height {
+                            // Platform has verified this Core block, use chain lock proof
+                            AssetLockProof::Chain(ChainAssetLockProof {
+                                core_chain_locked_height: tx_block_height,
+                                out_point: OutPoint::new(tx_id, 0),
+                            })
+                        } else {
+                            // Platform hasn't verified this Core block yet
+                            return Err(format!(
+                                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
+                                Please wait for Platform to sync with Core chain.",
+                                tx_block_height, metadata.core_chain_locked_height
+                            ).into());
+                        }
                     } else {
                         AssetLockProof::Instant(instant_asset_lock_proof.clone())
                     }
@@ -343,7 +356,7 @@ impl AppContext {
             .put_new_identity_to_platform(
                 &sdk,
                 &identity,
-                asset_lock_proof,
+                asset_lock_proof.clone(),
                 &asset_lock_proof_private_key,
                 qualified_identity.clone(),
             )
@@ -354,18 +367,106 @@ impl AppContext {
                 qualified_identity.status = IdentityStatus::Unknown; // force refresh of the status
             }
             Err(e) => {
-                // we failed, set the status accordingly and terminate the process
-                qualified_identity
-                    .status
-                    .update(IdentityStatus::FailedCreation);
+                // Check if this is an instant lock proof expiration error
+                if e.contains("Instant lock proof signature is invalid")
+                    || e.contains("wasn't created recently")
+                {
+                    // Try to use chain asset lock proof instead
+                    let raw_transaction_info = self
+                        .core_client
+                        .read()
+                        .expect("Core client lock was poisoned")
+                        .get_raw_transaction_info(&tx_id, None)
+                        .map_err(|e| e.to_string())?;
 
-                self.insert_local_qualified_identity(
-                    &qualified_identity,
-                    &Some((wallet_id, wallet_identity_index)),
-                )
-                .map_err(|e| e.to_string())?;
+                    if raw_transaction_info.chainlock && raw_transaction_info.height.is_some() {
+                        let tx_block_height = raw_transaction_info.height.unwrap() as u32;
 
-                return Err(e);
+                        if tx_block_height <= metadata.core_chain_locked_height {
+                            // Platform has verified this Core block, use chain lock proof
+                            let chain_asset_lock_proof =
+                                AssetLockProof::Chain(ChainAssetLockProof {
+                                    core_chain_locked_height: tx_block_height,
+                                    out_point: OutPoint::new(tx_id, 0),
+                                });
+
+                            // Retry with chain asset lock proof
+                            match self
+                                .put_new_identity_to_platform(
+                                    &sdk,
+                                    &identity,
+                                    chain_asset_lock_proof,
+                                    &asset_lock_proof_private_key,
+                                    qualified_identity.clone(),
+                                )
+                                .await
+                            {
+                                Ok(updated_identity) => {
+                                    qualified_identity.identity = updated_identity;
+                                    qualified_identity.status = IdentityStatus::Unknown;
+                                }
+                                Err(retry_err) => {
+                                    qualified_identity
+                                        .status
+                                        .update(IdentityStatus::FailedCreation);
+
+                                    self.insert_local_qualified_identity(
+                                        &qualified_identity,
+                                        &Some((wallet_id, wallet_identity_index)),
+                                    )
+                                    .map_err(|e| e.to_string())?;
+
+                                    return Err(retry_err);
+                                }
+                            }
+                        } else {
+                            qualified_identity
+                                .status
+                                .update(IdentityStatus::FailedCreation);
+
+                            self.insert_local_qualified_identity(
+                                &qualified_identity,
+                                &Some((wallet_id, wallet_identity_index)),
+                            )
+                            .map_err(|e| e.to_string())?;
+
+                            return Err(format!(
+                                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
+                                Please wait for Platform to sync with Core chain.",
+                                tx_block_height, metadata.core_chain_locked_height
+                            ));
+                        }
+                    } else {
+                        qualified_identity
+                            .status
+                            .update(IdentityStatus::FailedCreation);
+
+                        self.insert_local_qualified_identity(
+                            &qualified_identity,
+                            &Some((wallet_id, wallet_identity_index)),
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                        return Err(format!(
+                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
+                            is not yet chainlocked. Please wait for the transaction to be chainlocked."
+                        ));
+                    }
+                } else {
+                    // we failed, set the status accordingly and terminate the process
+                    qualified_identity
+                        .status
+                        .update(IdentityStatus::FailedCreation);
+
+                    self.insert_local_qualified_identity(
+                        &qualified_identity,
+                        &Some((wallet_id, wallet_identity_index)),
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                    return Err(e);
+                }
             }
         }
 

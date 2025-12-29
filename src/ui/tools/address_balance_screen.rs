@@ -7,7 +7,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
-use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 pub struct AddressBalanceScreen {
@@ -91,10 +91,25 @@ impl AddressBalanceScreen {
         action
     }
 
-    fn render_result(&self, ui: &mut Ui) {
+    fn render_result(&mut self, ui: &mut Ui) {
         if let Some(ref error) = self.error_message {
             ui.add_space(20.0);
-            ui.colored_label(egui::Color32::RED, error);
+            let error_color = Color32::from_rgb(255, 100, 100);
+            let error = error.clone();
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.error_message = None;
+                        }
+                    });
+                });
         }
 
         if let Some(ref result) = self.result {

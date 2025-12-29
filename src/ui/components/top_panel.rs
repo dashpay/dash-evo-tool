@@ -310,6 +310,7 @@ pub fn add_top_panel(
                                     let resp = ui.add(docs_btn);
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -320,12 +321,13 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, da) in doc_actions {
-                                            if ui.button(text).clicked() {
+                                            if ui.add_sized([ui.available_width(), 0.0], egui::Button::new(text)).clicked() {
                                                 action = da.create_action(app_context);
-                                                // ui.close();
+                                                ui.close();
                                             }
                                         }
                                     });
@@ -347,6 +349,7 @@ pub fn add_top_panel(
                                     let popup_id = ui.auto_id_with("contracts_popup");
                                     let resp = ui.add(contracts_btn);
 
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -357,10 +360,11 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, ca) in contract_actions {
-                                            if ui.button(text).clicked() {
+                                            if ui.add_sized([ui.available_width(), 0.0], egui::Button::new(text)).clicked() {
                                                 action = ca.create_action(app_context);
                                                 ui.close();
                                             }

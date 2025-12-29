@@ -24,7 +24,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Context, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -33,8 +33,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
-
+use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::theme::DashColors;
 use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
 
@@ -72,6 +72,7 @@ pub struct TransferScreen {
     // Platform address transfer fields
     destination_type: TransferDestinationType,
     platform_address_input: String,
+    show_advanced_options: bool,
 }
 
 impl TransferScreen {
@@ -108,19 +109,18 @@ impl TransferScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             destination_type: TransferDestinationType::Identity,
             platform_address_input: String::new(),
+            show_advanced_options: false,
         }
     }
 
-    fn render_key_selection(&mut self, ui: &mut Ui) {
-        let mut selected_identity = Some(self.identity.clone());
-        add_identity_key_chooser(
+    fn render_key_selection(&mut self, ui: &mut Ui) -> AppAction {
+        add_key_chooser(
             ui,
             &self.app_context,
-            std::iter::once(&self.identity),
-            &mut selected_identity,
+            &self.identity,
             &mut self.selected_key,
             TransactionType::Transfer,
-        );
+        )
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
@@ -169,27 +169,34 @@ impl TransferScreen {
     }
 
     fn render_destination_type_selector(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        // Colors for selected/unselected states
+        let selected_fill = DashColors::DASH_BLUE;
+        let selected_text = Color32::WHITE;
+        let unselected_fill = if dark_mode {
+            Color32::from_rgb(60, 60, 60)
+        } else {
+            Color32::from_rgb(220, 220, 220)
+        };
+        let unselected_text = DashColors::text_primary(dark_mode);
+
         ui.horizontal(|ui| {
-            ui.label("Transfer to:");
+            ui.vertical(|ui| {
+                ui.add_space(5.0);
+                ui.label("Transfer to:");
+            });
             ui.add_space(10.0);
 
             // Identity button
             let identity_selected = self.destination_type == TransferDestinationType::Identity;
             let identity_button = egui::Button::new(
                 RichText::new("Identity")
-                    .color(if identity_selected {
-                        Color32::WHITE
-                    } else {
-                        Color32::GRAY
-                    })
+                    .color(if identity_selected { selected_text } else { unselected_text })
                     .strong(),
             )
-            .fill(if identity_selected {
-                Color32::from_rgb(0, 128, 255)
-            } else {
-                Color32::from_rgb(60, 60, 60)
-            })
-            .min_size(egui::vec2(100.0, 28.0));
+            .fill(if identity_selected { selected_fill } else { unselected_fill })
+            .min_size(egui::vec2(120.0, 28.0));
 
             if ui.add(identity_button).clicked() {
                 self.destination_type = TransferDestinationType::Identity;
@@ -202,18 +209,10 @@ impl TransferScreen {
                 self.destination_type == TransferDestinationType::PlatformAddress;
             let platform_button = egui::Button::new(
                 RichText::new("Platform Address")
-                    .color(if platform_selected {
-                        Color32::WHITE
-                    } else {
-                        Color32::GRAY
-                    })
+                    .color(if platform_selected { selected_text } else { unselected_text })
                     .strong(),
             )
-            .fill(if platform_selected {
-                Color32::from_rgb(0, 128, 255)
-            } else {
-                Color32::from_rgb(60, 60, 60)
-            })
+            .fill(if platform_selected { selected_fill } else { unselected_fill })
             .min_size(egui::vec2(140.0, 28.0));
 
             if ui.add(platform_button).clicked() {
@@ -515,9 +514,6 @@ impl ScreenLike for TransferScreen {
                 return inner_action;
             }
 
-            ui.heading("Transfer Funds");
-            ui.add_space(10.0);
-
             let has_keys = if self.app_context.is_developer_mode() {
                 !self.identity.identity.public_keys().is_empty()
             } else {
@@ -580,29 +576,29 @@ impl ScreenLike for TransferScreen {
                         }
                     }
 
-                // Select the key to sign with
-                ui.heading("1. Select the key to sign the transaction with");
-                ui.add_space(10.0);
+                // Heading with checkbox on the same line
                 ui.horizontal(|ui| {
-                    self.render_key_selection(ui);
-                    ui.add_space(5.0);
-                    let identity_id_string =
-                        self.identity.identity.id().to_string(Encoding::Base58);
-                    let identity_display = self
-                        .identity
-                        .alias
-                        .as_deref()
-                        .unwrap_or_else(|| &identity_id_string);
-                    ui.label(format!("Identity: {}", identity_display));
+                    ui.heading("Transfer Funds");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Show Advanced Options");
+                    });
                 });
-
-                ui.add_space(10.0);
-                ui.separator();
                 ui.add_space(10.0);
 
                 // Input the amount to transfer
-                ui.heading("2. Input the amount to transfer");
+                ui.heading("1. Input the amount to transfer");
                 ui.add_space(5.0);
+
+                // Show identity info
+                let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
+                let identity_label = if let Some(alias) = &self.identity.alias {
+                    format!("From: {} ({})", alias, identity_id_string)
+                } else {
+                    format!("From: {}", identity_id_string)
+                };
+                ui.label(identity_label);
+                ui.add_space(5.0);
+
                 self.render_amount_input(ui);
 
                 ui.add_space(10.0);
@@ -610,7 +606,7 @@ impl ScreenLike for TransferScreen {
                 ui.add_space(10.0);
 
                 // Destination type selector
-                ui.heading("3. Select transfer destination type");
+                ui.heading("2. Select transfer destination type");
                 ui.add_space(5.0);
                 self.render_destination_type_selector(ui);
 
@@ -621,22 +617,38 @@ impl ScreenLike for TransferScreen {
                 // Input the destination based on type
                 match self.destination_type {
                     TransferDestinationType::Identity => {
-                        ui.heading("4. ID of the identity to transfer to");
+                        ui.heading("3. ID of the identity to transfer to");
                         ui.add_space(5.0);
                         self.render_to_identity_input(ui);
                     }
                     TransferDestinationType::PlatformAddress => {
-                        ui.heading("4. Platform address to transfer to");
+                        ui.heading("3. Platform address to transfer to");
                         ui.add_space(5.0);
                         self.render_platform_address_input(ui);
                     }
                 }
 
+                // Select the key to sign with (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.heading("4. Select the key to sign the transaction with");
+                    ui.add_space(10.0);
+                    inner_action |= self.render_key_selection(ui);
+                }
+
                 ui.add_space(10.0);
 
                 // Transfer button - check readiness based on destination type
+                // Minimum balance needed for transfer fee (0.0002 DASH in credits)
+                let min_transfer_balance: u64 = 20_000_000;
+                let has_enough_balance = self.identity.identity.balance() > min_transfer_balance;
+
                 let ready = self.amount.is_some()
                     && self.selected_key.is_some()
+                    && has_enough_balance
                     && !matches!(
                         self.transfer_credits_status,
                         TransferCreditsStatus::WaitingForResult(_),
@@ -654,9 +666,18 @@ impl ScreenLike for TransferScreen {
                     .fill(Color32::from_rgb(0, 128, 255))
                     .frame(true)
                     .corner_radius(3.0);
+
+                let hover_text = if !has_enough_balance {
+                    "Insufficient balance for transfer fee (need at least 0.0002 DASH)"
+                } else if ready {
+                    "Transfer credits to another identity or Platform address"
+                } else {
+                    "Please ensure all fields are filled correctly"
+                };
+
                 if ui
                     .add_enabled(ready, button)
-                    .on_disabled_hover_text("Please ensure all fields are filled correctly")
+                    .on_hover_text(hover_text)
                     .clicked()
                 {
                     self.confirmation_popup = true;
@@ -708,7 +729,22 @@ impl ScreenLike for TransferScreen {
                         ));
                     }
                     TransferCreditsStatus::ErrorMessage(msg) => {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.transfer_credits_status = TransferCreditsStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     TransferCreditsStatus::Complete => {
                         // Handled above

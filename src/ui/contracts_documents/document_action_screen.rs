@@ -45,7 +45,7 @@ use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::epaint::Color32;
-use egui::{Context, RichText, Ui};
+use egui::{Context, Frame, Margin, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -547,7 +547,15 @@ impl DocumentActionScreen {
             }
         } else if self.broadcast_status == BroadcastStatus::Fetched {
             ui.add_space(10.0);
-            ui.colored_label(Color32::DARK_RED, "No document found with the provided ID");
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.label(RichText::new("No document found with the provided ID").color(error_color));
+                });
         }
         action
     }
@@ -1680,7 +1688,22 @@ impl DocumentActionScreen {
 
         if let Some(ref msg) = self.backend_message {
             ui.add_space(10.0);
-            ui.colored_label(Color32::DARK_RED, msg);
+            let error_color = Color32::from_rgb(255, 100, 100);
+            let msg = msg.clone();
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&msg).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.backend_message = None;
+                        }
+                    });
+                });
         }
 
         action

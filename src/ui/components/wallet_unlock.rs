@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::styled::StyledCheckbox;
 use eframe::epaint::Color32;
-use egui::Ui;
+use egui::{Frame, Margin, RichText, Ui};
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 
@@ -132,9 +132,23 @@ pub trait ScreenWithWalletUnlock {
                 self.set_error_message(local_error_message);
 
                 // Display error message if the password was incorrect
-                if let Some(error_message) = self.error_message() {
+                if let Some(error_message) = self.error_message().cloned() {
                     ui.add_space(5.0);
-                    ui.colored_label(Color32::RED, error_message);
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.set_error_message(None);
+                                }
+                            });
+                        });
                 }
             }
         }

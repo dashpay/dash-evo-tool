@@ -261,7 +261,8 @@ pub enum IdentityTask {
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     /// Search for an identity by its DPNS name (without .dash suffix)
-    SearchIdentityByDpnsName(String),
+    /// Second parameter is optional wallet seed hash for key derivation
+    SearchIdentityByDpnsName(String, Option<WalletSeedHash>),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
     /// Top up an identity from Platform addresses
@@ -500,8 +501,9 @@ impl AppContext {
                 self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
                     .await
             }
-            IdentityTask::SearchIdentityByDpnsName(dpns_name) => {
-                self.load_identity_by_dpns_name(sdk, dpns_name).await
+            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => {
+                self.load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
+                    .await
             }
             IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::TopUpIdentityFromPlatformAddresses {

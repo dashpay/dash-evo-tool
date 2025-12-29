@@ -10,7 +10,7 @@ use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
-use egui::{RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
 impl TokensScreen {
@@ -127,7 +127,22 @@ impl TokensScreen {
                 }
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
+                let error_color = Color32::from_rgb(255, 100, 100);
+                let msg = e.clone();
+                Frame::new()
+                    .fill(error_color.gamma_multiply(0.1))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .stroke(egui::Stroke::new(1.0, error_color))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                            ui.add_space(10.0);
+                            if ui.small_button("Dismiss").clicked() {
+                                self.contract_search_status = ContractSearchStatus::NotStarted;
+                            }
+                        });
+                    });
             }
         }
 

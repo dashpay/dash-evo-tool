@@ -117,20 +117,18 @@ impl QRCodeGeneratorScreen {
             ui.separator();
         }
 
-        ScrollArea::vertical().show(ui, |ui| {
-            // Identity selector
-            let identities = self
-                .app_context
-                .load_local_qualified_identities()
-                .unwrap_or_default();
+        // Identity selector
+        let identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default();
 
-            if identities.is_empty() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "No identities loaded. Please load or create an identity first.",
-                );
-                return;
-            }
+        if identities.is_empty() {
+            action |= super::render_no_identities_card(ui, &self.app_context);
+            return action;
+        }
+
+        ScrollArea::vertical().show(ui, |ui| {
 
             ui.group(|ui| {
                 ui.label(

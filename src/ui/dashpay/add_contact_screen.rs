@@ -243,10 +243,7 @@ impl ScreenLike for AddContactScreen {
                 .unwrap_or_default();
 
             if identities.is_empty() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "No identities loaded. Please load or create an identity first.",
-                );
+                inner_action |= super::render_no_identities_card(ui, &self.app_context);
                 return inner_action;
             }
 

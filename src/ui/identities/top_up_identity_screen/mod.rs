@@ -404,10 +404,12 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error topping up identity: {}", message));
-            // Reset step so UI is not stuck on "Topping Up..."
+            // Reset step so UI is not stuck on waiting messages
             let mut step = self.step.write().unwrap();
-            if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance {
-                *step = WalletFundedScreenStep::ChooseFundingMethod;
+            if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance
+                || *step == WalletFundedScreenStep::WaitingForAssetLock
+            {
+                *step = WalletFundedScreenStep::ReadyToCreate;
             }
         } else {
             self.error_message = Some(message.to_string());

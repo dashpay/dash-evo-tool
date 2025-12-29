@@ -31,7 +31,8 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
-use egui::{Button, Color32, ComboBox, ScrollArea, Ui};
+use egui::{Align, Button, Color32, ComboBox, ScrollArea, Ui};
+use egui_extras::{Column, TableBuilder};
 
 use crate::model::amount::Amount;
 use crate::ui::components::amount_input::AmountInput;
@@ -319,65 +320,6 @@ impl AddNewIdentityScreen {
         }
     }
 
-    // fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
-    //     if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-    //         let mut wallet = wallet_guard.write().unwrap();
-    //
-    //         // Only render the unlock prompt if the wallet requires a password and is locked
-    //         if wallet.uses_password && !wallet.is_open() {
-    //             ui.add_space(10.0);
-    //             ui.label("This wallet is locked. Please enter the password to unlock it:");
-    //
-    //             let mut unlocked = false;
-    //             ui.horizontal(|ui| {
-    //                 let password_input = ui.add(
-    //                     egui::TextEdit::singleline(&mut self.wallet_password)
-    //                         .password(!self.show_password)
-    //                         .hint_text("Enter password"),
-    //                 );
-    //
-    //                 ui.checkbox(&mut self.show_password, "Show Password");
-    //
-    //                 unlocked = if password_input.lost_focus()
-    //                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
-    //                 {
-    //                     let unlocked = match wallet.wallet_seed.open(&self.wallet_password) {
-    //                         Ok(_) => {
-    //                             self.error_message = None; // Clear any previous error
-    //                             true
-    //                         }
-    //                         Err(_) => {
-    //                             if let Some(hint) = wallet.password_hint() {
-    //                                 self.error_message = Some(format!(
-    //                                     "Incorrect Password, password hint is {}",
-    //                                     hint
-    //                                 ));
-    //                             } else {
-    //                                 self.error_message = Some("Incorrect Password".to_string());
-    //                             }
-    //                             false
-    //                         }
-    //                     };
-    //                     // Clear the password field after submission
-    //                     self.wallet_password.zeroize();
-    //                     unlocked
-    //                 } else {
-    //                     false
-    //                 };
-    //             });
-    //
-    //             // Display error message if the password was incorrect
-    //             if let Some(error_message) = &self.error_message {
-    //                 ui.add_space(5.0);
-    //                 ui.colored_label(Color32::RED, error_message);
-    //             }
-    //
-    //             return unlocked;
-    //         }
-    //     }
-    //     false
-    // }
-
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         let mut selected_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
@@ -635,143 +577,138 @@ impl AddNewIdentityScreen {
         let has_other_keys = !self.identity_keys.keys_input.is_empty();
 
         if has_master_key || has_other_keys {
-            egui::Grid::new("all_keys_grid")
-                .num_columns(6)
-                .spacing([10.0, 8.0])
-                .min_row_height(26.0)
-                .show(ui, |ui| {
-                    // Header row
-                    ui.label("Key");
-                    ui.label("WIF");
-                    ui.label("Purpose");
-                    ui.label("Type");
-                    ui.label("Security");
-                    ui.label(""); // Empty header for delete button
-                    ui.end_row();
+            let row_height = 30.0;
 
+            // Use a lighter stripe color that doesn't clash with comboboxes
+            let original_stripe_color = ui.visuals().faint_bg_color;
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            ui.visuals_mut().faint_bg_color = if dark_mode {
+                Color32::from_rgba_unmultiplied(255, 255, 255, 10) // Very subtle light stripe in dark mode
+            } else {
+                Color32::from_rgba_unmultiplied(0, 100, 200, 10) // Light blue tint in light mode
+            };
+
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .vscroll(false)
+                .cell_layout(egui::Layout::left_to_right(Align::Center))
+                .column(Column::auto().at_least(80.0))      // Key
+                .column(Column::auto().at_least(200.0))     // WIF
+                .column(Column::auto().at_least(120.0))     // Purpose
+                .column(Column::auto().at_least(120.0))     // Type
+                .column(Column::auto().at_least(100.0))     // Security
+                .column(Column::auto().at_least(30.0))      // Delete
+                .header(row_height, |mut header| {
+                    header.col(|ui| { ui.label("Key"); });
+                    header.col(|ui| { ui.label("WIF"); });
+                    header.col(|ui| { ui.label("Purpose"); });
+                    header.col(|ui| { ui.label("Type"); });
+                    header.col(|ui| { ui.label("Security"); });
+                    header.col(|_ui| {});
+                })
+                .body(|mut body| {
                     // Render master key first
                     if let Some((master_key, _)) = self.identity_keys.master_private_key {
-                        // Cell 1: Label
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(8.0);
-                                ui.add(egui::Label::new(" • Master Key:").wrap_mode(egui::TextWrapMode::Extend));
+                        body.row(row_height, |mut row| {
+                            row.col(|ui| {
+                                ui.label("Master Key");
                             });
-                        });
-
-                        // Cell 2: WIF
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(8.0);
-                                ui.add(egui::Label::new(master_key.to_wif()).wrap_mode(egui::TextWrapMode::Extend));
+                            row.col(|ui| {
+                                ui.label(master_key.to_wif());
                             });
-                        });
-
-                        // Cell 3: Empty (no purpose for master)
-                        ui.label("");
-
-                        // Cell 4: Key Type selection
-                        ui.vertical(|ui| {
-                            ui.add_space(14.0);
-                            ComboBox::from_id_salt("master_key_type")
-                                .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.identity_keys.master_private_key_type,
-                                        KeyType::ECDSA_SECP256K1,
-                                        "ECDSA_SECP256K1",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.identity_keys.master_private_key_type,
-                                        KeyType::ECDSA_HASH160,
-                                        "ECDSA_HASH160",
-                                    );
+                            row.col(|_ui| {
+                                // No purpose for master key
+                            });
+                            row.col(|ui| {
+                                ui.vertical(|ui| {
+                                    ComboBox::from_id_salt("master_key_type")
+                                        .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.identity_keys.master_private_key_type,
+                                                KeyType::ECDSA_SECP256K1,
+                                                "ECDSA_SECP256K1",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.identity_keys.master_private_key_type,
+                                                KeyType::ECDSA_HASH160,
+                                                "ECDSA_HASH160",
+                                            );
+                                        });
                                 });
+                            });
+                            row.col(|_ui| {
+                                // No security level for master key
+                            });
+                            row.col(|_ui| {
+                                // No delete for master key
+                            });
                         });
-
-                        // Cell 5: Empty (no security level selector for master)
-                        ui.label("");
-
-                        // Cell 6: Empty (no delete for master)
-                        ui.label("");
-
-                        ui.end_row();
                     }
 
                     // Render other keys
                     for (i, ((key, _), key_type, purpose, security_level)) in
                         self.identity_keys.keys_input.iter_mut().enumerate()
                     {
-                        // Cell 1: Key number
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(8.0);
-                                ui.add(egui::Label::new(format!(" • Key {}:", i + 1)).wrap_mode(egui::TextWrapMode::Extend));
+                        body.row(row_height, |mut row| {
+                            row.col(|ui| {
+                                ui.label(format!("Key {}", i + 1));
+                            });
+                            row.col(|ui| {
+                                ui.label(key.to_wif());
+                            });
+                            row.col(|ui| {
+                                ui.vertical(|ui| {
+                                    ComboBox::from_id_salt(format!("purpose_combo_{}", i))
+                                        .selected_text(format!("{:?}", purpose))
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(purpose, Purpose::AUTHENTICATION, "AUTHENTICATION");
+                                            ui.selectable_value(purpose, Purpose::TRANSFER, "TRANSFER");
+                                        });
+                                });
+                            });
+                            row.col(|ui| {
+                                ui.vertical(|ui| {
+                                    ComboBox::from_id_salt(format!("key_type_combo_{}", i))
+                                        .selected_text(format!("{:?}", key_type))
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
+                                            ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
+                                        });
+                                });
+                            });
+                            row.col(|ui| {
+                                ui.vertical(|ui| {
+                                    ComboBox::from_id_salt(format!("security_level_combo_{}", i))
+                                    .selected_text(format!("{:?}", security_level))
+                                    .show_ui(ui, |ui| {
+                                        if *purpose == Purpose::TRANSFER {
+                                            *security_level = SecurityLevel::CRITICAL;
+                                            ui.label("Locked to CRITICAL");
+                                        } else {
+                                            ui.selectable_value(
+                                                security_level,
+                                                SecurityLevel::CRITICAL,
+                                                "CRITICAL",
+                                            );
+                                            ui.selectable_value(security_level, SecurityLevel::HIGH, "HIGH");
+                                            ui.selectable_value(security_level, SecurityLevel::MEDIUM, "MEDIUM");
+                                        }
+                                    });
+                                });
+                            });
+                            row.col(|ui| {
+                                if ui.button("-").clicked() {
+                                    keys_to_remove.push(i);
+                                }
                             });
                         });
-
-                        // Cell 2: WIF
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(8.0);
-                                ui.add(egui::Label::new(key.to_wif()).wrap_mode(egui::TextWrapMode::Extend));
-                            });
-                        });
-
-                        // Cell 3: Purpose selection
-                        ui.vertical(|ui| {
-                            ui.add_space(14.0);
-                            ComboBox::from_id_salt(format!("purpose_combo_{}", i))
-                                .selected_text(format!("{:?}", purpose))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(purpose, Purpose::AUTHENTICATION, "AUTHENTICATION");
-                                    ui.selectable_value(purpose, Purpose::TRANSFER, "TRANSFER");
-                                });
-                        });
-
-                        // Cell 4: Key Type selection
-                        ui.vertical(|ui| {
-                            ui.add_space(14.0);
-                            ComboBox::from_id_salt(format!("key_type_combo_{}", i))
-                                .selected_text(format!("{:?}", key_type))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
-                                    ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
-                                });
-                        });
-
-                        // Cell 5: Security Level selection
-                        ui.vertical(|ui| {
-                            ui.add_space(14.0);
-                            ComboBox::from_id_salt(format!("security_level_combo_{}", i))
-                                .selected_text(format!("{:?}", security_level))
-                                .show_ui(ui, |ui| {
-                                    if *purpose == Purpose::TRANSFER {
-                                        *security_level = SecurityLevel::CRITICAL;
-                                        ui.label("Locked to CRITICAL");
-                                    } else {
-                                        ui.selectable_value(
-                                            security_level,
-                                            SecurityLevel::CRITICAL,
-                                            "CRITICAL",
-                                        );
-                                        ui.selectable_value(security_level, SecurityLevel::HIGH, "HIGH");
-                                        ui.selectable_value(security_level, SecurityLevel::MEDIUM, "MEDIUM");
-                                    }
-                                });
-                        });
-
-                        // Cell 6: Delete button
-                        ui.vertical(|ui| {
-                            ui.add_space(14.0);
-                            if ui.button("-").clicked() {
-                                keys_to_remove.push(i);
-                            }
-                        });
-
-                        ui.end_row();
                     }
                 });
+
+            // Restore original stripe color
+            ui.visuals_mut().faint_bg_color = original_stripe_color;
         }
 
         // Remove keys marked for deletion
@@ -1011,6 +948,9 @@ impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error registering identity: {}", message));
+            // Reset step so we stop showing "Waiting for Platform acknowledgement"
+            let mut step = self.step.write().unwrap();
+            *step = WalletFundedScreenStep::ReadyToCreate;
         } else {
             self.error_message = Some(message.to_string());
         }
@@ -1091,6 +1031,29 @@ impl ScreenLike for AddNewIdentityScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
+
+            // Display error message at the top, outside of scroll area
+            if let Some(error_message) = self.error_message.clone() {
+                let message_color = Color32::from_rgb(255, 100, 100);
+
+                ui.horizontal(|ui| {
+                    egui::Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&error_message).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.error_message = None;
+                                }
+                            });
+                        });
+                });
+                ui.add_space(10.0);
+            }
 
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};

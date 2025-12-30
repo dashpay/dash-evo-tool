@@ -253,7 +253,8 @@ impl<'a> Widget for IdentitySelector<'a> {
                 ui.vertical(|ui| {
                     ui.add_space(13.0);
                     TextEdit::singleline(self.identity_str).ui(ui)
-                }).inner
+                })
+                .inner
             } else {
                 // Create a dummy response that never changes when other_option is disabled
                 ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())

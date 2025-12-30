@@ -1064,8 +1064,10 @@ pub struct TokensScreen {
     // ====================================
     //           Token Creator
     // ====================================
+    show_advanced_token_creator: bool,
     selected_token_preset: Option<TokenConfigurationPresetFeatures>,
     show_pop_up_info: Option<String>,
+    identity_id_string: String,
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -1415,8 +1417,10 @@ impl TokensScreen {
             show_token_info_popup: None,
 
             // Token Creator
+            show_advanced_token_creator: false,
             selected_token_preset: None,
             show_pop_up_info: None,
+            identity_id_string: String::new(),
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
@@ -2195,6 +2199,7 @@ impl TokensScreen {
     }
 
     fn reset_token_creator(&mut self) {
+        self.identity_id_string = String::new();
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
@@ -2785,7 +2790,7 @@ impl ScreenLike for TokensScreen {
 
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
-                        let mut popup = InfoPopup::new("Information", &info_text).markdown(true);
+                        let mut popup = InfoPopup::new("Information", &info_text);
                         if popup.show(ui).inner {
                             self.show_pop_up_info = None;
                         }
@@ -2840,14 +2845,15 @@ impl ScreenLike for TokensScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

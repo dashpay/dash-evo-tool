@@ -287,8 +287,7 @@ impl AppContext {
                 .send(TaskResult::Success(Box::new(
                     BackendTaskSuccessResult::Message(format!(
                         "Searching index {} of {}...",
-                        identity_index,
-                        max_identity_index
+                        identity_index, max_identity_index
                     )),
                 )))
                 .await
@@ -323,7 +322,10 @@ impl AppContext {
         }
 
         let summary = if loaded_indices.len() == 1 {
-            format!("Successfully loaded 1 identity at index {}.", loaded_indices[0])
+            format!(
+                "Successfully loaded 1 identity at index {}.",
+                loaded_indices[0]
+            )
         } else {
             let loaded_display = loaded_indices
                 .iter()

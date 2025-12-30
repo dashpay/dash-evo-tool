@@ -944,11 +944,7 @@ impl WalletSendScreen {
 
         let dest_type = self.detect_address_type(&self.destination_address);
         let has_destination = dest_type != AddressType::Unknown;
-        let has_amount = self
-            .amount
-            .as_ref()
-            .map(|a| a.value() > 0)
-            .unwrap_or(false);
+        let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
 
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult(_));
@@ -1252,9 +1248,7 @@ impl WalletSendScreen {
                             ui.label("Amount:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.core_inputs[idx].amount)
-                                    .hint_text(
-                                        RichText::new("0.0").color(Color32::GRAY),
-                                    )
+                                    .hint_text(RichText::new("0.0").color(Color32::GRAY))
                                     .desired_width(100.0),
                             );
                             ui.label(
@@ -1382,9 +1376,7 @@ impl WalletSendScreen {
                             ui.label("Amount:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.platform_inputs[idx].amount)
-                                    .hint_text(
-                                        RichText::new("0.0").color(Color32::GRAY),
-                                    )
+                                    .hint_text(RichText::new("0.0").color(Color32::GRAY))
                                     .desired_width(100.0),
                             );
                             ui.label(
@@ -1487,9 +1479,7 @@ impl WalletSendScreen {
                             ui.label("Amount:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.advanced_outputs[idx].amount)
-                                    .hint_text(
-                                        RichText::new("0.0").color(Color32::GRAY),
-                                    )
+                                    .hint_text(RichText::new("0.0").color(Color32::GRAY))
                                     .desired_width(100.0),
                             );
                             ui.label(

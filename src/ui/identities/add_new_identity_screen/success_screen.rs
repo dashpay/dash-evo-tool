@@ -23,17 +23,18 @@ impl AddNewIdentityScreen {
 
         // Handle the custom action to navigate to DPNS registration
         if let AppAction::Custom(ref s) = action
-            && s == "register_dpns" {
-                let mut screen = RegisterDpnsNameScreen::new(&self.app_context);
-                if let Some(identity_id) = self.successful_qualified_identity_id {
-                    screen.select_identity(identity_id);
-                    screen.show_identity_selector = false;
-                }
-                return AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenDPNSOwnedNames,
-                    Screen::RegisterDpnsNameScreen(screen),
-                );
+            && s == "register_dpns"
+        {
+            let mut screen = RegisterDpnsNameScreen::new(&self.app_context);
+            if let Some(identity_id) = self.successful_qualified_identity_id {
+                screen.select_identity(identity_id);
+                screen.show_identity_selector = false;
             }
+            return AppAction::PopThenAddScreenToMainScreen(
+                RootScreenType::RootScreenDPNSOwnedNames,
+                Screen::RegisterDpnsNameScreen(screen),
+            );
+        }
 
         action
     }

@@ -837,13 +837,14 @@ impl Database {
         for row in platform_rows {
             if let Ok((seed_hash, address_str, balance, nonce)) = row
                 && let Some(wallet) = wallets_map.get_mut(&seed_hash)
-                    && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str) {
-                        let address = address.assume_checked();
-                        wallet.platform_address_info.insert(
-                            address,
-                            crate::model::wallet::PlatformAddressInfo { balance, nonce },
-                        );
-                    }
+                && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str)
+            {
+                let address = address.assume_checked();
+                wallet.platform_address_info.insert(
+                    address,
+                    crate::model::wallet::PlatformAddressInfo { balance, nonce },
+                );
+            }
         }
 
         // Convert the BTreeMap into a Vec of Wallets.

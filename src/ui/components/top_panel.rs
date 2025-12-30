@@ -321,11 +321,21 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
+                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode {
+                                        Color32::from_rgb(40, 40, 40)
+                                    } else {
+                                        Color32::WHITE
+                                    }))
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, da) in doc_actions {
-                                            if ui.add_sized([ui.available_width(), 0.0], egui::Button::new(text)).clicked() {
+                                            if ui
+                                                .add_sized(
+                                                    [ui.available_width(), 0.0],
+                                                    egui::Button::new(text),
+                                                )
+                                                .clicked()
+                                            {
                                                 action = da.create_action(app_context);
                                                 ui.close();
                                             }
@@ -360,11 +370,21 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
+                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode {
+                                        Color32::from_rgb(40, 40, 40)
+                                    } else {
+                                        Color32::WHITE
+                                    }))
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, ca) in contract_actions {
-                                            if ui.add_sized([ui.available_width(), 0.0], egui::Button::new(text)).clicked() {
+                                            if ui
+                                                .add_sized(
+                                                    [ui.available_width(), 0.0],
+                                                    egui::Button::new(text),
+                                                )
+                                                .clicked()
+                                            {
                                                 action = ca.create_action(app_context);
                                                 ui.close();
                                             }

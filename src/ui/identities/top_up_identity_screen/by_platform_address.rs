@@ -102,14 +102,13 @@ impl TopUpIdentityScreen {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     // Amount input using AmountInput component
-                    let amount_input =
-                        self.platform_top_up_amount_input.get_or_insert_with(|| {
-                            AmountInput::new(Amount::new_dash(0.0))
-                                .with_label("Amount (DASH):")
-                                .with_hint_text("Enter amount (e.g., 0.01)")
-                                .with_max_button(true)
-                                .with_desired_width(150.0)
-                        });
+                    let amount_input = self.platform_top_up_amount_input.get_or_insert_with(|| {
+                        AmountInput::new(Amount::new_dash(0.0))
+                            .with_label("Amount (DASH):")
+                            .with_hint_text("Enter amount (e.g., 0.01)")
+                            .with_max_button(true)
+                            .with_desired_width(150.0)
+                    });
 
                     // Update max amount dynamically based on selected platform address
                     amount_input.set_max_amount(max_balance_credits);

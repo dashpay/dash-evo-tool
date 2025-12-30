@@ -532,14 +532,15 @@ impl ScreenLike for TransferTokensScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

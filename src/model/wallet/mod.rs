@@ -32,7 +32,10 @@ use std::sync::{Arc, RwLock};
 fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     match (a, b) {
         (Network::Dash, Network::Dash) => true,
-        (Network::Testnet | Network::Devnet | Network::Regtest, Network::Testnet | Network::Devnet | Network::Regtest) => true,
+        (
+            Network::Testnet | Network::Devnet | Network::Regtest,
+            Network::Testnet | Network::Devnet | Network::Regtest,
+        ) => true,
         _ => false,
     }
 }
@@ -1842,8 +1845,11 @@ impl Wallet {
                 .platform_address_info
                 .keys()
                 .filter(|existing_addr| {
-                    if let Ok(existing_platform) = PlatformAddress::try_from((*existing_addr).clone()) {
-                        existing_platform.to_bytes() == canonical_bytes && *existing_addr != &address
+                    if let Ok(existing_platform) =
+                        PlatformAddress::try_from((*existing_addr).clone())
+                    {
+                        existing_platform.to_bytes() == canonical_bytes
+                            && *existing_addr != &address
                     } else {
                         false
                     }
@@ -2084,9 +2090,16 @@ impl WalletAddressProvider {
     }
 
     /// Derive a Platform address at the given index.
-    fn derive_address_at_index(&self, index: AddressIndex) -> Result<(AddressKey, Address), String> {
-        let derivation_path =
-            DerivationPath::platform_payment_path(self.network, self.account, self.key_class, index);
+    fn derive_address_at_index(
+        &self,
+        index: AddressIndex,
+    ) -> Result<(AddressKey, Address), String> {
+        let derivation_path = DerivationPath::platform_payment_path(
+            self.network,
+            self.account,
+            self.key_class,
+            index,
+        );
 
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&self.seed, self.network)
@@ -2147,11 +2160,7 @@ impl AddressProvider for WalletAddressProvider {
 
         if balance > 0 {
             // Update highest found
-            self.highest_found = Some(
-                self.highest_found
-                    .map(|h| h.max(index))
-                    .unwrap_or(index),
-            );
+            self.highest_found = Some(self.highest_found.map(|h| h.max(index)).unwrap_or(index));
 
             // Store the balance result
             if let Some((_, core_address)) = self.pending.get(&index) {

@@ -83,7 +83,7 @@ impl ScreenLike for DashPayScreen {
                     DesiredAppAction::Custom("fetch_contacts_and_requests".to_string()),
                 ),
                 (
-                    "Send Contact Request",
+                    "Add Contact",
                     DesiredAppAction::AddScreenType(Box::new(
                         crate::ui::ScreenType::DashPayAddContact,
                     )),

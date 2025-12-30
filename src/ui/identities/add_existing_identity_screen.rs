@@ -466,8 +466,10 @@ impl AddExistingIdentityScreen {
         } else if !is_valid_id {
             ui.add_space(5.0);
             ui.label(
-                RichText::new("Invalid Identity ID format. Must be valid Base58 or Hex (64 characters).")
-                    .color(Color32::from_rgb(255, 150, 100)),
+                RichText::new(
+                    "Invalid Identity ID format. Must be valid Base58 or Hex (64 characters).",
+                )
+                .color(Color32::from_rgb(255, 150, 100)),
             );
         }
 
@@ -747,7 +749,10 @@ impl AddExistingIdentityScreen {
                     .selected_text(selected_label)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(self.selected_wallet.is_none(), "All unlocked wallets")
+                            .selectable_label(
+                                self.selected_wallet.is_none(),
+                                "All unlocked wallets",
+                            )
                             .clicked()
                         {
                             self.selected_wallet = None;
@@ -781,7 +786,10 @@ impl AddExistingIdentityScreen {
             });
 
         ui.add_space(5.0);
-        ui.label(RichText::new("Example: Enter \"alice\" to look up \"alice.dash\"").color(Color32::GRAY));
+        ui.label(
+            RichText::new("Example: Enter \"alice\" to look up \"alice.dash\"")
+                .color(Color32::GRAY),
+        );
         ui.add_space(15.0);
 
         // Search button - styled consistently
@@ -918,22 +926,23 @@ impl AddExistingIdentityScreen {
 
         // Handle the custom action to reset the form
         if let AppAction::Custom(ref s) = action
-            && s == "load_another" {
-                self.identity_id_input.clear();
-                self.alias_input.clear();
-                self.voting_private_key_input.clear();
-                self.owner_private_key_input.clear();
-                self.payout_address_private_key_input.clear();
-                self.keys_input = vec![String::new(), String::new(), String::new()];
-                self.identity_index_input.clear();
-                self.dpns_name_input.clear();
-                self.error_message = None;
-                self.show_pop_up_info = None;
-                self.add_identity_status = AddIdentityStatus::NotStarted;
-                self.backend_message = None;
-                self.success_message = None;
-                return AppAction::None;
-            }
+            && s == "load_another"
+        {
+            self.identity_id_input.clear();
+            self.alias_input.clear();
+            self.voting_private_key_input.clear();
+            self.owner_private_key_input.clear();
+            self.payout_address_private_key_input.clear();
+            self.keys_input = vec![String::new(), String::new(), String::new()];
+            self.identity_index_input.clear();
+            self.dpns_name_input.clear();
+            self.error_message = None;
+            self.show_pop_up_info = None;
+            self.add_identity_status = AddIdentityStatus::NotStarted;
+            self.backend_message = None;
+            self.success_message = None;
+            return AppAction::None;
+        }
 
         action
     }
@@ -971,9 +980,7 @@ impl ScreenLike for AddExistingIdentityScreen {
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
-                if msg.starts_with("Successfully loaded")
-                    || msg.starts_with("Finished loading")
-                {
+                if msg.starts_with("Successfully loaded") || msg.starts_with("Finished loading") {
                     self.success_message = Some(msg);
                     self.add_identity_status = AddIdentityStatus::Complete;
                     self.backend_message = None;
@@ -1020,7 +1027,10 @@ impl ScreenLike for AddExistingIdentityScreen {
                     .stroke(egui::Stroke::new(1.0, error_color))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                            ui.label(
+                                RichText::new(format!("Error: {}", error_message))
+                                    .color(error_color),
+                            );
                             ui.add_space(10.0);
                             if ui.small_button("Dismiss").clicked() {
                                 self.error_message = None;
@@ -1147,10 +1157,14 @@ impl ScreenLike for AddExistingIdentityScreen {
                                 .stroke(egui::Stroke::new(1.0, error_color))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                        ui.label(
+                                            RichText::new(format!("Error: {}", msg))
+                                                .color(error_color),
+                                        );
                                         ui.add_space(10.0);
                                         if ui.small_button("Dismiss").clicked() {
-                                            self.add_identity_status = AddIdentityStatus::NotStarted;
+                                            self.add_identity_status =
+                                                AddIdentityStatus::NotStarted;
                                         }
                                     });
                                 });
@@ -1179,14 +1193,15 @@ impl ScreenLike for AddExistingIdentityScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

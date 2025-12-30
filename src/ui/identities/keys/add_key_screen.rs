@@ -207,16 +207,17 @@ impl AddKeyScreen {
 
         // Handle the custom action to reset the form and refresh identity
         if let AppAction::Custom(ref s) = action
-            && s == "add_another" {
-                self.private_key_input = String::new();
-                self.contract_id_input = String::new();
-                self.document_type_input = String::new();
-                self.enable_contract_bounds = false;
-                self.add_key_status = AddKeyStatus::NotStarted;
-                return AppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::RefreshIdentity(self.identity.clone()),
-                ));
-            }
+            && s == "add_another"
+        {
+            self.private_key_input = String::new();
+            self.contract_id_input = String::new();
+            self.document_type_input = String::new();
+            self.enable_contract_bounds = false;
+            self.add_key_status = AddKeyStatus::NotStarted;
+            return AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RefreshIdentity(self.identity.clone()),
+            ));
+        }
 
         action
     }
@@ -288,23 +289,24 @@ impl ScreenLike for AddKeyScreen {
             }
 
             if self.selected_wallet.is_some()
-                && let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
-                    }
-                    if wallet_needs_unlock(wallet) {
-                        ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
-                        }
-                        return inner_action;
-                    }
+                && let Some(wallet) = &self.selected_wallet
+            {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    self.error_message = Some(e);
                 }
+                if wallet_needs_unlock(wallet) {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to continue.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Unlock Wallet").clicked() {
+                        self.wallet_unlock_popup.open();
+                    }
+                    return inner_action;
+                }
+            }
 
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
@@ -525,7 +527,9 @@ impl ScreenLike for AddKeyScreen {
                         .stroke(egui::Stroke::new(1.0, error_color))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                ui.label(
+                                    RichText::new(format!("Error: {}", msg)).color(error_color),
+                                );
                                 ui.add_space(10.0);
                                 if ui.small_button("Dismiss").clicked() {
                                     self.add_key_status = AddKeyStatus::NotStarted;
@@ -543,14 +547,15 @@ impl ScreenLike for AddKeyScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

@@ -156,10 +156,8 @@ impl AppContext {
                     }
 
                     // Update address_balances for affected addresses
-                    let affected_addresses: std::collections::BTreeSet<_> = used_utxos
-                        .values()
-                        .map(|(_, addr)| addr.clone())
-                        .collect();
+                    let affected_addresses: std::collections::BTreeSet<_> =
+                        used_utxos.values().map(|(_, addr)| addr.clone()).collect();
                     for address in affected_addresses {
                         // Recalculate balance from remaining UTXOs for this address
                         let new_balance = wallet

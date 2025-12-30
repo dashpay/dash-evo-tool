@@ -593,18 +593,28 @@ impl AddNewIdentityScreen {
                 .resizable(true)
                 .vscroll(false)
                 .cell_layout(egui::Layout::left_to_right(Align::Center))
-                .column(Column::auto().at_least(80.0))      // Key
-                .column(Column::auto().at_least(200.0))     // WIF
-                .column(Column::auto().at_least(120.0))     // Purpose
-                .column(Column::auto().at_least(120.0))     // Type
-                .column(Column::auto().at_least(100.0))     // Security
-                .column(Column::auto().at_least(30.0))      // Delete
+                .column(Column::auto().at_least(80.0)) // Key
+                .column(Column::auto().at_least(200.0)) // WIF
+                .column(Column::auto().at_least(120.0)) // Purpose
+                .column(Column::auto().at_least(120.0)) // Type
+                .column(Column::auto().at_least(100.0)) // Security
+                .column(Column::auto().at_least(30.0)) // Delete
                 .header(row_height, |mut header| {
-                    header.col(|ui| { ui.label("Key"); });
-                    header.col(|ui| { ui.label("WIF"); });
-                    header.col(|ui| { ui.label("Purpose"); });
-                    header.col(|ui| { ui.label("Type"); });
-                    header.col(|ui| { ui.label("Security"); });
+                    header.col(|ui| {
+                        ui.label("Key");
+                    });
+                    header.col(|ui| {
+                        ui.label("WIF");
+                    });
+                    header.col(|ui| {
+                        ui.label("Purpose");
+                    });
+                    header.col(|ui| {
+                        ui.label("Type");
+                    });
+                    header.col(|ui| {
+                        ui.label("Security");
+                    });
                     header.col(|_ui| {});
                 })
                 .body(|mut body| {
@@ -623,7 +633,10 @@ impl AddNewIdentityScreen {
                             row.col(|ui| {
                                 ui.vertical(|ui| {
                                     ComboBox::from_id_salt("master_key_type")
-                                        .selected_text(format!("{:?}", self.identity_keys.master_private_key_type))
+                                        .selected_text(format!(
+                                            "{:?}",
+                                            self.identity_keys.master_private_key_type
+                                        ))
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
                                                 &mut self.identity_keys.master_private_key_type,
@@ -663,8 +676,16 @@ impl AddNewIdentityScreen {
                                     ComboBox::from_id_salt(format!("purpose_combo_{}", i))
                                         .selected_text(format!("{:?}", purpose))
                                         .show_ui(ui, |ui| {
-                                            ui.selectable_value(purpose, Purpose::AUTHENTICATION, "AUTHENTICATION");
-                                            ui.selectable_value(purpose, Purpose::TRANSFER, "TRANSFER");
+                                            ui.selectable_value(
+                                                purpose,
+                                                Purpose::AUTHENTICATION,
+                                                "AUTHENTICATION",
+                                            );
+                                            ui.selectable_value(
+                                                purpose,
+                                                Purpose::TRANSFER,
+                                                "TRANSFER",
+                                            );
                                         });
                                 });
                             });
@@ -673,29 +694,45 @@ impl AddNewIdentityScreen {
                                     ComboBox::from_id_salt(format!("key_type_combo_{}", i))
                                         .selected_text(format!("{:?}", key_type))
                                         .show_ui(ui, |ui| {
-                                            ui.selectable_value(key_type, KeyType::ECDSA_HASH160, "ECDSA_HASH160");
-                                            ui.selectable_value(key_type, KeyType::ECDSA_SECP256K1, "ECDSA_SECP256K1");
+                                            ui.selectable_value(
+                                                key_type,
+                                                KeyType::ECDSA_HASH160,
+                                                "ECDSA_HASH160",
+                                            );
+                                            ui.selectable_value(
+                                                key_type,
+                                                KeyType::ECDSA_SECP256K1,
+                                                "ECDSA_SECP256K1",
+                                            );
                                         });
                                 });
                             });
                             row.col(|ui| {
                                 ui.vertical(|ui| {
                                     ComboBox::from_id_salt(format!("security_level_combo_{}", i))
-                                    .selected_text(format!("{:?}", security_level))
-                                    .show_ui(ui, |ui| {
-                                        if *purpose == Purpose::TRANSFER {
-                                            *security_level = SecurityLevel::CRITICAL;
-                                            ui.label("Locked to CRITICAL");
-                                        } else {
-                                            ui.selectable_value(
-                                                security_level,
-                                                SecurityLevel::CRITICAL,
-                                                "CRITICAL",
-                                            );
-                                            ui.selectable_value(security_level, SecurityLevel::HIGH, "HIGH");
-                                            ui.selectable_value(security_level, SecurityLevel::MEDIUM, "MEDIUM");
-                                        }
-                                    });
+                                        .selected_text(format!("{:?}", security_level))
+                                        .show_ui(ui, |ui| {
+                                            if *purpose == Purpose::TRANSFER {
+                                                *security_level = SecurityLevel::CRITICAL;
+                                                ui.label("Locked to CRITICAL");
+                                            } else {
+                                                ui.selectable_value(
+                                                    security_level,
+                                                    SecurityLevel::CRITICAL,
+                                                    "CRITICAL",
+                                                );
+                                                ui.selectable_value(
+                                                    security_level,
+                                                    SecurityLevel::HIGH,
+                                                    "HIGH",
+                                                );
+                                                ui.selectable_value(
+                                                    security_level,
+                                                    SecurityLevel::MEDIUM,
+                                                    "MEDIUM",
+                                                );
+                                            }
+                                        });
                                 });
                             });
                             row.col(|ui| {
@@ -941,7 +978,6 @@ impl AddNewIdentityScreen {
             ));
         }
     }
-
 }
 
 impl ScreenLike for AddNewIdentityScreen {

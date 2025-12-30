@@ -165,11 +165,12 @@ impl AddContactScreen {
 
         // Handle the custom action to reset the form
         if let AppAction::Custom(ref s) = action
-            && s == "send_another" {
-                self.status = ContactRequestStatus::NotStarted;
-                self.selected_key = None;
-                return AppAction::Refresh;
-            }
+            && s == "send_another"
+        {
+            self.status = ContactRequestStatus::NotStarted;
+            self.selected_key = None;
+            return AppAction::Refresh;
+        }
 
         action
     }
@@ -191,7 +192,7 @@ impl ScreenLike for AddContactScreen {
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
-                ("Send Contact Request", AppAction::None),
+                ("Add Contact", AppAction::None),
             ],
             vec![],
         );
@@ -215,7 +216,7 @@ impl ScreenLike for AddContactScreen {
                 if ui.button("Back").clicked() {
                     inner_action = AppAction::PopScreen;
                 }
-                ui.heading("Send Contact Request");
+                ui.heading("Add Contact");
                 ui.add_space(5.0);
                 if crate::ui::helpers::info_icon_button(ui, CONTACT_REQUEST_INFO_TEXT).clicked() {
                     self.show_info_popup = true;
@@ -462,7 +463,7 @@ impl ScreenLike for AddContactScreen {
                         ui.add_space(10.0);
                         ui.colored_label(
                             egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to send contact request.",
+                            "Wallet is locked. Please unlock to add contact.",
                         );
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
@@ -488,7 +489,7 @@ impl ScreenLike for AddContactScreen {
                                 && self.selected_key.is_some();
 
                             let send_button = egui::Button::new(
-                                RichText::new("Send Contact Request").color(egui::Color32::WHITE),
+                                RichText::new("Add Contact").color(egui::Color32::WHITE),
                             )
                             .fill(if send_button_enabled {
                                 egui::Color32::from_rgb(0, 141, 228) // Dash blue
@@ -535,14 +536,15 @@ impl ScreenLike for AddContactScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully, UI will update on next frame
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully, UI will update on next frame
             }
+        }
 
         action
     }

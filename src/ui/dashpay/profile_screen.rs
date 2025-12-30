@@ -13,7 +13,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{ColorImage, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
+use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -928,16 +928,40 @@ impl ProfileScreen {
                         });
                     } else if self.profile_load_attempted {
                         // No profile exists (only show after we've tried to load)
-                        ui.label("No DashPay profile found for this identity.");
-                        ui.add_space(10.0);
-                        let create_button = egui::Button::new(
-                            RichText::new("Create Profile").color(egui::Color32::WHITE),
-                        )
-                        .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        Frame::group(ui.style())
+                            .fill(ui.visuals().extreme_bg_color)
+                            .corner_radius(5.0)
+                            .outer_margin(Margin::same(20))
+                            .shadow(ui.visuals().window_shadow)
+                            .show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("No DashPay Profile")
+                                            .strong()
+                                            .size(20.0)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.add_space(5.0);
+                                    ui.label(
+                                        RichText::new(
+                                            "This identity doesn't have a DashPay profile yet.",
+                                        )
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.add_space(15.0);
+                                    let create_button = egui::Button::new(
+                                        RichText::new("Create Profile").color(egui::Color32::WHITE),
+                                    )
+                                    .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
-                        if ui.add(create_button).clicked() {
-                            self.start_editing();
-                        }
+                                    if ui.add(create_button).clicked() {
+                                        self.start_editing();
+                                    }
+                                    ui.add_space(10.0);
+                                });
+                            });
                     }
                 }
             });
@@ -958,14 +982,15 @@ impl ProfileScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ui.ctx(), wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully, UI will update on next frame
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ui.ctx(), wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully, UI will update on next frame
             }
+        }
 
         action
     }

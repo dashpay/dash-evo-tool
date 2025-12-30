@@ -554,7 +554,9 @@ impl DocumentActionScreen {
                 .corner_radius(5.0)
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
-                    ui.label(RichText::new("No document found with the provided ID").color(error_color));
+                    ui.label(
+                        RichText::new("No document found with the provided ID").color(error_color),
+                    );
                 });
         }
         action
@@ -1508,14 +1510,15 @@ impl ScreenLike for DocumentActionScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

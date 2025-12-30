@@ -200,7 +200,14 @@ pub fn add_key_chooser(
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
 ) -> AppAction {
-    add_key_chooser_with_doc_type(ui, app_context, identity, selected_key, transaction_type, None)
+    add_key_chooser_with_doc_type(
+        ui,
+        app_context,
+        identity,
+        selected_key,
+        transaction_type,
+        None,
+    )
 }
 
 /// Key chooser that filters keys based on transaction type, document type and dev mode.
@@ -221,37 +228,39 @@ pub fn add_key_chooser_with_doc_type(
         (TransactionType::DocumentAction, Some(doc_type)) => {
             let required_level = doc_type.security_level_requirement();
             let allowed_levels = SecurityLevel::CRITICAL as u8..=required_level as u8;
-            [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]
-                .into_iter()
-                .filter(|level| allowed_levels.contains(&(*level as u8)))
-                .collect()
+            [
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ]
+            .into_iter()
+            .filter(|level| allowed_levels.contains(&(*level as u8)))
+            .collect()
         }
         _ => transaction_type.allowed_security_levels(),
     };
 
     // Check for keys with private keys loaded
-    let has_suitable_keys_with_private = identity
-        .private_keys
-        .identity_public_keys()
-        .iter()
-        .any(|key_ref| {
-            let key = &key_ref.1.identity_public_key;
-            let basic_ok = allowed_purposes.contains(&key.purpose())
-                && allowed_security_levels.contains(&key.security_level());
+    let has_suitable_keys_with_private =
+        identity
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .any(|key_ref| {
+                let key = &key_ref.1.identity_public_key;
+                let basic_ok = allowed_purposes.contains(&key.purpose())
+                    && allowed_security_levels.contains(&key.security_level());
 
-            if transaction_type == TransactionType::ContactRequest {
-                basic_ok && key.key_type() == KeyType::ECDSA_SECP256K1
-            } else {
-                basic_ok
-            }
-        });
+                if transaction_type == TransactionType::ContactRequest {
+                    basic_ok && key.key_type() == KeyType::ECDSA_SECP256K1
+                } else {
+                    basic_ok
+                }
+            });
 
     // Check if there are eligible public keys without private keys
-    let has_eligible_public_keys_without_private = identity
-        .identity
-        .public_keys()
-        .iter()
-        .any(|(_, pub_key)| {
+    let has_eligible_public_keys_without_private =
+        identity.identity.public_keys().iter().any(|(_, pub_key)| {
             let basic_ok = allowed_purposes.contains(&pub_key.purpose())
                 && allowed_security_levels.contains(&pub_key.security_level());
 

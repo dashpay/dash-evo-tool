@@ -256,7 +256,7 @@ impl QRScannerScreen {
                     if wallet_locked {
                         ui.colored_label(
                             egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to send contact request.",
+                            "Wallet is locked. Please unlock to add contact.",
                         );
                         ui.add_space(8.0);
                         if ui.button("Unlock Wallet").clicked() {
@@ -267,7 +267,7 @@ impl QRScannerScreen {
                             if self.sending {
                                 ui.spinner();
                                 ui.label("Sending contact request...");
-                            } else if ui.button("Send Contact Request").clicked() {
+                            } else if ui.button("Add Contact").clicked() {
                                 action = self.send_contact_request_with_proof();
                             }
                         });
@@ -327,14 +327,15 @@ impl ScreenLike for QRScannerScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully, UI will update on next frame
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully, UI will update on next frame
             }
+        }
 
         action
     }

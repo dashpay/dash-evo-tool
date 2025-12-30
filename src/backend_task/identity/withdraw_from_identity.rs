@@ -58,7 +58,8 @@ impl AppContext {
         );
 
         // Log the key being used
-        let signing_key = id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id));
+        let signing_key =
+            id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id));
         if let Some(key) = &signing_key {
             tracing::info!(
                 key_id = key.id(),

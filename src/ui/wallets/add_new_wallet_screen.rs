@@ -50,11 +50,40 @@ pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
     ChildNumber::Hardened { index: 0 },
 ];
 
+/// Word count options for BIP39 mnemonic seed phrases
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordCount {
+    Words12 = 12,
+    Words15 = 15,
+    Words18 = 18,
+    Words21 = 21,
+    Words24 = 24,
+}
+
+impl WordCount {
+    /// Returns the number of entropy bytes required for this word count
+    pub fn entropy_bytes(&self) -> usize {
+        match self {
+            WordCount::Words12 => 16, // 128 bits
+            WordCount::Words15 => 20, // 160 bits
+            WordCount::Words18 => 24, // 192 bits
+            WordCount::Words21 => 28, // 224 bits
+            WordCount::Words24 => 32, // 256 bits
+        }
+    }
+
+    /// Returns the word count as a number
+    pub fn count(&self) -> usize {
+        *self as usize
+    }
+}
+
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
     password: String,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
+    selected_word_count: WordCount,
     alias_input: String,
     wrote_it_down: bool,
     password_strength: f64,
@@ -79,6 +108,7 @@ impl AddNewWalletScreen {
             password: String::new(),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
+            selected_word_count: WordCount::Words24, // Default to 24 words for maximum security
             alias_input: String::new(),
             wrote_it_down: false,
             password_strength: 0.0,
@@ -96,11 +126,15 @@ impl AddNewWalletScreen {
         }
     }
 
-    /// Generate a new seed phrase based on the selected language
+    /// Generate a new seed phrase based on the selected language and word count
     fn generate_seed_phrase(&mut self) {
+        let full_entropy = self.entropy_grid.random_number_with_user_input();
+        let entropy_bytes = self.selected_word_count.entropy_bytes();
+
+        // Use only the required number of bytes for the selected word count
         let mnemonic = Mnemonic::from_entropy_in(
             self.selected_language,
-            &self.entropy_grid.random_number_with_user_input(),
+            &full_entropy[..entropy_bytes],
         )
         .expect("Failed to generate mnemonic");
         self.seed_phrase = Some(mnemonic);
@@ -512,40 +546,87 @@ impl AddNewWalletScreen {
         ui.add_space(15.0); // Add spacing from the top
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             ui.add_space(-6.0);
-            // Center the language selector and generate button
+            // Language and word count selectors with generate button
             ui.horizontal(|ui| {
-                ui.label("Language:");
+                ui.vertical(|ui| {
+                    ui.add_space(7.0);
+                    ui.label("Language:");
+                });
 
-                ComboBox::from_label("")
-                    .selected_text(format!("{:?}", self.selected_language))
-                    .width(150.0)
+                ui.vertical(|ui| {
+                    ComboBox::from_id_salt("language_selector")
+                        .selected_text(format!("{:?}", self.selected_language))
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.selected_language,
+                                Language::English,
+                                "English",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_language,
+                                Language::Spanish,
+                                "Spanish",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_language,
+                                Language::French,
+                                "French",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_language,
+                                Language::Italian,
+                                "Italian",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_language,
+                                Language::Portuguese,
+                                "Portuguese",
+                            );
+                        });
+                });
+
+                ui.add_space(10.0);
+
+                ui.vertical(|ui| {
+                    ui.add_space(7.0);
+                    ui.label("Word Count:");
+                });
+
+                ui.vertical(|ui| {
+                    ComboBox::from_id_salt("word_count_selector")
+                    .selected_text(format!("{} words", self.selected_word_count.count()))
+                    .width(100.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
-                            &mut self.selected_language,
-                            Language::English,
-                            "English",
+                            &mut self.selected_word_count,
+                            WordCount::Words12,
+                            "12 words",
                         );
                         ui.selectable_value(
-                            &mut self.selected_language,
-                            Language::Spanish,
-                            "Spanish",
+                            &mut self.selected_word_count,
+                            WordCount::Words15,
+                            "15 words",
                         );
                         ui.selectable_value(
-                            &mut self.selected_language,
-                            Language::French,
-                            "French",
+                            &mut self.selected_word_count,
+                            WordCount::Words18,
+                            "18 words",
                         );
                         ui.selectable_value(
-                            &mut self.selected_language,
-                            Language::Italian,
-                            "Italian",
+                            &mut self.selected_word_count,
+                            WordCount::Words21,
+                            "21 words",
                         );
                         ui.selectable_value(
-                            &mut self.selected_language,
-                            Language::Portuguese,
-                            "Portuguese",
+                            &mut self.selected_word_count,
+                            WordCount::Words24,
+                            "24 words",
                         );
                     });
+                });
+
+                ui.add_space(10.0);
 
                 let generate_button = egui::Button::new(
                     RichText::new("Generate")
@@ -566,11 +647,18 @@ impl AddNewWalletScreen {
             if let Some(mnemonic) = &self.seed_phrase {
                 ui.add_space(10.0);
 
+                // Calculate grid dimensions based on word count
+                let word_count = mnemonic.word_count();
+                let columns = if word_count <= 12 { 3 } else { 4 };
+                let rows = (word_count + columns - 1) / columns; // Ceiling division
+
                 // Create a container with a fixed width (limited to 600px max to prevent overflow)
                 let available_width = ui.available_width();
                 let frame_width = (available_width * 0.65).min(600.0);
+                let frame_height = (rows as f32 * 40.0).max(120.0); // Dynamic height based on rows
+
                 ui.allocate_ui_with_layout(
-                    Vec2::new(frame_width, 260.0), // Set width and height of the container
+                    Vec2::new(frame_width, frame_height + 20.0), // Set width and height of the container
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
                         Frame::new()
@@ -579,12 +667,9 @@ impl AddNewWalletScreen {
                             .corner_radius(5.0)
                             .inner_margin(Margin::same(10))
                             .show(ui, |ui| {
-                                let columns = 4; // Reduced from 6 to 4 for better fit
-                                let rows = 24 / columns;
-
                                 // Calculate the size of each grid cell with padding
                                 let column_width = (frame_width - 20.0) / columns as f32; // Account for inner margin
-                                let row_height = 240.0 / rows as f32; // Reduced height for padding
+                                let row_height = frame_height / rows as f32;
 
                                 Grid::new("seed_phrase_grid")
                                     .num_columns(columns)
@@ -594,7 +679,7 @@ impl AddNewWalletScreen {
                                     .show(ui, |ui| {
                                         for (i, word) in mnemonic.words().enumerate() {
                                             let number_text = RichText::new(format!("{} ", i + 1))
-                                                .size(row_height * 0.2)
+                                                .size(row_height * 0.3)
                                                 .color(Color32::GRAY);
 
                                             let word_text = RichText::new(word)
@@ -666,7 +751,7 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(5.0);
 
-                    ui.heading("2. Select your desired seed phrase language and press \"Generate\".");
+                    ui.heading("2. Select your desired seed phrase language and word count and press \"Generate\".");
                     self.render_seed_phrase_input(ui);
 
                     if self.seed_phrase.is_none() {

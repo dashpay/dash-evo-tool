@@ -588,10 +588,13 @@ impl ScreenLike for GroupActionsScreen {
                         .stroke(egui::Stroke::new(1.0, error_color))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                ui.label(
+                                    RichText::new(format!("Error: {}", msg)).color(error_color),
+                                );
                                 ui.add_space(10.0);
                                 if ui.small_button("Dismiss").clicked() {
-                                    self.fetch_group_actions_status = FetchGroupActionsStatus::NotStarted;
+                                    self.fetch_group_actions_status =
+                                        FetchGroupActionsStatus::NotStarted;
                                 }
                             });
                         });

@@ -12,10 +12,10 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use egui::{RichText, ScrollArea, Ui};
+use egui::{Frame, Margin, RichText, ScrollArea, Ui};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -428,10 +428,30 @@ impl ContactRequests {
                     });
                 } else {
                     ScrollArea::vertical().id_salt("incoming_requests_scroll").show(ui, |ui| {
-                    if !self.has_fetched_requests {
-                        ui.label("No contact requests loaded");
-                    } else if self.incoming_requests.is_empty() {
-                        ui.label("No incoming contact requests found");
+                    if self.incoming_requests.is_empty() {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        Frame::group(ui.style())
+                            .fill(ui.visuals().extreme_bg_color)
+                            .corner_radius(5.0)
+                            .outer_margin(Margin::same(20))
+                            .shadow(ui.visuals().window_shadow)
+                            .show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("No Incoming Requests")
+                                            .strong()
+                                            .size(20.0)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.add_space(5.0);
+                                    ui.label(
+                                        RichText::new("You don't have any pending contact requests.")
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.add_space(10.0);
+                                });
+                            });
                     } else {
                         let requests: Vec<_> = self.incoming_requests.values().cloned().collect();
                         for request in requests {
@@ -590,10 +610,40 @@ impl ContactRequests {
                     });
                 } else {
                     ScrollArea::vertical().id_salt("outgoing_requests_scroll").show(ui, |ui| {
-                    if !self.has_fetched_requests {
-                        ui.label("No contact requests loaded");
-                    } else if self.outgoing_requests.is_empty() {
-                        ui.label("No outgoing contact requests found");
+                    if self.outgoing_requests.is_empty() {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        Frame::group(ui.style())
+                            .fill(ui.visuals().extreme_bg_color)
+                            .corner_radius(5.0)
+                            .outer_margin(Margin::same(20))
+                            .shadow(ui.visuals().window_shadow)
+                            .show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("No Outgoing Requests")
+                                            .strong()
+                                            .size(20.0)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.add_space(5.0);
+                                    ui.label(
+                                        RichText::new("You haven't sent any contact requests.")
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.add_space(15.0);
+                                    let add_button = egui::Button::new(
+                                        RichText::new("Add Contact").color(egui::Color32::WHITE),
+                                    )
+                                    .fill(egui::Color32::from_rgb(0, 141, 228));
+                                    if ui.add(add_button).clicked() {
+                                        action = AppAction::AddScreen(
+                                            ScreenType::DashPayAddContact.create_screen(&self.app_context),
+                                        );
+                                    }
+                                    ui.add_space(10.0);
+                                });
+                            });
                     } else {
                         let requests: Vec<_> = self.outgoing_requests.values().cloned().collect();
                         for request in requests {
@@ -679,14 +729,15 @@ impl ScreenLike for ContactRequests {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully, UI will update on next frame
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully, UI will update on next frame
             }
+        }
 
         action
     }

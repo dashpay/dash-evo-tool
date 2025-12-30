@@ -116,7 +116,11 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
-        ("Dashpay", RootScreenType::RootScreenDashPayProfile, "dashpay.png"),
+        (
+            "Dashpay",
+            RootScreenType::RootScreenDashPayProfile,
+            "dashpay.png",
+        ),
         (
             "Identities",
             RootScreenType::RootScreenIdentities,

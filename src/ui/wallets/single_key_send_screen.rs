@@ -217,7 +217,10 @@ impl SingleKeyWalletSendScreen {
                         ui.add_space(5.0);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recipients[i].address)
-                                .hint_text(RichText::new("Enter Dash address (e.g., y...)").color(Color32::GRAY))
+                                .hint_text(
+                                    RichText::new("Enter Dash address (e.g., y...)")
+                                        .color(Color32::GRAY),
+                                )
                                 .desired_width(600.0),
                         );
 

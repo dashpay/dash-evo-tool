@@ -34,7 +34,10 @@ const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
 fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     match (a, b) {
         (Network::Dash, Network::Dash) => true,
-        (Network::Testnet | Network::Devnet | Network::Regtest, Network::Testnet | Network::Devnet | Network::Regtest) => true,
+        (
+            Network::Testnet | Network::Devnet | Network::Regtest,
+            Network::Testnet | Network::Devnet | Network::Regtest,
+        ) => true,
         _ => false,
     }
 }

@@ -265,12 +265,13 @@ impl RegisterDataContractScreen {
 
         // Handle the custom action to reset the form
         if let AppAction::Custom(ref s) = action
-            && s == "register_another" {
-                self.contract_json_input = String::new();
-                self.contract_alias_input = String::new();
-                self.broadcast_status = BroadcastStatus::Idle;
-                return AppAction::None;
-            }
+            && s == "register_another"
+        {
+            self.contract_json_input = String::new();
+            self.contract_alias_input = String::new();
+            self.broadcast_status = BroadcastStatus::Idle;
+            return AppAction::None;
+        }
 
         action
     }
@@ -457,14 +458,15 @@ impl ScreenLike for RegisterDataContractScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

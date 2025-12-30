@@ -47,9 +47,8 @@ impl AddressBalanceScreen {
         self.error_message = None;
         self.result = None;
 
-        let task = BackendTask::PlatformInfo(PlatformInfoTaskRequestType::FetchAddressBalance(
-            address,
-        ));
+        let task =
+            BackendTask::PlatformInfo(PlatformInfoTaskRequestType::FetchAddressBalance(address));
         AppAction::BackendTask(task)
     }
 

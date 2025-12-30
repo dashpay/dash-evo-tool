@@ -11,7 +11,7 @@ use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
+use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextureHandle, Ui};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -315,13 +315,13 @@ impl ContactsList {
 
         // Tab bar
         ui.horizontal(|ui| {
-            let contacts_tab = egui::Button::new(
-                RichText::new("My Contacts").color(if self.active_tab == ContactsTab::Contacts {
+            let contacts_tab = egui::Button::new(RichText::new("My Contacts").color(
+                if self.active_tab == ContactsTab::Contacts {
                     DashColors::WHITE
                 } else {
                     DashColors::text_primary(dark_mode)
-                }),
-            )
+                },
+            ))
             .fill(if self.active_tab == ContactsTab::Contacts {
                 DashColors::DASH_BLUE
             } else {
@@ -349,13 +349,13 @@ impl ContactsList {
                 "Requests".to_string()
             };
 
-            let requests_tab = egui::Button::new(
-                RichText::new(requests_label).color(if self.active_tab == ContactsTab::Requests {
+            let requests_tab = egui::Button::new(RichText::new(requests_label).color(
+                if self.active_tab == ContactsTab::Requests {
                     DashColors::WHITE
                 } else {
                     DashColors::text_primary(dark_mode)
-                }),
-            )
+                },
+            ))
             .fill(if self.active_tab == ContactsTab::Requests {
                 DashColors::DASH_BLUE
             } else {
@@ -384,7 +384,11 @@ impl ContactsList {
                 .set_selected_identity(self.selected_identity.clone());
             // Render the contact requests tab without its own header
             action |= self.contact_requests.render_embedded(ui);
-        } else {
+            return action;
+        }
+
+        // Contacts tab - show search/filter/sort controls if there are contacts
+        {
             // Only show search/filter/sort controls if there are contacts
             if !self.contacts.is_empty() {
                 // Search bar
@@ -636,232 +640,291 @@ impl ContactsList {
         });
 
         // Contacts list
-        ScrollArea::vertical().id_salt("contacts_list_scroll").show(ui, |ui| {
-            if self.contacts.is_empty() {
-                if self.has_loaded {
-                    ui.label("No contacts found");
-                } else {
-                    ui.label("No contacts loaded");
-                }
-            } else if filtered_contacts.is_empty() {
-                ui.label("No contacts match your search");
-            } else {
-                // Collect avatar URLs that need to be loaded
-                let mut avatars_to_load: Vec<String> = Vec::new();
-
-                for contact in filtered_contacts {
-                    let avatar_url_clone = contact.avatar_url.clone();
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            // Avatar display
-                            ui.vertical(|ui| {
+        ScrollArea::vertical()
+            .id_salt("contacts_list_scroll")
+            .show(ui, |ui| {
+                if self.contacts.is_empty() {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    Frame::group(ui.style())
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(5.0)
+                        .outer_margin(Margin::same(20))
+                        .shadow(ui.visuals().window_shadow)
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(10.0);
+                                ui.label(
+                                    RichText::new("No Contacts")
+                                        .strong()
+                                        .size(20.0)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
                                 ui.add_space(5.0);
-                                const AVATAR_SIZE: f32 = 40.0;
+                                ui.label(
+                                    RichText::new("You haven't added any contacts yet.")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.add_space(15.0);
+                                let add_button = egui::Button::new(
+                                    RichText::new("Add Contact").color(egui::Color32::WHITE),
+                                )
+                                .fill(egui::Color32::from_rgb(0, 141, 228));
+                                if ui.add(add_button).clicked() {
+                                    action = AppAction::AddScreen(
+                                        ScreenType::DashPayAddContact
+                                            .create_screen(&self.app_context),
+                                    );
+                                }
+                                ui.add_space(10.0);
+                            });
+                        });
+                } else if filtered_contacts.is_empty() {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    Frame::group(ui.style())
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(5.0)
+                        .outer_margin(Margin::same(20))
+                        .shadow(ui.visuals().window_shadow)
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(10.0);
+                                ui.label(
+                                    RichText::new("No Matches")
+                                        .strong()
+                                        .size(20.0)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                ui.add_space(5.0);
+                                ui.label(
+                                    RichText::new("No contacts match your search.")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.add_space(10.0);
+                            });
+                        });
+                } else {
+                    // Collect avatar URLs that need to be loaded
+                    let mut avatars_to_load: Vec<String> = Vec::new();
 
-                                if let Some(ref url) = avatar_url_clone {
-                                    if !url.is_empty() {
-                                        let texture_id = format!("contact_avatar_{}", url);
+                    for contact in filtered_contacts {
+                        let avatar_url_clone = contact.avatar_url.clone();
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                // Avatar display
+                                ui.vertical(|ui| {
+                                    ui.add_space(5.0);
+                                    const AVATAR_SIZE: f32 = 40.0;
 
-                                        // Check if texture is already cached
-                                        if let Some(texture) = self.avatar_textures.get(&texture_id)
-                                        {
-                                            // Display the cached avatar image
-                                            ui.add(
-                                                egui::Image::new(texture)
-                                                    .fit_to_exact_size(egui::vec2(
-                                                        AVATAR_SIZE,
-                                                        AVATAR_SIZE,
-                                                    ))
-                                                    .corner_radius(AVATAR_SIZE / 2.0),
-                                            );
-                                        } else {
-                                            // Check if image data was loaded by async task
-                                            let data_id = format!("contact_avatar_data_{}", url);
-                                            let color_image = ui.ctx().data_mut(|data| {
-                                                data.get_temp::<ColorImage>(egui::Id::new(&data_id))
-                                            });
+                                    if let Some(ref url) = avatar_url_clone {
+                                        if !url.is_empty() {
+                                            let texture_id = format!("contact_avatar_{}", url);
 
-                                            if let Some(color_image) = color_image {
-                                                // Create texture from loaded image
-                                                let texture = ui.ctx().load_texture(
-                                                    &texture_id,
-                                                    color_image,
-                                                    egui::TextureOptions::LINEAR,
-                                                );
-
-                                                // Display the image
+                                            // Check if texture is already cached
+                                            if let Some(texture) =
+                                                self.avatar_textures.get(&texture_id)
+                                            {
+                                                // Display the cached avatar image
                                                 ui.add(
-                                                    egui::Image::new(&texture)
+                                                    egui::Image::new(texture)
                                                         .fit_to_exact_size(egui::vec2(
                                                             AVATAR_SIZE,
                                                             AVATAR_SIZE,
                                                         ))
                                                         .corner_radius(AVATAR_SIZE / 2.0),
                                                 );
-
-                                                // Cache the texture and clear loading state
-                                                self.avatar_textures
-                                                    .insert(texture_id.clone(), texture);
-                                                self.avatars_loading.remove(url);
-
-                                                // Clear the temporary data
-                                                ui.ctx().data_mut(|data| {
-                                                    data.remove::<ColorImage>(egui::Id::new(
-                                                        &data_id,
-                                                    ));
-                                                });
-                                            } else if !self.avatars_loading.contains(url) {
-                                                // Queue for loading
-                                                avatars_to_load.push(url.clone());
-                                                // Show spinner while loading
-                                                ui.add(
-                                                    egui::Spinner::new()
-                                                        .size(AVATAR_SIZE)
-                                                        .color(DashColors::DASH_BLUE),
-                                                );
                                             } else {
-                                                // Show loading indicator
-                                                ui.add(
-                                                    egui::Spinner::new()
-                                                        .size(AVATAR_SIZE)
-                                                        .color(DashColors::DASH_BLUE),
-                                                );
+                                                // Check if image data was loaded by async task
+                                                let data_id =
+                                                    format!("contact_avatar_data_{}", url);
+                                                let color_image = ui.ctx().data_mut(|data| {
+                                                    data.get_temp::<ColorImage>(egui::Id::new(
+                                                        &data_id,
+                                                    ))
+                                                });
+
+                                                if let Some(color_image) = color_image {
+                                                    // Create texture from loaded image
+                                                    let texture = ui.ctx().load_texture(
+                                                        &texture_id,
+                                                        color_image,
+                                                        egui::TextureOptions::LINEAR,
+                                                    );
+
+                                                    // Display the image
+                                                    ui.add(
+                                                        egui::Image::new(&texture)
+                                                            .fit_to_exact_size(egui::vec2(
+                                                                AVATAR_SIZE,
+                                                                AVATAR_SIZE,
+                                                            ))
+                                                            .corner_radius(AVATAR_SIZE / 2.0),
+                                                    );
+
+                                                    // Cache the texture and clear loading state
+                                                    self.avatar_textures
+                                                        .insert(texture_id.clone(), texture);
+                                                    self.avatars_loading.remove(url);
+
+                                                    // Clear the temporary data
+                                                    ui.ctx().data_mut(|data| {
+                                                        data.remove::<ColorImage>(egui::Id::new(
+                                                            &data_id,
+                                                        ));
+                                                    });
+                                                } else if !self.avatars_loading.contains(url) {
+                                                    // Queue for loading
+                                                    avatars_to_load.push(url.clone());
+                                                    // Show spinner while loading
+                                                    ui.add(
+                                                        egui::Spinner::new()
+                                                            .size(AVATAR_SIZE)
+                                                            .color(DashColors::DASH_BLUE),
+                                                    );
+                                                } else {
+                                                    // Show loading indicator
+                                                    ui.add(
+                                                        egui::Spinner::new()
+                                                            .size(AVATAR_SIZE)
+                                                            .color(DashColors::DASH_BLUE),
+                                                    );
+                                                }
                                             }
+                                        } else {
+                                            // Empty URL, show default emoji
+                                            ui.label(RichText::new("👤").size(AVATAR_SIZE));
                                         }
                                     } else {
-                                        // Empty URL, show default emoji
+                                        // No avatar URL, show default emoji
                                         ui.label(RichText::new("👤").size(AVATAR_SIZE));
                                     }
-                                } else {
-                                    // No avatar URL, show default emoji
-                                    ui.label(RichText::new("👤").size(AVATAR_SIZE));
-                                }
-                            });
+                                });
 
-                            ui.add_space(10.0);
+                                ui.add_space(10.0);
 
-                            ui.vertical(|ui| {
-                                // Display name or username
-                                let name = contact
-                                    .nickname
-                                    .as_ref()
-                                    .or(contact.display_name.as_ref())
-                                    .or(contact.username.as_ref())
-                                    .cloned()
-                                    .unwrap_or_else(|| "Unknown".to_string());
+                                ui.vertical(|ui| {
+                                    // Display name or username
+                                    let name = contact
+                                        .nickname
+                                        .as_ref()
+                                        .or(contact.display_name.as_ref())
+                                        .or(contact.username.as_ref())
+                                        .cloned()
+                                        .unwrap_or_else(|| "Unknown".to_string());
 
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-                                // Add hidden indicator to name if contact is hidden
-                                let display_name = if contact.is_hidden {
-                                    format!("[Hidden] {}", name)
-                                } else {
-                                    name
-                                };
+                                    // Add hidden indicator to name if contact is hidden
+                                    let display_name = if contact.is_hidden {
+                                        format!("[Hidden] {}", name)
+                                    } else {
+                                        name
+                                    };
 
-                                ui.label(
-                                    RichText::new(display_name)
-                                        .strong()
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-
-                                // Username if different from display name
-                                if let Some(username) = &contact.username
-                                    && (contact.display_name.is_some()
-                                        || contact.nickname.is_some())
-                                {
                                     ui.label(
-                                        RichText::new(format!("@{}", username))
+                                        RichText::new(display_name)
+                                            .strong()
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+
+                                    // Username if different from display name
+                                    if let Some(username) = &contact.username
+                                        && (contact.display_name.is_some()
+                                            || contact.nickname.is_some())
+                                    {
+                                        ui.label(
+                                            RichText::new(format!("@{}", username))
+                                                .small()
+                                                .color(DashColors::text_secondary(dark_mode)),
+                                        );
+                                    }
+
+                                    // Bio
+                                    if let Some(bio) = &contact.bio {
+                                        ui.label(
+                                            RichText::new(bio)
+                                                .small()
+                                                .color(DashColors::text_secondary(dark_mode)),
+                                        );
+                                    }
+
+                                    // Account reference
+                                    if contact.account_reference > 0 {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Account #{}",
+                                                contact.account_reference
+                                            ))
                                             .small()
                                             .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                }
+                                        );
+                                    }
+                                });
 
-                                // Bio
-                                if let Some(bio) = &contact.bio {
-                                    ui.label(
-                                        RichText::new(bio)
-                                            .small()
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                }
-
-                                // Account reference
-                                if contact.account_reference > 0 {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "Account #{}",
-                                            contact.account_reference
-                                        ))
-                                        .small()
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                }
-                            });
-
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    // Hide/Unhide button
-                                    let hide_button_text =
-                                        if contact.is_hidden { "Unhide" } else { "Hide" };
-                                    if ui.button(hide_button_text).clicked() {
-                                        let new_hidden = !contact.is_hidden;
-                                        if let Some(identity) = &self.selected_identity {
-                                            let owner_id = identity.identity.id();
-                                            if let Err(e) = self.app_context.db.set_contact_hidden(
-                                                &owner_id,
-                                                &contact.identity_id,
-                                                new_hidden,
-                                            ) {
-                                                self.message = Some((
-                                                    format!("Failed to update contact: {}", e),
-                                                    MessageType::Error,
-                                                ));
-                                            } else {
-                                                // Update the contact in memory
-                                                if let Some(c) =
-                                                    self.contacts.get_mut(&contact.identity_id)
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        // Hide/Unhide button
+                                        let hide_button_text =
+                                            if contact.is_hidden { "Unhide" } else { "Hide" };
+                                        if ui.button(hide_button_text).clicked() {
+                                            let new_hidden = !contact.is_hidden;
+                                            if let Some(identity) = &self.selected_identity {
+                                                let owner_id = identity.identity.id();
+                                                if let Err(e) =
+                                                    self.app_context.db.set_contact_hidden(
+                                                        &owner_id,
+                                                        &contact.identity_id,
+                                                        new_hidden,
+                                                    )
                                                 {
-                                                    c.is_hidden = new_hidden;
+                                                    self.message = Some((
+                                                        format!("Failed to update contact: {}", e),
+                                                        MessageType::Error,
+                                                    ));
+                                                } else {
+                                                    // Update the contact in memory
+                                                    if let Some(c) =
+                                                        self.contacts.get_mut(&contact.identity_id)
+                                                    {
+                                                        c.is_hidden = new_hidden;
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
 
-                                    // Pay button
-                                    if ui.button("Pay").clicked() {
-                                        action = AppAction::AddScreen(
-                                            ScreenType::DashPaySendPayment(
-                                                self.selected_identity.clone().unwrap(),
-                                                contact.identity_id,
-                                            )
-                                            .create_screen(&self.app_context),
-                                        );
-                                    }
+                                        // Pay button
+                                        if ui.button("Pay").clicked() {
+                                            action = AppAction::AddScreen(
+                                                ScreenType::DashPaySendPayment(
+                                                    self.selected_identity.clone().unwrap(),
+                                                    contact.identity_id,
+                                                )
+                                                .create_screen(&self.app_context),
+                                            );
+                                        }
 
-                                    if ui.button("View Profile").clicked() {
-                                        action = AppAction::AddScreen(
-                                            ScreenType::DashPayContactProfileViewer(
-                                                self.selected_identity.clone().unwrap(),
-                                                contact.identity_id,
-                                            )
-                                            .create_screen(&self.app_context),
-                                        );
-                                    }
-                                },
-                            );
+                                        if ui.button("View Profile").clicked() {
+                                            action = AppAction::AddScreen(
+                                                ScreenType::DashPayContactProfileViewer(
+                                                    self.selected_identity.clone().unwrap(),
+                                                    contact.identity_id,
+                                                )
+                                                .create_screen(&self.app_context),
+                                            );
+                                        }
+                                    },
+                                );
+                            });
                         });
-                    });
-                    ui.add_space(4.0);
-                }
+                        ui.add_space(4.0);
+                    }
 
-                // Load any avatars that were queued
-                for url in avatars_to_load {
-                    self.load_avatar_texture(ui.ctx(), &url);
+                    // Load any avatars that were queued
+                    for url in avatars_to_load {
+                        self.load_avatar_texture(ui.ctx(), &url);
+                    }
                 }
-            }
-        });
+            });
 
         action
     }

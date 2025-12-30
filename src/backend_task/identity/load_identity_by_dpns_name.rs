@@ -1,14 +1,16 @@
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{
+    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier, Identity, Fetch};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 
 impl AppContext {
     /// Load an identity by its DPNS name
@@ -78,7 +80,9 @@ impl AppContext {
                     None
                 }
             })
-            .ok_or_else(|| "DPNS domain document does not contain a valid identity reference".to_string())?;
+            .ok_or_else(|| {
+                "DPNS domain document does not contain a valid identity reference".to_string()
+            })?;
 
         // Fetch the identity
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
@@ -115,9 +119,7 @@ impl AppContext {
                     .values()
                     .filter_map(|maybe_doc| {
                         maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc
-                                .get("label")
-                                .map(|l| l.to_str().unwrap_or_default());
+                            let name = doc.get("label").map(|l| l.to_str().unwrap_or_default());
                             let acquired_at = doc
                                 .created_at()
                                 .into_iter()
@@ -142,13 +144,11 @@ impl AppContext {
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();
 
-        if let Some((_, _, wallet_private_keys)) =
-            self.match_user_identity_keys_with_wallet(
-                &identity,
-                &wallets,
-                selected_wallet_seed_hash,
-            )?
-        {
+        if let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
+            &identity,
+            &wallets,
+            selected_wallet_seed_hash,
+        )? {
             encrypted_private_keys.extend(wallet_private_keys);
         }
 

@@ -151,8 +151,7 @@ impl WithdrawalScreen {
                                 self.withdrawal_address_error = None;
                             }
                             Err(_) => {
-                                self.withdrawal_address_error =
-                                    Some("Invalid address".to_string());
+                                self.withdrawal_address_error = Some("Invalid address".to_string());
                             }
                         }
                     }
@@ -465,9 +464,7 @@ impl ScreenLike for WithdrawalScreen {
                 let balance_dash = self.max_amount as f64 / 100_000_000_000.0;
                 ui.horizontal(|ui| {
                     ui.label("Available Balance:");
-                    ui.label(
-                        RichText::new(format!("{:.4} Dash", balance_dash))
-                    );
+                    ui.label(RichText::new(format!("{:.4} Dash", balance_dash)));
                 });
                 ui.add_space(5.0);
 
@@ -575,10 +572,13 @@ impl ScreenLike for WithdrawalScreen {
                             .stroke(egui::Stroke::new(1.0, error_color))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                    );
                                     ui.add_space(10.0);
                                     if ui.small_button("Dismiss").clicked() {
-                                        self.withdraw_from_identity_status = WithdrawFromIdentityStatus::NotStarted;
+                                        self.withdraw_from_identity_status =
+                                            WithdrawFromIdentityStatus::NotStarted;
                                     }
                                 });
                             });

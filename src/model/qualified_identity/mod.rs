@@ -369,9 +369,9 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 // For ECDSA_HASH160, verify that the private key matches the public key hash on Platform
                 // If there's a mismatch (due to incorrect stored derivation path), regenerate the correct path
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
-                    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
                     use dash_sdk::dpp::dashcore::PublicKey;
-                    use dash_sdk::dpp::dashcore::hashes::{Hash, sha256, ripemd160};
+                    use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+                    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
@@ -384,7 +384,9 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 
                         if hash160.as_byte_array() != platform_key_data {
                             // Mismatch detected - scan identity indices to find the correct derivation path
-                            use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
+                            use dash_sdk::dpp::key_wallet::bip32::{
+                                DerivationPath as DP, KeyDerivationType,
+                            };
 
                             if let Some(wallet) = self.associated_wallets.values().next() {
                                 if let Ok(wallet_ref) = wallet.read() {
@@ -398,18 +400,32 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                                                 key_id,
                                             );
 
-                                            if let Ok(extended_key) = correct_path.derive_priv_ecdsa_for_master_seed(seed, self.network) {
-                                                let correct_pubkey = PublicKey::new(extended_key.private_key.public_key(&secp));
-                                                let correct_hash = ripemd160::Hash::hash(sha256::Hash::hash(&correct_pubkey.to_bytes()).as_byte_array());
+                                            if let Ok(extended_key) = correct_path
+                                                .derive_priv_ecdsa_for_master_seed(
+                                                    seed,
+                                                    self.network,
+                                                )
+                                            {
+                                                let correct_pubkey = PublicKey::new(
+                                                    extended_key.private_key.public_key(&secp),
+                                                );
+                                                let correct_hash = ripemd160::Hash::hash(
+                                                    sha256::Hash::hash(&correct_pubkey.to_bytes())
+                                                        .as_byte_array(),
+                                                );
 
-                                                if correct_hash.as_byte_array() == platform_key_data {
+                                                if correct_hash.as_byte_array() == platform_key_data
+                                                {
                                                     tracing::info!(
                                                         identity_index = identity_index,
                                                         key_id = key_id,
                                                         path = %correct_path,
                                                         "Using corrected derivation path for signing (found via scan)"
                                                     );
-                                                    let signature = signer::sign(data, &extended_key.private_key.secret_bytes())?;
+                                                    let signature = signer::sign(
+                                                        data,
+                                                        &extended_key.private_key.secret_bytes(),
+                                                    )?;
                                                     return Ok(signature.to_vec().into());
                                                 }
                                             }

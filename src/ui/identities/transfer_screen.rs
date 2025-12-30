@@ -30,13 +30,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::get_selected_wallet;
+use super::keys::add_key_screen::AddKeyScreen;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::theme::DashColors;
-use super::get_selected_wallet;
-use super::keys::add_key_screen::AddKeyScreen;
 
 /// Transfer destination type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -192,10 +192,18 @@ impl TransferScreen {
             let identity_selected = self.destination_type == TransferDestinationType::Identity;
             let identity_button = egui::Button::new(
                 RichText::new("Identity")
-                    .color(if identity_selected { selected_text } else { unselected_text })
+                    .color(if identity_selected {
+                        selected_text
+                    } else {
+                        unselected_text
+                    })
                     .strong(),
             )
-            .fill(if identity_selected { selected_fill } else { unselected_fill })
+            .fill(if identity_selected {
+                selected_fill
+            } else {
+                unselected_fill
+            })
             .min_size(egui::vec2(120.0, 28.0));
 
             if ui.add(identity_button).clicked() {
@@ -209,10 +217,18 @@ impl TransferScreen {
                 self.destination_type == TransferDestinationType::PlatformAddress;
             let platform_button = egui::Button::new(
                 RichText::new("Platform Address")
-                    .color(if platform_selected { selected_text } else { unselected_text })
+                    .color(if platform_selected {
+                        selected_text
+                    } else {
+                        unselected_text
+                    })
                     .strong(),
             )
-            .fill(if platform_selected { selected_fill } else { unselected_fill })
+            .fill(if platform_selected {
+                selected_fill
+            } else {
+                unselected_fill
+            })
             .min_size(egui::vec2(140.0, 28.0));
 
             if ui.add(platform_button).clicked() {
@@ -558,23 +574,24 @@ impl ScreenLike for TransferScreen {
                 }
             } else {
                 if self.selected_wallet.is_some()
-                    && let Some(wallet) = &self.selected_wallet {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.error_message = Some(e);
-                        }
-                        if wallet_needs_unlock(wallet) {
-                            ui.add_space(10.0);
-                            ui.colored_label(
-                                egui::Color32::from_rgb(200, 150, 50),
-                                "Wallet is locked. Please unlock to continue.",
-                            );
-                            ui.add_space(8.0);
-                            if ui.button("Unlock Wallet").clicked() {
-                                self.wallet_unlock_popup.open();
-                            }
-                            return inner_action;
-                        }
+                    && let Some(wallet) = &self.selected_wallet
+                {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
                     }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                        return inner_action;
+                    }
+                }
 
                 // Heading with checkbox on the same line
                 ui.horizontal(|ui| {
@@ -738,10 +755,13 @@ impl ScreenLike for TransferScreen {
                             .stroke(egui::Stroke::new(1.0, error_color))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                    );
                                     ui.add_space(10.0);
                                     if ui.small_button("Dismiss").clicked() {
-                                        self.transfer_credits_status = TransferCreditsStatus::NotStarted;
+                                        self.transfer_credits_status =
+                                            TransferCreditsStatus::NotStarted;
                                     }
                                 });
                             });
@@ -757,14 +777,15 @@ impl ScreenLike for TransferScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }

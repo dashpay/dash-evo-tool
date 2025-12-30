@@ -501,7 +501,10 @@ impl ScreenLike for KeyInfoScreen {
                             .stroke(egui::Stroke::new(1.0, error_color))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", error_message))
+                                            .color(error_color),
+                                    );
                                     ui.add_space(10.0);
                                     if ui.small_button("Dismiss").clicked() {
                                         self.error_message = None;
@@ -512,24 +515,25 @@ impl ScreenLike for KeyInfoScreen {
                 }
 
                 if self.view_wallet_unlock
-                    && let Some(wallet) = &self.selected_wallet {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.error_message = Some(e);
-                        }
-                        if wallet_needs_unlock(wallet) {
-                            ui.add_space(10.0);
-                            ui.colored_label(
-                                egui::Color32::from_rgb(200, 150, 50),
-                                "Wallet is locked. Please unlock to continue.",
-                            );
-                            ui.add_space(8.0);
-                            if ui.button("Unlock Wallet").clicked() {
-                                self.wallet_unlock_popup.open();
-                            }
-                        } else {
-                            self.wallet_open = true;
-                        }
+                    && let Some(wallet) = &self.selected_wallet
+                {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
                     }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                    } else {
+                        self.wallet_open = true;
+                    }
+                }
 
                 // Show the remove private key confirmation popup
                 if self.show_confirm_remove_private_key {
@@ -544,14 +548,15 @@ impl ScreenLike for KeyInfoScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
@@ -695,7 +700,9 @@ impl KeyInfoScreen {
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                        ui.label(
+                            RichText::new(format!("Error: {}", error_message)).color(error_color),
+                        );
                         ui.add_space(10.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.sign_error_message = None;

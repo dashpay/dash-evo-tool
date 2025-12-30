@@ -23,7 +23,7 @@ use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 
 const PAYMENT_GUIDELINES_INFO_TEXT: &str = "Payment Guidelines:\n\n\
@@ -419,14 +419,15 @@ impl ScreenLike for SendPaymentScreen {
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
-            && let Some(wallet) = &self.selected_wallet {
-                let result = self
-                    .wallet_unlock_popup
-                    .show(ctx, wallet, &self.app_context);
-                if result == WalletUnlockResult::Unlocked {
-                    // Wallet unlocked successfully
-                }
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
+        }
 
         action
     }
@@ -670,11 +671,29 @@ impl PaymentHistory {
         // Payment list
         ScrollArea::vertical().show(ui, |ui| {
             if self.payments.is_empty() {
-                if self.has_searched {
-                    ui.label("No payments found");
-                } else {
-                    ui.label("No payments loaded");
-                }
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::group(ui.style())
+                    .fill(ui.visuals().extreme_bg_color)
+                    .corner_radius(5.0)
+                    .outer_margin(Margin::same(20))
+                    .shadow(ui.visuals().window_shadow)
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(
+                                RichText::new("No Payment History")
+                                    .strong()
+                                    .size(20.0)
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            ui.add_space(5.0);
+                            ui.label(
+                                RichText::new("No payments have been made with this identity.")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.add_space(10.0);
+                        });
+                    });
             } else {
                 for payment in &self.payments {
                     ui.group(|ui| {

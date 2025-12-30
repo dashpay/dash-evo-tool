@@ -412,10 +412,7 @@ impl IdentitiesScreen {
                     ui.add_space(10.0);
 
                     // Description
-                    ui.label(
-                        "It looks like you are not tracking any Identities, \
-                         Evonodes, or Masternodes yet.",
-                    );
+                    ui.label("It looks like you are not tracking any Identities yet.");
 
                     ui.add_space(10.0);
 
@@ -901,7 +898,10 @@ impl IdentitiesScreen {
                             RichText::new("No").color(DashColors::text_primary(dark_mode)),
                         )
                         .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(1.0, DashColors::text_secondary(dark_mode)))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            DashColors::text_secondary(dark_mode),
+                        ))
                         .corner_radius(egui::CornerRadius::same(4))
                         .min_size(egui::Vec2::new(80.0, 32.0));
 
@@ -912,12 +912,11 @@ impl IdentitiesScreen {
                         ui.add_space(8.0);
 
                         // Yes button
-                        let yes_button = egui::Button::new(
-                            RichText::new("Yes").color(Color32::WHITE),
-                        )
-                        .fill(Color32::from_rgb(200, 60, 60))
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(80.0, 32.0));
+                        let yes_button =
+                            egui::Button::new(RichText::new("Yes").color(Color32::WHITE))
+                                .fill(Color32::from_rgb(200, 60, 60))
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .min_size(egui::Vec2::new(80.0, 32.0));
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
@@ -1017,7 +1016,7 @@ impl ScreenLike for IdentitiesScreen {
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
-                    "Import Mnemonic",
+                    "Import Wallet",
                     DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
                 ),
                 (

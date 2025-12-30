@@ -1275,7 +1275,7 @@ impl WalletsBalancesScreen {
                     // Bullet points
                     ui.label(
                         "• IMPORT a Dash wallet by clicking \
-                         on \"Import Mnemonic\" at the top right, or",
+                         on \"Import Wallet\" at the top right, or",
                     );
                     ui.add_space(1.0);
                     ui.label(
@@ -1737,7 +1737,9 @@ impl WalletsBalancesScreen {
                         .stroke(egui::Stroke::new(1.0, error_color))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
+                                ui.label(
+                                    RichText::new(format!("Error: {}", error)).color(error_color),
+                                );
                                 ui.add_space(10.0);
                                 if ui.small_button("Dismiss").clicked() {
                                     self.send_dialog.error = None;
@@ -2907,7 +2909,8 @@ impl WalletsBalancesScreen {
                             .button(RichText::new("Receive").color(text_color))
                             .clicked()
                         {
-                            self.receive_dialog.core_addresses = vec![(address.clone(), balance_duffs)];
+                            self.receive_dialog.core_addresses =
+                                vec![(address.clone(), balance_duffs)];
                             self.receive_dialog.selected_core_index = 0;
                             self.receive_dialog.is_open = true;
                         }
@@ -2975,7 +2978,9 @@ impl ScreenLike for WalletsBalancesScreen {
         self.check_message_expiration();
 
         // Check for pending platform balance refresh (triggered after transfers)
-        let pending_refresh_action = if let Some(seed_hash) = self.pending_platform_balance_refresh.take() {
+        let pending_refresh_action = if let Some(seed_hash) =
+            self.pending_platform_balance_refresh.take()
+        {
             AppAction::BackendTask(BackendTask::WalletTask(
                 crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
             ))
@@ -3396,9 +3401,13 @@ impl ScreenLike for WalletsBalancesScreen {
                     let balance = address
                         .parse::<Address<_>>()
                         .ok()
-                        .and_then(|addr| wallet.address_balances.get(&addr.assume_checked()).copied())
+                        .and_then(|addr| {
+                            wallet.address_balances.get(&addr.assume_checked()).copied()
+                        })
                         .unwrap_or(0);
-                    self.receive_dialog.core_addresses.push((address.clone(), balance));
+                    self.receive_dialog
+                        .core_addresses
+                        .push((address.clone(), balance));
                     self.receive_dialog.selected_core_index =
                         self.receive_dialog.core_addresses.len() - 1;
                     self.receive_dialog.qr_texture = None;

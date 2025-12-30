@@ -13,6 +13,14 @@ use eframe::epaint::Color32;
 use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
+const KEYWORD_SEARCH_INFO_TEXT: &str = "Keyword Search allows you to find tokens by searching their associated keywords.\n\n\
+    When token creators register tokens on Dash Platform, they can add searchable keywords \
+    to make their tokens discoverable.\n\n\
+    Tips:\n\n\
+    - Try common terms like 'game', 'music', 'art', etc.\n\n\
+    - Keywords are case-insensitive.\n\n\
+    - Each keyword costs 0.1 Dash to register, so creators choose them carefully.";
+
 impl TokensScreen {
     pub(super) fn render_keyword_search(&mut self, ui: &mut Ui) -> AppAction {
         ui.set_min_width(ui.available_width());
@@ -20,8 +28,13 @@ impl TokensScreen {
 
         let mut action = AppAction::None;
 
-        // 1) Input & “Go” button
-        ui.heading("Search Tokens by Keyword");
+        // 1) Input & "Go" button
+        ui.horizontal(|ui| {
+            ui.heading("Search Tokens by Keyword");
+            if crate::ui::helpers::info_icon_button(ui, KEYWORD_SEARCH_INFO_TEXT).clicked() {
+                self.show_pop_up_info = Some(KEYWORD_SEARCH_INFO_TEXT.to_string());
+            }
+        });
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {

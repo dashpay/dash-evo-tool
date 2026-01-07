@@ -13,8 +13,8 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, DerivationPathReference, DerivationPathType, Wallet,
-    WalletSeedHash, WalletTransaction,
+    AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
+    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
@@ -893,10 +893,70 @@ impl AppContext {
             result.highest_found_index
         );
 
+        // Log the found balances from provider
+        for (addr, balance) in provider.found_balances() {
+            tracing::info!(
+                "Sync found address: {} (network: {:?}) with balance: {}",
+                addr,
+                addr.network(),
+                balance
+            );
+        }
+
         // Apply results to wallet and persist
         let balances = {
             let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+
+            // Log known_addresses before applying
+            tracing::info!(
+                "Wallet has {} known_addresses before apply",
+                wallet.known_addresses.len()
+            );
+            for (addr, path) in wallet.known_addresses.iter().take(5) {
+                tracing::info!(
+                    "  known_address: {} (network: {:?}) path: {:?}",
+                    addr,
+                    addr.network(),
+                    path
+                );
+            }
+
+            // Log platform payment addresses specifically
+            let platform_payment_count = wallet
+                .watched_addresses
+                .iter()
+                .filter(|(path, _)| path.is_platform_payment(self.network))
+                .count();
+            tracing::info!(
+                "Wallet has {} Platform payment addresses in watched_addresses",
+                platform_payment_count
+            );
+            for (path, info) in wallet.watched_addresses.iter() {
+                if path.is_platform_payment(self.network) {
+                    tracing::info!(
+                        "  platform_payment: {} (network: {:?}) path: {:?}",
+                        info.address,
+                        info.address.network(),
+                        path
+                    );
+                }
+            }
+
             provider.apply_results_to_wallet(&mut wallet);
+
+            // Log platform_address_info after applying
+            tracing::info!(
+                "Wallet has {} platform_address_info entries after apply",
+                wallet.platform_address_info.len()
+            );
+            for (addr, info) in wallet.platform_address_info.iter() {
+                tracing::info!(
+                    "  platform_address_info: {} (network: {:?}) balance: {}",
+                    addr,
+                    addr.network(),
+                    info.balance
+                );
+            }
 
             // Persist to database
             for (address, balance) in provider.found_balances() {

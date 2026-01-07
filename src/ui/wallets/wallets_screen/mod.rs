@@ -684,9 +684,9 @@ impl WalletsBalancesScreen {
                         Self::categorize_path(derivation_path, path_reference);
 
                     // Get Platform credits balance for Platform Payment addresses
+                    // Use canonical lookup to handle potential Address key mismatches
                     let platform_credits = wallet
-                        .platform_address_info
-                        .get(address)
+                        .get_platform_address_info(address)
                         .map(|info| info.balance)
                         .unwrap_or_default();
 
@@ -1139,8 +1139,7 @@ impl WalletsBalancesScreen {
                             .filter_map(|(addr, _)| {
                                 use dash_sdk::dpp::address_funds::PlatformAddress;
                                 let balance = wallet
-                                    .platform_address_info
-                                    .get(addr)
+                                    .get_platform_address_info(addr)
                                     .map(|info| info.balance)
                                     .unwrap_or(0);
                                 PlatformAddress::try_from(addr.clone())

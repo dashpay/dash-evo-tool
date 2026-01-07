@@ -511,8 +511,7 @@ impl WalletSendScreen {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
 
         let balance = wallet_guard
-            .platform_address_info
-            .get(&source_core_addr)
+            .get_platform_address_info(&source_core_addr)
             .map(|info| info.balance)
             .unwrap_or(0);
 
@@ -574,8 +573,7 @@ impl WalletSendScreen {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
 
         let balance = wallet_guard
-            .platform_address_info
-            .get(&source_core_addr)
+            .get_platform_address_info(&source_core_addr)
             .map(|info| info.balance)
             .unwrap_or(0);
 
@@ -894,8 +892,7 @@ impl WalletSendScreen {
                 self.selected_wallet.as_ref().and_then(|w| {
                     let wallet = w.read().unwrap();
                     wallet
-                        .platform_address_info
-                        .get(core_addr)
+                        .get_platform_address_info(core_addr)
                         .map(|info| info.balance)
                 })
             }

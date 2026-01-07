@@ -188,8 +188,7 @@ impl TopUpIdentityScreen {
             .into_iter()
             .map(|(core_addr, platform_addr)| {
                 let balance = wallet
-                    .platform_address_info
-                    .get(&core_addr)
+                    .get_platform_address_info(&core_addr)
                     .map(|info| info.balance)
                     .unwrap_or(0);
                 (core_addr, platform_addr, balance)

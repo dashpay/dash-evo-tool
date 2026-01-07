@@ -240,9 +240,9 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
             .unwrap_or_default();
 
         // Get Platform credits balance for Platform Payment addresses
+        // Use canonical lookup to handle potential Address key mismatches
         let platform_credits = wallet
-            .platform_address_info
-            .get(&info.address)
+            .get_platform_address_info(&info.address)
             .map(|info| info.balance)
             .unwrap_or_default();
 

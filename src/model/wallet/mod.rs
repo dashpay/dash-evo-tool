@@ -1824,6 +1824,32 @@ impl Wallet {
             .sum()
     }
 
+    /// Get Platform address info by canonical address comparison.
+    ///
+    /// This method handles the case where the same platform address may be represented
+    /// by different Address objects. It normalizes by comparing PlatformAddress bytes
+    /// to find a matching entry.
+    pub fn get_platform_address_info(&self, address: &Address) -> Option<&PlatformAddressInfo> {
+        // First try direct lookup
+        if let Some(info) = self.platform_address_info.get(address) {
+            return Some(info);
+        }
+
+        // If direct lookup fails, try canonical comparison via PlatformAddress bytes
+        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
+            let canonical_bytes = platform_addr.to_bytes();
+            for (existing_addr, info) in &self.platform_address_info {
+                if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone()) {
+                    if existing_platform.to_bytes() == canonical_bytes {
+                        return Some(info);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Update Platform address info (balance and nonce)
     ///
     /// This method handles the case where the same platform address may be represented
@@ -2157,6 +2183,27 @@ impl AddressProvider for WalletAddressProvider {
 
     fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], balance: u64) {
         self.resolved.insert(index);
+
+        // Log what the SDK is returning
+        if let Some((_, core_address)) = self.pending.get(&index) {
+            // Also show Platform address format for comparison
+            let platform_addr_str = PlatformAddress::try_from(core_address.clone())
+                .map(|p| p.to_bech32m_string(self.network))
+                .unwrap_or_else(|_| "conversion failed".to_string());
+            tracing::info!(
+                "on_address_found: index={}, core_address={}, platform_address={}, balance={}",
+                index,
+                core_address,
+                platform_addr_str,
+                balance
+            );
+        } else {
+            tracing::warn!(
+                "on_address_found: index={} not in pending! balance={}",
+                index,
+                balance
+            );
+        }
 
         if balance > 0 {
             // Update highest found

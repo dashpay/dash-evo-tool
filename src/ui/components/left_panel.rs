@@ -180,7 +180,7 @@ pub fn add_left_panel(
                         bottom_reserved += 22.0; // network label + spacing
                     }
                     if app_context.is_developer_mode() {
-                        bottom_reserved += Spacing::MD + 16.0; // dev label area
+                        bottom_reserved += 2.0 + 16.0; // dev label area (spacing + label height)
                     }
 
                     StripBuilder::new(ui)
@@ -364,10 +364,10 @@ pub fn add_left_panel(
                                             );
                                         }
 
-                                        // Dev mode label (above network label if present)
+                                        // Dev mode label (below network label if present)
                                         if app_context.is_developer_mode() {
-                                            ui.add_space(Spacing::MD);
-                                            let dev_label = egui::RichText::new("🔧 Dev mode")
+                                            ui.add_space(2.0);
+                                            let dev_label = egui::RichText::new("🔧 Dev Mode")
                                                 .color(DashColors::GRADIENT_PURPLE)
                                                 .size(12.0);
                                             if ui.label(dev_label).clicked() {

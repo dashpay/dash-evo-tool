@@ -13,8 +13,8 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, DerivationPathReference, DerivationPathType, Wallet,
-    WalletSeedHash, WalletTransaction,
+    AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
+    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
@@ -384,9 +384,8 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
-            self.queue_platform_address_sync(seed_hash);
-            // In RPC mode, also refresh Core UTXOs
-            self.queue_core_wallet_refresh(wallet.clone());
+            // Note: Platform address sync and Core UTXO refresh are NOT done automatically on unlock.
+            // User must explicitly click Refresh to update balances.
         }
     }
 
@@ -870,10 +869,16 @@ impl AppContext {
                 .ok_or_else(|| "Wallet not found".to_string())?
         };
 
-        // Create provider (requires wallet to be open)
+        // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
-            WalletAddressProvider::new(&wallet, self.network)?
+            match WalletAddressProvider::new(&wallet, self.network) {
+                Ok(provider) => provider,
+                Err(_) if !wallet.is_open() => {
+                    return Err("Wallet is locked. Please unlock it first to refresh.".to_string());
+                }
+                Err(e) => return Err(e),
+            }
         };
 
         // Sync using SDK's privacy-preserving method
@@ -908,6 +913,7 @@ impl AppContext {
             );
         }
 
+        // TODO: Re-enable terminal balance updates once the queries are working properly
         // Step 2: Fetch recent balance changes (terminal updates after checkpoint)
         // This catches any balance changes that happened after the checkpoint the trunk/branch sync used
         self.apply_recent_balance_changes(
@@ -924,8 +930,28 @@ impl AppContext {
 
             provider.apply_results_to_wallet(&mut wallet);
 
-            // Persist to database
-            for (address, balance) in provider.found_balances() {
+            // Persist addresses and balances to database
+            for (index, (address, balance)) in provider.found_balances_with_indices() {
+                // Persist the address to wallet_addresses table if not already there
+                let derivation_path = DerivationPath::platform_payment_path(
+                    self.network,
+                    0, // account
+                    0, // key_class
+                    index,
+                );
+                if let Err(e) = self.db.add_address_if_not_exists(
+                    &seed_hash,
+                    address,
+                    &self.network,
+                    &derivation_path,
+                    DerivationPathReference::PlatformPayment,
+                    DerivationPathType::CLEAR_FUNDS,
+                    None,
+                ) {
+                    tracing::warn!("Failed to persist Platform address: {}", e);
+                }
+
+                // Persist balance to platform_address_balances table
                 let nonce = wallet
                     .platform_address_info
                     .get(address)
@@ -1327,7 +1353,7 @@ impl AppContext {
                     .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
             }
             // Also remove from database
-            if let Err(e) = self.db.delete_asset_lock_transaction(&tx_id.to_string()) {
+            if let Err(e) = self.db.delete_asset_lock_transaction(tx_id.as_byte_array()) {
                 tracing::warn!("Failed to delete asset lock from database: {}", e);
             }
         }

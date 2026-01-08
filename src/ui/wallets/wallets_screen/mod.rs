@@ -77,6 +77,8 @@ pub struct WalletsBalancesScreen {
     selected_account: Option<(AccountCategory, Option<u32>)>,
     /// Pending refresh of platform address balances (triggered after transfers)
     pending_platform_balance_refresh: Option<WalletSeedHash>,
+    /// Whether we should refresh the wallet after it's unlocked
+    pending_refresh_after_unlock: bool,
 }
 
 // Define a struct to hold the address data
@@ -247,6 +249,7 @@ impl WalletsBalancesScreen {
             private_key_dialog: PrivateKeyDialogState::default(),
             selected_account: None,
             pending_platform_balance_refresh: None,
+            pending_refresh_after_unlock: false,
         }
     }
 
@@ -3002,26 +3005,22 @@ impl ScreenLike for WalletsBalancesScreen {
         // Add Refresh button for HD wallet
         if !self.refreshing
             && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-            && let Some(wallet_arc) = self.selected_wallet.clone()
+            && self.selected_wallet.is_some()
         {
             right_buttons.push((
                 "Refresh",
-                DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
-                    CoreTask::RefreshWalletInfo(wallet_arc),
-                ))),
+                DesiredAppAction::Custom("RefreshHDWallet".to_string()),
             ));
         }
 
         // Add Refresh button for single key wallet
         if !self.refreshing
             && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-            && let Some(wallet_arc) = self.selected_single_key_wallet.clone()
+            && self.selected_single_key_wallet.is_some()
         {
             right_buttons.push((
                 "Refresh",
-                DesiredAppAction::BackendTask(Box::new(BackendTask::CoreTask(
-                    CoreTask::RefreshSingleKeyWalletInfo(wallet_arc),
-                ))),
+                DesiredAppAction::Custom("RefreshSKWallet".to_string()),
             ));
         }
         let mut action = add_top_panel(
@@ -3211,6 +3210,19 @@ impl ScreenLike for WalletsBalancesScreen {
                         self.fund_platform_dialog.pending_fund_after_unlock = false;
                         action |= self.prepare_fund_platform_action();
                     }
+
+                    // Check if we were trying to refresh the wallet
+                    // Note: handle_wallet_unlocked also queues a refresh in the background,
+                    // but we dispatch our own so the UI gets the result and can stop the spinner
+                    if self.pending_refresh_after_unlock {
+                        self.pending_refresh_after_unlock = false;
+                        if let Some(wallet_arc) = &self.selected_wallet {
+                            self.refreshing = true;
+                            action |= AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::RefreshWalletInfo(wallet_arc.clone()),
+                            ));
+                        }
+                    }
                 }
                 WalletUnlockResult::Cancelled => {
                     // Clear any pending private key view request on cancel
@@ -3219,6 +3231,9 @@ impl ScreenLike for WalletsBalancesScreen {
 
                     // Clear pending fund request on cancel
                     self.fund_platform_dialog.pending_fund_after_unlock = false;
+
+                    // Clear pending refresh request on cancel
+                    self.pending_refresh_after_unlock = false;
                 }
                 WalletUnlockResult::Pending => {}
             }
@@ -3327,6 +3342,17 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.show_sk_unlock_dialog = false;
                 self.sk_wallet_password.clear();
                 self.sk_error_message = None;
+
+                // Check if we were trying to refresh the SK wallet
+                if self.pending_refresh_after_unlock {
+                    self.pending_refresh_after_unlock = false;
+                    if let Some(wallet_arc) = &self.selected_single_key_wallet {
+                        self.refreshing = true;
+                        action |= AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
+                        ));
+                    }
+                }
             }
         }
 
@@ -3334,6 +3360,49 @@ impl ScreenLike for WalletsBalancesScreen {
             action
         {
             self.refreshing = true;
+        }
+
+        // Handle custom refresh actions - check wallet lock status
+        if let AppAction::Custom(ref cmd) = action {
+            if cmd == "RefreshHDWallet" {
+                if let Some(wallet_arc) = &self.selected_wallet {
+                    let is_locked = wallet_arc
+                        .read()
+                        .map(|w| !w.is_open())
+                        .unwrap_or(true);
+                    if is_locked {
+                        // Wallet is locked - open unlock popup
+                        self.pending_refresh_after_unlock = true;
+                        self.wallet_unlock_popup.open();
+                        action = AppAction::None;
+                    } else {
+                        // Wallet is unlocked - proceed with refresh
+                        self.refreshing = true;
+                        action = AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::RefreshWalletInfo(wallet_arc.clone()),
+                        ));
+                    }
+                }
+            } else if cmd == "RefreshSKWallet" {
+                if let Some(wallet_arc) = &self.selected_single_key_wallet {
+                    let is_locked = wallet_arc
+                        .read()
+                        .map(|w| !w.is_open())
+                        .unwrap_or(true);
+                    if is_locked {
+                        // SK wallet is locked - open unlock dialog
+                        self.pending_refresh_after_unlock = true;
+                        self.show_sk_unlock_dialog = true;
+                        action = AppAction::None;
+                    } else {
+                        // SK wallet is unlocked - proceed with refresh
+                        self.refreshing = true;
+                        action = AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
+                        ));
+                    }
+                }
+            }
         }
 
         // Combine with pending refresh action
@@ -3416,7 +3485,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 }
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
-                self.display_message("Platform withdrawal successful", MessageType::Success);
+                self.display_message("Platform withdrawal successful. Note: It may take a few minutes for funds to appear on the Core chain.", MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
                 self.fund_platform_dialog.is_processing = false;

@@ -188,7 +188,11 @@ impl AppContext {
                         .await
                         .map_err(|e| format!("Error refreshing wallet via SPV: {}", e))?;
                 } else {
-                    self.refresh_wallet_info(wallet)
+                    // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
+                    let ctx = self.clone();
+                    tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                        .await
+                        .map_err(|e| format!("Task join error: {}", e))?
                         .map_err(|e| format!("Error refreshing wallet: {}", e))?;
                 }
 
@@ -200,7 +204,12 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::RefreshedWallet)
             }
             CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
-                self.refresh_single_key_wallet_info(wallet)?;
+                // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
+                let ctx = self.clone();
+                tokio::task::spawn_blocking(move || ctx.refresh_single_key_wallet_info(wallet))
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))?
+                    .map_err(|e| format!("Error refreshing wallet: {}", e))?;
                 Ok(BackendTaskSuccessResult::RefreshedWallet)
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self

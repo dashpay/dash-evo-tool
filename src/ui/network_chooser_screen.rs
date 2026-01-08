@@ -4,6 +4,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
+use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
@@ -833,6 +834,77 @@ impl NetworkChooserScreen {
                             .italics(),
                     );
                 });
+
+                // Developer-only tools
+                if self.developer_mode {
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new("Developer Tools")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(6.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Clear Platform Addresses").clicked() {
+                            // Clear from database
+                            let current_context = self.current_app_context();
+                            match current_context
+                                .db
+                                .clear_all_platform_addresses(&current_context.network)
+                            {
+                                Ok(count) => {
+                                    tracing::info!(
+                                        "Cleared {} platform addresses from database",
+                                        count
+                                    );
+                                    // Also clear from in-memory wallets
+                                    if let Ok(wallets) = current_context.wallets.read() {
+                                        for wallet_arc in wallets.values() {
+                                            if let Ok(mut wallet) = wallet_arc.write() {
+                                                // Clear platform address info
+                                                wallet.platform_address_info.clear();
+
+                                                // Remove platform addresses from known_addresses
+                                                wallet.known_addresses.retain(|_, path| {
+                                                    !path.is_platform_payment(current_context.network)
+                                                });
+
+                                                // Remove platform addresses from watched_addresses
+                                                wallet.watched_addresses.retain(|path, _| {
+                                                    !path.is_platform_payment(current_context.network)
+                                                });
+
+                                                // Remove platform addresses from address_balances
+                                                let platform_addrs: Vec<_> = wallet
+                                                    .address_balances
+                                                    .keys()
+                                                    .filter(|addr| {
+                                                        // Check if this address was a platform address
+                                                        // by seeing if it's not in known_addresses anymore
+                                                        !wallet.known_addresses.contains_key(*addr)
+                                                    })
+                                                    .cloned()
+                                                    .collect();
+                                                for addr in platform_addrs {
+                                                    wallet.address_balances.remove(&addr);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to clear platform addresses: {}", e);
+                                }
+                            }
+                        }
+                        ui.label(
+                            egui::RichText::new("Removes all Platform addresses for testing sync")
+                                .color(DashColors::TEXT_SECONDARY)
+                                .italics(),
+                        );
+                    });
+                }
 
                 ui.add_space(8.0);
 

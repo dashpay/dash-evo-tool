@@ -2149,13 +2149,14 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Generate a new Platform address for the wallet (or return existing one with zero balance)
+    /// Generate a new Platform address for the wallet.
     /// Returns the address in DIP-18 Bech32m format (e.g., tdashevo1... for testnet)
     fn generate_platform_address(&self, wallet: &Arc<RwLock<Wallet>>) -> Result<String, String> {
         use dash_sdk::dpp::address_funds::PlatformAddress;
         let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+        // Pass true to skip known addresses and generate a new one
         let address = wallet_guard
-            .platform_receive_address(self.app_context.network, false, Some(&self.app_context))
+            .platform_receive_address(self.app_context.network, true, Some(&self.app_context))
             .map_err(|e| e.to_string())?;
         // Convert to PlatformAddress and encode as Bech32m per DIP-18
         let platform_addr =

@@ -125,6 +125,57 @@ impl AppContext {
             }
         }
 
+        // Step 6b: Cleanup stale asset locks (those whose UTXOs have been spent)
+        {
+            let client = self
+                .core_client
+                .read()
+                .expect("Core client lock was poisoned");
+
+            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+
+            // Collect txids of asset locks to remove (those whose output 0 has been spent)
+            let stale_txids: Vec<_> = wallet_guard
+                .unused_asset_locks
+                .iter()
+                .filter_map(|(tx, _, _, _, _)| {
+                    let txid = tx.txid();
+                    // Check if output 0 (the asset lock output) is still unspent
+                    match client.get_tx_out(&txid, 0, Some(true)) {
+                        Ok(Some(_)) => None, // UTXO exists, keep it
+                        Ok(None) => {
+                            // UTXO has been spent or doesn't exist
+                            tracing::info!(
+                                "Asset lock {} has been used (UTXO spent), removing from unused list",
+                                txid
+                            );
+                            Some(txid)
+                        }
+                        Err(e) => {
+                            tracing::debug!("Error checking asset lock UTXO {}: {}", txid, e);
+                            None // Keep it on error to avoid false removals
+                        }
+                    }
+                })
+                .collect();
+
+            // Remove stale asset locks from wallet
+            if !stale_txids.is_empty() {
+                wallet_guard
+                    .unused_asset_locks
+                    .retain(|(tx, _, _, _, _)| !stale_txids.contains(&tx.txid()));
+
+                // Also remove from database
+                for txid in &stale_txids {
+                    if let Err(e) = self.db.delete_asset_lock_transaction(&txid.to_string()) {
+                        tracing::warn!("Failed to delete stale asset lock from database: {}", e);
+                    }
+                }
+
+                tracing::info!("Removed {} stale asset locks", stale_txids.len());
+            }
+        }
+
         // Step 7: Calculate and persist wallet-level balance
         // In RPC mode, we use the UTXO sum as the confirmed/total balance
         let total_balance: u64 = utxo_map.values().map(|tx_out| tx_out.value).sum();

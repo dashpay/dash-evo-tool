@@ -2098,6 +2098,13 @@ impl WalletAddressProvider {
         &self.found_balances
     }
 
+    /// Update a balance for an address (used for terminal balance updates).
+    ///
+    /// This allows applying balance changes discovered after the initial sync.
+    pub fn update_balance(&mut self, address: &Address, balance: u64) {
+        self.found_balances.insert(address.clone(), balance);
+    }
+
     /// Apply the sync results to a wallet, updating Platform address info.
     ///
     /// This updates the wallet's `platform_address_info` with the balances found during sync.

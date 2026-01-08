@@ -24,7 +24,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
-use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;

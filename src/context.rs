@@ -13,8 +13,8 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
+    AddressInfo as WalletAddressInfo, DerivationPathReference, DerivationPathType, Wallet,
+    WalletSeedHash, WalletTransaction,
 };
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
@@ -26,6 +26,7 @@ use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::balances::credits::BlockAwareCreditOperation;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
@@ -909,8 +910,13 @@ impl AppContext {
 
         // Step 2: Fetch recent balance changes (terminal updates after checkpoint)
         // This catches any balance changes that happened after the checkpoint the trunk/branch sync used
-        self.apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, result.checkpoint_height)
-            .await;
+        self.apply_recent_balance_changes(
+            &sdk,
+            &wallet_arc,
+            &mut provider,
+            result.checkpoint_height,
+        )
+        .await;
 
         // Apply results to wallet and persist
         let balances = {
@@ -978,7 +984,9 @@ impl AppContext {
         use dash_sdk::platform::{
             Fetch, RecentAddressBalanceChangesQuery, RecentCompactedAddressBalanceChangesQuery,
         };
-        use dash_sdk::query_types::{RecentAddressBalanceChanges, RecentCompactedAddressBalanceChanges};
+        use dash_sdk::query_types::{
+            RecentAddressBalanceChanges, RecentCompactedAddressBalanceChanges,
+        };
 
         // The trunk/branch sync provides balances as of the checkpoint height.
         // We query for compacted changes starting from that checkpoint height,
@@ -1027,10 +1035,12 @@ impl AppContext {
                             .unwrap_or(0);
 
                         let new_balance = match credit_op {
-                            CreditOperation::SetCredits(credits) => credits,
-                            CreditOperation::AddToCredits(credits) => {
-                                current_balance.saturating_add(credits)
-                            }
+                            BlockAwareCreditOperation::SetCredits(credits) => credits,
+                            BlockAwareCreditOperation::AddToCreditsOperations(
+                                credits_per_height,
+                            ) => credits_per_height
+                                .values()
+                                .fold(current_balance, |acc, &credits| acc.saturating_add(credits)),
                         };
 
                         if new_balance != current_balance {

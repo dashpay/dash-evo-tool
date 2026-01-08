@@ -2088,7 +2088,7 @@ impl ScreenLike for WalletSendScreen {
             }
             crate::backend_task::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
                 self.send_status =
-                    SendStatus::Complete("Withdrawal initiated successfully!".to_string());
+                    SendStatus::Complete("Withdrawal initiated successfully!\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string());
             }
             crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred {
                 ..

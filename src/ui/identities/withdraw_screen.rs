@@ -266,7 +266,7 @@ impl WithdrawalScreen {
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
         crate::ui::helpers::show_success_screen(
             ui,
-            "Successfully withdrew from identity".to_string(),
+            "Successfully withdrew from identity.\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string(),
             vec![(
                 "Back to Identities".to_string(),
                 AppAction::PopScreenAndRefresh,

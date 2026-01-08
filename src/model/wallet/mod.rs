@@ -2098,6 +2098,23 @@ impl WalletAddressProvider {
         &self.found_balances
     }
 
+    /// Get the found balances with their indices after sync is complete.
+    ///
+    /// Returns an iterator of (index, (&Address, &balance)) for addresses that were found with balance.
+    /// The index can be used to reconstruct the derivation path.
+    pub fn found_balances_with_indices(&self) -> impl Iterator<Item = (AddressIndex, (&Address, &u64))> {
+        // Build a reverse lookup from address to index
+        let address_to_index: BTreeMap<&Address, AddressIndex> = self
+            .pending
+            .iter()
+            .map(|(idx, (_, addr))| (addr, *idx))
+            .collect();
+
+        self.found_balances.iter().filter_map(move |(addr, balance)| {
+            address_to_index.get(addr).map(|&idx| (idx, (addr, balance)))
+        })
+    }
+
     /// Update a balance for an address (used for terminal balance updates).
     ///
     /// This allows applying balance changes discovered after the initial sync.
@@ -2108,8 +2125,17 @@ impl WalletAddressProvider {
     /// Apply the sync results to a wallet, updating Platform address info.
     ///
     /// This updates the wallet's `platform_address_info` with the balances found during sync.
+    /// Also ensures addresses are registered in `known_addresses` and `watched_addresses`
+    /// so they appear in the UI.
     /// Note: This does not update nonces - those should be fetched separately if needed.
     pub fn apply_results_to_wallet(&self, wallet: &mut Wallet) {
+        // Build a reverse lookup from address to index
+        let address_to_index: BTreeMap<&Address, AddressIndex> = self
+            .pending
+            .iter()
+            .map(|(idx, (_, addr))| (addr, *idx))
+            .collect();
+
         for (address, balance) in &self.found_balances {
             // Get existing nonce or default to 0
             let nonce = wallet
@@ -2119,6 +2145,31 @@ impl WalletAddressProvider {
                 .unwrap_or(0);
 
             wallet.set_platform_address_info(address.clone(), *balance, nonce);
+
+            // Also register in known_addresses and watched_addresses if not already present
+            if !wallet.known_addresses.contains_key(address) {
+                if let Some(&index) = address_to_index.get(address) {
+                    let derivation_path = DerivationPath::platform_payment_path(
+                        self.network,
+                        self.account,
+                        self.key_class,
+                        index,
+                    );
+
+                    wallet
+                        .known_addresses
+                        .insert(address.clone(), derivation_path.clone());
+
+                    wallet.watched_addresses.insert(
+                        derivation_path,
+                        AddressInfo {
+                            address: address.clone(),
+                            path_type: DerivationPathType::CLEAR_FUNDS,
+                            path_reference: DerivationPathReference::PlatformPayment,
+                        },
+                    );
+                }
+            }
         }
     }
 

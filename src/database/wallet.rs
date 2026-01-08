@@ -958,6 +958,39 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Clear ALL Platform address balances for a network (developer tool)
+    pub fn clear_all_platform_address_info(&self, network: &Network) -> rusqlite::Result<usize> {
+        let network_str = network.to_string();
+        self.execute(
+            "DELETE FROM platform_address_balances WHERE network = ?",
+            params![network_str],
+        )
+    }
+
+    /// Clear ALL Platform addresses entirely for a network (developer tool)
+    /// This removes both the addresses from wallet_addresses and their balances from platform_address_balances
+    pub fn clear_all_platform_addresses(&self, network: &Network) -> rusqlite::Result<usize> {
+        let network_str = network.to_string();
+        let conn = self.conn.lock().unwrap();
+
+        // Delete from platform_address_balances
+        conn.execute(
+            "DELETE FROM platform_address_balances WHERE network = ?",
+            params![network_str],
+        )?;
+
+        // Delete platform addresses from wallet_addresses (path_reference = 16 is PlatformPayment)
+        // We need to join with wallet table to filter by network
+        let deleted = conn.execute(
+            "DELETE FROM wallet_addresses
+             WHERE path_reference = 16
+             AND seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
+            params![network_str],
+        )?;
+
+        Ok(deleted)
+    }
 }
 
 /// Ensure the address is valid for the given network and

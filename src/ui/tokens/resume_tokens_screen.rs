@@ -1,7 +1,7 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -68,6 +68,8 @@ pub struct ResumeTokensScreen {
     // If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl ResumeTokensScreen {
@@ -187,6 +189,7 @@ impl ResumeTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -250,13 +253,27 @@ impl ResumeTokensScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_group_token_success_screen(
+        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_str = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_str)
+        });
+
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_group_token_success_screen_with_fee(
             ui,
             "Resume",
             self.group_action_id.is_some(),
             self.is_unilateral_group_member,
             self.group.is_some(),
             &self.app_context,
+            fee_ref,
         )
     }
 }
@@ -270,7 +287,8 @@ impl ScreenLike for ResumeTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ResumedTokens = backend_task_success_result {
+        if let BackendTaskSuccessResult::ResumedTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.status = ResumeTokensStatus::Complete;
         }
     }

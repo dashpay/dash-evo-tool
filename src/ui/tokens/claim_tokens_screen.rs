@@ -1,4 +1,4 @@
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -62,6 +62,8 @@ pub struct ClaimTokensScreen {
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl ClaimTokensScreen {
@@ -129,6 +131,7 @@ impl ClaimTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -228,10 +231,24 @@ impl ClaimTokensScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Claimed Successfully!".to_string(),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            info_ref,
         )
     }
 }
@@ -245,7 +262,8 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ClaimedTokens = backend_task_success_result {
+        if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
         }
     }

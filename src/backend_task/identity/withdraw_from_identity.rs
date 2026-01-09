@@ -1,3 +1,4 @@
+use crate::backend_task::FeeResult;
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -120,8 +121,11 @@ impl AppContext {
         }
 
         qualified_identity.identity.set_balance(remaining_balance);
+
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity)
+            .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
             .map_err(|e| format!("Database error: {}", e))
     }
 }

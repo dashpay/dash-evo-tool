@@ -992,9 +992,36 @@ pub fn show_group_token_success_screen(
     has_group: bool,
     app_context: &Arc<AppContext>,
 ) -> AppAction {
+    show_group_token_success_screen_with_fee(
+        ui,
+        action_name,
+        is_group_action_signing,
+        is_unilateral_group_member,
+        has_group,
+        app_context,
+        None,
+    )
+}
+
+/// Shows a success screen for group token actions with optional fee info display.
+/// Handles the three cases:
+/// 1. Group action signing (group_action_id is Some) - shows "Back to Group Actions" and "Back to Tokens"
+/// 2. Group action initiated (has_group && !is_unilateral) - shows "Back to Tokens" and "Go to Group Actions"
+/// 3. Normal action - shows just "Back to Tokens"
+pub fn show_group_token_success_screen_with_fee(
+    ui: &mut Ui,
+    action_name: &str,
+    is_group_action_signing: bool,
+    is_unilateral_group_member: bool,
+    has_group: bool,
+    app_context: &Arc<AppContext>,
+    fee_info: Option<(&str, &str)>,
+) -> AppAction {
     let mut action = AppAction::None;
+    let dark_mode = ui.ctx().style().visuals.dark_mode;
+
     ui.vertical_centered(|ui| {
-        ui.add_space(100.0);
+        ui.add_space(if fee_info.is_some() { 60.0 } else { 100.0 });
         ui.heading("🎉");
 
         // Determine the success message based on the action type
@@ -1004,6 +1031,31 @@ pub fn show_group_token_success_screen(
             ui.heading(format!("Group {} Initiated.", action_name));
         } else {
             ui.heading(format!("{} Successful.", action_name));
+        }
+
+        // Optional fee info section
+        if let Some((title, description)) = fee_info {
+            ui.add_space(24.0);
+
+            let description_width = 500.0_f32.min(ui.available_width() - 40.0);
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(description_width, 0.0),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(16.0)
+                            .strong()
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(description)
+                            .size(14.0)
+                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                    );
+                },
+            );
         }
 
         ui.add_space(20.0);
@@ -1033,7 +1085,7 @@ pub fn show_group_token_success_screen(
                 );
             }
         }
-        ui.add_space(100.0);
+        ui.add_space(if fee_info.is_some() { 60.0 } else { 100.0 });
     });
     action
 }

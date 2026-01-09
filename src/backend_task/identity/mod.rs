@@ -10,7 +10,7 @@ mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
@@ -615,6 +615,7 @@ impl AppContext {
         key_id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
 
         // Get the identity
         let identity = qualified_identity.identity.clone();
@@ -622,9 +623,14 @@ impl AppContext {
         // Get the signing key if specified
         let signing_key = key_id.and_then(|id| identity.get_public_key_by_id(id));
 
+        // Track balance before transfer for fee calculation
+        let balance_before = identity.balance();
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_credit_transfer_to_addresses(outputs.len());
+
         // Execute the transfer - qualified_identity is consumed here as the signer
         let (address_infos, new_balance) = identity
-            .transfer_credits_to_addresses(sdk, outputs, signing_key, &qualified_identity, None)
+            .transfer_credits_to_addresses(sdk, outputs.clone(), signing_key, &qualified_identity, None)
             .await
             .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
 
@@ -647,10 +653,29 @@ impl AppContext {
         let mut updated_identity = qualified_identity;
         updated_identity.identity.set_balance(new_balance);
 
+        // Calculate actual fee
+        let total_outputs: Credits = outputs.values().sum();
+        let actual_fee = balance_before.saturating_sub(new_balance).saturating_sub(total_outputs);
+
+        tracing::info!(
+            "Credit transfer to addresses complete: estimated fee {} credits, actual fee {} credits",
+            estimated_fee,
+            actual_fee
+        );
+        if actual_fee != estimated_fee {
+            tracing::warn!(
+                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                estimated_fee,
+                actual_fee,
+                actual_fee as i64 - estimated_fee as i64
+            );
+        }
+
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::TransferredCredits)
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+        Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
     }
 }

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -52,6 +52,8 @@ pub struct AddKeyScreen {
     contract_id_input: String,
     document_type_input: String,
     enable_contract_bounds: bool,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl AddKeyScreen {
@@ -81,6 +83,7 @@ impl AddKeyScreen {
             contract_id_input: String::new(),
             document_type_input: String::new(),
             enable_contract_bounds: false,
+            completed_fee_result: None,
         }
     }
 
@@ -192,9 +195,23 @@ impl AddKeyScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let action = crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        // Convert to references for the function call
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Successfully added key.".to_string(),
+            "Key Added Successfully!".to_string(),
             vec![
                 (
                     "Back to Identities Screen".to_string(),
@@ -205,6 +222,7 @@ impl AddKeyScreen {
                     AppAction::Custom("add_another".to_string()),
                 ),
             ],
+            info_ref,
         );
 
         // Handle the custom action to reset the form and refresh identity
@@ -216,6 +234,7 @@ impl AddKeyScreen {
             self.document_type_input = String::new();
             self.enable_contract_bounds = false;
             self.add_key_status = AddKeyStatus::NotStarted;
+            self.completed_fee_result = None;
             return AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::RefreshIdentity(self.identity.clone()),
             ));
@@ -246,7 +265,8 @@ impl ScreenLike for AddKeyScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::AddedKeyToIdentity => {
+            BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.add_key_status = AddKeyStatus::Complete;
             }
             BackendTaskSuccessResult::RefreshedIdentity(_) => {

@@ -1,7 +1,8 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -66,6 +67,8 @@ pub struct UpdateTokenConfigScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>, // unused
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl UpdateTokenConfigScreen {
@@ -119,6 +122,7 @@ impl UpdateTokenConfigScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
+            completed_fee_result: None,
         }
     }
 
@@ -904,11 +908,17 @@ impl ScreenLike for UpdateTokenConfigScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item) =
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item, fee_result) =
             backend_task_success_result
         {
+            self.completed_fee_result = Some(fee_result.clone());
+            let fee_info = format!(
+                " (Fee: Estimated {} • Actual {})",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
             self.backend_message = Some((
-                format!("Successfully updated token config item: {}", change_item),
+                format!("Successfully updated token config item: {}{}", change_item, fee_info),
                 MessageType::Success,
                 Utc::now(),
             ));

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
@@ -74,6 +74,8 @@ pub struct TransferScreen {
     destination_type: TransferDestinationType,
     platform_address_input: String,
     show_advanced_options: bool,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl TransferScreen {
@@ -111,6 +113,7 @@ impl TransferScreen {
             destination_type: TransferDestinationType::Identity,
             platform_address_input: String::new(),
             show_advanced_options: false,
+            completed_fee_result: None,
         }
     }
 
@@ -467,13 +470,28 @@ impl TransferScreen {
     }
 
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        // Convert to references for the function call
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Success!".to_string(),
+            "Transfer Successful!".to_string(),
             vec![(
                 "Back to Identities".to_string(),
                 AppAction::PopScreenAndRefresh,
             )],
+            info_ref,
         )
     }
 }
@@ -487,7 +505,8 @@ impl ScreenLike for TransferScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredCredits = backend_task_success_result {
+        if let BackendTaskSuccessResult::TransferredCredits(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.transfer_credits_status = TransferCreditsStatus::Complete;
         }
     }

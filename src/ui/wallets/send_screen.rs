@@ -4,6 +4,7 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -2080,9 +2081,14 @@ impl ScreenLike for WalletSendScreen {
                 };
                 self.send_status = SendStatus::Complete(msg);
             }
-            crate::backend_task::BackendTaskSuccessResult::TransferredCredits => {
+            crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
+                let fee_info = format!(
+                    "\n\nFee: Estimated {} • Actual {}",
+                    format_credits_as_dash(fee_result.estimated_fee),
+                    format_credits_as_dash(fee_result.actual_fee)
+                );
                 self.send_status =
-                    SendStatus::Complete("Credits transferred successfully!".to_string());
+                    SendStatus::Complete(format!("Credits transferred successfully!{}", fee_info));
             }
             crate::backend_task::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
                 self.send_status =

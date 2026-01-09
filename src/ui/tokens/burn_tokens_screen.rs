@@ -1,4 +1,4 @@
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -78,6 +78,8 @@ pub struct BurnTokensScreen {
     // For password-based wallet unlocking, if needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl BurnTokensScreen {
@@ -211,6 +213,7 @@ impl BurnTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -314,13 +317,27 @@ impl BurnTokensScreen {
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_group_token_success_screen(
+        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_str = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_str)
+        });
+
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_group_token_success_screen_with_fee(
             ui,
             "Burn",
             self.group_action_id.is_some(),
             self.is_unilateral_group_member,
             self.group.is_some(),
             &self.app_context,
+            fee_ref,
         )
     }
 }
@@ -334,7 +351,8 @@ impl ScreenLike for BurnTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::BurnedTokens = backend_task_success_result {
+        if let BackendTaskSuccessResult::BurnedTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.status = BurnTokensStatus::Complete;
         }
     }

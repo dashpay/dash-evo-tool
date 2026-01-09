@@ -1,4 +1,5 @@
 use super::BackendTaskSuccessResult;
+use crate::backend_task::FeeResult;
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
@@ -96,26 +97,32 @@ impl AppContext {
         };
 
         // Calculate and log actual fee paid
-        if let Some(balance_after) = new_balance {
-            let actual_fee = balance_before.saturating_sub(balance_after);
+        let actual_fee = if let Some(balance_after) = new_balance {
+            let fee = balance_before.saturating_sub(balance_after);
             tracing::info!(
                 "AddKeyToIdentity complete: estimated fee {} credits, actual fee {} credits",
                 estimated_fee,
-                actual_fee
+                fee
             );
-            if actual_fee != estimated_fee {
+            if fee != estimated_fee {
                 tracing::warn!(
                     "Fee mismatch: estimated {} vs actual {} (diff: {})",
                     estimated_fee,
-                    actual_fee,
-                    actual_fee as i64 - estimated_fee as i64
+                    fee,
+                    fee as i64 - estimated_fee as i64
                 );
             }
             qualified_identity.identity.set_balance(balance_after);
-        }
+            fee
+        } else {
+            // If we couldn't determine the balance, use the estimate
+            estimated_fee
+        };
+
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity)
+            .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
             .map_err(|e| format!("Database error: {}", e))
     }
 }

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
@@ -60,6 +60,8 @@ pub struct TransferTokensScreen {
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl TransferTokensScreen {
@@ -105,6 +107,7 @@ impl TransferTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -235,10 +238,24 @@ impl TransferTokensScreen {
         )))
     }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Success!".to_string(),
+            "Transfer Successful!".to_string(),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            info_ref,
         )
     }
 }
@@ -251,7 +268,8 @@ impl ScreenLike for TransferTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredTokens = backend_task_success_result {
+        if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
         }
     }

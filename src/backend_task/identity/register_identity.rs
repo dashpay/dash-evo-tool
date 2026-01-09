@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_sdk::dash_spv::Network;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -15,10 +16,10 @@ use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
-use dash_sdk::platform::{Fetch, FetchMany, Identity};
+use dash_sdk::platform::{Fetch, Identity};
 use dash_sdk::query_types::AddressInfo;
 use dash_sdk::{Error, Sdk};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 impl AppContext {
@@ -191,7 +192,17 @@ impl AppContext {
                 inputs,
                 wallet_seed_hash,
             } => {
-                let merged_inputs = Self::fetch_address_nonces(&sdk, inputs).await?;
+                // inputs with nonces, incremented by 1 from current nonce
+                let inputs_with_nonces = inputs
+                    .into_iter()
+                    .map(|(addr, credits)| {
+                        self.get_platform_address_best_info(&addr, self.network)
+                            .map(|info| (addr, (info.nonce.saturating_add(1), credits)))
+                    })
+                    .collect::<Option<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>>()
+                    .ok_or(String::from(
+                        "Each input platform address must be present in at least one wallet",
+                    ))?;
 
                 return self
                     .register_identity_from_platform_addresses(
@@ -199,7 +210,7 @@ impl AppContext {
                         keys,
                         wallet,
                         wallet_identity_index,
-                        merged_inputs,
+                        inputs_with_nonces,
                         wallet_seed_hash,
                     )
                     .await;
@@ -656,56 +667,33 @@ impl AppContext {
         }
     }
 
-    /// Fetch nonces for the given Platform addresses and merge them with the provided credits.
-    /// Returns a map of PlatformAddress to (AddressNonce, Credits) tuples, where credits are from the input
-    /// and nonces are fetched from the Platform.
+    /// Get the best (most recent nonce) AddressInfo from all wallets for the given [PlatformAddress] in current [Self::network].
     ///
-    /// TODO: this leaks address ownership information to the DAPI node; should be handled inside wallet address syncing logic instead.
-    async fn fetch_address_nonces(
-        sdk: &Sdk,
-        addresses_with_credits: BTreeMap<PlatformAddress, Credits>,
-    ) -> Result<
-        BTreeMap<
-            dash_sdk::dpp::address_funds::PlatformAddress,
-            (AddressNonce, dash_sdk::dpp::fee::Credits),
-        >,
-        String,
-    > {
-        // fetch address infos to get nonces
-        // TODO: we leak address owner's IP here to whoever runs the DAPI node; it should be handled inside the
-        // address syncing logic of the wallet instead
-        let address_infos = AddressInfo::fetch_many(
-            sdk,
-            addresses_with_credits
-                .keys()
-                .cloned()
-                .collect::<BTreeSet<PlatformAddress>>(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    /// Returns `None`` if no info is found.
+    fn get_platform_address_best_info(
+        &self,
+        platform_address: &PlatformAddress,
+        network: Network,
+    ) -> Option<AddressInfo> {
+        let generic_address = platform_address.to_address_with_network(network);
+        let wallets = self.wallets.read().ok()?;
 
-        // sanity checks: we must have info for all input addresses
-        if address_infos.len() != addresses_with_credits.len() {
-            return Err("Failed to fetch address infos for all input addresses".to_string());
-        }
-        // merge credits from inputs with nonces from address_infos
-        let merged_inputs = addresses_with_credits
-            .into_iter()
-            .map(|(addr, credits)| {
-                let info_opt = address_infos.get(&addr).cloned();
-                match info_opt {
-                    // nonce must be incremented by 1 for the state transition
-                    Some(Some(info)) => Ok((addr, (info.nonce.saturating_add(1), credits))),
-                    Some(None) | None => {
-                        Err(format!("Failed to fetch address info for address {}", addr))
-                    }
+        let mut recent_info: Option<AddressInfo> = None;
+        for wallet in wallets.values() {
+            let wallet_guard = wallet.read().ok()?;
+
+            if let Some(new_info) = wallet_guard.get_platform_address_info(&generic_address) {
+                let recent_nonce = recent_info.as_ref().map(|info| info.nonce);
+                if recent_nonce.is_none_or(|previous| new_info.nonce > previous) {
+                    recent_info = Some(AddressInfo {
+                        address: *platform_address,
+                        balance: new_info.balance,
+                        nonce: new_info.nonce,
+                    });
                 }
-            })
-            .collect::<Result<
-                BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, (AddressNonce, Credits)>,
-                String,
-            >>()?;
+            }
+        }
 
-        Ok(merged_inputs)
+        recent_info
     }
 }

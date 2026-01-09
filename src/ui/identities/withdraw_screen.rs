@@ -3,6 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
@@ -16,6 +17,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -491,6 +493,32 @@ impl ScreenLike for WithdrawalScreen {
 
                 ui.add_space(10.0);
 
+                // Fee estimation display
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_credit_withdrawal();
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
+
                 // Withdraw button
 
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
@@ -501,19 +529,25 @@ impl ScreenLike for WithdrawalScreen {
 
                 let has_valid_amount = self.withdrawal_amount.is_some();
                 let has_address_error = self.withdrawal_address_error.is_some();
-                let ready = has_valid_amount && !has_address_error;
+                let has_enough_balance = self.max_amount > estimated_fee;
+                let ready = has_valid_amount && !has_address_error && has_enough_balance;
 
                 let hover_text = if !has_valid_amount {
-                    "Please enter a valid amount to withdraw"
+                    "Please enter a valid amount to withdraw".to_string()
                 } else if has_address_error {
-                    "Please enter a valid withdrawal address"
+                    "Please enter a valid withdrawal address".to_string()
+                } else if !has_enough_balance {
+                    format!(
+                        "Insufficient balance for withdrawal fee (need at least {})",
+                        format_credits_as_dash(estimated_fee)
+                    )
                 } else {
-                    ""
+                    String::new()
                 };
 
                 if ui
                     .add_enabled(ready, button)
-                    .on_disabled_hover_text(hover_text)
+                    .on_disabled_hover_text(&hover_text)
                     .clicked()
                     && self.confirmation_dialog.is_none()
                 {

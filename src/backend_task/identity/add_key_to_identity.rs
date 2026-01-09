@@ -1,5 +1,6 @@
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -47,6 +48,10 @@ impl AppContext {
             ),
             (public_key_to_add.clone(), private_key),
         );
+        // Track balance before operation for fee calculation
+        let balance_before = qualified_identity.identity.balance();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_update();
+
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,
             &master_key_id,
@@ -68,12 +73,14 @@ impl AppContext {
         // Log and handle the proof result
         tracing::info!("AddKeyToIdentity proof result: {}", result);
 
-        match result {
+        let new_balance = match result {
             StateTransitionProofResult::VerifiedPartialIdentity(identity) => {
                 // Update the identity with proof-verified public keys
+                let balance = identity.balance;
                 for public_key in identity.loaded_public_keys.into_values() {
                     qualified_identity.identity.add_public_key(public_key);
                 }
+                balance
             }
             other => {
                 tracing::warn!(
@@ -84,7 +91,27 @@ impl AppContext {
                 qualified_identity
                     .identity
                     .add_public_key(public_key_to_add.identity_public_key.clone());
+                None
             }
+        };
+
+        // Calculate and log actual fee paid
+        if let Some(balance_after) = new_balance {
+            let actual_fee = balance_before.saturating_sub(balance_after);
+            tracing::info!(
+                "AddKeyToIdentity complete: estimated fee {} credits, actual fee {} credits",
+                estimated_fee,
+                actual_fee
+            );
+            if actual_fee != estimated_fee {
+                tracing::warn!(
+                    "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                    estimated_fee,
+                    actual_fee,
+                    actual_fee as i64 - estimated_fee as i64
+                );
+            }
+            qualified_identity.identity.set_balance(balance_after);
         }
 
         self.update_local_qualified_identity(&qualified_identity)

@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -79,6 +80,10 @@ impl AppContext {
             "Qualified identity key info"
         );
 
+        // Track balance before withdrawal for fee calculation
+        let balance_before = qualified_identity.identity.balance();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_credit_withdrawal();
+
         let remaining_balance = qualified_identity
             .identity
             .clone()
@@ -96,6 +101,24 @@ impl AppContext {
                 tracing::error!(error = %e, "Withdrawal failed");
                 format!("Withdrawal error: {}", e)
             })?;
+
+        // Calculate and log actual fee paid
+        let actual_fee = balance_before.saturating_sub(remaining_balance).saturating_sub(credits);
+        tracing::info!(
+            "Withdrawal complete: withdrew {} credits, estimated fee {} credits, actual fee {} credits",
+            credits,
+            estimated_fee,
+            actual_fee
+        );
+        if actual_fee != estimated_fee {
+            tracing::warn!(
+                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                estimated_fee,
+                actual_fee,
+                actual_fee as i64 - estimated_fee as i64
+            );
+        }
+
         qualified_identity.identity.set_balance(remaining_balance);
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity)

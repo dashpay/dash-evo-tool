@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
@@ -21,6 +22,10 @@ impl AppContext {
             guard.clone()
         };
 
+        // Track balance before transfer for fee calculation
+        let balance_before = qualified_identity.identity.balance();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_credit_transfer();
+
         let (sender_balance, receiver_balance) = qualified_identity
             .identity
             .clone()
@@ -34,6 +39,24 @@ impl AppContext {
             )
             .await
             .map_err(|e| format!("Transfer error: {}", e))?;
+
+        // Calculate and log actual fee paid
+        let actual_fee = balance_before.saturating_sub(sender_balance).saturating_sub(credits);
+        tracing::info!(
+            "Credit transfer complete: sent {} credits, estimated fee {} credits, actual fee {} credits",
+            credits,
+            estimated_fee,
+            actual_fee
+        );
+        if actual_fee != estimated_fee {
+            tracing::warn!(
+                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                estimated_fee,
+                actual_fee,
+                actual_fee as i64 - estimated_fee as i64
+            );
+        }
+
         qualified_identity.identity.set_balance(sender_balance);
 
         // If the receiver is a local qualified identity, update its balance too

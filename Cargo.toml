@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { path = "../platform/packages/rs-sdk", features = [
+dash-sdk = { path = "../Dash/platform/packages/rs-sdk", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",

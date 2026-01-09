@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -44,6 +45,8 @@ pub struct RegisterDpnsNameScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl RegisterDpnsNameScreen {
@@ -71,6 +74,7 @@ impl RegisterDpnsNameScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message,
+            completed_fee_result: None,
         }
     }
 
@@ -130,9 +134,22 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let action = crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Successfully registered DPNS name.".to_string(),
+            "DPNS Name Registered!".to_string(),
             vec![
                 (
                     "Back to DPNS screen".to_string(),
@@ -143,6 +160,7 @@ impl RegisterDpnsNameScreen {
                     AppAction::Custom("register_another".to_string()),
                 ),
             ],
+            info_ref,
         );
 
         // Handle the custom action to reset the form
@@ -151,6 +169,7 @@ impl RegisterDpnsNameScreen {
         {
             self.name_input = String::new();
             self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+            self.completed_fee_result = None;
             return AppAction::None;
         }
 
@@ -167,7 +186,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::RegisteredDpnsName = backend_task_success_result {
+        if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }

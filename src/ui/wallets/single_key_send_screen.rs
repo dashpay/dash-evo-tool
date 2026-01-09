@@ -12,6 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::sync::{Arc, RwLock};
@@ -36,6 +37,26 @@ impl SendRecipient {
     }
 }
 
+/// State for the fee confirmation dialog shown when min relay fee is higher than estimated
+#[derive(Debug, Clone)]
+struct FeeConfirmationDialog {
+    is_open: bool,
+    estimated_fee: u64,
+    required_fee: u64,
+    pending_request: Option<WalletPaymentRequest>,
+}
+
+impl Default for FeeConfirmationDialog {
+    fn default() -> Self {
+        Self {
+            is_open: false,
+            estimated_fee: 0,
+            required_fee: 0,
+            pending_request: None,
+        }
+    }
+}
+
 pub struct SingleKeyWalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
@@ -56,6 +77,12 @@ pub struct SingleKeyWalletSendScreen {
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,
+
+    // Fee confirmation dialog
+    fee_dialog: FeeConfirmationDialog,
+
+    // Advanced options toggle
+    show_advanced_options: bool,
 }
 
 impl SingleKeyWalletSendScreen {
@@ -72,6 +99,8 @@ impl SingleKeyWalletSendScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message: None,
+            fee_dialog: FeeConfirmationDialog::default(),
+            show_advanced_options: false,
         }
     }
 
@@ -94,6 +123,98 @@ impl SingleKeyWalletSendScreen {
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
         let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
         amount.dash_to_duffs()
+    }
+
+    /// Estimate transaction size for P2PKH transactions
+    fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
+        fn varint_size(value: usize) -> usize {
+            match value {
+                0..=0xfc => 1,
+                0xfd..=0xffff => 3,
+                0x1_0000..=0xffff_ffff => 5,
+                _ => 9,
+            }
+        }
+        let mut size = 8; // version/type/lock_time
+        size += varint_size(inputs);
+        size += varint_size(outputs);
+        size += inputs * 148; // P2PKH input size
+        size += outputs * 34; // P2PKH output size
+        size
+    }
+
+    /// Calculate estimated fee based on UTXO selection for the send amount
+    fn estimate_fee(&self) -> Option<(u64, usize, usize)> {
+        let wallet = self.selected_wallet.as_ref()?;
+        let wallet_guard = wallet.read().ok()?;
+
+        if wallet_guard.utxos.is_empty() {
+            return None;
+        }
+
+        // Calculate total amount to send
+        let total_output: u64 = self
+            .recipients
+            .iter()
+            .filter_map(|r| Self::parse_amount_to_duffs(&r.amount).ok())
+            .sum();
+
+        if total_output == 0 {
+            // No valid amounts entered yet, show estimate for minimum tx
+            let output_count = self.recipients.len().max(1) + 1;
+            let estimated_size = Self::estimate_p2pkh_tx_size(1, output_count);
+            let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+            return Some((fee, 1, estimated_size));
+        }
+
+        // Sort UTXOs by value descending to estimate how many we'd need
+        let mut utxo_values: Vec<u64> = wallet_guard.utxos.values().map(|tx| tx.value).collect();
+        utxo_values.sort_by(|a, b| b.cmp(a));
+
+        let output_count = self.recipients.len() + 1; // +1 for change
+
+        // Select UTXOs until we have enough (simulating the backend logic)
+        let mut selected_count = 0;
+        let mut selected_total: u64 = 0;
+
+        for value in utxo_values {
+            selected_count += 1;
+            selected_total += value;
+
+            // Recalculate fee with current input count
+            let current_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
+            let current_fee = FeeLevel::Normal.fee_rate().calculate_fee(current_size);
+
+            if selected_total >= total_output + current_fee {
+                return Some((current_fee, selected_count, current_size));
+            }
+        }
+
+        // Not enough funds - show what we'd need with all UTXOs
+        let estimated_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
+        let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+        Some((fee, selected_count, estimated_size))
+    }
+
+    /// Parse the required fee from a "min relay fee not met" error message
+    fn parse_min_relay_fee_error(error: &str) -> Option<u64> {
+        // Error format: "min relay fee not met, X < Y"
+        if error.contains("min relay fee not met") || error.contains("min relay fee") {
+            // Try to find the pattern "X < Y" and extract Y
+            if let Some(pos) = error.find('<') {
+                let after_lt = &error[pos + 1..];
+                // Extract the number after '<'
+                let num_str: String = after_lt
+                    .trim()
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if let Ok(required_fee) = num_str.parse::<u64>() {
+                    return Some(required_fee);
+                }
+            }
+        }
+        None
     }
 
     fn validate_and_send(&mut self) -> Result<AppAction, String> {
@@ -158,7 +279,15 @@ impl SingleKeyWalletSendScreen {
             } else {
                 Some(memo.to_string())
             },
+            override_fee: None,
         };
+
+        // Store the request for potential retry if min relay fee is too low
+        self.fee_dialog.pending_request = Some(request.clone());
+        // Store estimated fee for display in dialog
+        if let Some((estimated_fee, _, _)) = self.estimate_fee() {
+            self.fee_dialog.estimated_fee = estimated_fee;
+        }
 
         self.sending = true;
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
@@ -313,7 +442,245 @@ impl SingleKeyWalletSendScreen {
                     RichText::new("Subtract fee from amount")
                         .color(DashColors::text_primary(dark_mode)),
                 );
+
+                // Fee estimation display
+                if let Some((estimated_fee, utxo_count, tx_size)) = self.estimate_fee() {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Estimated fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} ({:.8} DASH)", estimated_fee, estimated_fee as f64 * 1e-8))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Transaction details:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(12.0),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} inputs, ~{} bytes", utxo_count, tx_size))
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(12.0),
+                        );
+                    });
+
+                    if utxo_count > 100 {
+                        ui.add_space(5.0);
+                        ui.label(
+                            RichText::new("Note: Large number of inputs may require higher network fee")
+                                .color(DashColors::WARNING)
+                                .size(12.0),
+                        );
+                    }
+                }
             });
+    }
+
+    /// Render the simple (beginner) send UI - single recipient, minimal options
+    fn render_simple_send(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        ui.add_space(15.0);
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 10))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                // Address field
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("To:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.add_space(5.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.recipients[0].address)
+                            .hint_text(
+                                RichText::new("Enter Dash address")
+                                    .color(Color32::GRAY),
+                            )
+                            .desired_width(500.0),
+                    );
+                });
+
+                ui.add_space(10.0);
+
+                // Amount field
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Amount:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.add_space(5.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.recipients[0].amount)
+                            .hint_text(RichText::new("0.00").color(Color32::GRAY))
+                            .desired_width(150.0),
+                    );
+                    ui.label(
+                        RichText::new("DASH")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+
+                // Simple fee display
+                if let Some((estimated_fee, _, _)) = self.estimate_fee() {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(format!("~{:.8} DASH", estimated_fee as f64 * 1e-8))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+                }
+            });
+    }
+
+    fn render_fee_confirmation_dialog(&mut self, ctx: &Context) -> AppAction {
+        let mut action = AppAction::None;
+
+        if !self.fee_dialog.is_open {
+            return action;
+        }
+
+        let dark_mode = ctx.style().visuals.dark_mode;
+
+        egui::Window::new("Fee Confirmation Required")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(10.0);
+
+                ui.label(
+                    RichText::new("The network requires a higher fee than estimated.")
+                        .color(DashColors::text_primary(dark_mode))
+                        .size(14.0),
+                );
+
+                ui.add_space(15.0);
+
+                Frame::group(ui.style())
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(12, 10))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} duffs ({:.8} DASH)",
+                                    self.fee_dialog.estimated_fee,
+                                    self.fee_dialog.estimated_fee as f64 * 1e-8
+                                ))
+                                .color(DashColors::text_primary(dark_mode)),
+                            );
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Required fee:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} duffs ({:.8} DASH)",
+                                    self.fee_dialog.required_fee,
+                                    self.fee_dialog.required_fee as f64 * 1e-8
+                                ))
+                                .color(DashColors::WARNING)
+                                .strong(),
+                            );
+                        });
+
+                        let fee_diff = self.fee_dialog.required_fee.saturating_sub(self.fee_dialog.estimated_fee);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Additional cost:")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "+{} duffs ({:.8} DASH)",
+                                    fee_diff,
+                                    fee_diff as f64 * 1e-8
+                                ))
+                                .color(DashColors::text_primary(dark_mode)),
+                            );
+                        });
+                    });
+
+                ui.add_space(15.0);
+
+                ui.label(
+                    RichText::new("Would you like to proceed with the higher fee?")
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+
+                ui.add_space(15.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.fee_dialog.is_open = false;
+                        self.fee_dialog.pending_request = None;
+                        self.sending = false;
+                    }
+
+                    ui.add_space(20.0);
+
+                    let confirm_button = egui::Button::new(
+                        RichText::new("Confirm & Send")
+                            .color(Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(DashColors::DASH_BLUE);
+
+                    if ui.add(confirm_button).clicked() {
+                        if let Some(mut request) = self.fee_dialog.pending_request.take() {
+                            // Update the request to use the higher fee
+                            request.override_fee = Some(self.fee_dialog.required_fee);
+
+                            if let Some(wallet) = &self.selected_wallet {
+                                action = AppAction::BackendTask(BackendTask::CoreTask(
+                                    CoreTask::SendSingleKeyWalletPayment {
+                                        wallet: wallet.clone(),
+                                        request,
+                                    },
+                                ));
+                            }
+                        }
+                        self.fee_dialog.is_open = false;
+                    }
+                });
+
+                ui.add_space(10.0);
+            });
+
+        action
     }
 
     fn render_wallet_info(&self, ui: &mut Ui) {
@@ -545,11 +912,17 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
-                    ui.heading(
-                        RichText::new("Send Dash")
-                            .color(DashColors::text_primary(dark_mode))
-                            .size(24.0),
-                    );
+                    // Heading with Advanced Options checkbox
+                    ui.horizontal(|ui| {
+                        ui.heading(
+                            RichText::new("Send Dash")
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(24.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                        });
+                    });
 
                     ui.add_space(15.0);
 
@@ -569,11 +942,14 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                         ui.add_space(10.0);
                     }
 
-                    // Recipients
-                    self.render_recipients(ui);
-
-                    // Options (memo, subtract fee)
-                    self.render_options(ui);
+                    if self.show_advanced_options {
+                        // Advanced mode: multiple recipients, memo, subtract fee, detailed info
+                        self.render_recipients(ui);
+                        self.render_options(ui);
+                    } else {
+                        // Simple mode: single recipient, minimal UI
+                        self.render_simple_send(ui);
+                    }
 
                     // Send button
                     inner_action |= self.render_send_button(ui);
@@ -582,6 +958,9 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             inner_action
         });
 
+        // Render fee confirmation dialog (modal, on top of everything)
+        action |= self.render_fee_confirmation_dialog(ctx);
+
         action
     }
 
@@ -589,7 +968,20 @@ impl ScreenLike for SingleKeyWalletSendScreen {
         // Check for success messages to reset sending state
         if message.contains("Sent") || message.contains("TxID") {
             self.sending = false;
+            self.fee_dialog.pending_request = None;
         }
+
+        // Check for min relay fee error and show confirmation dialog
+        if message_type == MessageType::Error {
+            if let Some(required_fee) = Self::parse_min_relay_fee_error(message) {
+                // Show the fee confirmation dialog instead of the error message
+                self.fee_dialog.required_fee = required_fee;
+                self.fee_dialog.is_open = true;
+                // Keep sending state true until user confirms or cancels
+                return;
+            }
+        }
+
         self.message = Some((message.to_string(), message_type, Utc::now()));
     }
 

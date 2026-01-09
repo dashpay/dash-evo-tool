@@ -23,7 +23,6 @@ use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdenti
 use crate::utils::tasks::TaskManager;
 use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
-use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::balances::credits::BlockAwareCreditOperation;
@@ -46,8 +45,10 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionC
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
+use dash_sdk::platform::address_sync::{AddressSyncConfig, AddressSyncResult};
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
+use dash_sdk::{RequestSettings, Sdk};
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
@@ -861,6 +862,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         use crate::model::wallet::WalletAddressProvider;
 
+        tracing::info!("Platform address sync start");
+        let start_time = std::time::Instant::now();
+
         let wallet_arc = {
             let wallets = self.wallets.read().unwrap();
             wallets
@@ -887,13 +891,37 @@ impl AppContext {
             guard.clone()
         };
 
-        let result = sdk
-            .sync_address_balances(&mut provider, None)
-            .await
-            .map_err(|e| format!("Failed to sync Platform addresses: {}", e))?;
+        // trunk state query is faling if tree is empty with internal error
+        // this happen when we don't have any balances yet
+        // this case is most offen happen for local network
+        // so we do not ban addresses in case of failure
+        // and return empty `AddressSyncResult`
+        let config = if sdk.network == Network::Regtest {
+            Some(AddressSyncConfig {
+                request_settings: RequestSettings {
+                    ban_failed_address: Some(false),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
+        let result = match sdk.sync_address_balances(&mut provider, config).await {
+            Ok(res) => res,
+            Err(e) if e.to_string().contains("empty tree") => {
+                tracing::debug!(
+                    "Platform address balance tree is empty. Returning empty sync result."
+                );
+                AddressSyncResult::default()
+            }
+            Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
+        };
 
         tracing::info!(
-            "Platform address sync complete: found={}, absent={}, highest_index={:?}, checkpoint_height={}",
+            "Platform address sync finish: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
+            start_time.elapsed(),
             result.found.len(),
             result.absent.len(),
             result.highest_found_index,
@@ -913,7 +941,6 @@ impl AppContext {
             );
         }
 
-        // TODO: Re-enable terminal balance updates once the queries are working properly
         // Step 2: Fetch recent balance changes (terminal updates after checkpoint)
         // This catches any balance changes that happened after the checkpoint the trunk/branch sync used
         self.apply_recent_balance_changes(
@@ -1006,7 +1033,7 @@ impl AppContext {
         checkpoint_height: u64,
     ) {
         use dash_sdk::dpp::address_funds::PlatformAddress;
-        use dash_sdk::dpp::balances::credits::CreditOperation;
+        use dash_sdk::dpp::balances::credits::{BlockAwareCreditOperation, CreditOperation};
         use dash_sdk::platform::{
             Fetch, RecentAddressBalanceChangesQuery, RecentCompactedAddressBalanceChangesQuery,
         };
@@ -1062,11 +1089,15 @@ impl AppContext {
 
                         let new_balance = match credit_op {
                             BlockAwareCreditOperation::SetCredits(credits) => credits,
-                            BlockAwareCreditOperation::AddToCreditsOperations(
-                                credits_per_height,
-                            ) => credits_per_height
-                                .values()
-                                .fold(current_balance, |acc, &credits| acc.saturating_add(credits)),
+                            BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
+                                // Only apply credits from blocks AFTER the checkpoint
+                                let total_to_add: u64 = operations
+                                    .iter()
+                                    .filter(|(height, _)| **height > checkpoint_height)
+                                    .map(|(_, credits)| *credits)
+                                    .sum();
+                                current_balance.saturating_add(total_to_add)
+                            }
                         };
 
                         if new_balance != current_balance {

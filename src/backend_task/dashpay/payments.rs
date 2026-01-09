@@ -273,6 +273,7 @@ pub async fn send_payment_to_contact_impl(
         }],
         subtract_fee_from_amount: false,
         memo: memo.clone(),
+        override_fee: None,
     };
 
     // Send the payment using the existing wallet infrastructure

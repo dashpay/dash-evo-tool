@@ -1,9 +1,10 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -23,6 +24,7 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
+use eframe::egui::{Frame, Margin};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -76,6 +78,8 @@ pub struct MintTokensScreen {
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl MintTokensScreen {
@@ -202,6 +206,7 @@ impl MintTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -333,13 +338,27 @@ impl MintTokensScreen {
     }
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_group_token_success_screen(
+        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_str = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_str)
+        });
+
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_group_token_success_screen_with_fee(
             ui,
             "Mint",
             self.group_action_id.is_some(),
             self.is_unilateral_group_member,
             self.group.is_some(),
             &self.app_context,
+            fee_ref,
         )
     }
 }
@@ -353,7 +372,8 @@ impl ScreenLike for MintTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::MintedTokens = backend_task_success_result {
+        if let BackendTaskSuccessResult::MintedTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.status = MintTokensStatus::Complete;
         }
     }
@@ -589,6 +609,29 @@ impl ScreenLike for MintTokensScreen {
                         }
                     });
                 }
+
+                // Fee estimation display
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
 
                 let button_text = render_group_action_text(
                     ui,

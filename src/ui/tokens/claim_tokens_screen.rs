@@ -1,4 +1,5 @@
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -29,6 +30,7 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
@@ -60,6 +62,8 @@ pub struct ClaimTokensScreen {
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl ClaimTokensScreen {
@@ -127,6 +131,7 @@ impl ClaimTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -226,10 +231,24 @@ impl ClaimTokensScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Claimed Successfully!".to_string(),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            info_ref,
         )
     }
 }
@@ -243,7 +262,8 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ClaimedTokens = backend_task_success_result {
+        if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
         }
     }
@@ -492,6 +512,32 @@ impl ScreenLike for ClaimTokensScreen {
                     {}", extra_info));
                     ui.add_space(10.0);
                 }
+
+                // Fee estimation display
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
 
                 let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 0))

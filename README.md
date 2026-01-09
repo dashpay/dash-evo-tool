@@ -115,6 +115,16 @@ When the application runs for the first time, it creates an application director
 | Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
 | Linux | `/home/<user>/.config/dash-evo-tool/` |
 
+#### Local Network or Devnet Configuration
+
+To connect to a local network or devnet, you need to configure the `.env` file with your network settings:
+
+1. Copy `.env.example` to the application directory for your OS (see table above)
+2. Rename it to `.env`
+3. Update the configuration values to match your local network or devnet settings
+
+See [`.env.example`](.env.example) for available configuration options.
+
 ### Connect to a Network
 
 1. **Open Network Chooser**: In the app, navigate to the **Network Chooser** screen.

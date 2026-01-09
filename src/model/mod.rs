@@ -1,5 +1,6 @@
 pub mod amount;
 pub mod contested_name;
+pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod password_info;
 pub mod proof_log_item;

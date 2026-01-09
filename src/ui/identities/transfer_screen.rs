@@ -1,8 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -73,6 +74,8 @@ pub struct TransferScreen {
     destination_type: TransferDestinationType,
     platform_address_input: String,
     show_advanced_options: bool,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl TransferScreen {
@@ -110,6 +113,7 @@ impl TransferScreen {
             destination_type: TransferDestinationType::Identity,
             platform_address_input: String::new(),
             show_advanced_options: false,
+            completed_fee_result: None,
         }
     }
 
@@ -466,13 +470,28 @@ impl TransferScreen {
     }
 
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
-        crate::ui::helpers::show_success_screen(
+        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_info = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee", fee_info)
+        });
+
+        // Convert to references for the function call
+        let info_ref = info_section
+            .as_ref()
+            .map(|(title, desc)| (*title, desc.as_str()));
+
+        crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Success!".to_string(),
+            "Transfer Successful!".to_string(),
             vec![(
                 "Back to Identities".to_string(),
                 AppAction::PopScreenAndRefresh,
             )],
+            info_ref,
         )
     }
 }
@@ -486,7 +505,8 @@ impl ScreenLike for TransferScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredCredits = backend_task_success_result {
+        if let BackendTaskSuccessResult::TransferredCredits(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
             self.transfer_credits_status = TransferCreditsStatus::Complete;
         }
     }
@@ -658,10 +678,41 @@ impl ScreenLike for TransferScreen {
 
                 ui.add_space(10.0);
 
+                // Fee estimation
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = match self.destination_type {
+                    TransferDestinationType::Identity => fee_estimator.estimate_credit_transfer(),
+                    TransferDestinationType::PlatformAddress => {
+                        // Platform address transfer has output cost
+                        fee_estimator.estimate_credit_transfer_to_addresses(1)
+                    }
+                };
+
+                // Display estimated fee
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::group(ui.style())
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
+
                 // Transfer button - check readiness based on destination type
-                // Minimum balance needed for transfer fee (0.0002 DASH in credits)
-                let min_transfer_balance: u64 = 20_000_000;
-                let has_enough_balance = self.identity.identity.balance() > min_transfer_balance;
+                let has_enough_balance = self.identity.identity.balance() > estimated_fee;
 
                 let ready = self.amount.is_some()
                     && self.selected_key.is_some()
@@ -685,11 +736,14 @@ impl ScreenLike for TransferScreen {
                     .corner_radius(3.0);
 
                 let hover_text = if !has_enough_balance {
-                    "Insufficient balance for transfer fee (need at least 0.0002 DASH)"
+                    format!(
+                        "Insufficient balance for transfer fee (need at least {})",
+                        format_credits_as_dash(estimated_fee)
+                    )
                 } else if ready {
-                    "Transfer credits to another identity or Platform address"
+                    "Transfer credits to another identity or Platform address".to_string()
                 } else {
-                    "Please ensure all fields are filled correctly"
+                    "Please ensure all fields are filled correctly".to_string()
                 };
 
                 if ui

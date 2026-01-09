@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use dash_sdk::Error;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
@@ -286,6 +287,10 @@ impl AppContext {
             )
             .map_err(|e| e.to_string())?;
 
+        // Track balance before top-up for fee calculation
+        let balance_before = qualified_identity.identity.balance();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
+
         let updated_identity_balance = match qualified_identity
             .identity
             .top_up_identity(
@@ -386,6 +391,43 @@ impl AppContext {
         qualified_identity
             .identity
             .set_balance(updated_identity_balance);
+
+        // Calculate and log actual fee paid
+        // For top-ups, the "fee" is the difference between expected new balance and actual
+        let expected_credits_from_topup = if let Some((amount, _)) = top_up_index {
+            // amount is in duffs, 1 duff = 1000 credits
+            amount * 1000
+        } else {
+            // For asset lock method, calculate from the asset lock amount
+            0 // Can't easily determine without more info
+        };
+
+        if expected_credits_from_topup > 0 {
+            let balance_increase = updated_identity_balance.saturating_sub(balance_before);
+            let actual_fee = expected_credits_from_topup.saturating_sub(balance_increase);
+            tracing::info!(
+                "Identity top-up complete: topped up {} credits (from {} duffs), estimated fee {} credits, actual fee {} credits, balance increased by {} credits",
+                expected_credits_from_topup,
+                expected_credits_from_topup / 1000,
+                estimated_fee,
+                actual_fee,
+                balance_increase
+            );
+            if actual_fee != estimated_fee {
+                tracing::warn!(
+                    "Top-up fee mismatch: estimated {} vs actual {} (diff: {})",
+                    estimated_fee,
+                    actual_fee,
+                    actual_fee as i64 - estimated_fee as i64
+                );
+            }
+        } else {
+            tracing::info!(
+                "Identity top-up complete: balance before {} credits, balance after {} credits",
+                balance_before,
+                updated_identity_balance
+            );
+        }
 
         self.update_local_qualified_identity(&qualified_identity)
             .map_err(|e| e.to_string())?;

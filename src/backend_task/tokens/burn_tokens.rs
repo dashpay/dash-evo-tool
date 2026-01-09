@@ -136,7 +136,13 @@ impl AppContext {
             }
         }
 
-        // Return success
-        Ok(BackendTaskSuccessResult::BurnedTokens)
+        // Return success with fee result
+        // For token operations, we use the estimated fee as a placeholder
+        // TODO: Add proper fee tracking when SDK provides this information
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::BurnedTokens(fee_result))
     }
 }

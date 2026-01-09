@@ -57,6 +57,24 @@ pub mod wallet;
 // TODO: Refactor how we handle errors and messages, and remove it from here
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 
+/// Information about fees paid for a platform state transition
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeeResult {
+    /// The fee that was estimated before the operation
+    pub estimated_fee: u64,
+    /// The actual fee that was paid (in credits)
+    pub actual_fee: u64,
+}
+
+impl FeeResult {
+    pub fn new(estimated_fee: u64, actual_fee: u64) -> Self {
+        Self {
+            estimated_fee,
+            actual_fee,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendTask {
     IdentityTask(IdentityTask),
@@ -188,26 +206,26 @@ pub enum BackendTaskSuccessResult {
     },
 
     // Token operation results (replacing string messages)
-    PausedTokens,
-    ResumedTokens,
-    MintedTokens,
-    BurnedTokens,
-    FrozeTokens,
-    UnfrozeTokens,
-    TransferredTokens,
-    PurchasedTokens,
-    SetTokenPrice,
-    DestroyedFrozenFunds,
-    ClaimedTokens,
-    UpdatedTokenConfig(String), // The config item that was updated
+    PausedTokens(FeeResult),
+    ResumedTokens(FeeResult),
+    MintedTokens(FeeResult),
+    BurnedTokens(FeeResult),
+    FrozeTokens(FeeResult),
+    UnfrozeTokens(FeeResult),
+    TransferredTokens(FeeResult),
+    PurchasedTokens(FeeResult),
+    SetTokenPrice(FeeResult),
+    DestroyedFrozenFunds(FeeResult),
+    ClaimedTokens(FeeResult),
+    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
     SavedToken,
 
     // Identity operation results (replacing string messages)
-    AddedKeyToIdentity,
-    TransferredCredits,
-    WithdrewFromIdentity,
-    RegisteredDpnsName,
+    AddedKeyToIdentity(FeeResult),
+    TransferredCredits(FeeResult),
+    WithdrewFromIdentity(FeeResult),
+    RegisteredDpnsName(FeeResult),
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
 

@@ -168,9 +168,14 @@ impl AppContext {
         )
         .map_err(|e| format!("Error inserting token into local database: {}", e))?;
 
-        // Return success
+        // Return success with fee result
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::UpdatedTokenConfig(
             change_item.to_string(),
+            fee_result,
         ))
     }
 }

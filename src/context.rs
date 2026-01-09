@@ -23,7 +23,6 @@ use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdenti
 use crate::utils::tasks::TaskManager;
 use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
-use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -45,8 +44,10 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionC
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
+use dash_sdk::platform::address_sync::{AddressSyncConfig, AddressSyncResult};
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
+use dash_sdk::{RequestSettings, Sdk};
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
@@ -886,10 +887,33 @@ impl AppContext {
             guard.clone()
         };
 
-        let result = sdk
-            .sync_address_balances(&mut provider, None)
-            .await
-            .map_err(|e| format!("Failed to sync Platform addresses: {}", e))?;
+        // trunk state query is faling if tree is empty with internal error
+        // this happen when we don't have any balances yet
+        // this case is most offen happen for local network
+        // so we do not ban addresses in case of failure
+        // and return empty `AddressSyncResult`
+        let config = if sdk.network == Network::Regtest {
+            Some(AddressSyncConfig {
+                request_settings: RequestSettings {
+                    ban_failed_address: Some(false),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
+        let result = match sdk.sync_address_balances(&mut provider, config).await {
+            Ok(res) => res,
+            Err(e) if e.to_string().contains("empty tree") => {
+                tracing::debug!(
+                    "Platform address balance tree is empty. Returning empty sync result."
+                );
+                AddressSyncResult::default()
+            }
+            Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
+        };
 
         tracing::info!(
             "Platform address sync complete: found={}, absent={}, highest_index={:?}, checkpoint_height={}",
@@ -1005,7 +1029,9 @@ impl AppContext {
         use dash_sdk::platform::{
             Fetch, RecentAddressBalanceChangesQuery, RecentCompactedAddressBalanceChangesQuery,
         };
-        use dash_sdk::query_types::{RecentAddressBalanceChanges, RecentCompactedAddressBalanceChanges};
+        use dash_sdk::query_types::{
+            RecentAddressBalanceChanges, RecentCompactedAddressBalanceChanges,
+        };
 
         // The trunk/branch sync provides balances as of the checkpoint height.
         // We query for compacted changes starting from that checkpoint height,
@@ -1056,6 +1082,7 @@ impl AppContext {
                         let new_balance = match credit_op {
                             BlockAwareCreditOperation::SetCredits(credits) => credits,
                             BlockAwareCreditOperation::AddToCreditsOperations(ops) => {
+                                // TODO: This is incorrect
                                 let total_add: u64 = ops.values().sum();
                                 current_balance.saturating_add(total_add)
                             }

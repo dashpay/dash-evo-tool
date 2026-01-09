@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { path = "../Dash/platform/packages/rs-sdk", features = [
+dash-sdk = { path = "../platform/packages/rs-sdk", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -54,7 +54,10 @@ arboard = { version = "3.6.0", default-features = false, features = [
 directories = "6.0.0"
 rusqlite = { version = "0.37.0", features = ["functions"] }
 dark-light = "2.0.0"
-image = { version = "0.25.6", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25.6", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
 resvg = "0.45"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 bitflags = "2.9.1"

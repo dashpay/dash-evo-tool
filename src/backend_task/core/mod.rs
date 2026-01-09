@@ -101,6 +101,8 @@ pub struct WalletPaymentRequest {
     pub recipients: Vec<PaymentRecipient>,
     pub subtract_fee_from_amount: bool,
     pub memo: Option<String>,
+    /// Override fee to use instead of calculated fee (for retry after min relay fee error)
+    pub override_fee: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

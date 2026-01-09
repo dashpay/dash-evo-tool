@@ -443,6 +443,7 @@ impl WalletSendScreen {
                     recipients: vec![recipient],
                     subtract_fee_from_amount: self.subtract_fee,
                     memo: None,
+                    override_fee: None,
                 },
             },
         )))
@@ -1730,6 +1731,7 @@ impl WalletSendScreen {
                     recipients,
                     subtract_fee_from_amount: self.subtract_fee,
                     memo: None,
+                    override_fee: None,
                 },
             },
         )))

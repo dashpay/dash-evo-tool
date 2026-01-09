@@ -861,6 +861,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         use crate::model::wallet::WalletAddressProvider;
 
+        tracing::info!("Platform address sync start");
+        let start_time = std::time::Instant::now();
+
         let wallet_arc = {
             let wallets = self.wallets.read().unwrap();
             wallets
@@ -916,7 +919,8 @@ impl AppContext {
         };
 
         tracing::info!(
-            "Platform address sync complete: found={}, absent={}, highest_index={:?}, checkpoint_height={}",
+            "Platform address sync finish: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
+            start_time.elapsed(),
             result.found.len(),
             result.absent.len(),
             result.highest_found_index,
@@ -936,12 +940,10 @@ impl AppContext {
             );
         }
 
-        // TODO: Re-enable terminal balance updates once the queries are working properly
         // Step 2: Fetch recent balance changes (terminal updates after checkpoint)
         // This catches any balance changes that happened after the checkpoint the trunk/branch sync used
-        // TEMPORARILY DISABLED - queries not working
-        // self.apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, result.checkpoint_height)
-        //     .await;
+        self.apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, result.checkpoint_height)
+            .await;
 
         // Apply results to wallet and persist
         let balances = {
@@ -1081,10 +1083,9 @@ impl AppContext {
 
                         let new_balance = match credit_op {
                             BlockAwareCreditOperation::SetCredits(credits) => credits,
-                            BlockAwareCreditOperation::AddToCreditsOperations(ops) => {
-                                // TODO: This is incorrect
-                                let total_add: u64 = ops.values().sum();
-                                current_balance.saturating_add(total_add)
+                            BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
+                                let total_to_add: u64 = operations.values().sum();
+                                current_balance.saturating_add(total_to_add)
                             }
                         };
 

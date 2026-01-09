@@ -79,6 +79,8 @@ pub struct WalletsBalancesScreen {
     pending_platform_balance_refresh: Option<WalletSeedHash>,
     /// Whether we should refresh the wallet after it's unlocked
     pending_refresh_after_unlock: bool,
+    /// Current page for single key wallet UTXO pagination (0-indexed)
+    utxo_page: usize,
 }
 
 // Define a struct to hold the address data
@@ -250,6 +252,7 @@ impl WalletsBalancesScreen {
             selected_account: None,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
+            utxo_page: 0,
         }
     }
 
@@ -486,6 +489,7 @@ impl WalletsBalancesScreen {
                                         WalletItem::SingleKey(w) => {
                                             self.selected_single_key_wallet = Some(w.clone());
                                             self.selected_wallet = None;
+                                            self.utxo_page = 0; // Reset pagination
                                             // Persist selection to AppContext
                                             if let Ok(hash) = w.read().map(|g| g.key_hash)
                                                 && let Ok(mut guard) =
@@ -2661,6 +2665,7 @@ impl WalletsBalancesScreen {
             } else {
                 Some(memo.to_string())
             },
+            override_fee: None,
         };
 
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
@@ -2929,10 +2934,50 @@ impl WalletsBalancesScreen {
                     if utxos.is_empty() {
                         ui.label("No UTXOs available. Click 'Refresh' to load UTXOs from Core.");
                     } else {
+                        const UTXOS_PER_PAGE: usize = 50;
+                        let total_pages = (utxo_count + UTXOS_PER_PAGE - 1) / UTXOS_PER_PAGE;
+
+                        // Ensure current page is valid
+                        if self.utxo_page >= total_pages {
+                            self.utxo_page = total_pages.saturating_sub(1);
+                        }
+
+                        let start_idx = self.utxo_page * UTXOS_PER_PAGE;
+                        let utxos_page: Vec<_> = utxos.iter().skip(start_idx).take(UTXOS_PER_PAGE).collect();
+
+                        // Pagination controls
+                        if total_pages > 1 {
+                            ui.horizontal(|ui| {
+                                if ui.add_enabled(self.utxo_page > 0, egui::Button::new("<< First")).clicked() {
+                                    self.utxo_page = 0;
+                                }
+                                if ui.add_enabled(self.utxo_page > 0, egui::Button::new("< Prev")).clicked() {
+                                    self.utxo_page = self.utxo_page.saturating_sub(1);
+                                }
+
+                                ui.label(format!(
+                                    "Page {} of {} ({}-{} of {})",
+                                    self.utxo_page + 1,
+                                    total_pages,
+                                    start_idx + 1,
+                                    (start_idx + utxos_page.len()).min(utxo_count),
+                                    utxo_count
+                                ));
+
+                                if ui.add_enabled(self.utxo_page < total_pages - 1, egui::Button::new("Next >")).clicked() {
+                                    self.utxo_page += 1;
+                                }
+                                if ui.add_enabled(self.utxo_page < total_pages - 1, egui::Button::new("Last >>")).clicked() {
+                                    self.utxo_page = total_pages - 1;
+                                }
+                            });
+                            ui.add_space(10.0);
+                        }
+
                         egui::ScrollArea::vertical()
                             .max_height(300.0)
                             .show(ui, |ui| {
-                                for (outpoint, tx_out) in &utxos {
+                                for (outpoint, tx_out) in utxos_page {
                                     Frame::group(ui.style())
                                         .fill(DashColors::surface(dark_mode).gamma_multiply(0.9))
                                         .inner_margin(Margin::symmetric(10, 8))

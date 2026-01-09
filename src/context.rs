@@ -1084,7 +1084,12 @@ impl AppContext {
                         let new_balance = match credit_op {
                             BlockAwareCreditOperation::SetCredits(credits) => credits,
                             BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
-                                let total_to_add: u64 = operations.values().sum();
+                                // Only apply credits from blocks AFTER the checkpoint
+                                let total_to_add: u64 = operations
+                                    .iter()
+                                    .filter(|(height, _)| **height > checkpoint_height)
+                                    .map(|(_, credits)| *credits)
+                                    .sum();
                                 current_balance.saturating_add(total_to_add)
                             }
                         };

@@ -1001,7 +1001,7 @@ impl AppContext {
         checkpoint_height: u64,
     ) {
         use dash_sdk::dpp::address_funds::PlatformAddress;
-        use dash_sdk::dpp::balances::credits::CreditOperation;
+        use dash_sdk::dpp::balances::credits::{BlockAwareCreditOperation, CreditOperation};
         use dash_sdk::platform::{
             Fetch, RecentAddressBalanceChangesQuery, RecentCompactedAddressBalanceChangesQuery,
         };
@@ -1054,9 +1054,10 @@ impl AppContext {
                             .unwrap_or(0);
 
                         let new_balance = match credit_op {
-                            CreditOperation::SetCredits(credits) => credits,
-                            CreditOperation::AddToCredits(credits) => {
-                                current_balance.saturating_add(credits)
+                            BlockAwareCreditOperation::SetCredits(credits) => credits,
+                            BlockAwareCreditOperation::AddToCreditsOperations(ops) => {
+                                let total_add: u64 = ops.values().sum();
+                                current_balance.saturating_add(total_add)
                             }
                         };
 

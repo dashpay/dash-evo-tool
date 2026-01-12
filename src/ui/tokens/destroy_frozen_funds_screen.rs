@@ -348,7 +348,9 @@ impl ScreenLike for DestroyFrozenFundsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::DestroyedFrozenFunds(fee_result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::DestroyedFrozenFunds(fee_result) =
+            backend_task_success_result
+        {
             self.completed_fee_result = Some(fee_result);
             self.status = DestroyFrozenFundsStatus::Complete;
         }

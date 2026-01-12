@@ -682,15 +682,16 @@ impl AppContext {
         for wallet in wallets.values() {
             let wallet_guard = wallet.read().ok()?;
 
-            if let Some(new_info) = wallet_guard.get_platform_address_info(&generic_address) {
-                let recent_nonce = recent_info.as_ref().map(|info| info.nonce);
-                if recent_nonce.is_none_or(|previous| new_info.nonce > previous) {
-                    recent_info = Some(AddressInfo {
-                        address: *platform_address,
-                        balance: new_info.balance,
-                        nonce: new_info.nonce,
-                    });
-                }
+            if let Some(new_info) = wallet_guard.get_platform_address_info(&generic_address)
+                && recent_info
+                    .as_ref()
+                    .is_none_or(|recent| new_info.nonce > recent.nonce)
+            {
+                recent_info = Some(AddressInfo {
+                    address: *platform_address,
+                    balance: new_info.balance,
+                    nonce: new_info.nonce,
+                });
             }
         }
 

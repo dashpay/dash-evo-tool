@@ -79,13 +79,11 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for credit transfer to platform addresses
     pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
-        self.min_fees
-            .credit_transfer_to_addresses
-            .saturating_add(
-                self.min_fees
-                    .address_funds_transfer_output_cost
-                    .saturating_mul(output_count as u64),
-            )
+        self.min_fees.credit_transfer_to_addresses.saturating_add(
+            self.min_fees
+                .address_funds_transfer_output_cost
+                .saturating_mul(output_count as u64),
+        )
     }
 
     /// Estimate fee for credit withdrawal to core chain
@@ -105,13 +103,11 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for identity creation
     pub fn estimate_identity_create(&self, key_count: usize) -> u64 {
-        self.min_fees
-            .identity_create_base_cost
-            .saturating_add(
-                self.min_fees
-                    .identity_key_in_creation_cost
-                    .saturating_mul(key_count as u64),
-            )
+        self.min_fees.identity_create_base_cost.saturating_add(
+            self.min_fees
+                .identity_key_in_creation_cost
+                .saturating_mul(key_count as u64),
+        )
     }
 
     /// Estimate fee for identity creation from addresses (asset lock)

@@ -42,7 +42,9 @@ impl AppContext {
             .map_err(|e| format!("Transfer error: {}", e))?;
 
         // Calculate and log actual fee paid
-        let actual_fee = balance_before.saturating_sub(sender_balance).saturating_sub(credits);
+        let actual_fee = balance_before
+            .saturating_sub(sender_balance)
+            .saturating_sub(credits);
         tracing::info!(
             "Credit transfer complete: sent {} credits, estimated fee {} credits, actual fee {} credits",
             credits,

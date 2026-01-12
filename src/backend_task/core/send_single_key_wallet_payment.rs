@@ -63,9 +63,11 @@ impl AppContext {
             // Start with an estimate assuming ~10 inputs, then refine
             let num_outputs = outputs.len() + 1; // +1 for change
             let initial_fee_estimate = Self::estimate_p2pkh_tx_size(10, num_outputs);
-            let initial_fee = request
-                .override_fee
-                .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(initial_fee_estimate));
+            let initial_fee = request.override_fee.unwrap_or_else(|| {
+                FeeLevel::Normal
+                    .fee_rate()
+                    .calculate_fee(initial_fee_estimate)
+            });
 
             let target_amount = total_output + initial_fee;
 
@@ -118,7 +120,8 @@ impl AppContext {
 
         // Calculate final fee with selected UTXOs
         let num_outputs_with_change = outputs.len() + 1;
-        let estimated_size = Self::estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
+        let estimated_size =
+            Self::estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
         let fee = request
             .override_fee
             .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(estimated_size));

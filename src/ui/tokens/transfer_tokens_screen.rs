@@ -22,12 +22,12 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use eframe::egui::{Frame, Margin};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
+use eframe::egui::{Frame, Margin};
 use egui::{Color32, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -268,7 +268,8 @@ impl ScreenLike for TransferTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
+        {
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
         }

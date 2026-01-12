@@ -505,7 +505,9 @@ impl ScreenLike for TransferScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredCredits(fee_result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::TransferredCredits(fee_result) =
+            backend_task_success_result
+        {
             self.completed_fee_result = Some(fee_result);
             self.transfer_credits_status = TransferCreditsStatus::Complete;
         }

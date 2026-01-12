@@ -132,11 +132,9 @@ impl AddNewWalletScreen {
         let entropy_bytes = self.selected_word_count.entropy_bytes();
 
         // Use only the required number of bytes for the selected word count
-        let mnemonic = Mnemonic::from_entropy_in(
-            self.selected_language,
-            &full_entropy[..entropy_bytes],
-        )
-        .expect("Failed to generate mnemonic");
+        let mnemonic =
+            Mnemonic::from_entropy_in(self.selected_language, &full_entropy[..entropy_bytes])
+                .expect("Failed to generate mnemonic");
         self.seed_phrase = Some(mnemonic);
     }
 
@@ -595,35 +593,35 @@ impl AddNewWalletScreen {
 
                 ui.vertical(|ui| {
                     ComboBox::from_id_salt("word_count_selector")
-                    .selected_text(format!("{} words", self.selected_word_count.count()))
-                    .width(100.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.selected_word_count,
-                            WordCount::Words12,
-                            "12 words",
-                        );
-                        ui.selectable_value(
-                            &mut self.selected_word_count,
-                            WordCount::Words15,
-                            "15 words",
-                        );
-                        ui.selectable_value(
-                            &mut self.selected_word_count,
-                            WordCount::Words18,
-                            "18 words",
-                        );
-                        ui.selectable_value(
-                            &mut self.selected_word_count,
-                            WordCount::Words21,
-                            "21 words",
-                        );
-                        ui.selectable_value(
-                            &mut self.selected_word_count,
-                            WordCount::Words24,
-                            "24 words",
-                        );
-                    });
+                        .selected_text(format!("{} words", self.selected_word_count.count()))
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.selected_word_count,
+                                WordCount::Words12,
+                                "12 words",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_word_count,
+                                WordCount::Words15,
+                                "15 words",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_word_count,
+                                WordCount::Words18,
+                                "18 words",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_word_count,
+                                WordCount::Words21,
+                                "21 words",
+                            );
+                            ui.selectable_value(
+                                &mut self.selected_word_count,
+                                WordCount::Words24,
+                                "24 words",
+                            );
+                        });
                 });
 
                 ui.add_space(10.0);

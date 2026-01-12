@@ -614,8 +614,8 @@ impl AppContext {
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         key_id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
         use crate::model::fee_estimation::PlatformFeeEstimator;
+        use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
         // Get the identity
         let identity = qualified_identity.identity.clone();
@@ -630,7 +630,13 @@ impl AppContext {
 
         // Execute the transfer - qualified_identity is consumed here as the signer
         let (address_infos, new_balance) = identity
-            .transfer_credits_to_addresses(sdk, outputs.clone(), signing_key, &qualified_identity, None)
+            .transfer_credits_to_addresses(
+                sdk,
+                outputs.clone(),
+                signing_key,
+                &qualified_identity,
+                None,
+            )
             .await
             .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
 
@@ -655,7 +661,9 @@ impl AppContext {
 
         // Calculate actual fee
         let total_outputs: Credits = outputs.values().sum();
-        let actual_fee = balance_before.saturating_sub(new_balance).saturating_sub(total_outputs);
+        let actual_fee = balance_before
+            .saturating_sub(new_balance)
+            .saturating_sub(total_outputs);
 
         tracing::info!(
             "Credit transfer to addresses complete: estimated fee {} credits, actual fee {} credits",

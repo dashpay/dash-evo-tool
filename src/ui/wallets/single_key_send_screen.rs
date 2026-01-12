@@ -456,9 +456,13 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                         ui.label(
-                            RichText::new(format!("{} ({:.8} DASH)", estimated_fee, estimated_fee as f64 * 1e-8))
-                                .color(DashColors::text_primary(dark_mode))
-                                .size(14.0),
+                            RichText::new(format!(
+                                "{} ({:.8} DASH)",
+                                estimated_fee,
+                                estimated_fee as f64 * 1e-8
+                            ))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
                         );
                     });
 
@@ -478,9 +482,11 @@ impl SingleKeyWalletSendScreen {
                     if utxo_count > 100 {
                         ui.add_space(5.0);
                         ui.label(
-                            RichText::new("Note: Large number of inputs may require higher network fee")
-                                .color(DashColors::WARNING)
-                                .size(12.0),
+                            RichText::new(
+                                "Note: Large number of inputs may require higher network fee",
+                            )
+                            .color(DashColors::WARNING)
+                            .size(12.0),
                         );
                     }
                 }
@@ -508,10 +514,7 @@ impl SingleKeyWalletSendScreen {
                     ui.add_space(5.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.recipients[0].address)
-                            .hint_text(
-                                RichText::new("Enter Dash address")
-                                    .color(Color32::GRAY),
-                            )
+                            .hint_text(RichText::new("Enter Dash address").color(Color32::GRAY))
                             .desired_width(500.0),
                     );
                 });
@@ -617,7 +620,10 @@ impl SingleKeyWalletSendScreen {
                             );
                         });
 
-                        let fee_diff = self.fee_dialog.required_fee.saturating_sub(self.fee_dialog.estimated_fee);
+                        let fee_diff = self
+                            .fee_dialog
+                            .required_fee
+                            .saturating_sub(self.fee_dialog.estimated_fee);
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Additional cost:")

@@ -25,7 +25,6 @@ use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::balances::credits::BlockAwareCreditOperation;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
@@ -929,15 +928,16 @@ impl AppContext {
         );
 
         // Log the found balances from provider
-        for (addr, balance) in provider.found_balances() {
+        for (addr, funds) in provider.found_balances() {
             use dash_sdk::dpp::address_funds::PlatformAddress;
             let platform_addr_str = PlatformAddress::try_from(addr.clone())
                 .map(|p| p.to_bech32m_string(self.network))
                 .unwrap_or_else(|_| addr.to_string());
             tracing::info!(
-                "Sync found address: {} with balance: {}",
+                "Sync found address: {} with balance: {} nonce: {}",
                 platform_addr_str,
-                balance
+                funds.balance,
+                funds.nonce
             );
         }
 
@@ -958,7 +958,7 @@ impl AppContext {
             provider.apply_results_to_wallet(&mut wallet);
 
             // Persist addresses and balances to database
-            for (index, (address, balance)) in provider.found_balances_with_indices() {
+            for (index, (address, funds)) in provider.found_balances_with_indices() {
                 // Persist the address to wallet_addresses table if not already there
                 let derivation_path = DerivationPath::platform_payment_path(
                     self.network,
@@ -987,8 +987,8 @@ impl AppContext {
                 if let Err(e) = self.db.set_platform_address_info(
                     &seed_hash,
                     address,
-                    *balance,
-                    nonce,
+                    funds.balance,
+                    funds.nonce.max(nonce),
                     &self.network,
                 ) {
                     tracing::warn!("Failed to persist Platform address info: {}", e);
@@ -998,15 +998,8 @@ impl AppContext {
             // Return balances for result (nonce preserved from existing info or 0)
             provider
                 .found_balances()
-                .iter()
-                .map(|(addr, bal)| {
-                    let nonce = wallet
-                        .platform_address_info
-                        .get(addr)
-                        .map(|info| info.nonce)
-                        .unwrap_or(0);
-                    (addr.to_string(), (*bal, nonce))
-                })
+                .into_iter()
+                .map(|(addr, funds)| (addr.clone(), (funds.balance, funds.nonce)))
                 .collect()
         };
 
@@ -1084,7 +1077,7 @@ impl AppContext {
                         let current_balance = provider
                             .found_balances()
                             .get(&core_addr)
-                            .copied()
+                            .map(|funds| funds.balance)
                             .unwrap_or(0);
 
                         let new_balance = match credit_op {
@@ -1129,7 +1122,7 @@ impl AppContext {
                         let current_balance = provider
                             .found_balances()
                             .get(&core_addr)
-                            .copied()
+                            .map(|funds| funds.balance)
                             .unwrap_or(0);
 
                         let new_balance = match credit_op {

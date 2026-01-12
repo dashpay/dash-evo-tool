@@ -12,7 +12,7 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::platform::address_sync::{AddressIndex, AddressKey, AddressProvider};
+use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressKey, AddressProvider};
 
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -454,6 +454,16 @@ impl Drop for WalletSeed {
 }
 
 impl Wallet {
+    /// Convert a Platform address to a canonical Core address representation for map keys.
+    ///
+    /// This ensures we always use the same `dashcore::Address` instance for a given Platform
+    /// address, avoiding duplicate map entries caused by different internal representations.
+    pub(crate) fn canonical_address(address: &Address, network: Network) -> Address {
+        PlatformAddress::try_from(address.clone())
+            .map(|pa| pa.to_address_with_network(network))
+            .unwrap_or_else(|_| address.clone())
+    }
+
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
     }
@@ -1250,13 +1260,15 @@ impl Wallet {
         path_reference: DerivationPathReference,
         app_context: &AppContext,
     ) -> Result<(), String> {
+        let canonical_address = Wallet::canonical_address(&address, app_context.network);
+
         // Store the address in known_addresses and watched_addresses
         // Note: We don't import to Core wallet since Platform addresses are not valid there
         app_context
             .db
             .add_address_if_not_exists(
                 &self.seed_hash(),
-                &address,
+                &canonical_address,
                 &app_context.network,
                 derivation_path,
                 path_reference,
@@ -1266,11 +1278,11 @@ impl Wallet {
             .map_err(|e| e.to_string())?;
 
         self.known_addresses
-            .insert(address.clone(), derivation_path.clone());
+            .insert(canonical_address.clone(), derivation_path.clone());
         self.watched_addresses.insert(
             derivation_path.clone(),
             AddressInfo {
-                address: address.clone(),
+                address: canonical_address.clone(),
                 path_type,
                 path_reference,
             },
@@ -1839,10 +1851,10 @@ impl Wallet {
         if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
             let canonical_bytes = platform_addr.to_bytes();
             for (existing_addr, info) in &self.platform_address_info {
-                if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone()) {
-                    if existing_platform.to_bytes() == canonical_bytes {
-                        return Some(info);
-                    }
+                if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone())
+                    && existing_platform.to_bytes() == canonical_bytes
+                {
+                    return Some(info);
                 }
             }
         }
@@ -2042,7 +2054,7 @@ pub struct WalletAddressProvider {
     /// Highest index found with a non-zero balance
     highest_found: Option<AddressIndex>,
     /// Results: address -> balance for addresses found with balance
-    found_balances: BTreeMap<Address, u64>,
+    found_balances: BTreeMap<Address, AddressFunds>,
 }
 
 impl WalletAddressProvider {
@@ -2094,7 +2106,7 @@ impl WalletAddressProvider {
     /// Get the found balances after sync is complete.
     ///
     /// Returns a map of Core Address -> balance (in credits).
-    pub fn found_balances(&self) -> &BTreeMap<Address, u64> {
+    pub fn found_balances(&self) -> &BTreeMap<Address, AddressFunds> {
         &self.found_balances
     }
 
@@ -2102,7 +2114,9 @@ impl WalletAddressProvider {
     ///
     /// Returns an iterator of (index, (&Address, &balance)) for addresses that were found with balance.
     /// The index can be used to reconstruct the derivation path.
-    pub fn found_balances_with_indices(&self) -> impl Iterator<Item = (AddressIndex, (&Address, &u64))> {
+    pub fn found_balances_with_indices(
+        &self,
+    ) -> impl Iterator<Item = (AddressIndex, (&Address, &AddressFunds))> {
         // Build a reverse lookup from address to index
         let address_to_index: BTreeMap<&Address, AddressIndex> = self
             .pending
@@ -2110,16 +2124,29 @@ impl WalletAddressProvider {
             .map(|(idx, (_, addr))| (addr, *idx))
             .collect();
 
-        self.found_balances.iter().filter_map(move |(addr, balance)| {
-            address_to_index.get(addr).map(|&idx| (idx, (addr, balance)))
-        })
+        self.found_balances
+            .iter()
+            .filter_map(move |(addr, balance)| {
+                address_to_index
+                    .get(addr)
+                    .map(|&idx| (idx, (addr, balance)))
+            })
     }
 
     /// Update a balance for an address (used for terminal balance updates).
     ///
     /// This allows applying balance changes discovered after the initial sync.
     pub fn update_balance(&mut self, address: &Address, balance: u64) {
-        self.found_balances.insert(address.clone(), balance);
+        let canonical_address = Wallet::canonical_address(address, self.network);
+
+        let nonce = self
+            .found_balances
+            .get(&canonical_address)
+            .map(|funds| funds.nonce)
+            .unwrap_or(0);
+
+        self.found_balances
+            .insert(canonical_address, AddressFunds { nonce, balance });
     }
 
     /// Apply the sync results to a wallet, updating Platform address info.
@@ -2127,48 +2154,43 @@ impl WalletAddressProvider {
     /// This updates the wallet's `platform_address_info` with the balances found during sync.
     /// Also ensures addresses are registered in `known_addresses` and `watched_addresses`
     /// so they appear in the UI.
-    /// Note: This does not update nonces - those should be fetched separately if needed.
+    /// Nonces are taken directly from the SDK sync results.
     pub fn apply_results_to_wallet(&self, wallet: &mut Wallet) {
         // Build a reverse lookup from address to index
-        let address_to_index: BTreeMap<&Address, AddressIndex> = self
+        let address_to_index: BTreeMap<Address, AddressIndex> = self
             .pending
             .iter()
-            .map(|(idx, (_, addr))| (addr, *idx))
+            .map(|(idx, (_, addr))| (Wallet::canonical_address(addr, self.network), *idx))
             .collect();
 
-        for (address, balance) in &self.found_balances {
-            // Get existing nonce or default to 0
-            let nonce = wallet
-                .platform_address_info
-                .get(address)
-                .map(|info| info.nonce)
-                .unwrap_or(0);
+        for (address, funds) in &self.found_balances {
+            let canonical_address = Wallet::canonical_address(address, self.network);
 
-            wallet.set_platform_address_info(address.clone(), *balance, nonce);
+            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
 
             // Also register in known_addresses and watched_addresses if not already present
-            if !wallet.known_addresses.contains_key(address) {
-                if let Some(&index) = address_to_index.get(address) {
-                    let derivation_path = DerivationPath::platform_payment_path(
-                        self.network,
-                        self.account,
-                        self.key_class,
-                        index,
-                    );
+            if !wallet.known_addresses.contains_key(&canonical_address)
+                && let Some(&index) = address_to_index.get(&canonical_address)
+            {
+                let derivation_path = DerivationPath::platform_payment_path(
+                    self.network,
+                    self.account,
+                    self.key_class,
+                    index,
+                );
 
-                    wallet
-                        .known_addresses
-                        .insert(address.clone(), derivation_path.clone());
+                wallet
+                    .known_addresses
+                    .insert(canonical_address.clone(), derivation_path.clone());
 
-                    wallet.watched_addresses.insert(
-                        derivation_path,
-                        AddressInfo {
-                            address: address.clone(),
-                            path_type: DerivationPathType::CLEAR_FUNDS,
-                            path_reference: DerivationPathReference::PlatformPayment,
-                        },
-                    );
-                }
+                wallet.watched_addresses.insert(
+                    derivation_path,
+                    AddressInfo {
+                        address: canonical_address.clone(),
+                        path_type: DerivationPathType::CLEAR_FUNDS,
+                        path_reference: DerivationPathReference::PlatformPayment,
+                    },
+                );
             }
         }
     }
@@ -2239,7 +2261,7 @@ impl AddressProvider for WalletAddressProvider {
             .collect()
     }
 
-    fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], balance: u64) {
+    fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], funds: AddressFunds) {
         self.resolved.insert(index);
 
         // Log what the SDK is returning
@@ -2249,28 +2271,29 @@ impl AddressProvider for WalletAddressProvider {
                 .map(|p| p.to_bech32m_string(self.network))
                 .unwrap_or_else(|_| "conversion failed".to_string());
             tracing::info!(
-                "on_address_found: index={}, core_address={}, platform_address={}, balance={}",
+                "on_address_found: index={}, core_address={}, platform_address={}, balance={}, nonce={}",
                 index,
                 core_address,
                 platform_addr_str,
-                balance
+                funds.balance,
+                funds.nonce
             );
         } else {
             tracing::warn!(
                 "on_address_found: index={} not in pending! balance={}",
                 index,
-                balance
+                funds.balance
             );
         }
 
-        if balance > 0 {
+        if let Some((_, core_address)) = self.pending.get(&index) {
+            let canonical_address = Wallet::canonical_address(core_address, self.network);
+            self.found_balances.insert(canonical_address, funds);
+        }
+
+        if funds.balance > 0 {
             // Update highest found
             self.highest_found = Some(self.highest_found.map(|h| h.max(index)).unwrap_or(index));
-
-            // Store the balance result
-            if let Some((_, core_address)) = self.pending.get(&index) {
-                self.found_balances.insert(core_address.clone(), balance);
-            }
 
             // Extend the address range based on gap limit
             if let Err(e) = self.extend_for_gap_limit(index) {

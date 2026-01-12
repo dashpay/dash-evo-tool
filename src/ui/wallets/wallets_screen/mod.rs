@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::amount::Amount;
 use crate::model::wallet::{
     DerivationPathHelpers, DerivationPathReference, Wallet, WalletSeedHash, WalletTransaction,
 };
@@ -1110,7 +1110,7 @@ impl WalletsBalancesScreen {
     }
 
     fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
-        let mut app_action = AppAction::None;
+        let app_action = AppAction::None;
         let mut open_fund_dialog_for_idx: Option<(usize, Vec<(String, u64)>)> = None;
 
         if let Some(arc_wallet) = &self.selected_wallet {
@@ -1484,16 +1484,16 @@ impl WalletsBalancesScreen {
             });
 
         // Show description of the selected account below the dropdown
-        if let Some(summary) = selected_summary {
-            if let Some(description) = summary.category.description() {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(description)
-                        .color(DashColors::text_secondary(dark_mode))
-                        .italics()
-                        .size(12.0),
-                );
-            }
+        if let Some(summary) = selected_summary
+            && let Some(description) = summary.category.description()
+        {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(description)
+                    .color(DashColors::text_secondary(dark_mode))
+                    .italics()
+                    .size(12.0),
+            );
         }
     }
 
@@ -1985,8 +1985,7 @@ impl WalletsBalancesScreen {
                                     self.receive_dialog.status = Some(status);
                                 }
 
-                                if generate_new {
-                                    if let Some(wallet) = &self.selected_wallet {
+                                if generate_new && let Some(wallet) = &self.selected_wallet {
                                         match self.generate_new_core_receive_address(wallet) {
                                             Ok((new_addr, new_balance)) => {
                                                 self.receive_dialog.core_addresses.push((new_addr, new_balance));
@@ -2001,7 +2000,6 @@ impl WalletsBalancesScreen {
                                             }
                                         }
                                     }
-                                }
                             }
 
                             ui.add_space(10.0);
@@ -2935,7 +2933,7 @@ impl WalletsBalancesScreen {
                         ui.label("No UTXOs available. Click 'Refresh' to load UTXOs from Core.");
                     } else {
                         const UTXOS_PER_PAGE: usize = 50;
-                        let total_pages = (utxo_count + UTXOS_PER_PAGE - 1) / UTXOS_PER_PAGE;
+                        let total_pages = utxo_count.div_ceil(UTXOS_PER_PAGE);
 
                         // Ensure current page is valid
                         if self.utxo_page >= total_pages {
@@ -2943,15 +2941,22 @@ impl WalletsBalancesScreen {
                         }
 
                         let start_idx = self.utxo_page * UTXOS_PER_PAGE;
-                        let utxos_page: Vec<_> = utxos.iter().skip(start_idx).take(UTXOS_PER_PAGE).collect();
+                        let utxos_page: Vec<_> =
+                            utxos.iter().skip(start_idx).take(UTXOS_PER_PAGE).collect();
 
                         // Pagination controls
                         if total_pages > 1 {
                             ui.horizontal(|ui| {
-                                if ui.add_enabled(self.utxo_page > 0, egui::Button::new("<< First")).clicked() {
+                                if ui
+                                    .add_enabled(self.utxo_page > 0, egui::Button::new("<< First"))
+                                    .clicked()
+                                {
                                     self.utxo_page = 0;
                                 }
-                                if ui.add_enabled(self.utxo_page > 0, egui::Button::new("< Prev")).clicked() {
+                                if ui
+                                    .add_enabled(self.utxo_page > 0, egui::Button::new("< Prev"))
+                                    .clicked()
+                                {
                                     self.utxo_page = self.utxo_page.saturating_sub(1);
                                 }
 
@@ -2964,10 +2969,22 @@ impl WalletsBalancesScreen {
                                     utxo_count
                                 ));
 
-                                if ui.add_enabled(self.utxo_page < total_pages - 1, egui::Button::new("Next >")).clicked() {
+                                if ui
+                                    .add_enabled(
+                                        self.utxo_page < total_pages - 1,
+                                        egui::Button::new("Next >"),
+                                    )
+                                    .clicked()
+                                {
                                     self.utxo_page += 1;
                                 }
-                                if ui.add_enabled(self.utxo_page < total_pages - 1, egui::Button::new("Last >>")).clicked() {
+                                if ui
+                                    .add_enabled(
+                                        self.utxo_page < total_pages - 1,
+                                        egui::Button::new("Last >>"),
+                                    )
+                                    .clicked()
+                                {
                                     self.utxo_page = total_pages - 1;
                                 }
                             });
@@ -3234,18 +3251,18 @@ impl ScreenLike for WalletsBalancesScreen {
             match result {
                 WalletUnlockResult::Unlocked => {
                     // Check if we were trying to view a private key
-                    if let Some(path) = self.private_key_dialog.pending_derivation_path.take() {
-                        if let Some(address) = self.private_key_dialog.pending_address.take() {
-                            match self.derive_private_key_wif(&path) {
-                                Ok(key) => {
-                                    self.private_key_dialog.is_open = true;
-                                    self.private_key_dialog.address = address;
-                                    self.private_key_dialog.private_key_wif = key;
-                                    self.private_key_dialog.show_key = false;
-                                }
-                                Err(err) => {
-                                    self.display_message(&err, MessageType::Error);
-                                }
+                    if let Some(path) = self.private_key_dialog.pending_derivation_path.take()
+                        && let Some(address) = self.private_key_dialog.pending_address.take()
+                    {
+                        match self.derive_private_key_wif(&path) {
+                            Ok(key) => {
+                                self.private_key_dialog.is_open = true;
+                                self.private_key_dialog.address = address;
+                                self.private_key_dialog.private_key_wif = key;
+                                self.private_key_dialog.show_key = false;
+                            }
+                            Err(err) => {
+                                self.display_message(&err, MessageType::Error);
                             }
                         }
                     }
@@ -3411,10 +3428,7 @@ impl ScreenLike for WalletsBalancesScreen {
         if let AppAction::Custom(ref cmd) = action {
             if cmd == "RefreshHDWallet" {
                 if let Some(wallet_arc) = &self.selected_wallet {
-                    let is_locked = wallet_arc
-                        .read()
-                        .map(|w| !w.is_open())
-                        .unwrap_or(true);
+                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
                         // Wallet is locked - open unlock popup
                         self.pending_refresh_after_unlock = true;
@@ -3428,24 +3442,21 @@ impl ScreenLike for WalletsBalancesScreen {
                         ));
                     }
                 }
-            } else if cmd == "RefreshSKWallet" {
-                if let Some(wallet_arc) = &self.selected_single_key_wallet {
-                    let is_locked = wallet_arc
-                        .read()
-                        .map(|w| !w.is_open())
-                        .unwrap_or(true);
-                    if is_locked {
-                        // SK wallet is locked - open unlock dialog
-                        self.pending_refresh_after_unlock = true;
-                        self.show_sk_unlock_dialog = true;
-                        action = AppAction::None;
-                    } else {
-                        // SK wallet is unlocked - proceed with refresh
-                        self.refreshing = true;
-                        action = AppAction::BackendTask(BackendTask::CoreTask(
-                            CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
-                        ));
-                    }
+            } else if cmd == "RefreshSKWallet"
+                && let Some(wallet_arc) = &self.selected_single_key_wallet
+            {
+                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                if is_locked {
+                    // SK wallet is locked - open unlock dialog
+                    self.pending_refresh_after_unlock = true;
+                    self.show_sk_unlock_dialog = true;
+                    action = AppAction::None;
+                } else {
+                    // SK wallet is unlocked - proceed with refresh
+                    self.refreshing = true;
+                    action = AppAction::BackendTask(BackendTask::CoreTask(
+                        CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
+                    ));
                 }
             }
         }
@@ -3556,12 +3567,12 @@ impl ScreenLike for WalletsBalancesScreen {
                     && wallet.seed_hash() == seed_hash
                 {
                     // Update balances in the wallet
-                    for (addr_str, (balance, nonce)) in balances {
+                    for (balance_address, (balance, nonce)) in balances {
                         // Find the address that matches the string
                         if let Some((addr, _)) = wallet
                             .platform_address_info
                             .iter()
-                            .find(|(a, _)| a.to_string() == addr_str)
+                            .find(|(a, _)| **a == balance_address)
                         {
                             let addr = addr.clone();
                             wallet.set_platform_address_info(addr, balance, nonce);

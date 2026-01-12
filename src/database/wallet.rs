@@ -923,7 +923,13 @@ impl Database {
         for row in rows {
             let (address_str, balance, nonce) = row?;
             if let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str) {
-                let address_checked = address.assume_checked();
+                let address_checked = address.require_network(*network).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
                 let canonical_address = Wallet::canonical_address(&address_checked, *network);
                 results.push((canonical_address, balance, nonce));
             }

@@ -344,19 +344,27 @@ impl CoreZMQListener {
                                             let mut cursor = Cursor::new(data_bytes);
                                             match Block::consensus_decode(&mut cursor) {
                                                 Ok(block) => {
-                                                    if let Some(ref tx) = tx_zmq_status {
-                                                        // ZMQ refresh socket connected status
-                                                        tx.send(ZMQConnectionEvent::Connected)
-                                                            .expect("Failed to send connected event");
-                                                    }
-                                                    if let Err(e) = sender.send((
-                                                        ZMQMessage::ChainLockedBlock(block),
-                                                        network,
-                                                    )) {
-                                                        eprintln!(
-                                                            "Error sending data to main thread: {}",
-                                                            e
-                                                        );
+                                                    match ChainLock::consensus_decode(&mut cursor) {
+                                                        Ok(chain_lock) => {
+                                                            // Send the ChainLock and Network back to the main thread
+                                                            if let Err(e) = sender.send((
+                                                                ZMQMessage::ChainLockedBlock(
+                                                                    block, chain_lock,
+                                                                ),
+                                                                network,
+                                                            )) {
+                                                                eprintln!(
+                                                                    "Error sending data to main thread: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!(
+                                                                "Error deserializing ChainLock: {}",
+                                                                e
+                                                            );
+                                                        }
                                                     }
                                                 }
                                                 Err(e) => {

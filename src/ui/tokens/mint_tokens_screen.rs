@@ -641,6 +641,14 @@ impl ScreenLike for MintTokensScreen {
                     &self.group_action_id,
                 );
 
+                // Display estimated fee before action button
+                let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label("Estimated Fee:");
+                    ui.label(RichText::new(format_credits_as_dash(estimated_fee)).strong());
+                });
+
                 // Mint button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);

@@ -7,7 +7,7 @@ mod success_screen;
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -60,6 +60,8 @@ pub struct TopUpIdentityScreen {
     selected_platform_address: Option<(Address, PlatformAddress, Credits)>,
     platform_top_up_amount: Option<Amount>,
     platform_top_up_amount_input: Option<AmountInput>,
+    /// Fee result from completed top-up
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl TopUpIdentityScreen {
@@ -83,6 +85,7 @@ impl TopUpIdentityScreen {
             selected_platform_address: None,
             platform_top_up_amount: None,
             platform_top_up_amount_input: None,
+            completed_fee_result: None,
         }
     }
 
@@ -416,10 +419,11 @@ impl ScreenLike for TopUpIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity) =
-            &backend_task_success_result
+        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
+            backend_task_success_result
         {
-            self.identity = qualified_identity.clone();
+            self.identity = qualified_identity;
+            self.completed_fee_result = Some(fee_result);
             self.funding_address = None;
             self.funding_utxo = None;
             self.funding_amount.clear();

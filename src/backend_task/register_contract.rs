@@ -7,8 +7,9 @@ use dash_sdk::{
 };
 use tokio::time::sleep;
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{
     app::TaskResult,
     context::AppContext,
@@ -29,6 +30,9 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Estimate fee for contract creation
+        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_create_base();
+
         match data_contract
             .put_to_platform_and_wait_for_response(sdk, signing_key.clone(), &identity, None)
             .await
@@ -46,7 +50,8 @@ impl AppContext {
                         self,
                     )
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::RegisteredContract)
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+                Ok(BackendTaskSuccessResult::RegisteredContract(fee_result))
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {

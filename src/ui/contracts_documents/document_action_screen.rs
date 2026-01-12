@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -14,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering,
-    add_identity_key_chooser_with_doc_type, show_success_screen,
+    add_identity_key_chooser_with_doc_type, show_success_screen_with_info,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -119,6 +121,9 @@ pub struct DocumentActionScreen {
 
     // Delete-specific
     pub fetched_documents: IndexMap<Identifier, Option<Document>>,
+
+    // Fee tracking
+    pub completed_fee_result: Option<FeeResult>,
 }
 
 impl DocumentActionScreen {
@@ -164,6 +169,7 @@ impl DocumentActionScreen {
             identities_map,
             recipient_id_input: String::new(),
             fetched_documents: IndexMap::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -798,6 +804,38 @@ impl DocumentActionScreen {
 
     fn render_broadcast_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        // Fee estimation display
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = match self.action_type {
+            DocumentActionType::Create => fee_estimator.estimate_document_create(),
+            DocumentActionType::Delete => fee_estimator.estimate_document_delete(),
+            DocumentActionType::Replace => fee_estimator.estimate_document_replace(),
+            DocumentActionType::Transfer => fee_estimator.estimate_document_transfer(),
+            DocumentActionType::Purchase => fee_estimator.estimate_document_purchase(),
+            DocumentActionType::SetPrice => fee_estimator.estimate_document_set_price(),
+        };
+
+        ui.add_space(10.0);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated fee:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+            });
 
         ui.add_space(10.0);
         let button_text = match self.action_type {
@@ -1496,11 +1534,23 @@ impl ScreenLike for DocumentActionScreen {
                     AppAction::Custom("Reset".to_string()),
                 );
 
+                // Prepare fee info for display
+                let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+                    let fee_str = format!(
+                        "Estimated: {}  •  Actual: {}",
+                        format_credits_as_dash(fee_result.estimated_fee),
+                        format_credits_as_dash(fee_result.actual_fee)
+                    );
+                    ("Transaction Fee".to_string(), fee_str)
+                });
+                let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+
                 let inner_action =
-                    show_success_screen(ui, success_message, vec![back_button, reset_button]);
+                    show_success_screen_with_info(ui, success_message, vec![back_button, reset_button], fee_ref);
 
                 if inner_action == AppAction::Custom("Reset".to_string()) {
                     self.reset_screen();
+                    self.completed_fee_result = None;
                 }
 
                 inner_action
@@ -1534,12 +1584,15 @@ impl ScreenLike for DocumentActionScreen {
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::BroadcastedDocument(_)
-            | BackendTaskSuccessResult::DeletedDocument(_)
-            | BackendTaskSuccessResult::ReplacedDocument(_)
-            | BackendTaskSuccessResult::TransferredDocument(_)
-            | BackendTaskSuccessResult::PurchasedDocument(_)
-            | BackendTaskSuccessResult::SetDocumentPrice(_) => {
+            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+                self.broadcast_status = BroadcastStatus::Broadcasted;
+            }
+            BackendTaskSuccessResult::DeletedDocument(_, fee_result)
+            | BackendTaskSuccessResult::ReplacedDocument(_, fee_result)
+            | BackendTaskSuccessResult::TransferredDocument(_, fee_result)
+            | BackendTaskSuccessResult::PurchasedDocument(_, fee_result)
+            | BackendTaskSuccessResult::SetDocumentPrice(_, fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Broadcasted;
             }
             BackendTaskSuccessResult::Documents(documents) => {

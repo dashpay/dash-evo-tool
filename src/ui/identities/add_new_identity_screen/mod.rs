@@ -9,7 +9,7 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{
     IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
@@ -97,6 +97,8 @@ pub struct AddNewIdentityScreen {
     platform_funding_amount_input: Option<AmountInput>,
     /// Whether to show advanced options
     show_advanced_options: bool,
+    /// Fee result from completed identity registration
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl AddNewIdentityScreen {
@@ -155,6 +157,7 @@ impl AddNewIdentityScreen {
             platform_funding_amount: None,
             platform_funding_amount_input: None,
             show_advanced_options: false,
+            completed_fee_result: None,
         };
 
         if let Some(wallet) = selected_wallet {
@@ -992,10 +995,11 @@ impl ScreenLike for AddNewIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity) =
-            &backend_task_success_result
+        if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity, fee_result) =
+            backend_task_success_result
         {
             self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
+            self.completed_fee_result = Some(fee_result);
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::Success;
             return;

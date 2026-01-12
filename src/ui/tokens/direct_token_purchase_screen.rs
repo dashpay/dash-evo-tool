@@ -14,7 +14,7 @@ use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::Wallet;
@@ -546,6 +546,14 @@ impl ScreenLike for PurchaseTokenScreen {
 
                 ui.add_space(10.0);
                 ui.separator();
+                ui.add_space(10.0);
+
+                // Display estimated fee before action button
+                let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
+                ui.horizontal(|ui| {
+                    ui.label("Estimated Fee:");
+                    ui.label(RichText::new(format_credits_as_dash(estimated_fee)).strong());
+                });
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no valid amounts are available)

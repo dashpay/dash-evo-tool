@@ -2,7 +2,7 @@ use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -707,6 +707,14 @@ impl UpdateTokenConfigScreen {
                 }
             });
         }
+
+        // Display estimated fee before action button
+        let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label("Estimated Fee:");
+            ui.label(RichText::new(format_credits_as_dash(estimated_fee)).strong());
+        });
 
         let button_text = render_group_action_text(
             ui,

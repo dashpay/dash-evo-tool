@@ -1,4 +1,4 @@
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -456,8 +456,18 @@ impl AppContext {
                 .map_err(|e| e.to_string())?;
         }
 
+        // Calculate actual fee for the FeeResult
+        let actual_fee = if expected_credits_from_topup > 0 {
+            let balance_increase = updated_identity_balance.saturating_sub(balance_before);
+            expected_credits_from_topup.saturating_sub(balance_increase)
+        } else {
+            estimated_fee // Fall back to estimated when we can't calculate actual
+        };
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,
+            fee_result,
         ))
     }
 }

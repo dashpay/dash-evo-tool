@@ -1,8 +1,9 @@
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::{
     app::TaskResult,
     context::AppContext,
     model::{
+        fee_estimation::PlatformFeeEstimator,
         proof_log_item::{ProofLogItem, RequestType},
         qualified_identity::QualifiedIdentity,
     },
@@ -61,6 +62,9 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Estimate fee for contract update
+        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_update();
+
         // Increment the version of the data contract
         data_contract.increment_version();
 
@@ -110,7 +114,8 @@ impl AppContext {
                 self.db
                     .replace_contract(data_contract.id(), &returned_contract, self)
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::UpdatedContract)
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+                Ok(BackendTaskSuccessResult::UpdatedContract(fee_result))
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {

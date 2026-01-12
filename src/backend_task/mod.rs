@@ -114,8 +114,8 @@ pub enum BackendTaskSuccessResult {
     Documents(Documents),
     BroadcastedDocument(Document),
     CoreItem(CoreItem),
-    RegisteredIdentity(QualifiedIdentity),
-    ToppedUpIdentity(QualifiedIdentity),
+    RegisteredIdentity(QualifiedIdentity, FeeResult),
+    ToppedUpIdentity(QualifiedIdentity, FeeResult),
     #[allow(dead_code)] // May be used for reporting successful votes
     SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
@@ -230,17 +230,17 @@ pub enum BackendTaskSuccessResult {
     LoadedIdentity(QualifiedIdentity),
 
     // Document operation results (replacing string messages)
-    DeletedDocument(Identifier),
-    ReplacedDocument(Identifier),
-    TransferredDocument(Identifier),
-    PurchasedDocument(Identifier),
-    SetDocumentPrice(Identifier),
+    DeletedDocument(Identifier, FeeResult),
+    ReplacedDocument(Identifier, FeeResult),
+    TransferredDocument(Identifier, FeeResult),
+    PurchasedDocument(Identifier, FeeResult),
+    SetDocumentPrice(Identifier, FeeResult),
 
     // Contract operation results (replacing string messages)
-    UpdatedContract,
+    UpdatedContract(FeeResult),
     RemovedContract,
     FetchedNonce,
-    RegisteredContract,
+    RegisteredContract(FeeResult),
     RegisteredTokenContract,
     SavedContract,
     ContractNotFound,

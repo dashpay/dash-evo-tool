@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -48,6 +50,7 @@ pub struct RegisterDataContractScreen {
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl RegisterDataContractScreen {
@@ -77,6 +80,7 @@ impl RegisterDataContractScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
+            completed_fee_result: None,
         }
     }
 
@@ -181,8 +185,18 @@ impl RegisterDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // “Register” button
+                // Display estimated fee before action button
+                let estimated_fee =
+                    crate::model::fee_estimation::PlatformFeeEstimator::new().estimate_contract_create_base();
                 ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label("Estimated Fee:");
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee)).strong(),
+                    );
+                });
+                ui.add_space(10.0);
+
                 // Register button
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -248,9 +262,20 @@ impl RegisterDataContractScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let action = crate::ui::helpers::show_success_screen(
+        // Prepare fee info for display
+        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_str = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee".to_string(), fee_str)
+        });
+        let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+
+        let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Successfully registered data contract.".to_string(),
+            "Data Contract Registered Successfully!".to_string(),
             vec![
                 (
                     "Back to Contracts screen".to_string(),
@@ -261,6 +286,7 @@ impl RegisterDataContractScreen {
                     AppAction::Custom("register_another".to_string()),
                 ),
             ],
+            fee_ref,
         );
 
         // Handle the custom action to reset the form
@@ -270,6 +296,7 @@ impl RegisterDataContractScreen {
             self.contract_json_input = String::new();
             self.contract_alias_input = String::new();
             self.broadcast_status = BroadcastStatus::Idle;
+            self.completed_fee_result = None;
             return AppAction::None;
         }
 
@@ -299,7 +326,8 @@ impl ScreenLike for RegisterDataContractScreen {
                         .as_secs(),
                 );
             }
-            BackendTaskSuccessResult::RegisteredContract => {
+            BackendTaskSuccessResult::RegisteredContract(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
             BackendTaskSuccessResult::ProofErrorLogged => {

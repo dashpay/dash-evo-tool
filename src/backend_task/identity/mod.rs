@@ -542,6 +542,10 @@ impl AppContext {
         wallet_seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+
+        // Estimate fee for top-up from platform addresses
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
 
         tracing::info!(
             "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",
@@ -603,7 +607,8 @@ impl AppContext {
         self.update_local_qualified_identity(&updated_identity)
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::ToppedUpIdentity(updated_identity))
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::ToppedUpIdentity(updated_identity, fee_result))
     }
 
     /// Transfer credits from an identity to Platform addresses

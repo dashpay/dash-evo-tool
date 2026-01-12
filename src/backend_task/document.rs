@@ -1,5 +1,6 @@
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
@@ -241,9 +242,11 @@ impl AppContext {
                     })?;
 
                 // Handle the result - DocumentDeleteResult contains the deleted document ID
+                let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
                     DocumentDeleteResult::Deleted(deleted_id) => {
-                        Ok(BackendTaskSuccessResult::DeletedDocument(deleted_id))
+                        Ok(BackendTaskSuccessResult::DeletedDocument(deleted_id, fee_result))
                     }
                 }
             }
@@ -295,9 +298,11 @@ impl AppContext {
                     })?;
 
                 // Handle the result - DocumentReplaceResult contains the replaced document
+                let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
                     DocumentReplaceResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::ReplacedDocument(document.id()))
+                        Ok(BackendTaskSuccessResult::ReplacedDocument(document.id(), fee_result))
                     }
                 }
             }
@@ -367,9 +372,11 @@ impl AppContext {
                     })?;
 
                 // Handle the result - DocumentTransferResult contains the transferred document
+                let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
                     DocumentTransferResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::TransferredDocument(document.id()))
+                        Ok(BackendTaskSuccessResult::TransferredDocument(document.id(), fee_result))
                     }
                 }
             }
@@ -440,9 +447,11 @@ impl AppContext {
                     })?;
 
                 // Handle the result - DocumentPurchaseResult contains the purchased document
+                let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
                     DocumentPurchaseResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::PurchasedDocument(document.id()))
+                        Ok(BackendTaskSuccessResult::PurchasedDocument(document.id(), fee_result))
                     }
                 }
             }
@@ -512,9 +521,11 @@ impl AppContext {
                     })?;
 
                 // Handle the result - DocumentSetPriceResult contains the document with updated price
+                let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
                     DocumentSetPriceResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::SetDocumentPrice(document.id()))
+                        Ok(BackendTaskSuccessResult::SetDocumentPrice(document.id(), fee_result))
                     }
                 }
             }

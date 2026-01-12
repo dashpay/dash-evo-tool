@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -53,6 +55,7 @@ pub struct UpdateDataContractScreen {
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl UpdateDataContractScreen {
@@ -106,6 +109,7 @@ impl UpdateDataContractScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
+            completed_fee_result: None,
         }
     }
 
@@ -208,9 +212,33 @@ impl UpdateDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // “Update” button
+                // Fee estimation display
                 ui.add_space(10.0);
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_contract_update();
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
                 // Update button
+                ui.add_space(10.0);
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
@@ -287,9 +315,20 @@ impl UpdateDataContractScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let action = crate::ui::helpers::show_success_screen(
+        // Prepare fee info for display
+        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_str = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee".to_string(), fee_str)
+        });
+        let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+
+        let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Successfully updated data contract.".to_string(),
+            "Data Contract Updated Successfully!".to_string(),
             vec![
                 (
                     "Back to Contracts screen".to_string(),
@@ -300,6 +339,7 @@ impl UpdateDataContractScreen {
                     AppAction::Custom("update_another".to_string()),
                 ),
             ],
+            fee_ref,
         );
 
         // Handle the custom action to reset the form
@@ -308,6 +348,7 @@ impl UpdateDataContractScreen {
         {
             self.contract_json_input = String::new();
             self.broadcast_status = BroadcastStatus::Idle;
+            self.completed_fee_result = None;
             return AppAction::None;
         }
 
@@ -337,7 +378,8 @@ impl ScreenLike for UpdateDataContractScreen {
                         .as_secs(),
                 );
             }
-            BackendTaskSuccessResult::UpdatedContract => {
+            BackendTaskSuccessResult::UpdatedContract(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
             BackendTaskSuccessResult::ProofErrorLogged => {

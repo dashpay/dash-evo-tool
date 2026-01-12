@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
@@ -188,6 +189,16 @@ impl AddNewIdentityScreen {
 
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
+
+        // Display estimated fee before action button
+        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let input_count = if self.selected_platform_address_for_funding.is_some() { 1 } else { 0 };
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(input_count, false, key_count);
+        ui.horizontal(|ui| {
+            ui.label("Estimated Fee:");
+            ui.label(RichText::new(format_credits_as_dash(estimated_fee)).strong());
+        });
+        ui.add_space(10.0);
 
         // Create Identity button
         let can_create = self.selected_platform_address_for_funding.is_some()

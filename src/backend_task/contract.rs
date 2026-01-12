@@ -187,8 +187,6 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| BackendTaskSuccessResult::RegisteredContract)
-                .map_err(|e| format!("Error registering contract: {}", e))
             }
             ContractTask::UpdateDataContract(mut data_contract, identity, signing_key) => {
                 AppContext::update_data_contract(
@@ -200,8 +198,6 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| BackendTaskSuccessResult::UpdatedContract)
-                .map_err(|e| format!("Error updating contract: {}", e))
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)

@@ -153,6 +153,42 @@ impl PlatformFeeEstimator {
             .saturating_mul(transition_count.max(1) as u64)
     }
 
+    /// Estimate fee for document creation
+    pub fn estimate_document_create(&self) -> u64 {
+        self.min_fees.document_batch_sub_transition
+    }
+
+    /// Estimate fee for document deletion
+    pub fn estimate_document_delete(&self) -> u64 {
+        self.min_fees.document_batch_sub_transition
+    }
+
+    /// Estimate fee for document replacement
+    pub fn estimate_document_replace(&self) -> u64 {
+        self.min_fees.document_batch_sub_transition
+    }
+
+    /// Estimate fee for document transfer
+    pub fn estimate_document_transfer(&self) -> u64 {
+        self.min_fees.document_batch_sub_transition
+    }
+
+    /// Estimate fee for document purchase
+    pub fn estimate_document_purchase(&self) -> u64 {
+        self.min_fees.document_batch_sub_transition
+    }
+
+    /// Estimate fee for document set price
+    pub fn estimate_document_set_price(&self) -> u64 {
+        self.min_fees.document_batch_sub_transition
+    }
+
+    /// Estimate fee for token transition (mint, burn, transfer, freeze, etc.)
+    pub fn estimate_token_transition(&self) -> u64 {
+        // Token transitions use the document batch sub-transition fee
+        self.min_fees.document_batch_sub_transition
+    }
+
     /// Estimate fee for data contract creation (base fee only, excludes registration cost)
     pub fn estimate_contract_create_base(&self) -> u64 {
         self.min_fees.contract_create

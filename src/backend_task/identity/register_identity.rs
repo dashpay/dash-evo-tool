@@ -1,6 +1,7 @@
-use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
@@ -275,6 +276,10 @@ impl AppContext {
 
         let public_keys = keys.to_public_keys_map();
 
+        // Calculate fee estimate for identity creation
+        let key_count = public_keys.len();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create(key_count);
+
         let existing_identity = match Identity::fetch_by_identifier(&sdk, identity_id).await {
             Ok(result) => result,
             Err(e) => return Err(format!("Error fetching identity: {}", e)),
@@ -333,8 +338,10 @@ impl AppContext {
                 .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
                 .map_err(|e| e.to_string())?;
 
+            let fee_result = FeeResult::new(estimated_fee, estimated_fee);
             return Ok(BackendTaskSuccessResult::RegisteredIdentity(
                 qualified_identity,
+                fee_result,
             ));
         }
 
@@ -485,8 +492,10 @@ impl AppContext {
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
             .map_err(|e| e.to_string())?;
 
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
             qualified_identity,
+            fee_result,
         ))
     }
 
@@ -566,6 +575,12 @@ impl AppContext {
 
         let public_keys = keys.to_public_keys_map();
 
+        // Calculate fee estimate for identity creation from platform addresses
+        let key_count = public_keys.len();
+        let input_count = inputs.len();
+        let estimated_fee =
+            PlatformFeeEstimator::new().estimate_identity_create_from_addresses(input_count, false, key_count);
+
         // Clone the wallet for use as the address signer (needed across async boundary)
         let wallet_clone = { wallet.read().map_err(|e| e.to_string())?.clone() };
 
@@ -631,8 +646,10 @@ impl AppContext {
                         .insert(wallet_identity_index, qualified_identity.identity.clone());
                 }
 
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredIdentity(
                     qualified_identity,
+                    fee_result,
                 ))
             }
             Err(e) => {

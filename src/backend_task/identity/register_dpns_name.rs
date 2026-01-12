@@ -6,7 +6,6 @@ use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
     Sdk,
-    platform::Fetch,
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
@@ -17,6 +16,7 @@ use dash_sdk::{
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
     drive::query::{WhereClause, WhereOperator},
+    platform::Fetch,
     platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
 

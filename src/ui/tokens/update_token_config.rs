@@ -2,8 +2,8 @@ use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -940,7 +940,10 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 format_credits_as_dash(fee_result.actual_fee)
             );
             self.backend_message = Some((
-                format!("Successfully updated token config item: {}{}", change_item, fee_info),
+                format!(
+                    "Successfully updated token config item: {}{}",
+                    change_item, fee_info
+                ),
                 MessageType::Success,
                 Utc::now(),
             ));

@@ -2102,7 +2102,9 @@ impl WalletAddressProvider {
     ///
     /// Returns an iterator of (index, (&Address, &balance)) for addresses that were found with balance.
     /// The index can be used to reconstruct the derivation path.
-    pub fn found_balances_with_indices(&self) -> impl Iterator<Item = (AddressIndex, (&Address, &u64))> {
+    pub fn found_balances_with_indices(
+        &self,
+    ) -> impl Iterator<Item = (AddressIndex, (&Address, &u64))> {
         // Build a reverse lookup from address to index
         let address_to_index: BTreeMap<&Address, AddressIndex> = self
             .pending
@@ -2110,9 +2112,13 @@ impl WalletAddressProvider {
             .map(|(idx, (_, addr))| (addr, *idx))
             .collect();
 
-        self.found_balances.iter().filter_map(move |(addr, balance)| {
-            address_to_index.get(addr).map(|&idx| (idx, (addr, balance)))
-        })
+        self.found_balances
+            .iter()
+            .filter_map(move |(addr, balance)| {
+                address_to_index
+                    .get(addr)
+                    .map(|&idx| (idx, (addr, balance)))
+            })
     }
 
     /// Update a balance for an address (used for terminal balance updates).

@@ -61,7 +61,13 @@ impl AppContext {
                 Vec::new()
             } else {
                 client
-                    .list_unspent(None, None, Some(&addresses.iter().collect::<Vec<_>>()), Some(false), None)
+                    .list_unspent(
+                        None,
+                        None,
+                        Some(&addresses.iter().collect::<Vec<_>>()),
+                        Some(false),
+                        None,
+                    )
                     .map_err(|e| format!("Failed to list UTXOs: {}", e))?
             };
 
@@ -198,7 +204,9 @@ impl AppContext {
                 // Only track if balance changed
                 let current = wallet_guard.address_balances.get(address).cloned();
                 if current != Some(balance) {
-                    wallet_guard.address_balances.insert(address.clone(), balance);
+                    wallet_guard
+                        .address_balances
+                        .insert(address.clone(), balance);
                     balance_changes.push((address.clone(), balance));
                 }
             }
@@ -235,22 +243,28 @@ impl AppContext {
         // Step 11: Persist all changes to database (no wallet lock needed)
         // Update address balances in database
         for (address, balance) in &changed_balances {
-            if let Err(e) = self.db.update_address_balance(&seed_hash, address, *balance) {
+            if let Err(e) = self
+                .db
+                .update_address_balance(&seed_hash, address, *balance)
+            {
                 tracing::debug!(error = %e, address = %address, "Failed to persist address balance");
             }
         }
 
         // Update total received in database
         for (address, total_received) in &changed_total_received {
-            if let Err(e) = self.db.update_address_total_received(&seed_hash, address, *total_received) {
+            if let Err(e) =
+                self.db
+                    .update_address_total_received(&seed_hash, address, *total_received)
+            {
                 tracing::debug!(error = %e, address = %address, "Failed to persist total received");
             }
         }
 
         // Update wallet-level balances
-        if let Err(e) =
-            self.db
-                .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
+        if let Err(e) = self
+            .db
+            .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
         {
             tracing::warn!(error = %e, "Failed to persist wallet balances");
         }

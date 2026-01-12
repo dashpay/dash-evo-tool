@@ -190,9 +190,7 @@ impl UpdateDataContractScreen {
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(&msg).color(error_color)).wrap(),
-                        );
+                        ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
                         ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.broadcast_status = BroadcastStatus::Idle;
@@ -218,7 +216,10 @@ impl UpdateDataContractScreen {
                 ui.add_space(10.0);
                 let platform_version = self.app_context.platform_version();
                 let registration_fee = contract.registration_cost(platform_version).unwrap_or(0);
-                let base_fee = platform_version.fee_version.state_transition_min_fees.contract_update;
+                let base_fee = platform_version
+                    .fee_version
+                    .state_transition_min_fees
+                    .contract_update;
                 let estimated_fee = base_fee.saturating_add(registration_fee);
 
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -328,7 +329,9 @@ impl UpdateDataContractScreen {
             );
             ("Transaction Fee".to_string(), fee_str)
         });
-        let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (title.as_str(), desc.as_str()));
 
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,

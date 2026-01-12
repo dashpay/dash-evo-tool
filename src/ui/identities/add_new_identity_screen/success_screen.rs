@@ -16,7 +16,9 @@ impl AddNewIdentityScreen {
             );
             ("Transaction Fee".to_string(), fee_str)
         });
-        let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (title.as_str(), desc.as_str()));
 
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,

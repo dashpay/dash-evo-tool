@@ -157,9 +157,7 @@ impl RegisterDataContractScreen {
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(&msg).color(error_color)).wrap(),
-                        );
+                        ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
                         ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.broadcast_status = BroadcastStatus::Idle;
@@ -287,7 +285,9 @@ impl RegisterDataContractScreen {
             );
             ("Transaction Fee".to_string(), fee_str)
         });
-        let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (title.as_str(), desc.as_str()));
 
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,

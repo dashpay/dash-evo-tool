@@ -942,8 +942,13 @@ impl AppContext {
 
         // Step 2: Fetch recent balance changes (terminal updates after checkpoint)
         // This catches any balance changes that happened after the checkpoint the trunk/branch sync used
-        self.apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, result.checkpoint_height)
-            .await;
+        self.apply_recent_balance_changes(
+            &sdk,
+            &wallet_arc,
+            &mut provider,
+            result.checkpoint_height,
+        )
+        .await;
 
         // Apply results to wallet and persist
         let balances = {

@@ -541,8 +541,8 @@ impl AppContext {
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
-        use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
         use crate::model::fee_estimation::PlatformFeeEstimator;
+        use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
         // Estimate fee for top-up from platform addresses
         let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
@@ -608,7 +608,10 @@ impl AppContext {
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::ToppedUpIdentity(updated_identity, fee_result))
+        Ok(BackendTaskSuccessResult::ToppedUpIdentity(
+            updated_identity,
+            fee_result,
+        ))
     }
 
     /// Transfer credits from an identity to Platform addresses
@@ -619,8 +622,8 @@ impl AppContext {
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         key_id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
         use crate::model::fee_estimation::PlatformFeeEstimator;
+        use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
         // Get the identity
         let identity = qualified_identity.identity.clone();
@@ -635,7 +638,13 @@ impl AppContext {
 
         // Execute the transfer - qualified_identity is consumed here as the signer
         let (address_infos, new_balance) = identity
-            .transfer_credits_to_addresses(sdk, outputs.clone(), signing_key, &qualified_identity, None)
+            .transfer_credits_to_addresses(
+                sdk,
+                outputs.clone(),
+                signing_key,
+                &qualified_identity,
+                None,
+            )
             .await
             .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
 
@@ -660,7 +669,9 @@ impl AppContext {
 
         // Calculate actual fee
         let total_outputs: Credits = outputs.values().sum();
-        let actual_fee = balance_before.saturating_sub(new_balance).saturating_sub(total_outputs);
+        let actual_fee = balance_before
+            .saturating_sub(new_balance)
+            .saturating_sub(total_outputs);
 
         tracing::info!(
             "Credit transfer to addresses complete: estimated fee {} credits, actual fee {} credits",

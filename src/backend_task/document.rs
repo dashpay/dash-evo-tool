@@ -245,9 +245,9 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentDeleteResult::Deleted(deleted_id) => {
-                        Ok(BackendTaskSuccessResult::DeletedDocument(deleted_id, fee_result))
-                    }
+                    DocumentDeleteResult::Deleted(deleted_id) => Ok(
+                        BackendTaskSuccessResult::DeletedDocument(deleted_id, fee_result),
+                    ),
                 }
             }
             DocumentTask::ReplaceDocument(
@@ -301,9 +301,9 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentReplaceResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::ReplacedDocument(document.id(), fee_result))
-                    }
+                    DocumentReplaceResult::Document(document) => Ok(
+                        BackendTaskSuccessResult::ReplacedDocument(document.id(), fee_result),
+                    ),
                 }
             }
             DocumentTask::TransferDocument(
@@ -375,9 +375,9 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentTransferResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::TransferredDocument(document.id(), fee_result))
-                    }
+                    DocumentTransferResult::Document(document) => Ok(
+                        BackendTaskSuccessResult::TransferredDocument(document.id(), fee_result),
+                    ),
                 }
             }
             DocumentTask::PurchaseDocument(
@@ -450,9 +450,9 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentPurchaseResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::PurchasedDocument(document.id(), fee_result))
-                    }
+                    DocumentPurchaseResult::Document(document) => Ok(
+                        BackendTaskSuccessResult::PurchasedDocument(document.id(), fee_result),
+                    ),
                 }
             }
             DocumentTask::SetDocumentPrice(
@@ -524,9 +524,9 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentSetPriceResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::SetDocumentPrice(document.id(), fee_result))
-                    }
+                    DocumentSetPriceResult::Document(document) => Ok(
+                        BackendTaskSuccessResult::SetDocumentPrice(document.id(), fee_result),
+                    ),
                 }
             }
         }

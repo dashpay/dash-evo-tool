@@ -2943,15 +2943,22 @@ impl WalletsBalancesScreen {
                         }
 
                         let start_idx = self.utxo_page * UTXOS_PER_PAGE;
-                        let utxos_page: Vec<_> = utxos.iter().skip(start_idx).take(UTXOS_PER_PAGE).collect();
+                        let utxos_page: Vec<_> =
+                            utxos.iter().skip(start_idx).take(UTXOS_PER_PAGE).collect();
 
                         // Pagination controls
                         if total_pages > 1 {
                             ui.horizontal(|ui| {
-                                if ui.add_enabled(self.utxo_page > 0, egui::Button::new("<< First")).clicked() {
+                                if ui
+                                    .add_enabled(self.utxo_page > 0, egui::Button::new("<< First"))
+                                    .clicked()
+                                {
                                     self.utxo_page = 0;
                                 }
-                                if ui.add_enabled(self.utxo_page > 0, egui::Button::new("< Prev")).clicked() {
+                                if ui
+                                    .add_enabled(self.utxo_page > 0, egui::Button::new("< Prev"))
+                                    .clicked()
+                                {
                                     self.utxo_page = self.utxo_page.saturating_sub(1);
                                 }
 
@@ -2964,10 +2971,22 @@ impl WalletsBalancesScreen {
                                     utxo_count
                                 ));
 
-                                if ui.add_enabled(self.utxo_page < total_pages - 1, egui::Button::new("Next >")).clicked() {
+                                if ui
+                                    .add_enabled(
+                                        self.utxo_page < total_pages - 1,
+                                        egui::Button::new("Next >"),
+                                    )
+                                    .clicked()
+                                {
                                     self.utxo_page += 1;
                                 }
-                                if ui.add_enabled(self.utxo_page < total_pages - 1, egui::Button::new("Last >>")).clicked() {
+                                if ui
+                                    .add_enabled(
+                                        self.utxo_page < total_pages - 1,
+                                        egui::Button::new("Last >>"),
+                                    )
+                                    .clicked()
+                                {
                                     self.utxo_page = total_pages - 1;
                                 }
                             });
@@ -3411,10 +3430,7 @@ impl ScreenLike for WalletsBalancesScreen {
         if let AppAction::Custom(ref cmd) = action {
             if cmd == "RefreshHDWallet" {
                 if let Some(wallet_arc) = &self.selected_wallet {
-                    let is_locked = wallet_arc
-                        .read()
-                        .map(|w| !w.is_open())
-                        .unwrap_or(true);
+                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
                         // Wallet is locked - open unlock popup
                         self.pending_refresh_after_unlock = true;
@@ -3430,10 +3446,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 }
             } else if cmd == "RefreshSKWallet" {
                 if let Some(wallet_arc) = &self.selected_single_key_wallet {
-                    let is_locked = wallet_arc
-                        .read()
-                        .map(|w| !w.is_open())
-                        .unwrap_or(true);
+                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
                         // SK wallet is locked - open unlock dialog
                         self.pending_refresh_after_unlock = true;

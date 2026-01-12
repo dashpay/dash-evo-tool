@@ -1,5 +1,5 @@
-use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
@@ -521,7 +521,8 @@ impl AppContext {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
                 // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e {
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                {
                     self.db
                         .insert_proof_log_item(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,
@@ -622,8 +623,11 @@ impl AppContext {
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();
         let input_count = inputs.len();
-        let estimated_fee =
-            PlatformFeeEstimator::new().estimate_identity_create_from_addresses(input_count, false, key_count);
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
+            input_count,
+            false,
+            key_count,
+        );
 
         // Clone the wallet for use as the address signer (needed across async boundary)
         let wallet_clone = { wallet.read().map_err(|e| e.to_string())?.clone() };
@@ -698,7 +702,8 @@ impl AppContext {
             }
             Err(e) => {
                 // Log proof errors
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e {
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                {
                     self.db
                         .insert_proof_log_item(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,

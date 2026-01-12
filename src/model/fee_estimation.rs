@@ -68,15 +68,15 @@ impl Default for DataContractRegistrationFees {
     fn default() -> Self {
         // Values from FEE_DATA_CONTRACT_REGISTRATION_VERSION2
         Self {
-            base_contract_registration_fee: 10_000_000_000,      // 0.1 DASH
-            document_type_registration_fee: 2_000_000_000,       // 0.02 DASH
+            base_contract_registration_fee: 10_000_000_000, // 0.1 DASH
+            document_type_registration_fee: 2_000_000_000,  // 0.02 DASH
             document_type_base_non_unique_index_registration_fee: 1_000_000_000, // 0.01 DASH
-            document_type_base_unique_index_registration_fee: 1_000_000_000,     // 0.01 DASH
+            document_type_base_unique_index_registration_fee: 1_000_000_000, // 0.01 DASH
             document_type_base_contested_index_registration_fee: 100_000_000_000, // 1 DASH
-            token_registration_fee: 10_000_000_000,              // 0.1 DASH
+            token_registration_fee: 10_000_000_000,         // 0.1 DASH
             token_uses_perpetual_distribution_fee: 10_000_000_000, // 0.1 DASH
             token_uses_pre_programmed_distribution_fee: 10_000_000_000, // 0.1 DASH
-            search_keyword_fee: 10_000_000_000,                  // 0.1 DASH
+            search_keyword_fee: 10_000_000_000,             // 0.1 DASH
         }
     }
 }
@@ -196,13 +196,11 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for credit transfer to platform addresses
     pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
-        self.min_fees
-            .credit_transfer_to_addresses
-            .saturating_add(
-                self.min_fees
-                    .address_funds_transfer_output_cost
-                    .saturating_mul(output_count as u64),
-            )
+        self.min_fees.credit_transfer_to_addresses.saturating_add(
+            self.min_fees
+                .address_funds_transfer_output_cost
+                .saturating_mul(output_count as u64),
+        )
     }
 
     /// Estimate fee for credit withdrawal to core chain
@@ -320,9 +318,9 @@ impl PlatformFeeEstimator {
     pub fn estimate_document_transfer(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const OWNERSHIP_UPDATE_BYTES: usize = 64;
-        self.min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.estimate_storage_based_fee(OWNERSHIP_UPDATE_BYTES, ESTIMATED_SEEKS))
+        self.min_fees.document_batch_sub_transition.saturating_add(
+            self.estimate_storage_based_fee(OWNERSHIP_UPDATE_BYTES, ESTIMATED_SEEKS),
+        )
     }
 
     /// Estimate fee for document purchase.
@@ -414,7 +412,10 @@ impl PlatformFeeEstimator {
             fee = fee.saturating_add(self.registration_fees.token_uses_perpetual_distribution_fee);
         }
         if has_pre_programmed_distribution {
-            fee = fee.saturating_add(self.registration_fees.token_uses_pre_programmed_distribution_fee);
+            fee = fee.saturating_add(
+                self.registration_fees
+                    .token_uses_pre_programmed_distribution_fee,
+            );
         }
 
         // Search keyword fees

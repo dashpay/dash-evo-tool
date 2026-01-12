@@ -1,5 +1,5 @@
-use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
@@ -306,7 +306,8 @@ impl AppContext {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
                 // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e {
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                {
                     self.db
                         .insert_proof_log_item(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,

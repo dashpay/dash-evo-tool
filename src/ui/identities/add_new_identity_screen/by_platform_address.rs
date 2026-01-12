@@ -192,8 +192,16 @@ impl AddNewIdentityScreen {
 
         // Display estimated fee before action button
         let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
-        let input_count = if self.selected_platform_address_for_funding.is_some() { 1 } else { 0 };
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(input_count, false, key_count);
+        let input_count = if self.selected_platform_address_for_funding.is_some() {
+            1
+        } else {
+            0
+        };
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
+            input_count,
+            false,
+            key_count,
+        );
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
             .fill(crate::ui::theme::DashColors::surface(dark_mode))

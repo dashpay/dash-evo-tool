@@ -77,8 +77,7 @@ impl AppContext {
 
                     // Try to extract contract ID and fetch the contract if it exists
                     // This handles the case where the contract was actually created despite the proof error
-                    if let Ok(id) =
-                        extract_contract_id_from_error(proof_error.to_string().as_str())
+                    if let Ok(id) = extract_contract_id_from_error(proof_error.to_string().as_str())
                     {
                         match self.network {
                             Network::Regtest => sleep(Duration::from_secs(3)).await,

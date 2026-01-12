@@ -1535,10 +1535,16 @@ impl ScreenLike for DocumentActionScreen {
                     );
                     ("Transaction Fee".to_string(), fee_str)
                 });
-                let fee_ref = fee_info.as_ref().map(|(title, desc)| (title.as_str(), desc.as_str()));
+                let fee_ref = fee_info
+                    .as_ref()
+                    .map(|(title, desc)| (title.as_str(), desc.as_str()));
 
-                let inner_action =
-                    show_success_screen_with_info(ui, success_message, vec![back_button, reset_button], fee_ref);
+                let inner_action = show_success_screen_with_info(
+                    ui,
+                    success_message,
+                    vec![back_button, reset_button],
+                    fee_ref,
+                );
 
                 if inner_action == AppAction::Custom("Reset".to_string()) {
                     self.reset_screen();
@@ -1679,83 +1685,85 @@ impl ScreenLike for DocumentActionScreen {
 
 impl DocumentActionScreen {
     fn render_main_content(&mut self, ui: &mut Ui) -> AppAction {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let mut action = AppAction::None;
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                let mut action = AppAction::None;
 
-            // Step 1: Contract and Document Type Selection
-            self.render_contract_and_type_selection(ui);
+                // Step 1: Contract and Document Type Selection
+                self.render_contract_and_type_selection(ui);
 
-            if self.selected_contract.is_none() || self.selected_document_type.is_none() {
-                return action;
-            }
-
-            ui.separator();
-            ui.add_space(10.0);
-
-            // Step 2: Identity and Key Selection
-            self.render_identity_and_key_selection(ui);
-
-            if self.selected_identity.is_none() || self.selected_key.is_none() {
-                return action;
-            }
-
-            ui.separator();
-            ui.add_space(10.0);
-
-            // Wallet unlock
-            if let Some(selected_identity) = &self.selected_identity {
-                self.wallet = get_selected_wallet(
-                    selected_identity,
-                    Some(&self.app_context),
-                    None,
-                    &mut self.backend_message,
-                );
-            }
-            if let Some(wallet) = &self.wallet {
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.backend_message = Some(e);
-                }
-                if wallet_needs_unlock(wallet) {
-                    ui.add_space(10.0);
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 150, 50),
-                        "Wallet is locked. Please unlock to continue.",
-                    );
-                    ui.add_space(8.0);
-                    if ui.button("Unlock Wallet").clicked() {
-                        self.wallet_unlock_popup.open();
-                    }
+                if self.selected_contract.is_none() || self.selected_document_type.is_none() {
                     return action;
                 }
-            }
 
-            // Step 3: Action-specific inputs and broadcast
-            action |= match self.action_type {
-                DocumentActionType::Create => self.render_create_inputs(ui),
-                _ => self.render_action_specific_inputs(ui),
-            };
-
-            if let Some(ref msg) = self.backend_message {
+                ui.separator();
                 ui.add_space(10.0);
-                let error_color = Color32::from_rgb(255, 100, 100);
-                let msg = msg.clone();
-                Frame::new()
-                    .fill(error_color.gamma_multiply(0.1))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .stroke(egui::Stroke::new(1.0, error_color))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&msg).color(error_color));
-                            ui.add_space(10.0);
-                            if ui.small_button("Dismiss").clicked() {
-                                self.backend_message = None;
-                            }
-                        });
-                    });
-            }
 
-            action
-        }).inner
+                // Step 2: Identity and Key Selection
+                self.render_identity_and_key_selection(ui);
+
+                if self.selected_identity.is_none() || self.selected_key.is_none() {
+                    return action;
+                }
+
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Wallet unlock
+                if let Some(selected_identity) = &self.selected_identity {
+                    self.wallet = get_selected_wallet(
+                        selected_identity,
+                        Some(&self.app_context),
+                        None,
+                        &mut self.backend_message,
+                    );
+                }
+                if let Some(wallet) = &self.wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.backend_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                        return action;
+                    }
+                }
+
+                // Step 3: Action-specific inputs and broadcast
+                action |= match self.action_type {
+                    DocumentActionType::Create => self.render_create_inputs(ui),
+                    _ => self.render_action_specific_inputs(ui),
+                };
+
+                if let Some(ref msg) = self.backend_message {
+                    ui.add_space(10.0);
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&msg).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.backend_message = None;
+                                }
+                            });
+                        });
+                }
+
+                action
+            })
+            .inner
     }
 }

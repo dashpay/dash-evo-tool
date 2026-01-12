@@ -104,7 +104,9 @@ impl AppContext {
             })?;
 
         // Calculate and log actual fee paid
-        let actual_fee = balance_before.saturating_sub(remaining_balance).saturating_sub(credits);
+        let actual_fee = balance_before
+            .saturating_sub(remaining_balance)
+            .saturating_sub(credits);
         tracing::info!(
             "Withdrawal complete: withdrew {} credits, estimated fee {} credits, actual fee {} credits",
             credits,

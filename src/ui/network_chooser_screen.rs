@@ -548,6 +548,12 @@ impl NetworkChooserScreen {
                 false,
             );
 
+            // Reset to closed state when the screen is first opened
+            if self.should_reset_collapsing_states {
+                state.set_open(false);
+                self.should_reset_collapsing_states = false;
+            }
+
             // Custom expand/collapse icon
             let icon = if state.is_open() {
                 "−" // Minus sign when open

@@ -1439,8 +1439,7 @@ impl WalletSendScreen {
             .map(|o| Self::detect_address_type_static(&o.address))
             .collect();
 
-        for idx in 0..num_outputs {
-            let addr_type = addr_types[idx];
+        for (idx, &addr_type) in addr_types.iter().enumerate() {
 
             Frame::group(ui.style())
                 .fill(DashColors::surface(dark_mode))

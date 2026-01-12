@@ -433,45 +433,6 @@ impl AppContext {
         });
     }
 
-    fn queue_platform_address_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
-        let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync(async move {
-            if let Err(error) = ctx.fetch_platform_address_balances(seed_hash).await {
-                tracing::warn!(
-                    seed = %hex::encode(seed_hash),
-                    %error,
-                    "Failed to sync Platform address balances"
-                );
-            }
-        });
-    }
-
-    /// Queue a Core wallet UTXO refresh (only effective in RPC mode)
-    fn queue_core_wallet_refresh(self: &Arc<Self>, wallet: Arc<RwLock<Wallet>>) {
-        // Only refresh in RPC mode - SPV mode handles this differently
-        if self.core_backend_mode() != crate::spv::CoreBackendMode::Rpc {
-            return;
-        }
-
-        let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync(async move {
-            // Run the synchronous refresh_wallet_info in a blocking context
-            let result = tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet)).await;
-
-            match result {
-                Ok(Ok(_)) => {
-                    tracing::debug!("Successfully refreshed Core wallet UTXOs on unlock");
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "Failed to refresh Core wallet UTXOs on unlock");
-                }
-                Err(join_error) => {
-                    tracing::warn!(%join_error, "Task panicked while refreshing Core wallet UTXOs");
-                }
-            }
-        });
-    }
-
     /// Queue automatic discovery of identities derived from a wallet.
     /// Checks identity indices 0 through max_identity_index for existing identities on the network.
     pub fn queue_wallet_identity_discovery(

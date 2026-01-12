@@ -635,7 +635,9 @@ impl IdentitiesScreen {
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
-                                                            ui.set_enabled(can_withdraw);
+                                                            if !can_withdraw {
+                                                                ui.disable();
+                                                            }
                                                             if ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"))
                                                                 .on_hover_text(withdraw_hover)
                                                                 .clicked()
@@ -669,7 +671,9 @@ impl IdentitiesScreen {
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
-                                                            ui.set_enabled(can_transfer);
+                                                            if !can_transfer {
+                                                                ui.disable();
+                                                            }
                                                             if ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"))
                                                                 .on_hover_text(transfer_hover)
                                                                 .clicked()

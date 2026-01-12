@@ -1656,7 +1656,7 @@ impl WalletsBalancesScreen {
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
                             self.render_wallet_overview(ui, &wallet);
-                            collect_account_summaries(&wallet, self.app_context.network)
+                            collect_account_summaries(&wallet)
                         };
 
                         self.ensure_account_selection(&summaries);

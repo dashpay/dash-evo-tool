@@ -364,6 +364,7 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for data contract creation with detailed component counts.
     /// This provides the most accurate estimate by accounting for all registration fees.
+    #[allow(clippy::too_many_arguments)]
     pub fn estimate_contract_create_detailed(
         &self,
         contract_bytes: usize,

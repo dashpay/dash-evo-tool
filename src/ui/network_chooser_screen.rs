@@ -61,7 +61,6 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
-    show_evonode_tools: bool,
     use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
@@ -104,7 +103,6 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
-        let show_evonode_tools = settings.show_evonode_tools;
         let use_local_spv_node = mainnet_app_context
             .db
             .get_use_local_spv_node()
@@ -161,7 +159,6 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_message: None,
-            show_evonode_tools,
             use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,

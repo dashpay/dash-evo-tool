@@ -61,9 +61,9 @@ fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadIdentityMode {
-    ByIdentityId,
-    ByWallet,
-    ByDpnsName,
+    IdentityId,
+    Wallet,
+    DpnsName,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl AddExistingIdentityScreen {
             identity_index_input: String::new(),
             app_context: app_context.clone(),
             show_pop_up_info: None,
-            mode: LoadIdentityMode::ByIdentityId,
+            mode: LoadIdentityMode::IdentityId,
             backend_message: None,
             wallet_search_mode: WalletIdentitySearchMode::SpecificIndex,
             success_message: None,
@@ -1065,21 +1065,21 @@ impl ScreenLike for AddExistingIdentityScreen {
                         mode_changed |= ui
                             .selectable_value(
                                 &mut self.mode,
-                                LoadIdentityMode::ByIdentityId,
+                                LoadIdentityMode::IdentityId,
                                 "By Identity ID",
                             )
                             .changed();
                         mode_changed |= ui
                             .selectable_value(
                                 &mut self.mode,
-                                LoadIdentityMode::ByWallet,
+                                LoadIdentityMode::Wallet,
                                 "By Wallet",
                             )
                             .changed();
                         mode_changed |= ui
                             .selectable_value(
                                 &mut self.mode,
-                                LoadIdentityMode::ByDpnsName,
+                                LoadIdentityMode::DpnsName,
                                 "By DPNS Name",
                             )
                             .changed();
@@ -1094,17 +1094,17 @@ impl ScreenLike for AddExistingIdentityScreen {
                     }
 
                     match self.mode {
-                        LoadIdentityMode::ByIdentityId => {
+                        LoadIdentityMode::IdentityId => {
                             inner_action |= self.render_by_identity(ui);
                         }
-                        LoadIdentityMode::ByWallet => {
+                        LoadIdentityMode::Wallet => {
                             let wallets_len = {
                                 let wallets = self.app_context.wallets.read().unwrap();
                                 wallets.len()
                             };
                             inner_action |= self.render_by_wallet(ui, wallets_len);
                         }
-                        LoadIdentityMode::ByDpnsName => {
+                        LoadIdentityMode::DpnsName => {
                             inner_action |= self.render_by_dpns_name(ui);
                         }
                     }

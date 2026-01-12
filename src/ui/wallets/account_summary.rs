@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, Wallet};
 
@@ -157,9 +155,6 @@ pub struct AccountSummary {
     pub confirmed_balance: u64,
     /// Platform credits balance for Platform Payment addresses
     pub platform_credits: Credits,
-    pub total_addresses: usize,
-    pub external_addresses: usize,
-    pub internal_addresses: usize,
 }
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -172,9 +167,6 @@ struct AccountSummaryBuilder {
     key: AccountKey,
     confirmed_balance: u64,
     platform_credits: Credits,
-    total_addresses: usize,
-    external_addresses: usize,
-    internal_addresses: usize,
 }
 
 impl AccountSummaryBuilder {
@@ -183,28 +175,12 @@ impl AccountSummaryBuilder {
             key: AccountKey { category, index },
             confirmed_balance: 0,
             platform_credits: 0,
-            total_addresses: 0,
-            external_addresses: 0,
-            internal_addresses: 0,
         }
     }
 
-    fn add_address(
-        &mut self,
-        path: &DerivationPath,
-        balance: u64,
-        platform_credits: Credits,
-        network: Network,
-    ) {
+    fn add_address(&mut self, balance: u64, platform_credits: Credits) {
         self.confirmed_balance += balance;
         self.platform_credits += platform_credits;
-        self.total_addresses += 1;
-
-        if path.is_bip44_external(network) {
-            self.external_addresses += 1;
-        } else if path.is_bip44_change(network) {
-            self.internal_addresses += 1;
-        }
     }
 
     fn build(self) -> AccountSummary {
@@ -216,14 +192,11 @@ impl AccountSummaryBuilder {
             index: self.key.index,
             confirmed_balance: self.confirmed_balance,
             platform_credits: self.platform_credits,
-            total_addresses: self.total_addresses,
-            external_addresses: self.external_addresses,
-            internal_addresses: self.internal_addresses,
         }
     }
 }
 
-pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
+pub fn collect_account_summaries(wallet: &Wallet) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
     for (path, info) in &wallet.watched_addresses {
@@ -252,7 +225,7 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
                 index,
             })
             .or_insert_with(|| AccountSummaryBuilder::new(category, index))
-            .add_address(path, balance, platform_credits, network);
+            .add_address(balance, platform_credits);
     }
 
     let mut summaries: Vec<_> = builders

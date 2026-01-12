@@ -196,18 +196,13 @@ pub enum ContractSearchStatus {
     ErrorMessage(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
+    #[default]
     NotStarted,
     WaitingForResult(u64),
     Complete,
     ErrorMessage(String),
-}
-
-impl Default for TokenCreatorStatus {
-    fn default() -> Self {
-        Self::NotStarted
-    }
 }
 
 /// Sorting columns

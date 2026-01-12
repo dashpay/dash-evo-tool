@@ -1657,7 +1657,7 @@ impl WalletsBalancesScreen {
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
                             self.render_wallet_overview(ui, &wallet);
-                            collect_account_summaries(&wallet, self.app_context.network)
+                            collect_account_summaries(&wallet)
                         };
 
                         self.ensure_account_selection(&summaries);
@@ -1985,7 +1985,8 @@ impl WalletsBalancesScreen {
                                     self.receive_dialog.status = Some(status);
                                 }
 
-                                if generate_new && let Some(wallet) = &self.selected_wallet {
+                                if generate_new
+                                    && let Some(wallet) = &self.selected_wallet {
                                         match self.generate_new_core_receive_address(wallet) {
                                             Ok((new_addr, new_balance)) => {
                                                 self.receive_dialog.core_addresses.push((new_addr, new_balance));

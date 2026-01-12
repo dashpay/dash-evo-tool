@@ -635,7 +635,9 @@ impl IdentitiesScreen {
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
-                                                            ui.set_enabled(can_withdraw);
+                                                            if !can_withdraw {
+                                                                ui.disable();
+                                                            }
                                                             if ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"))
                                                                 .on_hover_text(withdraw_hover)
                                                                 .clicked()
@@ -669,7 +671,9 @@ impl IdentitiesScreen {
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
-                                                            ui.set_enabled(can_transfer);
+                                                            if !can_transfer {
+                                                                ui.disable();
+                                                            }
                                                             if ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"))
                                                                 .on_hover_text(transfer_hover)
                                                                 .clicked()
@@ -772,15 +776,14 @@ impl IdentitiesScreen {
                                                             }
 
                                                             // Add Key button
-                                                            if qualified_identity.can_sign_with_master_key().is_some() {
-                                                                if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
+                                                            if qualified_identity.can_sign_with_master_key().is_some()
+                                                                && ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
                                                                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
-                                                            }
                                                         },
                                                     );
                                                 }

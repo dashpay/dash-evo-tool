@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -14,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering,
-    add_identity_key_chooser_with_doc_type, show_success_screen,
+    add_identity_key_chooser_with_doc_type, show_success_screen_with_info,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -119,6 +121,9 @@ pub struct DocumentActionScreen {
 
     // Delete-specific
     pub fetched_documents: IndexMap<Identifier, Option<Document>>,
+
+    // Fee tracking
+    pub completed_fee_result: Option<FeeResult>,
 }
 
 impl DocumentActionScreen {
@@ -164,6 +169,7 @@ impl DocumentActionScreen {
             identities_map,
             recipient_id_input: String::new(),
             fetched_documents: IndexMap::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -240,18 +246,14 @@ impl DocumentActionScreen {
             let contract_id = contract.contract.id();
             let doc_type = doc_type.clone();
 
-            egui::ScrollArea::vertical()
-                .max_height(ui.available_height() - 100.0)
-                .show(ui, |ui| {
-                    self.ui_field_inputs(ui, &doc_type, contract_id);
+            self.ui_field_inputs(ui, &doc_type, contract_id);
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
 
-                    self.render_token_cost_info(ui, &doc_type);
-                    action |= self.render_broadcast_button(ui);
-                });
+            self.render_token_cost_info(ui, &doc_type);
+            action |= self.render_broadcast_button(ui);
         }
         action
     }
@@ -533,17 +535,13 @@ impl DocumentActionScreen {
                 let contract_id = contract.contract.id();
                 let doc_type = doc_type.clone();
 
-                egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 100.0)
-                    .show(ui, |ui| {
-                        self.ui_field_inputs(ui, &doc_type, contract_id);
+                self.ui_field_inputs(ui, &doc_type, contract_id);
 
-                        ui.add_space(10.0);
-                        if let Some(doc_type) = &self.selected_document_type {
-                            self.render_token_cost_info(ui, &doc_type.clone());
-                        }
-                        action |= self.render_broadcast_button(ui);
-                    });
+                ui.add_space(10.0);
+                if let Some(doc_type) = &self.selected_document_type {
+                    self.render_token_cost_info(ui, &doc_type.clone());
+                }
+                action |= self.render_broadcast_button(ui);
             }
         } else if self.broadcast_status == BroadcastStatus::Fetched {
             ui.add_space(10.0);
@@ -798,6 +796,38 @@ impl DocumentActionScreen {
 
     fn render_broadcast_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        // Fee estimation display
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = match self.action_type {
+            DocumentActionType::Create => fee_estimator.estimate_document_create(),
+            DocumentActionType::Delete => fee_estimator.estimate_document_delete(),
+            DocumentActionType::Replace => fee_estimator.estimate_document_replace(),
+            DocumentActionType::Transfer => fee_estimator.estimate_document_transfer(),
+            DocumentActionType::Purchase => fee_estimator.estimate_document_purchase(),
+            DocumentActionType::SetPrice => fee_estimator.estimate_document_set_price(),
+        };
+
+        ui.add_space(10.0);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated fee:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+            });
 
         ui.add_space(10.0);
         let button_text = match self.action_type {
@@ -1496,11 +1526,29 @@ impl ScreenLike for DocumentActionScreen {
                     AppAction::Custom("Reset".to_string()),
                 );
 
-                let inner_action =
-                    show_success_screen(ui, success_message, vec![back_button, reset_button]);
+                // Prepare fee info for display
+                let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+                    let fee_str = format!(
+                        "Estimated: {}  •  Actual: {}",
+                        format_credits_as_dash(fee_result.estimated_fee),
+                        format_credits_as_dash(fee_result.actual_fee)
+                    );
+                    ("Transaction Fee".to_string(), fee_str)
+                });
+                let fee_ref = fee_info
+                    .as_ref()
+                    .map(|(title, desc)| (title.as_str(), desc.as_str()));
+
+                let inner_action = show_success_screen_with_info(
+                    ui,
+                    success_message,
+                    vec![back_button, reset_button],
+                    fee_ref,
+                );
 
                 if inner_action == AppAction::Custom("Reset".to_string()) {
                     self.reset_screen();
+                    self.completed_fee_result = None;
                 }
 
                 inner_action
@@ -1534,12 +1582,15 @@ impl ScreenLike for DocumentActionScreen {
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::BroadcastedDocument(_)
-            | BackendTaskSuccessResult::DeletedDocument(_)
-            | BackendTaskSuccessResult::ReplacedDocument(_)
-            | BackendTaskSuccessResult::TransferredDocument(_)
-            | BackendTaskSuccessResult::PurchasedDocument(_)
-            | BackendTaskSuccessResult::SetDocumentPrice(_) => {
+            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+                self.broadcast_status = BroadcastStatus::Broadcasted;
+            }
+            BackendTaskSuccessResult::DeletedDocument(_, fee_result)
+            | BackendTaskSuccessResult::ReplacedDocument(_, fee_result)
+            | BackendTaskSuccessResult::TransferredDocument(_, fee_result)
+            | BackendTaskSuccessResult::PurchasedDocument(_, fee_result)
+            | BackendTaskSuccessResult::SetDocumentPrice(_, fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Broadcasted;
             }
             BackendTaskSuccessResult::Documents(documents) => {
@@ -1634,81 +1685,85 @@ impl ScreenLike for DocumentActionScreen {
 
 impl DocumentActionScreen {
     fn render_main_content(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                let mut action = AppAction::None;
 
-        // Step 1: Contract and Document Type Selection
-        self.render_contract_and_type_selection(ui);
+                // Step 1: Contract and Document Type Selection
+                self.render_contract_and_type_selection(ui);
 
-        if self.selected_contract.is_none() || self.selected_document_type.is_none() {
-            return action;
-        }
-
-        ui.separator();
-        ui.add_space(10.0);
-
-        // Step 2: Identity and Key Selection
-        self.render_identity_and_key_selection(ui);
-
-        if self.selected_identity.is_none() || self.selected_key.is_none() {
-            return action;
-        }
-
-        ui.separator();
-        ui.add_space(10.0);
-
-        // Wallet unlock
-        if let Some(selected_identity) = &self.selected_identity {
-            self.wallet = get_selected_wallet(
-                selected_identity,
-                Some(&self.app_context),
-                None,
-                &mut self.backend_message,
-            );
-        }
-        if let Some(wallet) = &self.wallet {
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.backend_message = Some(e);
-            }
-            if wallet_needs_unlock(wallet) {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "Wallet is locked. Please unlock to continue.",
-                );
-                ui.add_space(8.0);
-                if ui.button("Unlock Wallet").clicked() {
-                    self.wallet_unlock_popup.open();
+                if self.selected_contract.is_none() || self.selected_document_type.is_none() {
+                    return action;
                 }
-                return action;
-            }
-        }
 
-        // Step 3: Action-specific inputs and broadcast
-        action |= match self.action_type {
-            DocumentActionType::Create => self.render_create_inputs(ui),
-            _ => self.render_action_specific_inputs(ui),
-        };
+                ui.separator();
+                ui.add_space(10.0);
 
-        if let Some(ref msg) = self.backend_message {
-            ui.add_space(10.0);
-            let error_color = Color32::from_rgb(255, 100, 100);
-            let msg = msg.clone();
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&msg).color(error_color));
+                // Step 2: Identity and Key Selection
+                self.render_identity_and_key_selection(ui);
+
+                if self.selected_identity.is_none() || self.selected_key.is_none() {
+                    return action;
+                }
+
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Wallet unlock
+                if let Some(selected_identity) = &self.selected_identity {
+                    self.wallet = get_selected_wallet(
+                        selected_identity,
+                        Some(&self.app_context),
+                        None,
+                        &mut self.backend_message,
+                    );
+                }
+                if let Some(wallet) = &self.wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.backend_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.backend_message = None;
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
                         }
-                    });
-                });
-        }
+                        return action;
+                    }
+                }
 
-        action
+                // Step 3: Action-specific inputs and broadcast
+                action |= match self.action_type {
+                    DocumentActionType::Create => self.render_create_inputs(ui),
+                    _ => self.render_action_specific_inputs(ui),
+                };
+
+                if let Some(ref msg) = self.backend_message {
+                    ui.add_space(10.0);
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&msg).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.backend_message = None;
+                                }
+                            });
+                        });
+                }
+
+                action
+            })
+            .inner
     }
 }

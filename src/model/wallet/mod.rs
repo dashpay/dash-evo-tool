@@ -30,14 +30,14 @@ use std::sync::{Arc, RwLock};
 /// Check if two networks use the same address format.
 /// Testnet, Devnet, and Regtest all use testnet-style addresses.
 fn networks_address_compatible(a: &Network, b: &Network) -> bool {
-    match (a, b) {
-        (Network::Dash, Network::Dash) => true,
-        (
-            Network::Testnet | Network::Devnet | Network::Regtest,
-            Network::Testnet | Network::Devnet | Network::Regtest,
-        ) => true,
-        _ => false,
-    }
+    matches!(
+        (a, b),
+        (Network::Dash, Network::Dash)
+            | (
+                Network::Testnet | Network::Devnet | Network::Regtest,
+                Network::Testnet | Network::Devnet | Network::Regtest,
+            )
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]

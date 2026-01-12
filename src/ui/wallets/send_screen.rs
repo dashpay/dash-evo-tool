@@ -57,9 +57,10 @@ pub enum SendStatus {
 }
 
 /// Fee strategy for platform transfers
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PlatformFeeStrategy {
     /// Deduct fee from first input
+    #[default]
     DeductFromFirstInput,
     /// Deduct fee from last input
     DeductFromLastInput,
@@ -67,12 +68,6 @@ pub enum PlatformFeeStrategy {
     ReduceFirstOutput,
     /// Reduce last output by fee amount
     ReduceLastOutput,
-}
-
-impl Default for PlatformFeeStrategy {
-    fn default() -> Self {
-        Self::DeductFromFirstInput
-    }
 }
 
 impl std::fmt::Display for PlatformFeeStrategy {
@@ -1442,9 +1437,7 @@ impl WalletSendScreen {
             .map(|o| Self::detect_address_type_static(&o.address))
             .collect();
 
-        for idx in 0..num_outputs {
-            let addr_type = addr_types[idx];
-
+        for (idx, &addr_type) in addr_types.iter().enumerate() {
             Frame::group(ui.style())
                 .fill(DashColors::surface(dark_mode))
                 .inner_margin(Margin::symmetric(12, 10))
@@ -1628,8 +1621,8 @@ impl WalletSendScreen {
             .map(|o| Self::detect_address_type_static(&o.address))
             .collect();
 
-        let has_core_output = output_types.iter().any(|t| *t == AddressType::Core);
-        let has_platform_output = output_types.iter().any(|t| *t == AddressType::Platform);
+        let has_core_output = output_types.contains(&AddressType::Core);
+        let has_platform_output = output_types.contains(&AddressType::Platform);
 
         // Validate that we don't mix output types
         if has_core_output && has_platform_output {

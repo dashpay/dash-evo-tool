@@ -1,7 +1,9 @@
 use crate::app::AppAction;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
-use egui::{Color32, RichText, Ui};
+use crate::ui::theme::DashColors;
+use egui::{Color32, Frame, Margin, RichText, Ui};
 
 impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
@@ -44,6 +46,32 @@ impl TopUpIdentityScreen {
         let Ok(_) = self.funding_amount.parse::<f64>() else {
             return action;
         };
+
+        // Fee estimation display
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_identity_topup();
+
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated fee:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+            });
+
+        ui.add_space(10.0);
 
         // Top up button
         let mut new_style = (**ui.style()).clone();

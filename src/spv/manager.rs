@@ -785,7 +785,7 @@ impl SpvManager {
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             waited_ms = waited_ms.saturating_add(200);
-            if waited_ms % 5000 == 0 {
+            if waited_ms.is_multiple_of(5000) {
                 tracing::info!("SPV waiting for peers... {}s elapsed", waited_ms / 1000);
             }
         }

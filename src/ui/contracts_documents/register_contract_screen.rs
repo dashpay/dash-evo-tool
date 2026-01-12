@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -48,6 +50,7 @@ pub struct RegisterDataContractScreen {
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl RegisterDataContractScreen {
@@ -77,6 +80,7 @@ impl RegisterDataContractScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
+            completed_fee_result: None,
         }
     }
 
@@ -122,22 +126,18 @@ impl RegisterDataContractScreen {
     }
 
     fn ui_input_field(&mut self, ui: &mut egui::Ui) {
-        ScrollArea::vertical()
-            .max_height(ui.available_height() - 100.0)
-            .show(ui, |ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let response = ui.add(
-                    TextEdit::multiline(&mut self.contract_json_input)
-                        .desired_rows(6)
-                        .desired_width(ui.available_width())
-                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
-                        .code_editor(),
-                );
-                if response.changed() {
-                    self.parse_contract();
-                }
-            });
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let response = ui.add(
+            TextEdit::multiline(&mut self.contract_json_input)
+                .desired_rows(12)
+                .desired_width(ui.available_width())
+                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .code_editor(),
+        );
+        if response.changed() {
+            self.parse_contract();
+        }
     }
 
     /// Renders an error message at the top of the screen with a styled bubble
@@ -156,9 +156,9 @@ impl RegisterDataContractScreen {
                 .corner_radius(5.0)
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(msg).color(error_color));
-                        ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
+                        ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.broadcast_status = BroadcastStatus::Idle;
                         }
@@ -181,8 +181,36 @@ impl RegisterDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // “Register” button
+                // Display estimated fee using SDK's registration_cost method
+                // This accounts for document types, indexes, tokens, and keywords
+                let platform_version = self.app_context.platform_version();
+                let registration_fee = contract.registration_cost(platform_version).unwrap_or(0);
+                // Add storage and processing fees for the contract data
+                let contract_size = self.contract_json_input.len();
+                let storage_fee = crate::model::fee_estimation::PlatformFeeEstimator::new()
+                    .estimate_storage_based_fee(contract_size, 20); // ~20 seeks for tree operations
+                let estimated_fee = registration_fee.saturating_add(storage_fee);
                 ui.add_space(10.0);
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated Fee:")
+                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            );
+                        });
+                    });
+                ui.add_space(10.0);
+
                 // Register button
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -248,9 +276,22 @@ impl RegisterDataContractScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let action = crate::ui::helpers::show_success_screen(
+        // Prepare fee info for display
+        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
+            let fee_str = format!(
+                "Estimated: {}  •  Actual: {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            ("Transaction Fee".to_string(), fee_str)
+        });
+        let fee_ref = fee_info
+            .as_ref()
+            .map(|(title, desc)| (title.as_str(), desc.as_str()));
+
+        let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Successfully registered data contract.".to_string(),
+            "Data Contract Registered Successfully!".to_string(),
             vec![
                 (
                     "Back to Contracts screen".to_string(),
@@ -261,6 +302,7 @@ impl RegisterDataContractScreen {
                     AppAction::Custom("register_another".to_string()),
                 ),
             ],
+            fee_ref,
         );
 
         // Handle the custom action to reset the form
@@ -270,6 +312,7 @@ impl RegisterDataContractScreen {
             self.contract_json_input = String::new();
             self.contract_alias_input = String::new();
             self.broadcast_status = BroadcastStatus::Idle;
+            self.completed_fee_result = None;
             return AppAction::None;
         }
 
@@ -299,7 +342,8 @@ impl ScreenLike for RegisterDataContractScreen {
                         .as_secs(),
                 );
             }
-            BackendTaskSuccessResult::RegisteredContract => {
+            BackendTaskSuccessResult::RegisteredContract(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
             BackendTaskSuccessResult::ProofErrorLogged => {
@@ -342,118 +386,120 @@ impl ScreenLike for RegisterDataContractScreen {
                 return self.show_success(ui);
             }
 
-            ui.heading("Register Data Contract");
-            ui.add_space(10.0);
+            ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Register Data Contract");
+                ui.add_space(10.0);
 
-            // Show error message at the top if there's an error
-            self.render_error_bubble(ui);
+                // Show error message at the top if there's an error
+                self.render_error_bubble(ui);
 
-            // If no identities loaded, give message
-            if self.qualified_identities.is_empty() {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
-                    "No identities loaded. Please load an identity first.",
-                );
-                return AppAction::None;
-            }
-
-            // Check if any identity has suitable private keys for contract registration
-            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
-                qi.private_keys
-                    .identity_public_keys()
-                    .iter()
-                    .any(|key_ref| {
-                        let key = &key_ref.1.identity_public_key;
-                        // Contract registration requires Authentication keys with High or Critical security level
-                        key.purpose() == Purpose::AUTHENTICATION
-                            && (key.security_level() == SecurityLevel::HIGH
-                                || key.security_level() == SecurityLevel::CRITICAL)
-                    })
-            });
-
-            if !has_suitable_keys {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
-                    "No identities with high or critical authentication private keys loaded. Contract registration requires high or critical security level keys.",
-                );
-                return AppAction::None;
-            }
-
-            // Select the identity to register the name for
-            ui.heading("1. Select Identity");
-            ui.add_space(5.0);
-            add_identity_key_chooser(
-                ui,
-                &self.app_context,
-                self.qualified_identities.iter(),
-                &mut self.selected_qualified_identity,
-                &mut self.selected_key,
-                TransactionType::RegisterContract,
-            );
-            ui.add_space(5.0);
-            if let Some(identity) = &self.selected_qualified_identity {
-                ui.label(format!(
-                    "Identity balance: {:.6}",
-                    identity.identity.balance() as f64 * 1e-11
-                ));
-            }
-
-            if self.selected_key.is_none() {
-                return AppAction::None;
-            }
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
-
-            // Render wallet unlock if needed
-            if let Some(wallet) = &self.selected_wallet {
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
-                }
-                if wallet_needs_unlock(wallet) {
-                    ui.add_space(10.0);
+                // If no identities loaded, give message
+                if self.qualified_identities.is_empty() {
                     ui.colored_label(
-                        egui::Color32::from_rgb(200, 150, 50),
-                        "Wallet is locked. Please unlock to continue.",
+                        egui::Color32::DARK_RED,
+                        "No identities loaded. Please load an identity first.",
                     );
-                    ui.add_space(8.0);
-                    if ui.button("Unlock Wallet").clicked() {
-                        self.wallet_unlock_popup.open();
-                    }
                     return AppAction::None;
                 }
-            }
 
-            // Input for the alias
-            ui.heading("2. Contract alias for DET (optional)");
-            ui.add_space(5.0);
-            ui.text_edit_singleline(&mut self.contract_alias_input);
+                // Check if any identity has suitable private keys for contract registration
+                let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
+                    qi.private_keys
+                        .identity_public_keys()
+                        .iter()
+                        .any(|key_ref| {
+                            let key = &key_ref.1.identity_public_key;
+                            // Contract registration requires Authentication keys with High or Critical security level
+                            key.purpose() == Purpose::AUTHENTICATION
+                                && (key.security_level() == SecurityLevel::HIGH
+                                    || key.security_level() == SecurityLevel::CRITICAL)
+                        })
+                });
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
+                if !has_suitable_keys {
+                    ui.colored_label(
+                        egui::Color32::DARK_RED,
+                        "No identities with high or critical authentication private keys loaded. Contract registration requires high or critical security level keys.",
+                    );
+                    return AppAction::None;
+                }
 
-            // Input for the contract
-            ui.heading("3. Paste the contract JSON below");
-            ui.add_space(5.0);
+                // Select the identity to register the name for
+                ui.heading("1. Select Identity");
+                ui.add_space(5.0);
+                add_identity_key_chooser(
+                    ui,
+                    &self.app_context,
+                    self.qualified_identities.iter(),
+                    &mut self.selected_qualified_identity,
+                    &mut self.selected_key,
+                    TransactionType::RegisterContract,
+                );
+                ui.add_space(5.0);
+                if let Some(identity) = &self.selected_qualified_identity {
+                    ui.label(format!(
+                        "Identity balance: {:.6}",
+                        identity.identity.balance() as f64 * 1e-11
+                    ));
+                }
 
-            // Add link to dashpay.io
-            ui.horizontal(|ui| {
-                ui.label("Easily create a contract JSON here:");
-                ui.add(egui::Hyperlink::from_label_and_url(
-                    RichText::new("dashpay.io")
-                        .underline()
-                        .color(Color32::from_rgb(0, 128, 255)),
-                    "https://dashpay.io",
-                ));
-            });
-            ui.add_space(5.0);
+                if self.selected_key.is_none() {
+                    return AppAction::None;
+                }
 
-            self.ui_input_field(ui);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-            // Parse the contract and show the result
-            self.ui_parsed_contract(ui)
+                // Render wallet unlock if needed
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                        return AppAction::None;
+                    }
+                }
+
+                // Input for the alias
+                ui.heading("2. Contract alias for DET (optional)");
+                ui.add_space(5.0);
+                ui.text_edit_singleline(&mut self.contract_alias_input);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Input for the contract
+                ui.heading("3. Paste the contract JSON below");
+                ui.add_space(5.0);
+
+                // Add link to dashpay.io
+                ui.horizontal(|ui| {
+                    ui.label("Easily create a contract JSON here:");
+                    ui.add(egui::Hyperlink::from_label_and_url(
+                        RichText::new("dashpay.io")
+                            .underline()
+                            .color(Color32::from_rgb(0, 128, 255)),
+                        "https://dashpay.io",
+                    ));
+                });
+                ui.add_space(5.0);
+
+                self.ui_input_field(ui);
+
+                // Parse the contract and show the result
+                self.ui_parsed_contract(ui)
+            }).inner
         });
 
         // Show wallet unlock popup if open

@@ -61,7 +61,6 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
-    show_evonode_tools: bool,
     use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
@@ -104,7 +103,6 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
-        let show_evonode_tools = settings.show_evonode_tools;
         let use_local_spv_node = mainnet_app_context
             .db
             .get_use_local_spv_node()
@@ -161,7 +159,6 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_message: None,
-            show_evonode_tools,
             use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,
@@ -215,57 +212,89 @@ impl NetworkChooserScreen {
                 .spacing([40.0, 12.0])
                 .striped(false)
                 .show(ui, |ui| {
-                    // Row 1: Connection Type
-                    ui.label(
-                        egui::RichText::new("Connection Type:")
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-
+                    // TODO: SPV is currently hidden behind Developer Mode while still in development.
+                    // Once SPV is production-ready, remove this developer_mode check and make SPV
+                    // the default/primary connection method, with RPC as a fallback option.
                     let current_backend_mode = *self
                         .backend_modes
                         .entry(self.current_network)
                         .or_insert(CoreBackendMode::Rpc);
 
-                    let connection_text = match current_backend_mode {
-                        CoreBackendMode::Spv => "SPV Client",
-                        CoreBackendMode::Rpc => "Dash Core RPC",
-                    };
+                    if self.developer_mode {
+                        // Row 1: Connection Type (only shown in developer mode)
+                        ui.label(
+                            egui::RichText::new("Connection Type:")
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
 
-                    let mut connection_mode = current_backend_mode;
-                    egui::ComboBox::from_id_salt("connection_mode_selector")
-                        .selected_text(connection_text)
-                        .width(200.0)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_value(
-                                    &mut connection_mode,
-                                    CoreBackendMode::Spv,
-                                    "SPV Client",
-                                )
-                                .changed()
-                            {
-                                self.backend_modes
-                                    .insert(self.current_network, CoreBackendMode::Spv);
-                                let ctx = self.current_app_context();
-                                ctx.set_core_backend_mode(CoreBackendMode::Spv);
-                            }
-                            if ui
-                                .selectable_value(
-                                    &mut connection_mode,
-                                    CoreBackendMode::Rpc,
-                                    "Dash Core RPC",
-                                )
-                                .changed()
-                            {
-                                self.backend_modes
-                                    .insert(self.current_network, CoreBackendMode::Rpc);
-                                let ctx = self.current_app_context();
-                                ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                ctx.stop_spv();
-                            }
-                        });
+                        let connection_text = match current_backend_mode {
+                            CoreBackendMode::Spv => "SPV Client",
+                            CoreBackendMode::Rpc => "Dash Core RPC",
+                        };
 
-                    ui.end_row();
+                        let mut connection_mode = current_backend_mode;
+                        egui::ComboBox::from_id_salt("connection_mode_selector")
+                            .selected_text(connection_text)
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_value(
+                                        &mut connection_mode,
+                                        CoreBackendMode::Spv,
+                                        "SPV Client",
+                                    )
+                                    .changed()
+                                {
+                                    self.backend_modes
+                                        .insert(self.current_network, CoreBackendMode::Spv);
+                                    let ctx = self.current_app_context();
+                                    ctx.set_core_backend_mode(CoreBackendMode::Spv);
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut connection_mode,
+                                        CoreBackendMode::Rpc,
+                                        "Dash Core RPC",
+                                    )
+                                    .changed()
+                                {
+                                    self.backend_modes
+                                        .insert(self.current_network, CoreBackendMode::Rpc);
+                                    let ctx = self.current_app_context();
+                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
+                                    ctx.stop_spv();
+                                }
+                            });
+
+                        ui.end_row();
+
+                        // Show experimental warning when SPV mode is selected
+                        if current_backend_mode == CoreBackendMode::Spv {
+                            ui.label(""); // Empty label for grid alignment
+                            egui::Frame::new()
+                                .fill(DashColors::WARNING.gamma_multiply(0.15))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .stroke(egui::Stroke::new(1.0, DashColors::WARNING))
+                                .corner_radius(4.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("⚠")
+                                                .color(DashColors::WARNING)
+                                                .size(14.0),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "SPV mode is experimental and still in development",
+                                            )
+                                            .color(DashColors::WARNING)
+                                            .size(12.0),
+                                        );
+                                    });
+                                });
+                            ui.end_row();
+                        }
+                    }
 
                     // Row 2: Network
                     ui.label(
@@ -524,16 +553,19 @@ impl NetworkChooserScreen {
                 }
             });
 
-            if current_backend_mode == CoreBackendMode::Spv
+            // TODO: SPV sync progress is hidden when developer mode is OFF.
+            // Remove the developer_mode check once SPV is production-ready.
+            if self.developer_mode
+                && current_backend_mode == CoreBackendMode::Spv
                 && let Some(snap) = snapshot.as_ref()
-                    && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
-                {
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
+                && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
+            {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-                    self.render_spv_sync_progress(ui, snap);
-                }
+                self.render_spv_sync_progress(ui, snap);
+            }
         });
 
         // Advanced Settings section with clean dropdown
@@ -547,6 +579,12 @@ impl NetworkChooserScreen {
                 id,
                 false,
             );
+
+            // Reset to closed state when the screen is first opened
+            if self.should_reset_collapsing_states {
+                state.set_open(false);
+                self.should_reset_collapsing_states = false;
+            }
 
             // Custom expand/collapse icon
             let icon = if state.is_open() {
@@ -827,6 +865,39 @@ impl NetworkChooserScreen {
                         if let Some(ref ctx) = self.local_app_context {
                             ctx.enable_developer_mode(self.developer_mode);
                         }
+
+                        // TODO: When developer mode is disabled, stop SPV and switch to RPC.
+                        // Remove this block once SPV is production-ready.
+                        if !self.developer_mode {
+                            // Stop SPV and switch to RPC for all network contexts
+                            self.mainnet_app_context.stop_spv();
+                            if self.mainnet_app_context.core_backend_mode() == CoreBackendMode::Spv {
+                                self.mainnet_app_context.set_core_backend_mode(CoreBackendMode::Rpc);
+                            }
+                            self.backend_modes.insert(Network::Dash, CoreBackendMode::Rpc);
+
+                            if let Some(ref ctx) = self.testnet_app_context {
+                                ctx.stop_spv();
+                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
+                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
+                                }
+                                self.backend_modes.insert(Network::Testnet, CoreBackendMode::Rpc);
+                            }
+                            if let Some(ref ctx) = self.devnet_app_context {
+                                ctx.stop_spv();
+                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
+                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
+                                }
+                                self.backend_modes.insert(Network::Devnet, CoreBackendMode::Rpc);
+                            }
+                            if let Some(ref ctx) = self.local_app_context {
+                                ctx.stop_spv();
+                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
+                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
+                                }
+                                self.backend_modes.insert(Network::Regtest, CoreBackendMode::Rpc);
+                            }
+                        }
                     }
                     ui.label(
                         egui::RichText::new("Enable advanced features")
@@ -933,113 +1004,117 @@ impl NetworkChooserScreen {
                     );
                 });
 
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(12.0);
+                // TODO: SPV settings are hidden when developer mode is OFF.
+                // Remove the developer_mode checks once SPV is production-ready.
+                if self.developer_mode {
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(12.0);
 
-                // SPV Peer Source
-                ui.label(
-                    egui::RichText::new("SPV Peer Source")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Choose how SPV finds peers for blockchain sync on mainnet/testnet.",
-                    )
-                    .color(DashColors::text_secondary(dark_mode)),
-                );
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.use_local_spv_node, "Use local Dash Core node")
-                        .show(ui)
-                        .clicked()
-                    {
-                        // Save to database
-                        let _ = self
-                            .mainnet_app_context
-                            .db
-                            .update_use_local_spv_node(self.use_local_spv_node);
-
-                        // Update all network contexts
-                        self.mainnet_app_context
-                            .spv_manager()
-                            .set_use_local_node(self.use_local_spv_node);
-                        if let Some(ref ctx) = self.testnet_app_context {
-                            ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                        }
-                        if let Some(ref ctx) = self.devnet_app_context {
-                            ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                        }
-                        if let Some(ref ctx) = self.local_app_context {
-                            ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                        }
-                    }
+                    // SPV Peer Source
                     ui.label(
-                        egui::RichText::new(if self.use_local_spv_node {
-                            "Connect to local node at 127.0.0.1"
-                        } else {
-                            "Use DNS seed discovery (default)"
-                        })
-                        .color(DashColors::TEXT_SECONDARY)
+                        egui::RichText::new("SPV Peer Source")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Choose how SPV finds peers for blockchain sync on mainnet/testnet.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if StyledCheckbox::new(&mut self.use_local_spv_node, "Use local Dash Core node")
+                            .show(ui)
+                            .clicked()
+                        {
+                            // Save to database
+                            let _ = self
+                                .mainnet_app_context
+                                .db
+                                .update_use_local_spv_node(self.use_local_spv_node);
+
+                            // Update all network contexts
+                            self.mainnet_app_context
+                                .spv_manager()
+                                .set_use_local_node(self.use_local_spv_node);
+                            if let Some(ref ctx) = self.testnet_app_context {
+                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
+                            }
+                            if let Some(ref ctx) = self.devnet_app_context {
+                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
+                            }
+                            if let Some(ref ctx) = self.local_app_context {
+                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
+                            }
+                        }
+                        ui.label(
+                            egui::RichText::new(if self.use_local_spv_node {
+                                "Connect to local node at 127.0.0.1"
+                            } else {
+                                "Use DNS seed discovery (default)"
+                            })
+                            .color(DashColors::TEXT_SECONDARY)
+                            .italics(),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Note: Changes take effect on next SPV sync start. Devnet/local networks always use configured host.",
+                        )
+                        .size(11.0)
+                        .color(DashColors::text_secondary(dark_mode))
                         .italics(),
                     );
-                });
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Note: Changes take effect on next SPV sync start. Devnet/local networks always use configured host.",
-                    )
-                    .size(11.0)
-                    .color(DashColors::text_secondary(dark_mode))
-                    .italics(),
-                );
 
-                // Auto-start SPV on startup
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(12.0);
+                    // Auto-start SPV on startup
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(12.0);
 
-                ui.label(
-                    egui::RichText::new("SPV Auto-Start")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Automatically start SPV sync when the app opens.",
-                    )
-                    .color(DashColors::text_secondary(dark_mode)),
-                );
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.auto_start_spv, "Auto-start SPV on startup")
-                        .show(ui)
-                        .clicked()
-                    {
-                        // Save to database
-                        let _ = self
-                            .mainnet_app_context
-                            .db
-                            .update_auto_start_spv(self.auto_start_spv);
-                    }
                     ui.label(
-                        egui::RichText::new(if self.auto_start_spv {
-                            "Enabled"
-                        } else {
-                            "Disabled"
-                        })
-                        .color(if self.auto_start_spv {
-                            DashColors::DASH_BLUE
-                        } else {
-                            DashColors::text_secondary(dark_mode)
-                        }),
+                        egui::RichText::new("SPV Auto-Start")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
                     );
-                });
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Automatically start SPV sync when the app opens.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if StyledCheckbox::new(&mut self.auto_start_spv, "Auto-start SPV on startup")
+                            .show(ui)
+                            .clicked()
+                        {
+                            // Save to database
+                            let _ = self
+                                .mainnet_app_context
+                                .db
+                                .update_auto_start_spv(self.auto_start_spv);
+                        }
+                        ui.label(
+                            egui::RichText::new(if self.auto_start_spv {
+                                "Enabled"
+                            } else {
+                                "Disabled"
+                            })
+                            .color(if self.auto_start_spv {
+                                DashColors::DASH_BLUE
+                            } else {
+                                DashColors::text_secondary(dark_mode)
+                            }),
+                        );
+                    });
+                }
 
                 ui.add_space(12.0);
                 ui.separator();
@@ -1108,13 +1183,17 @@ impl NetworkChooserScreen {
                 }
 
                 // SPV Maintenance section
-                let current_backend_mode = self.current_app_context().core_backend_mode();
-                if current_backend_mode == CoreBackendMode::Spv {
-                    let snapshot = self.current_app_context().spv_manager().status();
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(12.0);
-                    app_action |= self.render_spv_maintenance_controls(ui, &snapshot);
+                // TODO: SPV maintenance is hidden when developer mode is OFF.
+                // Remove the developer_mode check once SPV is production-ready.
+                if self.developer_mode {
+                    let current_backend_mode = self.current_app_context().core_backend_mode();
+                    if current_backend_mode == CoreBackendMode::Spv {
+                        let snapshot = self.current_app_context().spv_manager().status();
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(12.0);
+                        app_action |= self.render_spv_maintenance_controls(ui, &snapshot);
+                    }
                 }
             });
         });

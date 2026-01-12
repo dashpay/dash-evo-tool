@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
@@ -188,6 +189,38 @@ impl AddNewIdentityScreen {
 
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
+
+        // Display estimated fee before action button
+        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let input_count = if self.selected_platform_address_for_funding.is_some() {
+            1
+        } else {
+            0
+        };
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
+            input_count,
+            false,
+            key_count,
+        );
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        egui::Frame::new()
+            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated Fee:")
+                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .strong(),
+                    );
+                });
+            });
+        ui.add_space(10.0);
 
         // Create Identity button
         let can_create = self.selected_platform_address_for_funding.is_some()

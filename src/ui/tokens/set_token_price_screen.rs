@@ -148,7 +148,7 @@ impl SetTokenPriceScreen {
             ));
         }
 
-        if credits_price_per_token % decimal_divisor != 0 {
+        if !credits_price_per_token.is_multiple_of(decimal_divisor) {
             return Err(format!(
                 "Price must be in multiples of {} to match the token decimals.",
                 self.minimum_price_amount()

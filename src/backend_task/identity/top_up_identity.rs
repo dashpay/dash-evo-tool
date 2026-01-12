@@ -1,7 +1,8 @@
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Error;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
@@ -80,11 +81,11 @@ impl AppContext {
                             } else {
                                 // Platform hasn't verified this Core block yet
                                 return Err(format!(
-                                        "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                                    "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
                                         and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
                                         Please wait for Platform to sync with Core chain.",
-                                        tx_block_height, metadata.core_chain_locked_height
-                                    ).into());
+                                    tx_block_height, metadata.core_chain_locked_height
+                                ));
                             }
                         } else {
                             AssetLockProof::Instant(instant_asset_lock_proof.clone())
@@ -304,6 +305,26 @@ impl AppContext {
         {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
+                // Log proof errors first
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    return Err(format!(
+                        "Error topping up identity: {}, proof error logged",
+                        proof_error
+                    ));
+                }
+
                 let error_string = e.to_string();
 
                 // Check if this is an instant lock proof expiration error
@@ -340,7 +361,32 @@ impl AppContext {
                                     None,
                                 )
                                 .await
-                                .map_err(|e| e.to_string())?
+                                .map_err(|e| {
+                                    // Log proof errors from retry
+                                    if let Error::DriveProofError(
+                                        ref proof_error,
+                                        ref proof_bytes,
+                                        ref block_info,
+                                    ) = e
+                                    {
+                                        self.db
+                                            .insert_proof_log_item(ProofLogItem {
+                                                request_type: RequestType::BroadcastStateTransition,
+                                                request_bytes: vec![],
+                                                verification_path_query_bytes: vec![],
+                                                height: block_info.height,
+                                                time_ms: block_info.time_ms,
+                                                proof_bytes: proof_bytes.clone(),
+                                                error: Some(proof_error.to_string()),
+                                            })
+                                            .ok();
+                                        return format!(
+                                            "Error topping up identity: {}, proof error logged",
+                                            proof_error
+                                        );
+                                    }
+                                    e.to_string()
+                                })?
                         } else {
                             return Err(format!(
                                 "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
@@ -350,10 +396,8 @@ impl AppContext {
                             ));
                         }
                     } else {
-                        return Err(format!(
-                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked."
-                        ));
+                        return Err("Cannot use this asset lock. The instant lock proof has expired and the transaction \
+                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string());
                     }
                 } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     qualified_identity
@@ -367,6 +411,30 @@ impl AppContext {
                         )
                         .await
                         .map_err(|e| {
+                            // Log proof errors from retry
+                            if let Error::DriveProofError(
+                                ref proof_error,
+                                ref proof_bytes,
+                                ref block_info,
+                            ) = e
+                            {
+                                self.db
+                                    .insert_proof_log_item(ProofLogItem {
+                                        request_type: RequestType::BroadcastStateTransition,
+                                        request_bytes: vec![],
+                                        verification_path_query_bytes: vec![],
+                                        height: block_info.height,
+                                        time_ms: block_info.time_ms,
+                                        proof_bytes: proof_bytes.clone(),
+                                        error: Some(proof_error.to_string()),
+                                    })
+                                    .ok();
+                                return format!(
+                                    "Error topping up identity: {}, proof error logged",
+                                    proof_error
+                                );
+                            }
+
                             let identity_create_transition =
                                 IdentityTopUpTransition::try_from_identity(
                                     &qualified_identity.identity,
@@ -456,8 +524,18 @@ impl AppContext {
                 .map_err(|e| e.to_string())?;
         }
 
+        // Calculate actual fee for the FeeResult
+        let actual_fee = if expected_credits_from_topup > 0 {
+            let balance_increase = updated_identity_balance.saturating_sub(balance_before);
+            expected_credits_from_topup.saturating_sub(balance_increase)
+        } else {
+            estimated_fee // Fall back to estimated when we can't calculate actual
+        };
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,
+            fee_result,
         ))
     }
 }

@@ -28,19 +28,11 @@ jobs:
           - name: "linux-x86_64"
             runs-on: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
-            platform: "x86_64-linux"
+            platform: "linux-x86_64"
           - name: "linux-arm64"
             runs-on: "ubuntu-22.04-arm"
             target: "aarch64-unknown-linux-gnu"
-            platform: "arm64-linux"
-          - name: "macos-x86_64"
-            runs-on: "macos-13"
-            target: "x86_64-apple-darwin"
-            platform: "x86_64-mac"
-          - name: "macos-arm64"
-            runs-on: "macos-latest"
-            target: "aarch64-apple-darwin"
-            platform: "arm64-mac"
+            platform: "linux-arm64"
           - name: "Windows"
             runs-on: "ubuntu-22.04"
             target: "x86_64-pc-windows-gnu"
@@ -81,7 +73,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang cmake unzip libsqlite3-dev gcc-mingw-w64 mingw-w64 libsqlite3-dev mingw-w64-x86-64-dev gcc-aarch64-linux-gnu zip && uname -a && cargo clean
 
       - name: Install protoc (ARM)
-        if: ${{ matrix.platform == 'arm64-linux' }}
+        if: ${{ matrix.platform == 'linux-arm64' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-aarch_64.zip && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
@@ -95,18 +87,6 @@ jobs:
       - name: Install protoc (Windows)
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-linux-x86_64.zip
-        env:
-          PROTOC: /usr/local/bin/protoc
-
-      - name: Install protoc (Mac x64)
-        if: ${{ matrix.target == 'x86_64-apple-darwin' }}
-        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-x86_64.zip && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-x86_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-x86_64.zip && uname -a
-        env:
-          PROTOC: /usr/local/bin/protoc
-
-      - name: Install protoc (Mac ARM)
-        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
-        run: curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-osx-aarch_64.zip && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local bin/protoc && sudo unzip -o protoc-25.2-osx-aarch_64.zip -d /usr/local 'include/*' && rm -f protoc-25.2-osx-aarch_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
 
@@ -138,27 +118,556 @@ jobs:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
 
+  build-macos-arm64:
+    name: Build macOS ARM64 (Signed & Notarized)
+    runs-on: macos-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Initial disk cleanup
+        run: |
+          echo "Disk usage before initial cleanup:"
+          df -h
+          
+          # Clean up homebrew cache
+          brew cleanup --prune=all || true
+          
+          # Remove Xcode caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
+          
+          # Clean system caches
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          
+          echo "Disk usage after initial cleanup:"
+          df -h
+
+      - name: Install protoc
+        run: |
+          brew install protobuf
+          protoc --version
+
+      - name: Build ARM64 architecture
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          mkdir -p build
+          cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
+          chmod +x build/dash-evo-tool
+
+          # Targeted cleanup - only remove build artifacts we don't need
+          rm -rf target/aarch64-apple-darwin/release/deps
+          rm -rf target/aarch64-apple-darwin/release/build
+          rm -rf target/aarch64-apple-darwin/release/incremental
+          rm -rf target/aarch64-apple-darwin/release/.fingerprint
+          rm -rf target/aarch64-apple-darwin/debug
+          rm -rf target/debug
+          
+          # Remove the actual binary from target since we copied it
+          rm -f target/aarch64-apple-darwin/release/dash-evo-tool
+
+          # Create app bundle structure
+          mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
+          mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
+
+          # Move binary into app bundle
+          cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+
+          # Create icon set and convert to ICNS
+          mkdir -p AppIcon.iconset
+
+          # Create all required icon sizes from the logo (which already has 8% padding)
+          sips -z 16 16     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
+          iconutil -c icns AppIcon.iconset
+          cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
+
+          # Create Info.plist
+          cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>dash-evo-tool</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIdentifier</key>
+            <string>org.dash.evo-tool</string>
+            <key>CFBundleName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleDisplayName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleSignature</key>
+            <string>????</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSSupportsAutomaticGraphicsSwitching</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Import signing certificates
+        uses: Apple-Actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Resolve signing identity
+        id: signid
+        run: |
+          ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | sed -E 's/.*"(.+)"/\1/' | head -n1)
+          echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Code sign app bundle with hardened runtime and timestamp
+        run: |
+          # Create entitlements file
+          cat > entitlements.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+            <true/>
+            <key>com.apple.security.cs.allow-jit</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Sign the app bundle (deep signing to get all components)
+          codesign --force --deep --options runtime --timestamp \
+            --sign "${{ steps.signid.outputs.IDENTITY }}" \
+            --entitlements entitlements.plist \
+            "build/Dash Evo Tool.app"
+
+          # Verify the signature
+          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
+
+      - name: Free up disk space before DMG creation
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
+          
+          # Remove the ENTIRE target directory since we already copied the binary
+          rm -rf target
+          
+          # Remove the entire Cargo directory
+          rm -rf ~/.cargo
+          
+          # Clean up homebrew completely
+          brew cleanup --prune=all
+          rm -rf $(brew --cache)
+          
+          # Remove any unnecessary Xcode simulators and caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches 2>/dev/null || true
+          
+          # Remove temporary icon files after creating the app bundle
+          rm -rf AppIcon.iconset 2>/dev/null || true
+          
+          # Clean system caches more aggressively
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
+          
+          # Remove any iOS simulators and SDKs we don't need
+          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
+          
+          echo "Disk usage after cleanup:"
+          df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
+
+      - name: Create DMG
+        run: |
+          # Get app size for sparse image
+          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
+          DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
+          
+          # Create a sparse image instead of using srcfolder
+          # Sparse images only use disk space as needed
+          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
+          
+          # Mount the sparse image
+          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
+          
+          # Copy app to mounted volume
+          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
+          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+
+          # Remove macOS metadata directories that get created automatically
+          rm -rf /Volumes/"Dash Evo Tool"/.fseventsd
+          rm -rf /Volumes/"Dash Evo Tool"/.Spotlight-V100
+          rm -f /Volumes/"Dash Evo Tool"/.DS_Store
+          
+          # Unmount
+          hdiutil detach /Volumes/"Dash Evo Tool"
+          
+          # Convert sparse image to compressed DMG
+          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-arm64.dmg
+          
+          # Clean up sparse image
+          rm -f temp.sparseimage
+
+          # Sign the DMG
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-arm64.dmg
+
+      - name: Validate Apple credentials
+        run: |
+          if [ -z "${{ secrets.APPLE_ID }}" ]; then
+            echo "Error: APPLE_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            echo "Error: APPLE_TEAM_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
+            echo "Error: APPLE_APP_SPECIFIC_PASSWORD secret is not set"
+            exit 1
+          fi
+          echo "Apple credentials validation passed"
+
+      - name: Notarize DMG
+        run: |
+          echo "Submitting DMG for notarization..."
+          xcrun notarytool submit dash-evo-tool-macos-arm64.dmg \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --wait --verbose
+
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple dash-evo-tool-macos-arm64.dmg
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dash-evo-tool-macos-arm64.dmg'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-evo-tool-macos-arm64.dmg
+          path: dash-evo-tool-macos-arm64.dmg
+
+  build-macos-x86:
+    name: Build macOS x86_64 (Signed & Notarized)
+    runs-on: macos-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Initial disk cleanup
+        run: |
+          echo "Disk usage before initial cleanup:"
+          df -h
+          
+          # Clean up homebrew cache
+          brew cleanup --prune=all || true
+          
+          # Remove Xcode caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
+          
+          # Clean system caches
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          
+          echo "Disk usage after initial cleanup:"
+          df -h
+
+      - name: Install protoc
+        run: |
+          brew install protobuf
+          protoc --version
+
+      - name: Build x86_64 architecture
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p build
+          cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
+          chmod +x build/dash-evo-tool
+
+          # Targeted cleanup - only remove build artifacts we don't need
+          rm -rf target/x86_64-apple-darwin/release/deps
+          rm -rf target/x86_64-apple-darwin/release/build
+          rm -rf target/x86_64-apple-darwin/release/incremental
+          rm -rf target/x86_64-apple-darwin/release/.fingerprint
+          rm -rf target/x86_64-apple-darwin/debug
+          rm -rf target/debug
+          
+          # Remove the actual binary from target since we copied it
+          rm -f target/x86_64-apple-darwin/release/dash-evo-tool
+
+          # Create app bundle structure
+          mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
+          mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
+
+          # Move binary into app bundle
+          cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+
+          # Create icon set and convert to ICNS
+          mkdir -p AppIcon.iconset
+
+          # Create all required icon sizes from the logo (which already has 8% padding)
+          sips -z 16 16     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     assets/DET_LOGO.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
+          iconutil -c icns AppIcon.iconset
+          cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
+
+          # Create Info.plist
+          cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>dash-evo-tool</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIdentifier</key>
+            <string>org.dash.evo-tool</string>
+            <key>CFBundleName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleDisplayName</key>
+            <string>Dash Evo Tool</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleSignature</key>
+            <string>????</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSSupportsAutomaticGraphicsSwitching</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Import signing certificates
+        uses: Apple-Actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Resolve signing identity
+        id: signid
+        run: |
+          ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | sed -E 's/.*"(.+)"/\1/' | head -n1)
+          echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Code sign app bundle with hardened runtime and timestamp
+        run: |
+          # Create entitlements file
+          cat > entitlements.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+            <true/>
+            <key>com.apple.security.cs.allow-jit</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Sign the app bundle (deep signing to get all components)
+          codesign --force --deep --options runtime --timestamp \
+            --sign "${{ steps.signid.outputs.IDENTITY }}" \
+            --entitlements entitlements.plist \
+            "build/Dash Evo Tool.app"
+
+          # Verify the signature
+          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
+
+      - name: Free up disk space before DMG creation
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
+          
+          # Remove the ENTIRE target directory since we already copied the binary
+          rm -rf target
+          
+          # Remove the entire Cargo directory
+          rm -rf ~/.cargo
+          
+          # Clean up homebrew completely
+          brew cleanup --prune=all
+          rm -rf $(brew --cache)
+          
+          # Remove any unnecessary Xcode simulators and caches
+          sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches 2>/dev/null || true
+          
+          # Remove temporary icon files after creating the app bundle
+          rm -rf AppIcon.iconset 2>/dev/null || true
+          
+          # Clean system caches more aggressively
+          sudo rm -rf /Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+          sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
+          
+          # Remove any iOS simulators and SDKs we don't need
+          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
+          
+          echo "Disk usage after cleanup:"
+          df -h
+          du -sh ~/* 2>/dev/null | sort -rh | head -20
+
+      - name: Create DMG
+        run: |
+          # Get app size for sparse image
+          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
+          DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
+          
+          # Create a sparse image instead of using srcfolder
+          # Sparse images only use disk space as needed
+          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
+          
+          # Mount the sparse image
+          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
+          
+          # Copy app to mounted volume
+          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
+          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+          
+          # Unmount
+          hdiutil detach /Volumes/"Dash Evo Tool"
+          
+          # Convert sparse image to compressed DMG
+          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-x86_64.dmg
+          
+          # Clean up sparse image
+          rm -f temp.sparseimage
+
+          # Sign the DMG
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg
+
+      - name: Validate Apple credentials
+        run: |
+          if [ -z "${{ secrets.APPLE_ID }}" ]; then
+            echo "Error: APPLE_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            echo "Error: APPLE_TEAM_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
+            echo "Error: APPLE_APP_SPECIFIC_PASSWORD secret is not set"
+            exit 1
+          fi
+          echo "Apple credentials validation passed"
+
+      - name: Notarize DMG
+        run: |
+          echo "Submitting DMG for notarization..."
+          xcrun notarytool submit dash-evo-tool-macos-x86_64.dmg \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --wait --verbose
+
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple dash-evo-tool-macos-x86_64.dmg
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dash-evo-tool-macos-x86_64.dmg'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-evo-tool-macos-x86_64.dmg
+          path: dash-evo-tool-macos-x86_64.dmg
+
   release:
     name: Create GitHub Release
-    needs: build-and-release
+    needs: [build-and-release, build-macos-arm64, build-macos-x86]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-x86_64-linux.zip
+          name: dash-evo-tool-linux-x86_64.zip
       - name: Download Linux Arm64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-arm64-linux.zip
-      - name: Download MacOS AMD64 Artifact
+          name: dash-evo-tool-linux-arm64.zip
+      - name: Download macOS ARM64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-x86_64-mac.zip
-      - name: Download MacOS ARM64 Artifact
+          name: dash-evo-tool-macos-arm64.dmg
+      - name: Download macOS x86_64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-arm64-mac.zip
+          name: dash-evo-tool-macos-x86_64.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
@@ -171,10 +680,10 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag }}
           files: |
-            ./dash-evo-tool-x86_64-linux.zip
-            ./dash-evo-tool-arm64-linux.zip
-            ./dash-evo-tool-x86_64-mac.zip
-            ./dash-evo-tool-arm64-mac.zip
+            ./dash-evo-tool-linux-x86_64.zip
+            ./dash-evo-tool-linux-arm64.zip
+            ./dash-evo-tool-macos-arm64.dmg
+            ./dash-evo-tool-macos-x86_64.dmg
             ./dash-evo-tool-windows.zip
           draft: false
           prerelease: true

@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_dashpay_derivation_path() {
         // Test that we can create valid derivation paths
-        let path = DerivationPath::from_str("m/9'/5'/15'/0'/").unwrap();
+        let path = DerivationPath::from_str("m/9'/5'/15'/0'").unwrap();
         assert_eq!(path.len(), 4);
     }
 

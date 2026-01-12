@@ -627,10 +627,14 @@ impl AppState {
             app_state.welcome_screen =
                 Some(WelcomeScreen::new(app_state.mainnet_app_context.clone()));
         } else {
-            // Auto-start SPV sync if onboarding is completed, backend mode is SPV, and auto-start is enabled
+            // Auto-start SPV sync if onboarding is completed, backend mode is SPV, auto-start is enabled,
+            // and developer mode is enabled.
+            // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+            // Remove the is_developer_mode() check once SPV is production-ready.
             let current_context = app_state.current_app_context();
             let auto_start_spv = db.get_auto_start_spv().unwrap_or(true);
             if auto_start_spv
+                && current_context.is_developer_mode()
                 && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
             {
                 if let Err(e) = current_context.start_spv() {
@@ -1071,10 +1075,13 @@ impl App for AppState {
                     let screen = screen_type.create_screen(self.current_app_context());
                     self.screen_stack.push(screen);
                 }
-                // Start SPV sync after onboarding completes (if auto-start is enabled)
+                // Start SPV sync after onboarding completes (if auto-start is enabled and developer mode is on)
+                // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+                // Remove the is_developer_mode() check once SPV is production-ready.
                 let current_context = self.current_app_context();
                 let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(true);
                 if auto_start_spv
+                    && current_context.is_developer_mode()
                     && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
                 {
                     if let Err(e) = current_context.start_spv() {

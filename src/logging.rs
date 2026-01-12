@@ -10,11 +10,12 @@ pub fn initialize_logger() {
         Ok(file) => file,
         Err(e) => panic!("Failed to create log file: {:?}", e),
     };
-
-    let filter = EnvFilter::try_new(
-        "info,dash_evo_tool=trace,dash_sdk=trace,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=trace,h2=warn,dash_spv=debug",
-    )
-        .unwrap_or_else(|e| panic!("Failed to create EnvFilter: {:?}", e));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::try_new(
+            "info,dash_evo_tool=trace,dash_sdk=debug,dash_sdk::platform::transition=trace,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn,dash_spv=debug",
+        )
+        .unwrap_or_else(|e| panic!("Failed to create EnvFilter: {:?}", e))
+    });
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)

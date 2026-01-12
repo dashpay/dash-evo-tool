@@ -1,6 +1,8 @@
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -290,6 +292,10 @@ impl AppContext {
 
         let public_keys = keys.to_public_keys_map();
 
+        // Calculate fee estimate for identity creation
+        let key_count = public_keys.len();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create(key_count);
+
         let existing_identity = match Identity::fetch_by_identifier(&sdk, identity_id).await {
             Ok(result) => result,
             Err(e) => return Err(format!("Error fetching identity: {}", e)),
@@ -348,8 +354,10 @@ impl AppContext {
                 .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
                 .map_err(|e| e.to_string())?;
 
+            let fee_result = FeeResult::new(estimated_fee, estimated_fee);
             return Ok(BackendTaskSuccessResult::RegisteredIdentity(
                 qualified_identity,
+                fee_result,
             ));
         }
 
@@ -461,10 +469,8 @@ impl AppContext {
                         )
                         .map_err(|e| e.to_string())?;
 
-                        return Err(String::from(
-                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked.",
-                        ));
+                        return Err("Cannot use this asset lock. The instant lock proof has expired and the transaction \
+                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string());
                     }
                 } else {
                     // we failed, set the status accordingly and terminate the process
@@ -500,8 +506,10 @@ impl AppContext {
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
             .map_err(|e| e.to_string())?;
 
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
             qualified_identity,
+            fee_result,
         ))
     }
 
@@ -525,6 +533,26 @@ impl AppContext {
         {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
+                // Log proof errors first
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    return Err(format!(
+                        "Error registering identity: {}, proof error logged",
+                        proof_error
+                    ));
+                }
+
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     identity
                         .put_to_platform_and_wait_for_response(
@@ -536,6 +564,30 @@ impl AppContext {
                         )
                         .await
                         .map_err(|e| {
+                            // Log proof errors from retry
+                            if let Error::DriveProofError(
+                                ref proof_error,
+                                ref proof_bytes,
+                                ref block_info,
+                            ) = e
+                            {
+                                self.db
+                                    .insert_proof_log_item(ProofLogItem {
+                                        request_type: RequestType::BroadcastStateTransition,
+                                        request_bytes: vec![],
+                                        verification_path_query_bytes: vec![],
+                                        height: block_info.height,
+                                        time_ms: block_info.time_ms,
+                                        proof_bytes: proof_bytes.clone(),
+                                        error: Some(proof_error.to_string()),
+                                    })
+                                    .ok();
+                                return format!(
+                                    "Error registering identity: {}, proof error logged",
+                                    proof_error
+                                );
+                            }
+
                             let identity_create_transition =
                                 IdentityCreateTransition::try_from_identity_with_signer(
                                     identity,
@@ -583,6 +635,15 @@ impl AppContext {
         };
 
         let public_keys = keys.to_public_keys_map();
+
+        // Calculate fee estimate for identity creation from platform addresses
+        let key_count = public_keys.len();
+        let input_count = inputs.len();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
+            input_count,
+            false,
+            key_count,
+        );
 
         // Clone the wallet for use as the address signer (needed across async boundary)
         let wallet_clone = { wallet.read().map_err(|e| e.to_string())?.clone() };
@@ -644,11 +705,44 @@ impl AppContext {
                         .insert(wallet_identity_index, qualified_identity.identity.clone());
                 }
 
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredIdentity(
                     qualified_identity,
+                    fee_result,
                 ))
             }
             Err(e) => {
+                // Log proof errors
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+
+                    qualified_identity
+                        .status
+                        .update(IdentityStatus::FailedCreation);
+
+                    self.insert_local_qualified_identity(
+                        &qualified_identity,
+                        &Some((wallet_seed_hash, wallet_identity_index)),
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                    return Err(format!(
+                        "Failed to create identity from Platform addresses: {}, proof error logged",
+                        proof_error
+                    ));
+                }
+
                 qualified_identity
                     .status
                     .update(IdentityStatus::FailedCreation);

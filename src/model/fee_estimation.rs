@@ -520,9 +520,9 @@ mod tests {
     #[test]
     fn test_identity_create_estimate() {
         let estimator = PlatformFeeEstimator::new();
-        // Base cost + 2 keys
+        // Base cost + asset lock cost + 2 keys
         let fee = estimator.estimate_identity_create(2);
-        assert_eq!(fee, 2_000_000 + 2 * 6_500_000);
+        assert_eq!(fee, 2_000_000 + 200_000_000 + 2 * 6_500_000);
     }
 
     #[test]

@@ -160,9 +160,11 @@ impl RegisterDataContractScreen {
                 .corner_radius(5.0)
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(msg).color(error_color));
-                        ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(&msg).color(error_color)).wrap(),
+                        );
+                        ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.broadcast_status = BroadcastStatus::Idle;
                         }
@@ -185,16 +187,30 @@ impl RegisterDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // Display estimated fee before action button
+                // Display estimated fee based on contract size
+                let contract_size = self.contract_json_input.len();
                 let estimated_fee =
-                    crate::model::fee_estimation::PlatformFeeEstimator::new().estimate_contract_create_base();
+                    crate::model::fee_estimation::PlatformFeeEstimator::new()
+                        .estimate_contract_create_with_size(contract_size);
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label("Estimated Fee:");
-                    ui.label(
-                        RichText::new(format_credits_as_dash(estimated_fee)).strong(),
-                    );
-                });
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated Fee:")
+                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            );
+                        });
+                    });
                 ui.add_space(10.0);
 
                 // Register button

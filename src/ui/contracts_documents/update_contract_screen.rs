@@ -189,9 +189,11 @@ impl UpdateDataContractScreen {
                 .corner_radius(5.0)
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(msg).color(error_color));
-                        ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(&msg).color(error_color)).wrap(),
+                        );
+                        ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.broadcast_status = BroadcastStatus::Idle;
                         }

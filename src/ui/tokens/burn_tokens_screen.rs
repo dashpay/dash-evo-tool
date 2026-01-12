@@ -597,10 +597,24 @@ impl ScreenLike for BurnTokensScreen {
                 // Display estimated fee before action button
                 let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label("Estimated Fee:");
-                    ui.label(RichText::new(format_credits_as_dash(estimated_fee)).strong());
-                });
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                egui::Frame::new()
+                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated Fee:")
+                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            );
+                        });
+                    });
 
                 // Burn button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {

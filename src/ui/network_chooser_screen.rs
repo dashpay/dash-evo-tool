@@ -267,6 +267,33 @@ impl NetworkChooserScreen {
                             });
 
                         ui.end_row();
+
+                        // Show experimental warning when SPV mode is selected
+                        if current_backend_mode == CoreBackendMode::Spv {
+                            ui.label(""); // Empty label for grid alignment
+                            egui::Frame::new()
+                                .fill(DashColors::WARNING.gamma_multiply(0.15))
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .stroke(egui::Stroke::new(1.0, DashColors::WARNING))
+                                .corner_radius(4.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("⚠")
+                                                .color(DashColors::WARNING)
+                                                .size(14.0),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "SPV mode is experimental and still in development",
+                                            )
+                                            .color(DashColors::WARNING)
+                                            .size(12.0),
+                                        );
+                                    });
+                                });
+                            ui.end_row();
+                        }
                     }
 
                     // Row 2: Network

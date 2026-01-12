@@ -772,15 +772,14 @@ impl IdentitiesScreen {
                                                             }
 
                                                             // Add Key button
-                                                            if qualified_identity.can_sign_with_master_key().is_some() {
-                                                                if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
+                                                            if qualified_identity.can_sign_with_master_key().is_some()
+                                                                && ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
                                                                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
-                                                            }
                                                         },
                                                     );
                                                 }

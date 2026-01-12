@@ -197,18 +197,15 @@ pub enum ContractSearchStatus {
 }
 
 #[derive(Debug, PartialEq)]
+#[derive(Default)]
 pub enum TokenCreatorStatus {
+    #[default]
     NotStarted,
     WaitingForResult(u64),
     Complete,
     ErrorMessage(String),
 }
 
-impl Default for TokenCreatorStatus {
-    fn default() -> Self {
-        Self::NotStarted
-    }
-}
 
 /// Sorting columns
 #[derive(Clone, Copy, PartialEq, Eq)]

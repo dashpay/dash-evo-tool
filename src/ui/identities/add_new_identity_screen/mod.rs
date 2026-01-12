@@ -24,7 +24,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
-use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -115,17 +115,15 @@ impl AddNewIdentityScreen {
         if app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &app_context.wallets.read().unwrap();
             // If a specific wallet seed hash is provided, use that wallet
-            if let Some(seed_hash) = wallet_seed_hash {
-                if let Some(wallet) = wallets.get(&seed_hash) {
+            if let Some(seed_hash) = wallet_seed_hash
+                && let Some(wallet) = wallets.get(&seed_hash) {
                     selected_wallet = Some(wallet.clone());
                 }
-            }
             // Otherwise, select the first available wallet
-            if selected_wallet.is_none() {
-                if let Some(wallet) = wallets.values().next() {
+            if selected_wallet.is_none()
+                && let Some(wallet) = wallets.values().next() {
                     selected_wallet = Some(wallet.clone());
                 }
-            }
         }
 
         let mut created = Self {

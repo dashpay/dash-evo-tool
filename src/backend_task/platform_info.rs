@@ -623,7 +623,7 @@ impl AppContext {
 
                 // Fetch the address info using FetchMany with BTreeSet
                 let mut addresses = std::collections::BTreeSet::new();
-                addresses.insert(platform_address.clone());
+                addresses.insert(platform_address);
                 match AddressInfo::fetch_many(&sdk, addresses).await {
                     Ok(address_infos) => {
                         // The result is a map of PlatformAddress -> Option<AddressInfo>

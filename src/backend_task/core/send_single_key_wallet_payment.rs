@@ -69,7 +69,7 @@ impl AppContext {
                     .calculate_fee(initial_fee_estimate)
             });
 
-            let target_amount = total_output + initial_fee;
+            let _target_amount = total_output + initial_fee;
 
             // Sort UTXOs by value descending for efficient selection (use larger UTXOs first)
             let mut all_utxos: Vec<(OutPoint, TxOut)> = wallet_guard

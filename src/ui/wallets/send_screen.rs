@@ -58,8 +58,10 @@ pub enum SendStatus {
 
 /// Fee strategy for platform transfers
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PlatformFeeStrategy {
     /// Deduct fee from first input
+    #[default]
     DeductFromFirstInput,
     /// Deduct fee from last input
     DeductFromLastInput,
@@ -69,11 +71,6 @@ pub enum PlatformFeeStrategy {
     ReduceLastOutput,
 }
 
-impl Default for PlatformFeeStrategy {
-    fn default() -> Self {
-        Self::DeductFromFirstInput
-    }
-}
 
 impl std::fmt::Display for PlatformFeeStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1628,8 +1625,8 @@ impl WalletSendScreen {
             .map(|o| Self::detect_address_type_static(&o.address))
             .collect();
 
-        let has_core_output = output_types.iter().any(|t| *t == AddressType::Core);
-        let has_platform_output = output_types.iter().any(|t| *t == AddressType::Platform);
+        let has_core_output = output_types.contains(&AddressType::Core);
+        let has_platform_output = output_types.contains(&AddressType::Platform);
 
         // Validate that we don't mix output types
         if has_core_output && has_platform_output {

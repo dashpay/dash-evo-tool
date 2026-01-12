@@ -143,11 +143,8 @@ impl AddressBalanceScreen {
 
 impl ScreenLike for AddressBalanceScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Error => {
-                self.error_message = Some(message.to_string());
-            }
-            _ => {}
+        if message_type == MessageType::Error {
+            self.error_message = Some(message.to_string());
         }
     }
 

@@ -1,6 +1,5 @@
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };

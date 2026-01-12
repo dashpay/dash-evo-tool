@@ -374,7 +374,7 @@ impl TopUpIdentityScreen {
             .map(|w| w.read().unwrap().total_balance_duffs())
             .unwrap_or(0);
         // Convert Duffs to Credits (1 Duff = 1000 Credits)
-        let max_amount_credits = max_amount_duffs as u64 * 1000;
+        let max_amount_credits = max_amount_duffs * 1000;
 
         // Lazy initialization of the AmountInput component
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {

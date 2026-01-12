@@ -1839,11 +1839,10 @@ impl Wallet {
         if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
             let canonical_bytes = platform_addr.to_bytes();
             for (existing_addr, info) in &self.platform_address_info {
-                if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone()) {
-                    if existing_platform.to_bytes() == canonical_bytes {
+                if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone())
+                    && existing_platform.to_bytes() == canonical_bytes {
                         return Some(info);
                     }
-                }
             }
         }
 
@@ -2153,8 +2152,8 @@ impl WalletAddressProvider {
             wallet.set_platform_address_info(address.clone(), *balance, nonce);
 
             // Also register in known_addresses and watched_addresses if not already present
-            if !wallet.known_addresses.contains_key(address) {
-                if let Some(&index) = address_to_index.get(address) {
+            if !wallet.known_addresses.contains_key(address)
+                && let Some(&index) = address_to_index.get(address) {
                     let derivation_path = DerivationPath::platform_payment_path(
                         self.network,
                         self.account,
@@ -2175,7 +2174,6 @@ impl WalletAddressProvider {
                         },
                     );
                 }
-            }
         }
     }
 

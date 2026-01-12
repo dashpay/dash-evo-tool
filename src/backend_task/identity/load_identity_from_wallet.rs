@@ -28,7 +28,7 @@ impl AppContext {
         sdk: &Sdk,
         wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 

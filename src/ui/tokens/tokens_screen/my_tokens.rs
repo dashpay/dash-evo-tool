@@ -2,7 +2,6 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
-use crate::ui::components::styled::StyledButton;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;

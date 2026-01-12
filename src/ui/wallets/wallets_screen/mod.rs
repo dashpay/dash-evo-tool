@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::amount::Amount;
 use crate::model::wallet::{
     DerivationPathHelpers, DerivationPathReference, Wallet, WalletSeedHash, WalletTransaction,
 };
@@ -1110,7 +1110,7 @@ impl WalletsBalancesScreen {
     }
 
     fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
-        let mut app_action = AppAction::None;
+        let app_action = AppAction::None;
         let mut open_fund_dialog_for_idx: Option<(usize, Vec<(String, u64)>)> = None;
 
         if let Some(arc_wallet) = &self.selected_wallet {
@@ -1484,8 +1484,8 @@ impl WalletsBalancesScreen {
             });
 
         // Show description of the selected account below the dropdown
-        if let Some(summary) = selected_summary {
-            if let Some(description) = summary.category.description() {
+        if let Some(summary) = selected_summary
+            && let Some(description) = summary.category.description() {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(description)
@@ -1494,7 +1494,6 @@ impl WalletsBalancesScreen {
                         .size(12.0),
                 );
             }
-        }
     }
 
     fn render_transactions_section(&self, ui: &mut Ui) {
@@ -1985,8 +1984,8 @@ impl WalletsBalancesScreen {
                                     self.receive_dialog.status = Some(status);
                                 }
 
-                                if generate_new {
-                                    if let Some(wallet) = &self.selected_wallet {
+                                if generate_new
+                                    && let Some(wallet) = &self.selected_wallet {
                                         match self.generate_new_core_receive_address(wallet) {
                                             Ok((new_addr, new_balance)) => {
                                                 self.receive_dialog.core_addresses.push((new_addr, new_balance));
@@ -2001,7 +2000,6 @@ impl WalletsBalancesScreen {
                                             }
                                         }
                                     }
-                                }
                             }
 
                             ui.add_space(10.0);
@@ -2935,7 +2933,7 @@ impl WalletsBalancesScreen {
                         ui.label("No UTXOs available. Click 'Refresh' to load UTXOs from Core.");
                     } else {
                         const UTXOS_PER_PAGE: usize = 50;
-                        let total_pages = (utxo_count + UTXOS_PER_PAGE - 1) / UTXOS_PER_PAGE;
+                        let total_pages = utxo_count.div_ceil(UTXOS_PER_PAGE);
 
                         // Ensure current page is valid
                         if self.utxo_page >= total_pages {
@@ -3253,8 +3251,8 @@ impl ScreenLike for WalletsBalancesScreen {
             match result {
                 WalletUnlockResult::Unlocked => {
                     // Check if we were trying to view a private key
-                    if let Some(path) = self.private_key_dialog.pending_derivation_path.take() {
-                        if let Some(address) = self.private_key_dialog.pending_address.take() {
+                    if let Some(path) = self.private_key_dialog.pending_derivation_path.take()
+                        && let Some(address) = self.private_key_dialog.pending_address.take() {
                             match self.derive_private_key_wif(&path) {
                                 Ok(key) => {
                                     self.private_key_dialog.is_open = true;
@@ -3267,7 +3265,6 @@ impl ScreenLike for WalletsBalancesScreen {
                                 }
                             }
                         }
-                    }
 
                     // Check if we were trying to fund a Platform address
                     if self.fund_platform_dialog.pending_fund_after_unlock {
@@ -3444,8 +3441,8 @@ impl ScreenLike for WalletsBalancesScreen {
                         ));
                     }
                 }
-            } else if cmd == "RefreshSKWallet" {
-                if let Some(wallet_arc) = &self.selected_single_key_wallet {
+            } else if cmd == "RefreshSKWallet"
+                && let Some(wallet_arc) = &self.selected_single_key_wallet {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
                         // SK wallet is locked - open unlock dialog
@@ -3460,7 +3457,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         ));
                     }
                 }
-            }
         }
 
         // Combine with pending refresh action

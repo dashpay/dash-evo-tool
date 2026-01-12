@@ -87,7 +87,7 @@ impl AppContext {
                                 and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
                                 Please wait for Platform to sync with Core chain.",
                                 tx_block_height, metadata.core_chain_locked_height
-                            ).into());
+                            ));
                         }
                     } else {
                         AssetLockProof::Instant(instant_asset_lock_proof.clone())
@@ -454,10 +454,8 @@ impl AppContext {
                         )
                         .map_err(|e| e.to_string())?;
 
-                        return Err(format!(
-                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked."
-                        ));
+                        return Err("Cannot use this asset lock. The instant lock proof has expired and the transaction \
+                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string());
                     }
                 } else {
                     // we failed, set the status accordingly and terminate the process

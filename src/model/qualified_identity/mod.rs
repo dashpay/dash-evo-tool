@@ -388,9 +388,9 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                                 DerivationPath as DP, KeyDerivationType,
                             };
 
-                            if let Some(wallet) = self.associated_wallets.values().next() {
-                                if let Ok(wallet_ref) = wallet.read() {
-                                    if let Ok(seed) = wallet_ref.seed_bytes() {
+                            if let Some(wallet) = self.associated_wallets.values().next()
+                                && let Ok(wallet_ref) = wallet.read()
+                                    && let Ok(seed) = wallet_ref.seed_bytes() {
                                         // Scan identity indices 0-9 to find matching key
                                         for identity_index in 0..10u32 {
                                             let correct_path = DP::identity_authentication_path(
@@ -431,8 +431,6 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                                             }
                                         }
                                     }
-                                }
-                            }
 
                             tracing::error!(
                                 derived = %hex::encode(hash160.as_byte_array()),

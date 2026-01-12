@@ -39,6 +39,7 @@ impl SendRecipient {
 
 /// State for the fee confirmation dialog shown when min relay fee is higher than estimated
 #[derive(Debug, Clone)]
+#[derive(Default)]
 struct FeeConfirmationDialog {
     is_open: bool,
     estimated_fee: u64,
@@ -46,16 +47,6 @@ struct FeeConfirmationDialog {
     pending_request: Option<WalletPaymentRequest>,
 }
 
-impl Default for FeeConfirmationDialog {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            estimated_fee: 0,
-            required_fee: 0,
-            pending_request: None,
-        }
-    }
-}
 
 pub struct SingleKeyWalletSendScreen {
     pub app_context: Arc<AppContext>,
@@ -978,15 +969,14 @@ impl ScreenLike for SingleKeyWalletSendScreen {
         }
 
         // Check for min relay fee error and show confirmation dialog
-        if message_type == MessageType::Error {
-            if let Some(required_fee) = Self::parse_min_relay_fee_error(message) {
+        if message_type == MessageType::Error
+            && let Some(required_fee) = Self::parse_min_relay_fee_error(message) {
                 // Show the fee confirmation dialog instead of the error message
                 self.fee_dialog.required_fee = required_fee;
                 self.fee_dialog.is_open = true;
                 // Keep sending state true until user confirms or cancels
                 return;
             }
-        }
 
         self.message = Some((message.to_string(), message_type, Utc::now()));
     }

@@ -1070,11 +1070,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                             )
                             .changed();
                         mode_changed |= ui
-                            .selectable_value(
-                                &mut self.mode,
-                                LoadIdentityMode::Wallet,
-                                "By Wallet",
-                            )
+                            .selectable_value(&mut self.mode, LoadIdentityMode::Wallet, "By Wallet")
                             .changed();
                         mode_changed |= ui
                             .selectable_value(

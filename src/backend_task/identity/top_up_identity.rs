@@ -81,11 +81,11 @@ impl AppContext {
                             } else {
                                 // Platform hasn't verified this Core block yet
                                 return Err(format!(
-                                        "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                                    "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
                                         and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
                                         Please wait for Platform to sync with Core chain.",
-                                        tx_block_height, metadata.core_chain_locked_height
-                                    ));
+                                    tx_block_height, metadata.core_chain_locked_height
+                                ));
                             }
                         } else {
                             AssetLockProof::Instant(instant_asset_lock_proof.clone())

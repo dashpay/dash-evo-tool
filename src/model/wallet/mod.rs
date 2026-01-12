@@ -1840,9 +1840,10 @@ impl Wallet {
             let canonical_bytes = platform_addr.to_bytes();
             for (existing_addr, info) in &self.platform_address_info {
                 if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone())
-                    && existing_platform.to_bytes() == canonical_bytes {
-                        return Some(info);
-                    }
+                    && existing_platform.to_bytes() == canonical_bytes
+                {
+                    return Some(info);
+                }
             }
         }
 
@@ -2153,27 +2154,28 @@ impl WalletAddressProvider {
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(address)
-                && let Some(&index) = address_to_index.get(address) {
-                    let derivation_path = DerivationPath::platform_payment_path(
-                        self.network,
-                        self.account,
-                        self.key_class,
-                        index,
-                    );
+                && let Some(&index) = address_to_index.get(address)
+            {
+                let derivation_path = DerivationPath::platform_payment_path(
+                    self.network,
+                    self.account,
+                    self.key_class,
+                    index,
+                );
 
-                    wallet
-                        .known_addresses
-                        .insert(address.clone(), derivation_path.clone());
+                wallet
+                    .known_addresses
+                    .insert(address.clone(), derivation_path.clone());
 
-                    wallet.watched_addresses.insert(
-                        derivation_path,
-                        AddressInfo {
-                            address: address.clone(),
-                            path_type: DerivationPathType::CLEAR_FUNDS,
-                            path_reference: DerivationPathReference::PlatformPayment,
-                        },
-                    );
-                }
+                wallet.watched_addresses.insert(
+                    derivation_path,
+                    AddressInfo {
+                        address: address.clone(),
+                        path_type: DerivationPathType::CLEAR_FUNDS,
+                        path_reference: DerivationPathReference::PlatformPayment,
+                    },
+                );
+            }
         }
     }
 

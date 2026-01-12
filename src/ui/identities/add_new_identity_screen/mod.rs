@@ -116,14 +116,16 @@ impl AddNewIdentityScreen {
             let wallets = &app_context.wallets.read().unwrap();
             // If a specific wallet seed hash is provided, use that wallet
             if let Some(seed_hash) = wallet_seed_hash
-                && let Some(wallet) = wallets.get(&seed_hash) {
-                    selected_wallet = Some(wallet.clone());
-                }
+                && let Some(wallet) = wallets.get(&seed_hash)
+            {
+                selected_wallet = Some(wallet.clone());
+            }
             // Otherwise, select the first available wallet
             if selected_wallet.is_none()
-                && let Some(wallet) = wallets.values().next() {
-                    selected_wallet = Some(wallet.clone());
-                }
+                && let Some(wallet) = wallets.values().next()
+            {
+                selected_wallet = Some(wallet.clone());
+            }
         }
 
         let mut created = Self {

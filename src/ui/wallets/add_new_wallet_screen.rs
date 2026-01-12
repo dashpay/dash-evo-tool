@@ -343,13 +343,14 @@ impl AddNewWalletScreen {
         if !self.funds_received {
             if let Some(seed_hash) = &self.created_wallet_seed_hash
                 && let Ok(wallets) = self.app_context.wallets.read()
-                    && let Some(wallet) = wallets.get(seed_hash)
-                        && let Ok(wallet_guard) = wallet.read()
-                            && wallet_guard.total_balance_duffs() > 0 {
-                                self.funds_received = true;
-                                // Auto-close the popup when funds are received
-                                self.show_receive_popup = false;
-                            }
+                && let Some(wallet) = wallets.get(seed_hash)
+                && let Ok(wallet_guard) = wallet.read()
+                && wallet_guard.total_balance_duffs() > 0
+            {
+                self.funds_received = true;
+                // Auto-close the popup when funds are received
+                self.show_receive_popup = false;
+            }
 
             // Request periodic repaint while waiting for funds
             ui.ctx()
@@ -479,21 +480,22 @@ impl AddNewWalletScreen {
         // Generate QR code if needed
         let mut qr_error: Option<String> = None;
         if let Some(address) = &self.receive_address_string
-            && self.receive_qr_texture.is_none() {
-                match generate_qr_code_image(address) {
-                    Ok(image) => {
-                        let texture = ctx.load_texture(
-                            format!("wallet_receive_{}", address),
-                            image,
-                            TextureOptions::LINEAR,
-                        );
-                        self.receive_qr_texture = Some(texture);
-                    }
-                    Err(e) => {
-                        qr_error = Some(format!("QR error: {:?}", e));
-                    }
+            && self.receive_qr_texture.is_none()
+        {
+            match generate_qr_code_image(address) {
+                Ok(image) => {
+                    let texture = ctx.load_texture(
+                        format!("wallet_receive_{}", address),
+                        image,
+                        TextureOptions::LINEAR,
+                    );
+                    self.receive_qr_texture = Some(texture);
+                }
+                Err(e) => {
+                    qr_error = Some(format!("QR error: {:?}", e));
                 }
             }
+        }
 
         let mut open = self.show_receive_popup;
         egui::Window::new("Fund Wallet")
@@ -519,9 +521,10 @@ impl AddNewWalletScreen {
                         ui.label(address);
                         ui.add_space(4.0);
                         if ui.button("Copy Address").clicked()
-                            && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address) {
-                                tracing::warn!("Failed to copy address: {}", err);
-                            }
+                            && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
+                        {
+                            tracing::warn!("Failed to copy address: {}", err);
+                        }
                     }
 
                     ui.add_space(8.0);

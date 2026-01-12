@@ -57,8 +57,7 @@ pub enum SendStatus {
 }
 
 /// Fee strategy for platform transfers
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PlatformFeeStrategy {
     /// Deduct fee from first input
     #[default]
@@ -70,7 +69,6 @@ pub enum PlatformFeeStrategy {
     /// Reduce last output by fee amount
     ReduceLastOutput,
 }
-
 
 impl std::fmt::Display for PlatformFeeStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1440,7 +1438,6 @@ impl WalletSendScreen {
             .collect();
 
         for (idx, &addr_type) in addr_types.iter().enumerate() {
-
             Frame::group(ui.style())
                 .fill(DashColors::surface(dark_mode))
                 .inner_margin(Margin::symmetric(12, 10))

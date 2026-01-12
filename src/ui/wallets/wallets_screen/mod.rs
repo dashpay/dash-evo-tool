@@ -1485,15 +1485,16 @@ impl WalletsBalancesScreen {
 
         // Show description of the selected account below the dropdown
         if let Some(summary) = selected_summary
-            && let Some(description) = summary.category.description() {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(description)
-                        .color(DashColors::text_secondary(dark_mode))
-                        .italics()
-                        .size(12.0),
-                );
-            }
+            && let Some(description) = summary.category.description()
+        {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(description)
+                    .color(DashColors::text_secondary(dark_mode))
+                    .italics()
+                    .size(12.0),
+            );
+        }
     }
 
     fn render_transactions_section(&self, ui: &mut Ui) {
@@ -3252,19 +3253,20 @@ impl ScreenLike for WalletsBalancesScreen {
                 WalletUnlockResult::Unlocked => {
                     // Check if we were trying to view a private key
                     if let Some(path) = self.private_key_dialog.pending_derivation_path.take()
-                        && let Some(address) = self.private_key_dialog.pending_address.take() {
-                            match self.derive_private_key_wif(&path) {
-                                Ok(key) => {
-                                    self.private_key_dialog.is_open = true;
-                                    self.private_key_dialog.address = address;
-                                    self.private_key_dialog.private_key_wif = key;
-                                    self.private_key_dialog.show_key = false;
-                                }
-                                Err(err) => {
-                                    self.display_message(&err, MessageType::Error);
-                                }
+                        && let Some(address) = self.private_key_dialog.pending_address.take()
+                    {
+                        match self.derive_private_key_wif(&path) {
+                            Ok(key) => {
+                                self.private_key_dialog.is_open = true;
+                                self.private_key_dialog.address = address;
+                                self.private_key_dialog.private_key_wif = key;
+                                self.private_key_dialog.show_key = false;
+                            }
+                            Err(err) => {
+                                self.display_message(&err, MessageType::Error);
                             }
                         }
+                    }
 
                     // Check if we were trying to fund a Platform address
                     if self.fund_platform_dialog.pending_fund_after_unlock {
@@ -3442,21 +3444,22 @@ impl ScreenLike for WalletsBalancesScreen {
                     }
                 }
             } else if cmd == "RefreshSKWallet"
-                && let Some(wallet_arc) = &self.selected_single_key_wallet {
-                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
-                    if is_locked {
-                        // SK wallet is locked - open unlock dialog
-                        self.pending_refresh_after_unlock = true;
-                        self.show_sk_unlock_dialog = true;
-                        action = AppAction::None;
-                    } else {
-                        // SK wallet is unlocked - proceed with refresh
-                        self.refreshing = true;
-                        action = AppAction::BackendTask(BackendTask::CoreTask(
-                            CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
-                        ));
-                    }
+                && let Some(wallet_arc) = &self.selected_single_key_wallet
+            {
+                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                if is_locked {
+                    // SK wallet is locked - open unlock dialog
+                    self.pending_refresh_after_unlock = true;
+                    self.show_sk_unlock_dialog = true;
+                    action = AppAction::None;
+                } else {
+                    // SK wallet is unlocked - proceed with refresh
+                    self.refreshing = true;
+                    action = AppAction::BackendTask(BackendTask::CoreTask(
+                        CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
+                    ));
                 }
+            }
         }
 
         // Combine with pending refresh action

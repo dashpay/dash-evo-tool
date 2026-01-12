@@ -390,47 +390,44 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 
                             if let Some(wallet) = self.associated_wallets.values().next()
                                 && let Ok(wallet_ref) = wallet.read()
-                                    && let Ok(seed) = wallet_ref.seed_bytes() {
-                                        // Scan identity indices 0-9 to find matching key
-                                        for identity_index in 0..10u32 {
-                                            let correct_path = DP::identity_authentication_path(
-                                                self.network,
-                                                KeyDerivationType::ECDSA,
-                                                identity_index,
-                                                key_id,
+                                && let Ok(seed) = wallet_ref.seed_bytes()
+                            {
+                                // Scan identity indices 0-9 to find matching key
+                                for identity_index in 0..10u32 {
+                                    let correct_path = DP::identity_authentication_path(
+                                        self.network,
+                                        KeyDerivationType::ECDSA,
+                                        identity_index,
+                                        key_id,
+                                    );
+
+                                    if let Ok(extended_key) = correct_path
+                                        .derive_priv_ecdsa_for_master_seed(seed, self.network)
+                                    {
+                                        let correct_pubkey = PublicKey::new(
+                                            extended_key.private_key.public_key(&secp),
+                                        );
+                                        let correct_hash = ripemd160::Hash::hash(
+                                            sha256::Hash::hash(&correct_pubkey.to_bytes())
+                                                .as_byte_array(),
+                                        );
+
+                                        if correct_hash.as_byte_array() == platform_key_data {
+                                            tracing::info!(
+                                                identity_index = identity_index,
+                                                key_id = key_id,
+                                                path = %correct_path,
+                                                "Using corrected derivation path for signing (found via scan)"
                                             );
-
-                                            if let Ok(extended_key) = correct_path
-                                                .derive_priv_ecdsa_for_master_seed(
-                                                    seed,
-                                                    self.network,
-                                                )
-                                            {
-                                                let correct_pubkey = PublicKey::new(
-                                                    extended_key.private_key.public_key(&secp),
-                                                );
-                                                let correct_hash = ripemd160::Hash::hash(
-                                                    sha256::Hash::hash(&correct_pubkey.to_bytes())
-                                                        .as_byte_array(),
-                                                );
-
-                                                if correct_hash.as_byte_array() == platform_key_data
-                                                {
-                                                    tracing::info!(
-                                                        identity_index = identity_index,
-                                                        key_id = key_id,
-                                                        path = %correct_path,
-                                                        "Using corrected derivation path for signing (found via scan)"
-                                                    );
-                                                    let signature = signer::sign(
-                                                        data,
-                                                        &extended_key.private_key.secret_bytes(),
-                                                    )?;
-                                                    return Ok(signature.to_vec().into());
-                                                }
-                                            }
+                                            let signature = signer::sign(
+                                                data,
+                                                &extended_key.private_key.secret_bytes(),
+                                            )?;
+                                            return Ok(signature.to_vec().into());
                                         }
                                     }
+                                }
+                            }
 
                             tracing::error!(
                                 derived = %hex::encode(hash160.as_byte_array()),

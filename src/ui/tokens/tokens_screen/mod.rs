@@ -196,8 +196,7 @@ pub enum ContractSearchStatus {
     ErrorMessage(String),
 }
 
-#[derive(Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
     #[default]
     NotStarted,
@@ -205,7 +204,6 @@ pub enum TokenCreatorStatus {
     Complete,
     ErrorMessage(String),
 }
-
 
 /// Sorting columns
 #[derive(Clone, Copy, PartialEq, Eq)]

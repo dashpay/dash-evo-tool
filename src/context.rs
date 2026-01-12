@@ -959,8 +959,13 @@ impl AppContext {
             // Return balances for result (nonce preserved from existing info or 0)
             provider
                 .found_balances()
-                .into_iter()
-                .map(|(addr, funds)| (addr.clone(), (funds.balance, funds.nonce)))
+                .iter()
+                .map(|(addr, funds)| {
+                    (
+                        Wallet::canonical_address(addr, self.network),
+                        (funds.balance, funds.nonce),
+                    )
+                })
                 .collect()
         };
 

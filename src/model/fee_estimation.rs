@@ -99,11 +99,19 @@ pub struct StateTransitionMinFees {
     pub identity_create_base_cost: u64,
     pub identity_topup_base_cost: u64,
     pub identity_key_in_creation_cost: u64,
+    /// Asset lock cost for identity creation (200,000 duffs × 1000 credits/duff)
+    pub identity_create_asset_lock_cost: u64,
+    /// Asset lock cost for identity top-up (50,000 duffs × 1000 credits/duff)
+    pub identity_topup_asset_lock_cost: u64,
+    /// Asset lock cost for address funding (50,000 duffs × 1000 credits/duff)
+    pub address_funding_asset_lock_cost: u64,
 }
 
 impl Default for StateTransitionMinFees {
     fn default() -> Self {
         // Values from STATE_TRANSITION_MIN_FEES_VERSION1
+        // Asset lock costs from IdentityTransitionAssetLockVersions (duffs × CREDITS_PER_DUFF)
+        // CREDITS_PER_DUFF = 1000
         Self {
             credit_transfer: 100_000,
             credit_transfer_to_addresses: 500_000,
@@ -119,6 +127,10 @@ impl Default for StateTransitionMinFees {
             identity_create_base_cost: 2_000_000,
             identity_topup_base_cost: 500_000,
             identity_key_in_creation_cost: 6_500_000,
+            // Asset lock costs (duffs × 1000)
+            identity_create_asset_lock_cost: 200_000_000, // 200,000 duffs × 1000 = 0.002 DASH
+            identity_topup_asset_lock_cost: 50_000_000,   // 50,000 duffs × 1000 = 0.0005 DASH
+            address_funding_asset_lock_cost: 50_000_000,  // 50,000 duffs × 1000 = 0.0005 DASH
         }
     }
 }
@@ -208,10 +220,12 @@ impl PlatformFeeEstimator {
         self.min_fees.identity_update
     }
 
-    /// Estimate fee for identity creation
+    /// Estimate fee for identity creation.
+    /// This includes base cost, asset lock cost, and per-key costs.
     pub fn estimate_identity_create(&self, key_count: usize) -> u64 {
         self.min_fees
             .identity_create_base_cost
+            .saturating_add(self.min_fees.identity_create_asset_lock_cost)
             .saturating_add(
                 self.min_fees
                     .identity_key_in_creation_cost
@@ -219,7 +233,8 @@ impl PlatformFeeEstimator {
             )
     }
 
-    /// Estimate fee for identity creation from addresses (asset lock)
+    /// Estimate fee for identity creation from addresses (asset lock).
+    /// This includes base cost, asset lock cost, input/output costs, and per-key costs.
     pub fn estimate_identity_create_from_addresses(
         &self,
         input_count: usize,
@@ -229,6 +244,7 @@ impl PlatformFeeEstimator {
         let output_count = if has_output { 1 } else { 0 };
         self.min_fees
             .identity_create_base_cost
+            .saturating_add(self.min_fees.address_funding_asset_lock_cost)
             .saturating_add(
                 self.min_fees
                     .address_funds_transfer_input_cost
@@ -246,9 +262,12 @@ impl PlatformFeeEstimator {
             )
     }
 
-    /// Estimate fee for identity top-up
+    /// Estimate fee for identity top-up.
+    /// This includes base cost and asset lock cost.
     pub fn estimate_identity_topup(&self) -> u64 {
-        self.min_fees.identity_topup_base_cost
+        self.min_fees
+            .identity_topup_base_cost
+            .saturating_add(self.min_fees.identity_topup_asset_lock_cost)
     }
 
     /// Estimate fee for document batch transition

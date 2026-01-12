@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -214,10 +214,12 @@ impl UpdateDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // Fee estimation display
+                // Fee estimation display - contract updates charge registration fees for the new contract
                 ui.add_space(10.0);
-                let fee_estimator = PlatformFeeEstimator::new();
-                let estimated_fee = fee_estimator.estimate_contract_update();
+                let platform_version = self.app_context.platform_version();
+                let registration_fee = contract.registration_cost(platform_version).unwrap_or(0);
+                let base_fee = platform_version.fee_version.state_transition_min_fees.contract_update;
+                let estimated_fee = base_fee.saturating_add(registration_fee);
 
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 Frame::new()

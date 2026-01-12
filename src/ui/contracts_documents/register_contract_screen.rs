@@ -183,11 +183,15 @@ impl RegisterDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // Display estimated fee based on contract size
+                // Display estimated fee using SDK's registration_cost method
+                // This accounts for document types, indexes, tokens, and keywords
+                let platform_version = self.app_context.platform_version();
+                let registration_fee = contract.registration_cost(platform_version).unwrap_or(0);
+                // Add storage and processing fees for the contract data
                 let contract_size = self.contract_json_input.len();
-                let estimated_fee =
-                    crate::model::fee_estimation::PlatformFeeEstimator::new()
-                        .estimate_contract_create_with_size(contract_size);
+                let storage_fee = crate::model::fee_estimation::PlatformFeeEstimator::new()
+                    .estimate_storage_based_fee(contract_size, 20); // ~20 seeks for tree operations
+                let estimated_fee = registration_fee.saturating_add(storage_fee);
                 ui.add_space(10.0);
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 Frame::new()

@@ -898,35 +898,6 @@ impl Database {
         Ok(())
     }
 
-    /// Get Platform address balance and nonce for a specific address
-    pub fn get_platform_address_info(
-        &self,
-        seed_hash: &[u8; 32],
-        address: &Address,
-        network: &Network,
-    ) -> rusqlite::Result<Option<(u64, u32)>> {
-        let conn = self.conn.lock().unwrap();
-        let network_str = network.to_string();
-        let address_str = address.to_string();
-
-        let mut stmt = conn.prepare(
-            "SELECT balance, nonce FROM platform_address_balances
-             WHERE seed_hash = ? AND address = ? AND network = ?",
-        )?;
-
-        let result = stmt.query_row(params![seed_hash, address_str, network_str], |row| {
-            let balance: i64 = row.get(0)?;
-            let nonce: i64 = row.get(1)?;
-            Ok((balance as u64, nonce as u32))
-        });
-
-        match result {
-            Ok(info) => Ok(Some(info)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     /// Get all Platform address balances for a wallet
     pub fn get_all_platform_address_info(
         &self,

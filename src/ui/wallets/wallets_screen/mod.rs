@@ -3570,10 +3570,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     // Update balances in the wallet
                     for (balance_address, (balance, nonce)) in balances {
                         // Find the address that matches the string
-                        if let Some((addr, _)) = wallet
+                        let canonical_address =
+                            Wallet::canonical_address(&balance_address, self.app_context.network);
+                        if let Some((addr, _info)) = wallet
                             .platform_address_info
-                            .iter()
-                            .find(|(a, _)| **a == balance_address)
+                            .get_key_value(&canonical_address)
                         {
                             let addr = addr.clone();
                             wallet.set_platform_address_info(addr, balance, nonce);

@@ -2,6 +2,7 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
@@ -519,6 +520,25 @@ impl AppContext {
         {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
+                // Log proof errors first
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+                    return Err(format!(
+                        "Error registering identity: {}, proof error logged",
+                        proof_error
+                    ));
+                }
+
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     identity
                         .put_to_platform_and_wait_for_response(
@@ -530,6 +550,30 @@ impl AppContext {
                         )
                         .await
                         .map_err(|e| {
+                            // Log proof errors from retry
+                            if let Error::DriveProofError(
+                                ref proof_error,
+                                ref proof_bytes,
+                                ref block_info,
+                            ) = e
+                            {
+                                self.db
+                                    .insert_proof_log_item(ProofLogItem {
+                                        request_type: RequestType::BroadcastStateTransition,
+                                        request_bytes: vec![],
+                                        verification_path_query_bytes: vec![],
+                                        height: block_info.height,
+                                        time_ms: block_info.time_ms,
+                                        proof_bytes: proof_bytes.clone(),
+                                        error: Some(proof_error.to_string()),
+                                    })
+                                    .ok();
+                                return format!(
+                                    "Error registering identity: {}, proof error logged",
+                                    proof_error
+                                );
+                            }
+
                             let identity_create_transition =
                                 IdentityCreateTransition::try_from_identity_with_signer(
                                     identity,
@@ -653,6 +697,36 @@ impl AppContext {
                 ))
             }
             Err(e) => {
+                // Log proof errors
+                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e {
+                    self.db
+                        .insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::BroadcastStateTransition,
+                            request_bytes: vec![],
+                            verification_path_query_bytes: vec![],
+                            height: block_info.height,
+                            time_ms: block_info.time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error.to_string()),
+                        })
+                        .ok();
+
+                    qualified_identity
+                        .status
+                        .update(IdentityStatus::FailedCreation);
+
+                    self.insert_local_qualified_identity(
+                        &qualified_identity,
+                        &Some((wallet_seed_hash, wallet_identity_index)),
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                    return Err(format!(
+                        "Failed to create identity from Platform addresses: {}, proof error logged",
+                        proof_error
+                    ));
+                }
+
                 qualified_identity
                     .status
                     .update(IdentityStatus::FailedCreation);

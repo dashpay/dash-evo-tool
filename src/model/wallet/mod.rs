@@ -413,7 +413,7 @@ impl WalletSeed {
                     OpenWalletSeed {
                         seed: closed_seed.encrypted_seed.clone().try_into().map_err(
                             |e: Vec<u8>| {
-                                format!("incorred seed size, expected 64 bytes, got {}", e.len())
+                                format!("incorrect seed size, expected 64 bytes, got {}", e.len())
                             },
                         )?,
                         wallet_info: closed_seed.clone(),
@@ -1946,8 +1946,12 @@ impl Signer<PlatformAddress> for Wallet {
             ));
         }
 
-        // We need the network to derive the key, but we don't have it here.
-        // Try both networks - the address will only exist in one
+        // The Signer trait doesn't pass network info, so we try each network.
+        // This is safe because:
+        // 1. A wallet instance only stores keys for ONE network (set at creation)
+        // 2. Platform addresses encode their network in the bech32m prefix (dashevo/tdashevo)
+        // 3. get_platform_address_private_key will only succeed for the correct network
+        // 4. Only one network's derivation will match the wallet's seed
         let private_key = self
             .get_platform_address_private_key(platform_address, Network::Dash)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
@@ -1975,7 +1979,8 @@ impl Signer<PlatformAddress> for Wallet {
             ));
         }
 
-        // Get the private key (try all networks)
+        // The Signer trait doesn't pass network info, so we try each network.
+        // This is safe - see comment in sign() above for explanation.
         let private_key = self
             .get_platform_address_private_key(platform_address, Network::Dash)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))

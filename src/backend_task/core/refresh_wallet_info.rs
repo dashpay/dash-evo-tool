@@ -241,33 +241,34 @@ impl AppContext {
         // Write lock released here - all I/O happens below without any wallet lock
 
         // Step 11: Persist all changes to database (no wallet lock needed)
-        // Update address balances in database
+        // Update address balances in database - propagate errors to prevent data loss
         for (address, balance) in &changed_balances {
-            if let Err(e) = self
-                .db
+            self.db
                 .update_address_balance(&seed_hash, address, *balance)
-            {
-                tracing::debug!(error = %e, address = %address, "Failed to persist address balance");
-            }
+                .map_err(|e| {
+                    format!(
+                        "Failed to persist address balance for {}: {}",
+                        address, e
+                    )
+                })?;
         }
 
         // Update total received in database
         for (address, total_received) in &changed_total_received {
-            if let Err(e) =
-                self.db
-                    .update_address_total_received(&seed_hash, address, *total_received)
-            {
-                tracing::debug!(error = %e, address = %address, "Failed to persist total received");
-            }
+            self.db
+                .update_address_total_received(&seed_hash, address, *total_received)
+                .map_err(|e| {
+                    format!(
+                        "Failed to persist total received for {}: {}",
+                        address, e
+                    )
+                })?;
         }
 
         // Update wallet-level balances
-        if let Err(e) = self
-            .db
+        self.db
             .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
-        {
-            tracing::warn!(error = %e, "Failed to persist wallet balances");
-        }
+            .map_err(|e| format!("Failed to persist wallet balances: {}", e))?;
 
         Ok(BackendTaskSuccessResult::RefreshedWallet)
     }

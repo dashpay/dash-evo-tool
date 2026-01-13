@@ -160,8 +160,8 @@ pub fn validate_core_height_created_at(
             ));
         }
 
-        // Check if the height is too far in the past (max 1000 blocks behind)
-        if current_height > core_height + 1000 {
+        // Check if the height is too far in the past (max 200 blocks / ~1.5 hours behind)
+        if current_height > core_height + 200 {
             validation.add_warning(format!(
                 "Core height {} is quite old (current: {}, {} blocks behind)",
                 core_height,

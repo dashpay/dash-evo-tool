@@ -254,6 +254,10 @@ pub fn verify_auto_accept_proof(
     let key_index =
         u32::from_be_bytes([proof_data[1], proof_data[2], proof_data[3], proof_data[4]]);
     let sig_len = proof_data[5] as usize;
+    // Compact ECDSA signatures are exactly 64 bytes
+    if sig_len != 64 {
+        return Ok(false);
+    }
     if proof_data.len() < 6 + sig_len {
         return Ok(false);
     }

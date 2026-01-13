@@ -5,14 +5,12 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 // DashPay contract ID from the platform repo
@@ -30,56 +28,94 @@ pub async fn get_dashpay_contract(sdk: &Sdk) -> Result<Arc<DataContract>, String
         .map(Arc::new)
 }
 
-// Helper function to derive encryption keys for contactInfo
+/// Derive encryption keys for contactInfo using BIP32 CKDpriv as specified in DIP-0015.
+///
+/// DIP-0015 specifies:
+/// - Key1 (for encToUserId): rootEncryptionKey/(2^16)'/index'
+/// - Key2 (for privateData): rootEncryptionKey/(2^16 + 1)'/index'
+///
+/// We use the wallet's master seed to derive a root encryption key,
+/// then apply BIP32 hardened derivation for the two encryption keys.
 fn derive_contact_info_keys(
     identity: &QualifiedIdentity,
     derivation_index: u32,
 ) -> Result<([u8; 32], [u8; 32]), String> {
-    // Get a key from the identity to use as root
-    let root_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
-            false,
+    // Get the wallet seed from the identity's associated wallet
+    let wallet = identity
+        .associated_wallets
+        .values()
+        .next()
+        .ok_or("No wallet associated with identity for key derivation")?;
+
+    let (seed, network) = {
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+        if !wallet_guard.is_open() {
+            return Err("Wallet must be unlocked to derive encryption keys".to_string());
+        }
+        let seed = wallet_guard
+            .seed_bytes()
+            .map_err(|e| format!("Wallet seed not available: {}", e))?
+            .to_vec();
+        (seed, identity.network)
+    };
+
+    // Create master extended private key from seed
+    let master_xprv = ExtendedPrivKey::new_master(network, &seed)
+        .map_err(|e| format!("Failed to create master key: {}", e))?;
+
+    // Derive to the root encryption key path: m/9'/5'/15'/0'
+    // This follows the DashPay derivation structure
+    let root_path = DerivationPath::from_str("m/9'/5'/15'/0'")
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+    let root_encryption_key = master_xprv
+        .derive_priv(&secp, &root_path)
+        .map_err(|e| format!("Failed to derive root encryption key: {}", e))?;
+
+    // Derive Key1 for encToUserId: rootEncryptionKey/(2^16)'/index'
+    // First derive at hardened index 2^16 (65536)
+    let key1_level1 = root_encryption_key
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(65536)
+                .map_err(|e| format!("Invalid hardened index: {}", e))?],
         )
-        .ok_or("No suitable key found for encryption")?;
+        .map_err(|e| format!("Failed to derive key1 level1: {}", e))?;
 
-    // Get the private key for this public key
-    let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
-    let private_key = identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                root_key.id(),
-            ),
-            &wallets,
-            identity.network,
+    // Then derive at hardened derivation_index
+    let key1_final = key1_level1
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(derivation_index)
+                .map_err(|e| format!("Invalid hardened index: {}", e))?],
         )
-        .map_err(|e| format!("Error resolving private key: {}", e))?
-        .map(|(_, private_key)| private_key)
-        .ok_or("Private key not found")?;
+        .map_err(|e| format!("Failed to derive key1 final: {}", e))?;
 
-    // Derive two keys using HMAC-SHA256
-    // Key 1 for encToUserId (offset 2^16)
-    let mut hasher = Sha256::new();
-    hasher.update(private_key);
-    hasher.update((65536u32 + derivation_index).to_le_bytes());
-    let key1 = hasher.finalize();
+    // Derive Key2 for privateData: rootEncryptionKey/(2^16 + 1)'/index'
+    // First derive at hardened index 2^16 + 1 (65537)
+    let key2_level1 = root_encryption_key
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(65537)
+                .map_err(|e| format!("Invalid hardened index: {}", e))?],
+        )
+        .map_err(|e| format!("Failed to derive key2 level1: {}", e))?;
 
-    // Key 2 for privateData (offset 2^16 + 1)
-    let mut hasher2 = Sha256::new();
-    hasher2.update(private_key);
-    hasher2.update((65537u32 + derivation_index).to_le_bytes());
-    let key2 = hasher2.finalize();
+    // Then derive at hardened derivation_index
+    let key2_final = key2_level1
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(derivation_index)
+                .map_err(|e| format!("Invalid hardened index: {}", e))?],
+        )
+        .map_err(|e| format!("Failed to derive key2 final: {}", e))?;
 
-    Ok((key1.into(), key2.into()))
+    // Extract the private key bytes (32 bytes) for encryption
+    let key1_bytes: [u8; 32] = key1_final.private_key.secret_bytes();
+    let key2_bytes: [u8; 32] = key2_final.private_key.secret_bytes();
+
+    Ok((key1_bytes, key2_bytes))
 }
 
 // Helper function to decrypt toUserId using AES-256-ECB
@@ -360,37 +396,25 @@ pub async fn load_contacts(
 pub async fn add_contact(
     _app_context: &Arc<AppContext>,
     _sdk: &Sdk,
-    identity: QualifiedIdentity,
-    contact_username: String,
-    account_label: Option<String>,
+    _identity: QualifiedIdentity,
+    _contact_username: String,
+    _account_label: Option<String>,
 ) -> Result<BackendTaskSuccessResult, String> {
     // TODO: Steps to implement:
     // 1. Resolve username to identity ID via DPNS
     // 2. Generate encryption keys for this contact relationship
     // 3. Create the contactRequest document with encrypted fields
     // 4. Broadcast the state transition
-
-    // For now, return a placeholder message
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Contact request to {} from {} (label: {:?}) - Not yet implemented",
-        contact_username,
-        identity.identity.id().to_string(Encoding::Base58),
-        account_label
-    )))
+    Err("Adding contacts via username is not yet implemented. Use the contact request workflow instead.".to_string())
 }
 
 pub async fn remove_contact(
     _app_context: &Arc<AppContext>,
     _sdk: &Sdk,
-    identity: QualifiedIdentity,
-    contact_id: Identifier,
+    _identity: QualifiedIdentity,
+    _contact_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, String> {
     // TODO: Implement contact removal
     // This would involve deleting the contactInfo document if it exists
-
-    Ok(BackendTaskSuccessResult::Message(format!(
-        "Removed contact {} for identity {} - Not yet implemented",
-        contact_id,
-        identity.identity.id().to_string(Encoding::Base58)
-    )))
+    Err("Contact removal is not yet implemented".to_string())
 }

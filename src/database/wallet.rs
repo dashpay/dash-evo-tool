@@ -530,7 +530,11 @@ impl Database {
             // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with dashevo/tdashevo prefix
             // and need special handling when stored (we store as Core address format internally)
             let address = if path_reference == DerivationPathReference::PlatformPayment {
-                // Platform addresses are stored as Core addresses for internal lookup
+                // Platform addresses are stored as Core P2PKH format for efficient internal lookup.
+                // We use assume_checked() here because:
+                // 1. Network validation was already performed at insertion time
+                // 2. Platform addresses (bech32m) map to Core P2PKH addresses internally
+                // 3. The stored address format doesn't have the same network version byte rules
                 Address::from_str(&address_str)
                     .map(|a| a.assume_checked())
                     .map_err(|e| {

@@ -314,17 +314,28 @@ pub async fn send_payment_to_contact_impl(
         status: PaymentStatus::Broadcast,
         address_index,
     };
-    store_payment_record(app_context, &payment).await?;
 
-    // Save to database using the db interface
-    let _ = app_context.db.save_payment(
-        &txid,
-        &from_identity.identity.id(),
-        &to_contact_id,
-        amount_duffs as i64,
-        memo.as_deref(),
-        "sent",
+    // Log payment details for debugging
+    tracing::debug!(
+        "Storing DashPay payment record: id={}, from={}, to={}, amount={}",
+        payment.id,
+        payment.from_identity.to_string(Encoding::Base58),
+        payment.to_identity.to_string(Encoding::Base58),
+        payment.amount
     );
+
+    // Save to database using the db interface - propagate errors
+    app_context
+        .db
+        .save_payment(
+            &txid,
+            &from_identity.identity.id(),
+            &to_contact_id,
+            amount_duffs as i64,
+            memo.as_deref(),
+            "sent",
+        )
+        .map_err(|e| format!("Failed to save payment record to database: {}", e))?;
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;
@@ -334,32 +345,6 @@ pub async fn send_payment_to_contact_impl(
         to_address.to_string(),
         amount_dash,
     ))
-}
-
-/// Store a payment record in the local database
-async fn store_payment_record(
-    _app_context: &Arc<AppContext>,
-    _payment: &PaymentRecord,
-) -> Result<(), String> {
-    // TODO: Implement database storage
-    // This would store the payment in a local SQLite database
-    // Table schema might look like:
-    // CREATE TABLE dashpay_payments (
-    //     id TEXT PRIMARY KEY,
-    //     from_identity BLOB NOT NULL,
-    //     to_identity BLOB NOT NULL,
-    //     from_address TEXT,
-    //     to_address TEXT NOT NULL,
-    //     amount INTEGER NOT NULL,
-    //     tx_id TEXT,
-    //     memo TEXT,
-    //     timestamp INTEGER NOT NULL,
-    //     status TEXT NOT NULL,
-    //     address_index INTEGER NOT NULL
-    // );
-
-    // TODO: Store payment record in database
-    Ok(())
 }
 
 /// Load payment history from local database

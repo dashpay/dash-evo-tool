@@ -102,7 +102,11 @@ pub async fn load_contact_requests(
         for (_, outgoing_doc) in outgoing.iter() {
             if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
             {
-                let to_id = Identifier::from_bytes(to_id_bytes.as_slice()).unwrap();
+                // Parse the identifier, skip if invalid
+                let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
+                    tracing::warn!("Invalid toUserId in contact request document, skipping");
+                    continue;
+                };
                 if to_id == from_id {
                     // Mutual request found - they are now contacts
                     contacts_established.insert(from_id);
@@ -116,7 +120,11 @@ pub async fn load_contact_requests(
 
     outgoing.retain(|(_, doc)| {
         if let Some(Value::Identifier(to_id_bytes)) = doc.properties().get("toUserId") {
-            let to_id = Identifier::from_bytes(to_id_bytes.as_slice()).unwrap();
+            // Parse the identifier, keep the document if we can't parse (defensive)
+            let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
+                tracing::warn!("Invalid toUserId in outgoing contact request, keeping in list");
+                return true;
+            };
             !contacts_established.contains(&to_id)
         } else {
             true

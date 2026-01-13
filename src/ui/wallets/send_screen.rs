@@ -881,16 +881,18 @@ impl WalletSendScreen {
 
         // Get max amount based on source selection
         let max_amount_credits = match &self.selected_source {
-            Some(SourceSelection::CoreWallet) => self.selected_wallet.as_ref().map(|w| {
-                let wallet = w.read().unwrap();
-                wallet.total_balance_duffs() * 1000 // duffs to credits
+            Some(SourceSelection::CoreWallet) => self.selected_wallet.as_ref().and_then(|w| {
+                w.read()
+                    .ok()
+                    .map(|wallet| wallet.total_balance_duffs() * 1000) // duffs to credits
             }),
             Some(SourceSelection::PlatformAddress(_, core_addr)) => {
                 self.selected_wallet.as_ref().and_then(|w| {
-                    let wallet = w.read().unwrap();
-                    wallet
-                        .get_platform_address_info(core_addr)
-                        .map(|info| info.balance)
+                    w.read().ok().and_then(|wallet| {
+                        wallet
+                            .get_platform_address_info(core_addr)
+                            .map(|info| info.balance)
+                    })
                 })
             }
             None => None,

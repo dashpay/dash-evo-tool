@@ -13,6 +13,7 @@ use dash_sdk::platform::documents::transitions::{
     DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
 };
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use rand::RngCore;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -194,12 +195,15 @@ pub async fn update_profile(
         ))
     } else {
         // Create new profile using DocumentCreateTransitionBuilder
-        // Generate document ID
+        // Generate random entropy for document ID (security: prevents predictable IDs)
+        let mut entropy = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut entropy);
+
         let profile_doc_id = Document::generate_document_id_v0(
             &dashpay_contract.id(),
             &identity_id,
             "profile",
-            &[0u8; 32], // entropy
+            &entropy,
         );
 
         let document = Document::V0(DocumentV0 {
@@ -223,7 +227,7 @@ pub async fn update_profile(
             dashpay_contract,
             "profile".to_string(),
             document,
-            [0u8; 32], // entropy - using zero for deterministic behavior
+            entropy, // Use same entropy as document ID generation
         );
 
         // Add state transition options if available

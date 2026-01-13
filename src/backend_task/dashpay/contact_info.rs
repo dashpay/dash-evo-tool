@@ -165,7 +165,15 @@ fn derive_contact_info_keys(
     Ok((key1_bytes, key2_bytes))
 }
 
-// Encrypt toUserId using AES-256-ECB
+/// Encrypt toUserId using AES-256-ECB as specified by DIP-0015.
+///
+/// DIP-0015 mandates ECB mode for encToUserId encryption because:
+/// 1. The toUserId is derived from SHA256, making it appear random (no patterns)
+/// 2. Keys are never reused (unique per contact via hardened BIP32 derivation)
+/// 3. The data is fixed-size (32 bytes = exactly 2 AES blocks)
+///
+/// These properties eliminate typical ECB vulnerabilities (pattern leakage).
+/// See: https://github.com/dashpay/dips/blob/master/dip-0015.md
 #[allow(deprecated)]
 fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], String> {
     use aes_gcm::aead::generic_array::GenericArray;
@@ -186,7 +194,9 @@ fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], St
     Ok(encrypted)
 }
 
-// Decrypt toUserId using AES-256-ECB
+/// Decrypt toUserId using AES-256-ECB as specified by DIP-0015.
+///
+/// See `encrypt_to_user_id` for the rationale behind ECB mode usage per DIP-0015.
 #[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
     use aes_gcm::aead::generic_array::GenericArray;

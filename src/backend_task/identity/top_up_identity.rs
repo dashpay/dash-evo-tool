@@ -180,18 +180,36 @@ impl AppContext {
                         }
                     }
 
-                    let asset_lock_proof;
-
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                asset_lock_proof = proof.clone();
-                                break;
+                    // Wait for asset lock proof with timeout (2 minutes)
+                    const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                    let asset_lock_proof =
+                        match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                            loop {
+                                {
+                                    let proofs =
+                                        self.transactions_waiting_for_finality.lock().unwrap();
+                                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                        return proof.clone();
+                                    }
+                                }
+                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
+                        })
+                        .await
+                        {
+                            Ok(proof) => proof,
+                            Err(_) => {
+                                // Clean up on timeout
+                                let mut proofs =
+                                    self.transactions_waiting_for_finality.lock().unwrap();
+                                proofs.remove(&tx_id);
+                                return Err(format!(
+                                    "Timeout waiting for asset lock proof after {} seconds. \
+                                 The transaction may not have been confirmed by the network.",
+                                    ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                                ));
+                            }
+                        };
 
                     (
                         asset_lock_proof,
@@ -259,18 +277,36 @@ impl AppContext {
                         let _ = wallet.update_address_balance(&input_address, new_balance, self);
                     }
 
-                    let asset_lock_proof;
-
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                asset_lock_proof = proof.clone();
-                                break;
+                    // Wait for asset lock proof with timeout (2 minutes)
+                    const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                    let asset_lock_proof =
+                        match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                            loop {
+                                {
+                                    let proofs =
+                                        self.transactions_waiting_for_finality.lock().unwrap();
+                                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                        return proof.clone();
+                                    }
+                                }
+                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
+                        })
+                        .await
+                        {
+                            Ok(proof) => proof,
+                            Err(_) => {
+                                // Clean up on timeout
+                                let mut proofs =
+                                    self.transactions_waiting_for_finality.lock().unwrap();
+                                proofs.remove(&tx_id);
+                                return Err(format!(
+                                    "Timeout waiting for asset lock proof after {} seconds. \
+                                 The transaction may not have been confirmed by the network.",
+                                    ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                                ));
+                            }
+                        };
 
                     (
                         asset_lock_proof,

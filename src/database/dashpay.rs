@@ -638,35 +638,47 @@ impl crate::database::Database {
         }
     }
 
-    /// Get the next send address index for a contact and increment it
-    /// This is used when sending a payment to ensure unique addresses
+    /// Get the next send address index for a contact and increment it atomically.
+    /// This is used when sending a payment to ensure unique addresses.
+    /// Uses an atomic INSERT/UPDATE with RETURNING to prevent race conditions.
     pub fn get_and_increment_send_index(
         &self,
         owner_identity_id: &Identifier,
         contact_identity_id: &Identifier,
     ) -> rusqlite::Result<u32> {
-        let indices = self.get_contact_address_indices(owner_identity_id, contact_identity_id)?;
-        let current_index = indices.next_send_index;
+        let conn = self.conn.lock().unwrap();
 
-        // Update to next index
-        let sql = "
-            INSERT INTO dashpay_contact_address_indices
-            (owner_identity_id, contact_identity_id, next_send_index)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(owner_identity_id, contact_identity_id)
-            DO UPDATE SET next_send_index = ?3
+        // First, ensure the row exists with default values if it doesn't
+        let init_sql = "
+            INSERT OR IGNORE INTO dashpay_contact_address_indices
+            (owner_identity_id, contact_identity_id, next_send_index, highest_receive_index)
+            VALUES (?1, ?2, 0, 0)
         ";
-
-        self.execute(
-            sql,
+        conn.execute(
+            init_sql,
             params![
                 owner_identity_id.to_buffer().to_vec(),
                 contact_identity_id.to_buffer().to_vec(),
-                current_index + 1,
             ],
         )?;
 
-        Ok(current_index)
+        // Now atomically increment and return the old value
+        // We update next_send_index = next_send_index + 1 and return the old value
+        let update_sql = "
+            UPDATE dashpay_contact_address_indices
+            SET next_send_index = next_send_index + 1
+            WHERE owner_identity_id = ?1 AND contact_identity_id = ?2
+            RETURNING next_send_index - 1
+        ";
+
+        conn.query_row(
+            update_sql,
+            params![
+                owner_identity_id.to_buffer().to_vec(),
+                contact_identity_id.to_buffer().to_vec(),
+            ],
+            |row| row.get(0),
+        )
     }
 
     /// Update the highest receive index seen for a contact

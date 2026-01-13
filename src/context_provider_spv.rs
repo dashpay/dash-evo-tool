@@ -28,9 +28,15 @@ impl SpvProvider {
     }
 
     /// Attach the `AppContext` so we can access SpvManager and settings.
-    pub fn bind_app_context(&self, app_context: Arc<AppContext>) {
-        let mut ac = self.app_context.lock().expect("lock poisoned");
+    ///
+    /// Returns an error if the lock is poisoned (indicates a prior panic).
+    pub fn bind_app_context(&self, app_context: Arc<AppContext>) -> Result<(), String> {
+        let mut ac = self
+            .app_context
+            .lock()
+            .map_err(|_| "SpvProvider app_context lock poisoned".to_string())?;
         ac.replace(app_context);
+        Ok(())
     }
 }
 
@@ -40,7 +46,10 @@ impl ContextProvider for SpvProvider {
         data_contract_id: &dash_sdk::platform::Identifier,
         _platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -70,7 +79,10 @@ impl ContextProvider for SpvProvider {
         token_id: &dash_sdk::platform::Identifier,
     ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
     {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -86,7 +98,10 @@ impl ContextProvider for SpvProvider {
         quorum_hash: [u8; 32],
         core_chain_locked_height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -108,10 +123,19 @@ impl ContextProvider for SpvProvider {
 
 impl Clone for SpvProvider {
     fn clone(&self) -> Self {
-        let app_guard = self.app_context.lock().expect("lock poisoned");
+        // Clone trait doesn't allow returning Result, so we use a fallback
+        // If the lock is poisoned, clone with None app_context (will require rebinding)
+        let app_context_clone = self
+            .app_context
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!("SpvProvider lock poisoned during clone, using fallback");
+                poisoned.into_inner().clone()
+            });
         Self {
             db: self.db.clone(),
-            app_context: Mutex::new(app_guard.clone()),
+            app_context: Mutex::new(app_context_clone),
             _network: self._network,
         }
     }

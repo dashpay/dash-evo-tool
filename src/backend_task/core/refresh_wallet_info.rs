@@ -245,24 +245,14 @@ impl AppContext {
         for (address, balance) in &changed_balances {
             self.db
                 .update_address_balance(&seed_hash, address, *balance)
-                .map_err(|e| {
-                    format!(
-                        "Failed to persist address balance for {}: {}",
-                        address, e
-                    )
-                })?;
+                .map_err(|e| format!("Failed to persist address balance for {}: {}", address, e))?;
         }
 
         // Update total received in database
         for (address, total_received) in &changed_total_received {
             self.db
                 .update_address_total_received(&seed_hash, address, *total_received)
-                .map_err(|e| {
-                    format!(
-                        "Failed to persist total received for {}: {}",
-                        address, e
-                    )
-                })?;
+                .map_err(|e| format!("Failed to persist total received for {}: {}", address, e))?;
         }
 
         // Update wallet-level balances

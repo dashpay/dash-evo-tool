@@ -344,17 +344,17 @@ impl AppContext {
                 // Log proof errors first
                 if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
                 {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
+                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                        request_type: RequestType::BroadcastStateTransition,
+                        request_bytes: vec![],
+                        verification_path_query_bytes: vec![],
+                        height: block_info.height,
+                        time_ms: block_info.time_ms,
+                        proof_bytes: proof_bytes.clone(),
+                        error: Some(proof_error.to_string()),
+                    }) {
+                        tracing::warn!("Failed to persist proof log: {}", e);
+                    }
                     return Err(format!(
                         "Error topping up identity: {}, proof error logged",
                         proof_error
@@ -405,8 +405,8 @@ impl AppContext {
                                         ref block_info,
                                     ) = e
                                     {
-                                        self.db
-                                            .insert_proof_log_item(ProofLogItem {
+                                        if let Err(e) =
+                                            self.db.insert_proof_log_item(ProofLogItem {
                                                 request_type: RequestType::BroadcastStateTransition,
                                                 request_bytes: vec![],
                                                 verification_path_query_bytes: vec![],
@@ -415,7 +415,9 @@ impl AppContext {
                                                 proof_bytes: proof_bytes.clone(),
                                                 error: Some(proof_error.to_string()),
                                             })
-                                            .ok();
+                                        {
+                                            tracing::warn!("Failed to persist proof log: {}", e);
+                                        }
                                         return format!(
                                             "Error topping up identity: {}, proof error logged",
                                             proof_error
@@ -454,17 +456,17 @@ impl AppContext {
                                 ref block_info,
                             ) = e
                             {
-                                self.db
-                                    .insert_proof_log_item(ProofLogItem {
-                                        request_type: RequestType::BroadcastStateTransition,
-                                        request_bytes: vec![],
-                                        verification_path_query_bytes: vec![],
-                                        height: block_info.height,
-                                        time_ms: block_info.time_ms,
-                                        proof_bytes: proof_bytes.clone(),
-                                        error: Some(proof_error.to_string()),
-                                    })
-                                    .ok();
+                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes: proof_bytes.clone(),
+                                    error: Some(proof_error.to_string()),
+                                }) {
+                                    tracing::warn!("Failed to persist proof log: {}", e);
+                                }
                                 return format!(
                                     "Error topping up identity: {}, proof error logged",
                                     proof_error

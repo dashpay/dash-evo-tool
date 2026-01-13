@@ -124,6 +124,8 @@ pub struct SpvManager {
     stop_token: Mutex<Option<CancellationToken>>,
     // Channel to send requests to the SPV runtime thread
     request_tx: Mutex<Option<mpsc::Sender<SpvRequest>>>,
+    // Network manager clone for broadcasting transactions (set when client is running)
+    network_manager: Arc<AsyncRwLock<Option<PeerNetworkManager>>>,
 }
 
 /// Requests that can be sent to the SPV runtime thread
@@ -132,7 +134,6 @@ pub struct SpvManager {
 /// allowing direct access to client methods without additional locking overhead.
 enum SpvRequest {
     BroadcastTransaction {
-        #[allow(dead_code)]
         tx: Box<Transaction>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
@@ -276,6 +277,7 @@ impl SpvManager {
             use_local_node: Arc::new(AtomicBool::new(false)),
             stop_token: Mutex::new(None),
             request_tx: Mutex::new(None),
+            network_manager: Arc::new(AsyncRwLock::new(None)),
         });
 
         Ok(manager)
@@ -805,11 +807,15 @@ impl SpvManager {
             .run_sync_and_monitor(client, command_receiver, stop_token, global_cancel)
             .await;
 
-        // Clear the interface since the client is done
+        // Clear the interface and network manager since the client is done
         {
             if let Ok(mut guard) = self.client_interface.write() {
                 *guard = None;
             }
+        }
+        {
+            let mut nm_guard = self.network_manager.write().await;
+            *nm_guard = None;
         }
 
         result
@@ -930,6 +936,7 @@ impl SpvManager {
         cancel: CancellationToken,
     ) {
         tracing::info!("SPV request handler started");
+        let network_manager = Arc::clone(&self.network_manager);
         self.subtasks.spawn_sync(async move {
             loop {
                 tokio::select! {
@@ -939,11 +946,36 @@ impl SpvManager {
                     }
                     request = request_rx.recv() => {
                         match request {
-                            Some(SpvRequest::BroadcastTransaction { response_tx, .. }) => {
+                            Some(SpvRequest::BroadcastTransaction { tx, response_tx }) => {
                                 tracing::debug!("Received BroadcastTransaction request");
-                                // Note: broadcast_transaction would need access to the client
-                                // For now, just return not implemented
-                                let _ = response_tx.send(Err("Broadcast not yet implemented".to_string()));
+                                let result = {
+                                    let nm_guard = network_manager.read().await;
+                                    if let Some(ref nm) = *nm_guard {
+                                        // Broadcast the transaction to all connected peers
+                                        let message = dash_sdk::dpp::dashcore::network::message::NetworkMessage::Tx((*tx).clone());
+                                        let results = nm.broadcast(message).await;
+                                        // Check if at least one broadcast succeeded
+                                        let mut success = false;
+                                        let mut errors = Vec::new();
+                                        for res in results {
+                                            match res {
+                                                Ok(_) => success = true,
+                                                Err(e) => errors.push(e.to_string()),
+                                            }
+                                        }
+                                        if success {
+                                            tracing::info!("Transaction {} broadcast successfully", tx.txid());
+                                            Ok(())
+                                        } else if errors.is_empty() {
+                                            Err("No peers connected to broadcast transaction".to_string())
+                                        } else {
+                                            Err(format!("Broadcast failed: {}", errors.join(", ")))
+                                        }
+                                    } else {
+                                        Err("SPV network manager not available".to_string())
+                                    }
+                                };
+                                let _ = response_tx.send(result);
                             }
                             None => {
                                 tracing::warn!("SPV request channel closed");
@@ -1091,6 +1123,12 @@ impl SpvManager {
         let network_manager = PeerNetworkManager::new(&config)
             .await
             .map_err(|e| format!("Failed to initialize SPV network manager: {e}"))?;
+
+        // Store a clone of the network manager for broadcasting transactions
+        {
+            let mut nm_guard = self.network_manager.write().await;
+            *nm_guard = Some(network_manager.clone());
+        }
 
         let storage_manager = DiskStorageManager::new(self.data_dir.clone())
             .await

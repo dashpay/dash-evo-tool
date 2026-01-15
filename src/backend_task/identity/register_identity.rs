@@ -313,6 +313,22 @@ impl AppContext {
 
         let public_keys = keys.to_public_keys_map();
 
+        // Debug: Log the keys being registered to verify contract bounds are set
+        for (key_id, key) in &public_keys {
+            match key {
+                dash_sdk::dpp::identity::IdentityPublicKey::V0(key_v0) => {
+                    tracing::info!(
+                        "Identity key {}: purpose={:?}, security_level={:?}, key_type={:?}, contract_bounds={:?}",
+                        key_id,
+                        key_v0.purpose,
+                        key_v0.security_level,
+                        key_v0.key_type,
+                        key_v0.contract_bounds
+                    );
+                }
+            }
+        }
+
         // Calculate fee estimate for identity creation
         let key_count = public_keys.len();
         let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create(key_count);

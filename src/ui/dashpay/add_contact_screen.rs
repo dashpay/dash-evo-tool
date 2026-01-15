@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -14,7 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::dashpay::DashPaySubscreen;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -39,12 +40,14 @@ enum ContactRequestStatus {
 pub struct AddContactScreen {
     pub app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
     selected_key: Option<IdentityPublicKey>,
     username_or_id: String,
     account_label: String,
     message: Option<(String, MessageType)>,
     status: ContactRequestStatus,
     show_info_popup: bool,
+    show_advanced_options: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
 }
@@ -54,12 +57,14 @@ impl AddContactScreen {
         Self {
             app_context,
             selected_identity: None,
+            selected_identity_string: String::new(),
             selected_key: None,
             username_or_id: String::new(),
             account_label: String::new(),
             message: None,
             status: ContactRequestStatus::NotStarted,
             show_info_popup: false,
+            show_advanced_options: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
         }
@@ -69,12 +74,14 @@ impl AddContactScreen {
         Self {
             app_context,
             selected_identity: None,
+            selected_identity_string: String::new(),
             selected_key: None,
             username_or_id: identity_id,
             account_label: String::new(),
             message: None,
             status: ContactRequestStatus::NotStarted,
             show_info_popup: false,
+            show_advanced_options: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
         }
@@ -211,7 +218,7 @@ impl ScreenLike for AddContactScreen {
                 return self.show_success_screen(ui);
             }
 
-            // Header with Back button and info icon
+            // Header with Back button, info icon, and Advanced Options checkbox
             ui.horizontal(|ui| {
                 if ui.button("Back").clicked() {
                     inner_action = AppAction::PopScreen;
@@ -221,6 +228,9 @@ impl ScreenLike for AddContactScreen {
                 if crate::ui::helpers::info_icon_button(ui, CONTACT_REQUEST_INFO_TEXT).clicked() {
                     self.show_info_popup = true;
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                });
             });
             ui.separator();
 
@@ -257,31 +267,37 @@ impl ScreenLike for AddContactScreen {
                 );
                 ui.separator();
 
-                // Track identity before selection to detect changes
-                let prev_identity_id = self.selected_identity.as_ref().map(|i| {
-                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                    i.identity.id()
-                });
-
-                let key_action = add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    identities.iter(),
-                    &mut self.selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::ContactRequest,
+                // Identity selector
+                let response = ui.add(
+                    IdentitySelector::new(
+                        "contact_sender_identity_selector",
+                        &mut self.selected_identity_string,
+                        &identities,
+                    )
+                    .selected_identity(&mut self.selected_identity)
+                    .unwrap()
+                    .width(300.0)
+                    .label("Identity:")
+                    .other_option(false),
                 );
-                if !matches!(key_action, AppAction::None) {
-                    inner_action = key_action;
-                }
 
-                // Update wallet if identity changed
-                let new_identity_id = self.selected_identity.as_ref().map(|i| {
-                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                    i.identity.id()
-                });
-                if prev_identity_id != new_identity_id {
+                // Handle identity change - auto-select key and update wallet
+                if response.changed() {
                     if let Some(identity) = &self.selected_identity {
+                        // Auto-select a suitable key for contact requests
+                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+                        self.selected_key = identity
+                            .identity
+                            .get_first_public_key_matching(
+                                Purpose::AUTHENTICATION,
+                                SecurityLevel::full_range().into(),
+                                KeyType::all_key_types().into(),
+                                false,
+                            )
+                            .cloned();
+
+                        // Update wallet
                         let mut error_message = None;
                         self.selected_wallet = get_selected_wallet(
                             identity,
@@ -290,7 +306,25 @@ impl ScreenLike for AddContactScreen {
                             &mut error_message,
                         );
                     } else {
+                        self.selected_key = None;
                         self.selected_wallet = None;
+                    }
+                }
+
+                // Key selector (only shown in advanced mode)
+                if self.show_advanced_options {
+                    ui.add_space(10.0);
+                    if let Some(identity) = &self.selected_identity {
+                        let key_action = add_key_chooser(
+                            ui,
+                            &self.app_context,
+                            identity,
+                            &mut self.selected_key,
+                            TransactionType::ContactRequest,
+                        );
+                        if !matches!(key_action, AppAction::None) {
+                            inner_action = key_action;
+                        }
                     }
                 }
             });

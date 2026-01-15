@@ -269,20 +269,6 @@ impl WithdrawalScreen {
     }
 
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
-        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_info = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee", fee_info)
-        });
-
-        // Convert to references for the function call
-        let info_ref = info_section
-            .as_ref()
-            .map(|(title, desc)| (*title, desc.as_str()));
-
         crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Withdrawal Successful!\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string(),
@@ -290,7 +276,7 @@ impl WithdrawalScreen {
                 "Back to Identities".to_string(),
                 AppAction::PopScreenAndRefresh,
             )],
-            info_ref,
+            None,
         )
     }
 }

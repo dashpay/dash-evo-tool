@@ -682,12 +682,6 @@ impl ScreenLike for DocumentQueryScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Contracts sub-left panel: DPNS / Dashpay / Contracts (default)
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-        );
-
         action |= add_contract_chooser_panel(
             ctx,
             &mut self.contract_search_term,

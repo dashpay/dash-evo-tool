@@ -5,12 +5,17 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
@@ -111,26 +116,21 @@ impl QRScannerScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         // Header
-        ui.horizontal(|ui| {
-            if ui.button("Back").clicked() {
-                action = AppAction::PopScreen;
-            }
-            ui.heading("Scan Contact QR Code");
-        });
-
-        ui.separator();
+        ui.heading("Scan Contact QR Code");
+        ui.add_space(10.0);
 
         // Show message if any
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
+                MessageType::Success => crate::ui::theme::DashColors::success_color(dark_mode),
+                MessageType::Error => crate::ui::theme::DashColors::error_color(dark_mode),
+                MessageType::Info => crate::ui::theme::DashColors::DASH_BLUE,
             };
             ui.colored_label(color, message);
-            ui.separator();
+            ui.add_space(10.0);
         }
 
         // Identity selector
@@ -195,7 +195,7 @@ impl QRScannerScreen {
 
                 ui.add(
                     TextEdit::multiline(&mut self.qr_data_input)
-                        .hint_text("dashpay:...")
+                        .hint_text("dash:?di=...")
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
                 );
@@ -321,9 +321,29 @@ impl ScreenLike for QRScannerScreen {
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         let mut action = AppAction::None;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            action = self.render(ui);
-        });
+        // Add top panel
+        action |= add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![
+                ("DashPay", AppAction::None),
+                ("Scan QR Code", AppAction::None),
+            ],
+            vec![],
+        );
+
+        // Highlight DashPay in the main left panel
+        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+
+        // Add DashPay subscreen chooser panel
+        action |= add_dashpay_subscreen_chooser_panel(
+            ctx,
+            &self.app_context,
+            DashPaySubscreen::Contacts,
+        );
+
+        // Main content area with island styling
+        action |= island_central_panel(ctx, |ui| self.render(ui));
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()

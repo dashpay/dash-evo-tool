@@ -113,7 +113,7 @@ pub async fn update_profile(
     if let Some(bio_text) = bio.filter(|bio| !bio.is_empty()) {
         profile_data.insert("publicMessage".to_string(), Value::Text(bio_text));
     }
-    if let Some(url) = avatar_url.filter(|url| !url.is_empty()) {
+    if let Some(url) = avatar_url.as_ref().filter(|url| !url.is_empty()) {
         profile_data.insert("avatarUrl".to_string(), Value::Text(url.clone()));
 
         // Try to fetch and process the avatar image
@@ -157,6 +157,15 @@ pub async fn update_profile(
         // Update the document's properties
         for (key, value) in profile_data {
             updated_document.set(&key, value);
+        }
+
+        // Handle avatar removal: if avatar_url is None or empty, remove avatar-related fields
+        if avatar_url.as_ref().map_or(true, |url| url.is_empty()) {
+            // Remove avatar-related fields from the document
+            let Document::V0(ref mut doc_v0) = updated_document;
+            doc_v0.properties_mut().remove("avatarUrl");
+            doc_v0.properties_mut().remove("avatarHash");
+            doc_v0.properties_mut().remove("avatarFingerprint");
         }
 
         // Bump revision for replacement
@@ -351,14 +360,21 @@ pub async fn fetch_contact_profile(
     }
 }
 
-/// Search for public profiles on the Platform
+/// Search for users on the Platform by DPNS username (per DIP-12/DIP-15)
+///
+/// Per the DIPs, search should:
+/// 1. Query DPNS for username prefix matches
+/// 2. Get the identity IDs from those results
+/// 3. Fetch profiles for display info (avatar, displayName)
+/// 4. Return the DPNS username prominently (it's the verified identifier)
 pub async fn search_profiles(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, String> {
+    let dpns_contract = app_context.dpns_contract.clone();
     let dashpay_contract = app_context.dashpay_contract.clone();
-    let mut results = Vec::new();
+    let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
 
     let query_trimmed = search_query.trim();
     if query_trimmed.is_empty() {
@@ -367,70 +383,69 @@ pub async fn search_profiles(
         ));
     }
 
-    // First, try to parse as identity ID (exact match)
-    if let Ok(identity_id) = Identifier::from_string(query_trimmed, Encoding::Base58) {
-        // Query for specific identity's profile
-        let mut query = DocumentQuery::new(dashpay_contract.clone(), "profile")
+    // Normalize the search query (DPNS uses lowercase normalized labels)
+    let normalized_query = query_trimmed.to_lowercase();
+
+    // Search DPNS for usernames starting with the query
+    let mut dpns_query = DocumentQuery::new(dpns_contract, "domain")
+        .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
+
+    dpns_query = dpns_query
+        .with_where(WhereClause {
+            field: "normalizedParentDomainName".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text("dash".to_string()),
+        })
+        .with_where(WhereClause {
+            field: "normalizedLabel".to_string(),
+            operator: WhereOperator::StartsWith,
+            value: Value::Text(normalized_query.clone()),
+        });
+    dpns_query.limit = 20; // Limit results
+
+    let dpns_results = Document::fetch_many(sdk, dpns_query)
+        .await
+        .map_err(|e| format!("Failed to search DPNS: {}", e))?;
+
+    // Collect identity IDs and usernames from DPNS results
+    let mut identity_usernames: Vec<(Identifier, String)> = Vec::new();
+    for (_, doc) in dpns_results {
+        if let Some(document) = doc {
+            let identity_id = document.owner_id();
+
+            // Get the label (username) from the document
+            let username = document
+                .get("normalizedLabel")
+                .and_then(|v| v.as_text())
+                .map(|s| format!("{}.dash", s))
+                .unwrap_or_else(|| format!("{}.dash", identity_id.to_string(Encoding::Base58)));
+
+            identity_usernames.push((identity_id, username));
+        }
+    }
+
+    // Fetch profiles for each identity
+    for (identity_id, username) in identity_usernames {
+        // Query for profile document owned by this identity
+        let mut profile_query = DocumentQuery::new(dashpay_contract.clone(), "profile")
             .map_err(|e| format!("Failed to create profile query: {}", e))?;
 
-        query = query.with_where(WhereClause {
+        profile_query = profile_query.with_where(WhereClause {
             field: "$ownerId".to_string(),
             operator: WhereOperator::Equal,
             value: Value::Identifier(identity_id.to_buffer()),
         });
-        query.limit = 1;
+        profile_query.limit = 1;
 
-        let identity_results = Document::fetch_many(sdk, query)
-            .await
-            .map_err(|e| format!("Failed to fetch profile by identity: {}", e))?;
+        let profile_results = Document::fetch_many(sdk, profile_query).await;
 
-        // Add identity results
-        for (_, doc) in identity_results {
-            if let Some(document) = doc {
-                results.push((identity_id, document));
-            }
-        }
-    }
+        // Get the profile document if it exists (profile is optional)
+        let profile_doc = match profile_results {
+            Ok(docs) => docs.into_iter().next().and_then(|(_, doc)| doc),
+            Err(_) => None, // Profile fetch failed, but user exists
+        };
 
-    // If no results from identity search or query doesn't look like identity ID,
-    // search by display name (partial match)
-    if results.is_empty() {
-        // Query all profiles and filter by display name client-side
-        // Note: Platform queries don't support partial text matching yet,
-        // so we fetch multiple profiles and filter
-        let mut query = DocumentQuery::new(dashpay_contract, "profile")
-            .map_err(|e| format!("Failed to create profile query: {}", e))?;
-
-        // Set to max allowed limit - Platform doesn't support text search
-        // so we need to fetch as many as possible and filter client-side
-        query.limit = 100;
-
-        let all_results = Document::fetch_many(sdk, query)
-            .await
-            .map_err(|e| format!("Failed to search profiles: {}", e))?;
-
-        // Filter results by display name match
-        let search_lower = query_trimmed.to_lowercase();
-        for (_, doc) in all_results {
-            if let Some(document) = doc {
-                // Extract display name from document
-                let properties = match &document {
-                    Document::V0(doc_v0) => doc_v0.properties(),
-                };
-
-                if properties
-                    .get("displayName")
-                    .and_then(|value| value.as_text())
-                    .is_some_and(|display_name| display_name.to_lowercase().contains(&search_lower))
-                {
-                    // Get the identity ID from document owner
-                    let identity_id = match &document {
-                        Document::V0(doc_v0) => doc_v0.owner_id(),
-                    };
-                    results.push((identity_id, document));
-                }
-            }
-        }
+        results.push((identity_id, profile_doc, username));
     }
 
     Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(

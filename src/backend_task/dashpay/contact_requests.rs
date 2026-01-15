@@ -220,18 +220,21 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Get key indices for ECDH
-    let sender_key = &signing_key; // Use the selected key
+    // Per DIP-11/DIP-15: Use ENCRYPTION key for sender (to encrypt outgoing),
+    // DECRYPTION key for recipient (they will decrypt incoming)
+    let sender_key = &signing_key; // Use the selected ENCRYPTION key
 
-    // Find a recipient key that supports ECDH (must be ECDSA_SECP256K1)
+    // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
+    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
     let recipient_key = to_identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]),
+            Purpose::DECRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
         .ok_or_else(|| {
-            "Recipient does not have a compatible ECDSA_SECP256K1 authentication key for ECDH encryption".to_string()
+            "Recipient does not have a compatible ECDSA_SECP256K1 DECRYPTION key for ECDH. They need to add a DashPay-compatible decryption key to their identity.".to_string()
         })?;
 
     // Step 4: Generate ECDH shared key and encrypt data
@@ -248,7 +251,7 @@ pub async fn send_contact_request_with_proof(
         )
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| "Sender does not have a ECDSA_SECP256K1 authentication private key loaded into Dash Evo Tool.".to_string())?;
+        .ok_or_else(|| "Sender does not have an ECDSA_SECP256K1 ENCRYPTION private key loaded into Dash Evo Tool.".to_string())?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| format!("Failed to generate ECDH shared key: {}", e))?;
@@ -548,20 +551,17 @@ pub async fn accept_contact_request(
         ));
     }
 
-    // Get a signing key for the identity
+    // Get an ENCRYPTION key for the identity (per DIP-11/DIP-15)
+    // Platform enforces MEDIUM security level for ENCRYPTION keys
     let signing_key = identity
         .identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]),
+            Purpose::ENCRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("Cannot accept contact request: This identity does not have a suitable ECDSA_SECP256K1 authentication key. Please add one in the Identities screen.")?
+        .ok_or("Cannot accept contact request: This identity does not have a suitable ECDSA_SECP256K1 ENCRYPTION key. Please add a DashPay-compatible encryption key in the Identities screen.")?
         .clone();
 
     let result = send_contact_request(

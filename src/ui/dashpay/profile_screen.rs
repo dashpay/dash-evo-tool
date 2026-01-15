@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
@@ -23,6 +24,14 @@ const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
     Bios are limited to 250 characters.\n\n\
     Avatar URLs should point to publicly accessible images (max 500 chars).\n\n\
     Profiles are public and visible to all DashPay users.";
+
+const AVATAR_URL_INFO_TEXT: &str = "Avatar Image Guidelines:\n\n\
+    The URL must point to a publicly accessible image.\n\n\
+    Recommended: Square images (e.g., 256x256 or 512x512 pixels).\n\n\
+    Supported formats: JPEG, PNG, WebP, or GIF.\n\n\
+    Maximum URL length: 500 characters.\n\n\
+    Example URL:\nhttps://example.com/images/avatar.jpg\n\n\
+    Tip: Use image hosting services like Imgur, Cloudinary, or your own server.";
 
 #[derive(Debug, Clone)]
 pub struct DashPayProfile {
@@ -85,6 +94,8 @@ pub struct ProfileScreen {
     avatar_loading: bool,                            // Track if avatar is being loaded
     pending_action: Option<Box<AppAction>>,          // Action to execute on next frame
     show_info_popup: bool,
+    show_avatar_info_popup: bool,
+    show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
 }
@@ -113,6 +124,8 @@ impl ProfileScreen {
             avatar_loading: false,
             pending_action: None,
             show_info_popup: false,
+            show_avatar_info_popup: false,
+            show_avatar_url_popup: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
         };
@@ -372,7 +385,6 @@ impl ProfileScreen {
     }
 
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
-        let _texture_id = format!("avatar_{}", url);
         let ctx_clone = ctx.clone();
         let url_clone = url.to_string();
 
@@ -386,8 +398,22 @@ impl ProfileScreen {
                     if let Ok(image) = image::load_from_memory(&image_bytes) {
                         // Convert to RGBA
                         let rgba_image = image.to_rgba8();
-                        let size = [rgba_image.width() as usize, rgba_image.height() as usize];
-                        let pixels = rgba_image.into_raw();
+                        let width = rgba_image.width();
+                        let height = rgba_image.height();
+
+                        // Center-crop to square if not already square
+                        let cropped_image = if width != height {
+                            let size = width.min(height);
+                            let x_offset = (width - size) / 2;
+                            let y_offset = (height - size) / 2;
+                            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size)
+                                .to_image()
+                        } else {
+                            rgba_image
+                        };
+
+                        let size = [cropped_image.width() as usize, cropped_image.height() as usize];
+                        let pixels = cropped_image.into_raw();
 
                         // Create ColorImage
                         let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
@@ -497,9 +523,33 @@ impl ProfileScreen {
             return action;
         }
 
-        // Profile loading status
+        // Profile loading status - styled card when no profile loaded
         if !self.profile_load_attempted && !self.loading {
-            ui.label("No profile loaded for the selected identity. Press 'Refresh' to load.");
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            Frame::group(ui.style())
+                .fill(ui.visuals().extreme_bg_color)
+                .corner_radius(5.0)
+                .outer_margin(Margin::same(20))
+                .shadow(ui.visuals().window_shadow)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(5.0);
+                        ui.label(
+                            RichText::new("No Profile Loaded")
+                                .strong()
+                                .size(25.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                        ui.add_space(5.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        ui.label("The profile for this identity hasn't been loaded yet.");
+                        ui.add_space(10.0);
+                        ui.label("Click the 'Refresh' button above to fetch it from the network.");
+                        ui.add_space(10.0);
+                    });
+                });
+            return action;
         }
 
         // Loading or saving indicator
@@ -624,6 +674,14 @@ impl ProfileScreen {
                                         RichText::new("Avatar URL:")
                                             .color(DashColors::text_primary(dark_mode)),
                                     );
+                                    if crate::ui::helpers::info_icon_button(
+                                        ui,
+                                        AVATAR_URL_INFO_TEXT,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.show_avatar_info_popup = true;
+                                    }
                                 });
 
                                 let avatar_response = ui.add(
@@ -701,6 +759,43 @@ impl ProfileScreen {
                                         }
                                     });
                                 } else {
+                                    // Fee estimation display
+                                    let fee_estimator = PlatformFeeEstimator::new();
+                                    // Profile creation/update is a document operation
+                                    let estimated_fee = if self.profile.is_some() {
+                                        fee_estimator.estimate_document_replace()
+                                    } else {
+                                        fee_estimator.estimate_document_create()
+                                    };
+
+                                    Frame::group(ui.style())
+                                        .fill(DashColors::surface(dark_mode))
+                                        .inner_margin(Margin::symmetric(10, 8))
+                                        .corner_radius(5.0)
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new("Estimated fee:")
+                                                        .color(DashColors::text_secondary(dark_mode))
+                                                        .size(14.0),
+                                                );
+                                                ui.label(
+                                                    RichText::new(format_credits_as_dash(estimated_fee))
+                                                        .color(DashColors::text_primary(dark_mode))
+                                                        .size(14.0),
+                                                );
+                                            });
+                                        });
+
+                                    ui.add_space(10.0);
+
+                                    // Check if identity has enough balance
+                                    let has_enough_balance = self
+                                        .selected_identity
+                                        .as_ref()
+                                        .map(|id| id.identity.balance() > estimated_fee)
+                                        .unwrap_or(false);
+
                                     // Action buttons
                                     ui.horizontal(|ui| {
                                         if ui.button("Cancel").clicked() {
@@ -715,21 +810,36 @@ impl ProfileScreen {
 
                                         ui.add_space(10.0);
 
+                                        let can_save = self.is_valid() && has_enough_balance;
                                         let save_button = egui::Button::new(
                                             RichText::new("Save Profile")
                                                 .color(egui::Color32::WHITE),
                                         )
-                                        .fill(if self.is_valid() {
+                                        .fill(if can_save {
                                             egui::Color32::from_rgb(0, 141, 228) // Dash blue
                                         } else {
                                             egui::Color32::GRAY
                                         });
 
-                                        if ui.add_enabled(self.is_valid(), save_button).clicked() {
+                                        let hover_text = if !has_enough_balance {
+                                            format!(
+                                                "Insufficient identity balance for fee (need at least {})",
+                                                format_credits_as_dash(estimated_fee)
+                                            )
+                                        } else if !self.is_valid() {
+                                            "Please fix validation errors".to_string()
+                                        } else {
+                                            "Save profile changes".to_string()
+                                        };
+
+                                        if ui
+                                            .add_enabled(can_save, save_button)
+                                            .on_hover_text(&hover_text)
+                                            .on_disabled_hover_text(&hover_text)
+                                            .clicked()
+                                        {
                                             action |= self.save_profile();
                                         }
-
-                                        // Save status removed to avoid UI disruption
                                     });
                                 }
                             });
@@ -744,8 +854,6 @@ impl ProfileScreen {
                                 ui.vertical(|ui| {
                                     ui.add_space(5.0);
                                     ui.horizontal(|ui| {
-                                        ui.add_space(10.0);
-
                                         // Check if we have an avatar URL and try to display it
                                         if !profile.avatar_url.is_empty() {
                                             let texture_id =
@@ -755,12 +863,16 @@ impl ProfileScreen {
                                             if let Some(texture) =
                                                 self.avatar_textures.get(&texture_id)
                                             {
-                                                // Display the cached avatar image
-                                                ui.add(
+                                                // Display the cached avatar image (clickable)
+                                                let image_response = ui.add(
                                                     egui::Image::new(texture)
-                                                        .fit_to_exact_size(egui::vec2(50.0, 50.0))
-                                                        .corner_radius(5.0),
-                                                );
+                                                        .fit_to_exact_size(egui::vec2(80.0, 80.0))
+                                                        .corner_radius(8.0)
+                                                        .sense(egui::Sense::click()),
+                                                ).on_hover_text("Click to view avatar URL");
+                                                if image_response.clicked() {
+                                                    self.show_avatar_url_popup = true;
+                                                }
                                             } else {
                                                 // Check if image data was loaded by async task
                                                 let data_id =
@@ -779,14 +891,16 @@ impl ProfileScreen {
                                                         egui::TextureOptions::LINEAR,
                                                     );
 
-                                                    // Display the image
-                                                    ui.add(
+                                                    // Display the image (clickable)
+                                                    let image_response = ui.add(
                                                         egui::Image::new(&texture)
-                                                            .fit_to_exact_size(egui::vec2(
-                                                                50.0, 50.0,
-                                                            ))
-                                                            .corner_radius(5.0),
-                                                    );
+                                                            .fit_to_exact_size(egui::vec2(80.0, 80.0))
+                                                            .corner_radius(8.0)
+                                                            .sense(egui::Sense::click()),
+                                                    ).on_hover_text("Click to view avatar URL");
+                                                    if image_response.clicked() {
+                                                        self.show_avatar_url_popup = true;
+                                                    }
 
                                                     // Cache the texture
                                                     self.avatar_textures
@@ -821,7 +935,7 @@ impl ProfileScreen {
                                             }
                                         } else {
                                             // No avatar URL, show default emoji
-                                            ui.label(RichText::new("👤").size(50.0));
+                                            ui.label(RichText::new("👤").size(80.0));
                                         }
                                     });
                                 });
@@ -838,12 +952,13 @@ impl ProfileScreen {
                                     if let Some(identity) = &self.selected_identity
                                         && !identity.dpns_names.is_empty()
                                     {
+                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                                         ui.label(
                                             RichText::new(format!(
                                                 "@{}",
                                                 identity.dpns_names[0].name
                                             ))
-                                            .strong(),
+                                            .color(DashColors::text_secondary(dark_mode)),
                                         );
                                     }
 
@@ -897,34 +1012,6 @@ impl ProfileScreen {
                                 );
                             }
 
-                            ui.separator();
-
-                            // Avatar URL
-                            ui.label(
-                                RichText::new("Avatar URL:")
-                                    .strong()
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-                            if !profile.avatar_url.is_empty() {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(&profile.avatar_url)
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                    if ui.small_button("Copy").clicked() {
-                                        ui.ctx().copy_text(profile.avatar_url.clone());
-                                        self.display_message(
-                                            "Avatar URL copied to clipboard",
-                                            MessageType::Info,
-                                        );
-                                    }
-                                });
-                            } else {
-                                ui.label(
-                                    RichText::new("No avatar URL set")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                            }
                         });
                     } else if self.profile_load_attempted {
                         // No profile exists (only show after we've tried to load)
@@ -978,6 +1065,72 @@ impl ProfileScreen {
                         self.show_info_popup = false;
                     }
                 });
+        }
+
+        // Show avatar info popup if requested
+        if self.show_avatar_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui.ctx(), |ui| {
+                    let mut popup =
+                        InfoPopup::new("Avatar Image Guidelines", AVATAR_URL_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_avatar_info_popup = false;
+                    }
+                });
+        }
+
+        // Show avatar URL popup when clicking on avatar image
+        if self.show_avatar_url_popup {
+            if let Some(profile) = &self.profile {
+                let avatar_url = profile.avatar_url.clone();
+                let texture_id = format!("avatar_{}", avatar_url);
+                egui::Window::new("Avatar")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(5.0);
+
+                            // Display larger avatar image
+                            if let Some(texture) = self.avatar_textures.get(&texture_id) {
+                                ui.add(
+                                    egui::Image::new(texture)
+                                        .fit_to_exact_size(egui::vec2(200.0, 200.0))
+                                        .corner_radius(10.0),
+                                );
+                            }
+
+                            ui.add_space(10.0);
+
+                            // Show URL in smaller, secondary text
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            ui.label(
+                                RichText::new(&avatar_url)
+                                    .small()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Copy URL").clicked() {
+                                    ui.ctx().copy_text(avatar_url.clone());
+                                    self.display_message(
+                                        "Avatar URL copied to clipboard",
+                                        MessageType::Info,
+                                    );
+                                    self.show_avatar_url_popup = false;
+                                }
+                                if ui.button("Close").clicked() {
+                                    self.show_avatar_url_popup = false;
+                                }
+                            });
+                        });
+                    });
+            } else {
+                self.show_avatar_url_popup = false;
+            }
         }
 
         // Show wallet unlock popup if open

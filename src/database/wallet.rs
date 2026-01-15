@@ -995,6 +995,38 @@ impl Database {
 
         Ok(deleted)
     }
+
+    /// Get the last platform full sync timestamp and checkpoint height for a wallet
+    /// Returns (last_sync_timestamp, checkpoint_height) or (0, 0) if not set
+    pub fn get_platform_sync_info(
+        &self,
+        seed_hash: &[u8; 32],
+    ) -> rusqlite::Result<(u64, u64)> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT last_platform_full_sync, last_platform_sync_checkpoint FROM wallet WHERE seed_hash = ?",
+            params![seed_hash],
+            |row| {
+                let last_sync: i64 = row.get(0)?;
+                let checkpoint: i64 = row.get(1)?;
+                Ok((last_sync as u64, checkpoint as u64))
+            },
+        )
+    }
+
+    /// Set the last platform full sync timestamp and checkpoint height for a wallet
+    pub fn set_platform_sync_info(
+        &self,
+        seed_hash: &[u8; 32],
+        last_sync_timestamp: u64,
+        checkpoint_height: u64,
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ? WHERE seed_hash = ?",
+            params![last_sync_timestamp as i64, checkpoint_height as i64, seed_hash],
+        )?;
+        Ok(())
+    }
 }
 
 /// Ensure the address is valid for the given network and

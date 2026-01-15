@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 19;
+pub const DEFAULT_DB_VERSION: u16 = 20;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            20 => {
+                self.add_platform_sync_columns(tx)?;
+            }
             19 => {
                 self.initialize_platform_address_balances_table(tx)?;
             }
@@ -284,7 +287,9 @@ impl Database {
                 network TEXT NOT NULL,
                 confirmed_balance INTEGER DEFAULT 0,
                 unconfirmed_balance INTEGER DEFAULT 0,
-                total_balance INTEGER DEFAULT 0
+                total_balance INTEGER DEFAULT 0,
+                last_platform_full_sync INTEGER DEFAULT 0,
+                last_platform_sync_checkpoint INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -502,6 +507,21 @@ impl Database {
                 PRIMARY KEY (seed_hash, address, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Add platform sync columns to wallet table (version 20).
+    /// - last_platform_full_sync: Unix timestamp of last full platform address sync
+    /// - last_platform_sync_checkpoint: Block height checkpoint from last full sync
+    fn add_platform_sync_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN last_platform_full_sync INTEGER DEFAULT 0",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN last_platform_sync_checkpoint INTEGER DEFAULT 0",
             [],
         )?;
         Ok(())

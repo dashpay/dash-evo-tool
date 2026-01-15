@@ -1682,9 +1682,12 @@ impl WalletsBalancesScreen {
                         ui.add_space(8.0);
                         action |= self.render_address_table(ui);
 
-                        ui.add_space(10.0);
-                        ui.separator();
-                        self.render_transactions_section(ui);
+                        // Transactions section - requires SPV which is dev mode only
+                        if self.app_context.is_developer_mode() {
+                            ui.add_space(10.0);
+                            ui.separator();
+                            self.render_transactions_section(ui);
+                        }
 
                         ui.add_space(14.0);
                         self.render_bottom_options(ui);

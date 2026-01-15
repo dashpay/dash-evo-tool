@@ -28,7 +28,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -53,6 +53,7 @@ pub struct PurchaseTokenScreen {
 
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
 
     // Specific to this transition - using AmountInput components following design pattern
     amount_to_purchase_input: Option<AmountInput>,
@@ -99,6 +100,7 @@ impl PurchaseTokenScreen {
         Self {
             identity_token_info,
             selected_key: possible_key,
+            show_advanced_options: false,
             amount_to_purchase_input: None,
             amount_to_purchase_value: None,
             fetched_pricing_schedule: None,
@@ -316,24 +318,11 @@ impl PurchaseTokenScreen {
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_info = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee", fee_info)
-        });
-
-        let info_ref = info_section
-            .as_ref()
-            .map(|(title, desc)| (*title, desc.as_str()));
-
         crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Purchase Successful!".to_string(),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
-            info_ref,
+            None,
         )
     }
 }
@@ -498,26 +487,34 @@ impl ScreenLike for PurchaseTokenScreen {
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the Purchase transaction");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Purchase Tokens");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity_token_info.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity_token_info.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenAction,
-                );
-
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the Purchase transaction");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity_token_info.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
 
-                // 2) Amount to purchase
-                ui.heading("2. Amount to purchase and price");
+                // Amount to purchase
+                let step_num = if self.show_advanced_options { 2 } else { 1 };
+                ui.heading(format!("{}. Amount to purchase and price", step_num));
                 ui.add_space(5.0);
                 action |= self.render_amount_input(ui);
 

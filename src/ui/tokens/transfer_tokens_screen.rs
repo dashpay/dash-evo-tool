@@ -17,7 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
@@ -50,6 +50,7 @@ pub struct TransferTokensScreen {
     pub identity_token_balance: IdentityTokenBalance,
     known_identities: Vec<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     pub public_note: Option<String>,
     pub receiver_identity_id: String,
     pub amount: Option<Amount>,
@@ -97,6 +98,7 @@ impl TransferTokensScreen {
             identity_token_balance,
             known_identities,
             selected_key: selected_key.cloned(),
+            show_advanced_options: false,
             public_note: None,
             receiver_identity_id: String::new(),
             amount,
@@ -238,24 +240,11 @@ impl TransferTokensScreen {
         )))
     }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
-        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_info = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee", fee_info)
-        });
-
-        let info_ref = info_section
-            .as_ref()
-            .map(|(title, desc)| (*title, desc.as_str()));
-
         crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Transfer Successful!".to_string(),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
-            info_ref,
+            None,
         )
     }
 }
@@ -399,26 +388,34 @@ impl ScreenLike for TransferTokensScreen {
                     }
                 }
 
-                // Select the key to sign with
-                ui.heading("1. Select the key to sign the transaction with");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Transfer Tokens");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenTransfer,
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the transaction with");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenTransfer,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                }
 
                 // Input the amount to transfer
-                ui.heading("2. Input the amount to transfer");
+                let step_num = if self.show_advanced_options { "2" } else { "1" };
+                ui.heading(format!("{}. Input the amount to transfer", step_num));
                 ui.add_space(5.0);
 
                 self.render_amount_input(ui);
@@ -428,7 +425,8 @@ impl ScreenLike for TransferTokensScreen {
                 ui.add_space(10.0);
 
                 // Input the ID of the identity to transfer to
-                ui.heading("3. ID of the identity to transfer to");
+                let step_num = if self.show_advanced_options { "3" } else { "2" };
+                ui.heading(format!("{}. ID of the identity to transfer to", step_num));
                 ui.add_space(5.0);
                 self.render_to_identity_input(ui);
 
@@ -437,7 +435,8 @@ impl ScreenLike for TransferTokensScreen {
                 ui.add_space(10.0);
 
                 // Render text input for the public note
-                ui.heading("4. Public note (optional)");
+                let step_num = if self.show_advanced_options { "4" } else { "3" };
+                ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
                     ui.label("Public note (optional):");

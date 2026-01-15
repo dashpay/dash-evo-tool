@@ -25,7 +25,9 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
@@ -203,23 +205,53 @@ impl AddNewIdentityScreen {
             let app_context = &self.app_context;
             let identity_id_number = self.identity_id_number;
 
-            const DEFAULT_KEY_TYPES: [(KeyType, Purpose, SecurityLevel); 3] = [
+            // Create DashPay contract bounds for ENCRYPTION/DECRYPTION keys
+            // Use the contract ID from app_context to ensure it matches the network
+            let dashpay_contract_id = app_context.dashpay_contract.id();
+            let dashpay_bounds = Some(ContractBounds::SingleContract {
+                id: dashpay_contract_id,
+            });
+
+            // Default keys per DIP-11:
+            // - AUTHENTICATION CRITICAL (general platform operations)
+            // - AUTHENTICATION HIGH (general platform operations)
+            // - TRANSFER CRITICAL (credit transfers)
+            // - ENCRYPTION MEDIUM with DashPay bounds (for contact requests per DIP-15)
+            // - DECRYPTION MEDIUM with DashPay bounds (for contact requests per DIP-15)
+            // Note: Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
+            let default_keys: Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> = vec![
                 (
                     KeyType::ECDSA_HASH160,
                     Purpose::AUTHENTICATION,
                     SecurityLevel::CRITICAL,
+                    None,
                 ),
                 (
                     KeyType::ECDSA_HASH160,
                     Purpose::AUTHENTICATION,
                     SecurityLevel::HIGH,
+                    None,
                 ),
                 (
                     KeyType::ECDSA_HASH160,
                     Purpose::TRANSFER,
                     SecurityLevel::CRITICAL,
+                    None,
+                ),
+                (
+                    KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
+                    Purpose::ENCRYPTION,
+                    SecurityLevel::MEDIUM, // Platform enforces MEDIUM for ENCRYPTION
+                    dashpay_bounds.clone(),
+                ),
+                (
+                    KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
+                    Purpose::DECRYPTION,
+                    SecurityLevel::MEDIUM,
+                    dashpay_bounds,
                 ),
             ];
+
             let mut wallet = wallet_lock.write().expect("wallet lock failed");
             let master_key = wallet.identity_authentication_ecdsa_private_key(
                 app_context.network,
@@ -228,10 +260,10 @@ impl AddNewIdentityScreen {
                 Some(app_context),
             )?;
 
-            let other_keys = DEFAULT_KEY_TYPES
+            let other_keys = default_keys
                 .into_iter()
                 .enumerate()
-                .map(|(i, (key_type, purpose, security_level))| {
+                .map(|(i, (key_type, purpose, security_level, contract_bounds))| {
                     Ok((
                         wallet.identity_authentication_ecdsa_private_key(
                             app_context.network,
@@ -242,6 +274,7 @@ impl AddNewIdentityScreen {
                         key_type,
                         purpose,
                         security_level,
+                        contract_bounds,
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -664,7 +697,7 @@ impl AddNewIdentityScreen {
                     }
 
                     // Render other keys
-                    for (i, ((key, _), key_type, purpose, security_level)) in
+                    for (i, ((key, _), key_type, purpose, security_level, _contract_bounds)) in
                         self.identity_keys.keys_input.iter_mut().enumerate()
                     {
                         body.row(row_height, |mut row| {
@@ -928,13 +961,13 @@ impl AddNewIdentityScreen {
                     Some(&self.app_context),
                 )?);
 
-            // Update the additional keys input
+            // Update the additional keys input (preserving contract bounds)
             self.identity_keys.keys_input = self
                 .identity_keys
                 .keys_input
                 .iter()
                 .enumerate()
-                .map(|(key_index, (_, key_type, purpose, security_level))| {
+                .map(|(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
                     Ok((
                         wallet.identity_authentication_ecdsa_private_key(
                             self.app_context.network,
@@ -945,6 +978,7 @@ impl AddNewIdentityScreen {
                         *key_type,
                         *purpose,
                         *security_level,
+                        contract_bounds.clone(),
                     ))
                 })
                 .collect::<Result<_, String>>()?;
@@ -965,7 +999,7 @@ impl AddNewIdentityScreen {
             let mut wallet = wallet_guard.write().unwrap();
             let new_key_index = self.identity_keys.keys_input.len() as u32 + 1;
 
-            // Add a new key with default parameters
+            // Add a new key with default parameters (no contract bounds for manually added keys)
             self.identity_keys.keys_input.push((
                 wallet
                     .identity_authentication_ecdsa_private_key(
@@ -975,9 +1009,10 @@ impl AddNewIdentityScreen {
                         Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
-                key_type, // Default key type
+                key_type,
                 purpose,
                 security_level,
+                None, // No contract bounds for manually added keys
             ));
         }
     }

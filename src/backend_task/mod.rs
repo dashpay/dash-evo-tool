@@ -149,7 +149,7 @@ pub enum BackendTaskSuccessResult {
     // DashPay related results
     DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
     DashPayContactProfile(Option<Document>),          // Contact's public profile document
-    DashPayProfileSearchResults(Vec<(Identifier, Document)>), // Search results: (identity_id, profile_document)
+    DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
     DashPayContactRequests {
         incoming: Vec<(Identifier, Document)>, // (request_id, document)
         outgoing: Vec<(Identifier, Document)>, // (request_id, document)

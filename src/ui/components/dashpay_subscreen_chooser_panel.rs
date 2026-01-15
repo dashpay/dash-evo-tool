@@ -8,18 +8,24 @@ use std::sync::Arc;
 
 pub fn add_dashpay_subscreen_chooser_panel(
     ctx: &Context,
-    _app_context: &Arc<AppContext>,
+    app_context: &Arc<AppContext>,
     current_subscreen: DashPaySubscreen,
 ) -> AppAction {
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
 
-    let subscreens = vec![
+    // Build subscreens list - Payment History requires SPV which is dev mode only
+    let mut subscreens = vec![
         DashPaySubscreen::Profile,
         DashPaySubscreen::Contacts,
-        DashPaySubscreen::Payments,
-        DashPaySubscreen::ProfileSearch,
     ];
+
+    // Only show Payment History in developer mode (requires SPV)
+    if app_context.is_developer_mode() {
+        subscreens.push(DashPaySubscreen::Payments);
+    }
+
+    subscreens.push(DashPaySubscreen::ProfileSearch);
 
     let active_screen = current_subscreen;
 

@@ -17,12 +17,13 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
+use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
+use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 /// Which DPNS sub-screen is currently showing.
@@ -1953,7 +1954,7 @@ impl ScreenLike for DPNSScreen {
                 0,
                 (
                     "Register Name",
-                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName)),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName(RegisterDpnsNameSource::DPNS))),
                 ),
             );
         }
@@ -1976,11 +1977,11 @@ impl ScreenLike for DPNSScreen {
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
+            RootScreenType::RootScreenToolsPlatformInfoScreen,
         );
 
-        // Contracts area chooser (DPNS / Dashpay / Contracts)
-        action |= add_contracts_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        // Tools area chooser
+        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // DPNS subscreen chooser
         action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());

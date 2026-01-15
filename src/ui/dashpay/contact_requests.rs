@@ -393,23 +393,60 @@ impl ContactRequests {
         }
 
         // Tabs
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.horizontal(|ui| {
-            if ui
-                .selectable_label(self.active_tab == RequestTab::Incoming, "Incoming")
-                .clicked()
-            {
+            let incoming_tab = egui::Button::new(RichText::new("Incoming").color(
+                if self.active_tab == RequestTab::Incoming {
+                    DashColors::WHITE
+                } else {
+                    DashColors::text_primary(dark_mode)
+                },
+            ))
+            .fill(if self.active_tab == RequestTab::Incoming {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::glass_white(dark_mode)
+            })
+            .stroke(if self.active_tab == RequestTab::Incoming {
+                egui::Stroke::NONE
+            } else {
+                egui::Stroke::new(1.0, DashColors::border(dark_mode))
+            })
+            .corner_radius(egui::CornerRadius::same(4))
+            .min_size(egui::Vec2::new(120.0, 28.0));
+
+            if ui.add(incoming_tab).clicked() {
                 self.active_tab = RequestTab::Incoming;
             }
-            ui.separator();
-            if ui
-                .selectable_label(self.active_tab == RequestTab::Outgoing, "Outgoing")
-                .clicked()
-            {
+
+            ui.add_space(8.0);
+
+            let outgoing_tab = egui::Button::new(RichText::new("Outgoing").color(
+                if self.active_tab == RequestTab::Outgoing {
+                    DashColors::WHITE
+                } else {
+                    DashColors::text_primary(dark_mode)
+                },
+            ))
+            .fill(if self.active_tab == RequestTab::Outgoing {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::glass_white(dark_mode)
+            })
+            .stroke(if self.active_tab == RequestTab::Outgoing {
+                egui::Stroke::NONE
+            } else {
+                egui::Stroke::new(1.0, DashColors::border(dark_mode))
+            })
+            .corner_radius(egui::CornerRadius::same(4))
+            .min_size(egui::Vec2::new(120.0, 28.0));
+
+            if ui.add(outgoing_tab).clicked() {
                 self.active_tab = RequestTab::Outgoing;
             }
         });
 
-        ui.separator();
+        ui.add_space(8.0);
 
         // Display requests based on active tab
         match self.active_tab {

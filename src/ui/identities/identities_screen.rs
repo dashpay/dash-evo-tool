@@ -13,6 +13,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::theme::DashColors;
@@ -686,6 +687,14 @@ impl IdentitiesScreen {
                                                                 );
                                                             }
                                                         });
+
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📛 Register DPNS Name")).on_hover_text("Register a DPNS username for this identity").clicked() {
+                                                            let mut screen = RegisterDpnsNameScreen::new(&self.app_context, RegisterDpnsNameSource::Identities);
+                                                            screen.select_identity(qualified_identity.identity.id());
+                                                            action = AppAction::AddScreen(
+                                                                Screen::RegisterDpnsNameScreen(screen),
+                                                            );
+                                                        }
                                                     });
                                             });
                                             });

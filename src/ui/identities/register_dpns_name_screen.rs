@@ -2,16 +2,18 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser_with_doc_type};
+use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -26,6 +28,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::get_selected_wallet;
 
+/// Tracks where the user navigated from to reach this screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RegisterDpnsNameSource {
+    #[default]
+    DPNS,
+    Identities,
+}
+
 #[derive(PartialEq)]
 pub enum RegisterDpnsNameStatus {
     NotStarted,
@@ -38,6 +48,7 @@ pub struct RegisterDpnsNameScreen {
     pub show_identity_selector: bool,
     pub qualified_identities: Vec<QualifiedIdentity>,
     pub selected_qualified_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
@@ -45,12 +56,15 @@ pub struct RegisterDpnsNameScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Source of navigation to this screen
+    pub source: RegisterDpnsNameSource,
 }
 
 impl RegisterDpnsNameScreen {
-    pub fn new(app_context: &Arc<AppContext>) -> Self {
+    pub fn new(app_context: &Arc<AppContext>, source: RegisterDpnsNameSource) -> Self {
         let qualified_identities: Vec<_> =
             app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
@@ -62,19 +76,41 @@ impl RegisterDpnsNameScreen {
             None
         };
 
+        // Auto-select a suitable key for DPNS registration
+        let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
+            use dash_sdk::dpp::identity::KeyType;
+            identity
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    dash_sdk::dpp::identity::SecurityLevel::full_range().into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned()
+        });
+
+        let selected_identity_string = selected_qualified_identity
+            .as_ref()
+            .map(|qi| qi.identity.id().to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58))
+            .unwrap_or_default();
+
         let show_identity_selector = qualified_identities.len() > 1;
         Self {
             show_identity_selector,
             qualified_identities,
             selected_qualified_identity,
-            selected_key: None,
+            selected_identity_string,
+            selected_key,
             name_input: String::new(),
             register_dpns_name_status: RegisterDpnsNameStatus::NotStarted,
             app_context: app_context.clone(),
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message,
+            show_advanced_options: false,
             completed_fee_result: None,
+            source,
         }
     }
 
@@ -87,7 +123,20 @@ impl RegisterDpnsNameScreen {
         {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
-            self.selected_key = None; // Reset key selection
+            self.selected_identity_string = qi.identity.id().to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            // Auto-select a suitable key for DPNS registration
+            use dash_sdk::dpp::identity::KeyType;
+            self.selected_key = qi
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    dash_sdk::dpp::identity::SecurityLevel::full_range().into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned();
+
             // Update the selected wallet
             self.selected_wallet =
                 get_selected_wallet(qi, Some(&self.app_context), None, &mut self.error_message);
@@ -95,25 +144,80 @@ impl RegisterDpnsNameScreen {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
             self.selected_qualified_identity = None;
+            self.selected_identity_string = String::new();
             self.selected_key = None;
             self.selected_wallet = None;
         }
     }
 
-    fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) {
-        add_identity_key_chooser_with_doc_type(
-            ui,
-            &self.app_context,
-            self.qualified_identities.iter(),
-            &mut self.selected_qualified_identity,
-            &mut self.selected_key,
-            TransactionType::DocumentAction,
-            self.app_context
-                .dpns_contract
-                .document_type_cloned_for_name("domain")
-                .ok()
-                .as_ref(),
+    fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Identity selector
+        let response = ui.add(
+            IdentitySelector::new(
+                "dpns_register_identity_selector",
+                &mut self.selected_identity_string,
+                &self.qualified_identities,
+            )
+            .selected_identity(&mut self.selected_qualified_identity)
+            .unwrap()
+            .width(300.0)
+            .label("Identity:")
+            .other_option(false),
         );
+
+        // Handle identity change - auto-select key and update wallet
+        if response.changed() {
+            if let Some(identity) = &self.selected_qualified_identity {
+                // Auto-select a suitable key for DPNS registration
+                use dash_sdk::dpp::identity::KeyType;
+                self.selected_key = identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        dash_sdk::dpp::identity::SecurityLevel::full_range().into(),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                    .cloned();
+
+                // Update wallet
+                self.selected_wallet = get_selected_wallet(
+                    identity,
+                    Some(&self.app_context),
+                    None,
+                    &mut self.error_message,
+                );
+            } else {
+                self.selected_key = None;
+                self.selected_wallet = None;
+            }
+        }
+
+        // Key selector (only shown in advanced mode)
+        if self.show_advanced_options {
+            ui.add_space(10.0);
+            if let Some(identity) = &self.selected_qualified_identity {
+                let key_action = add_key_chooser_with_doc_type(
+                    ui,
+                    &self.app_context,
+                    identity,
+                    &mut self.selected_key,
+                    TransactionType::DocumentAction,
+                    self.app_context
+                        .dpns_contract
+                        .document_type_cloned_for_name("domain")
+                        .ok()
+                        .as_ref(),
+                );
+                if !matches!(key_action, AppAction::None) {
+                    action = key_action;
+                }
+            }
+        }
+
+        action
     }
 
     fn register_dpns_name_clicked(&mut self) -> AppAction {
@@ -134,33 +238,17 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_info = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee", fee_info)
-        });
-
-        let info_ref = info_section
-            .as_ref()
-            .map(|(title, desc)| (*title, desc.as_str()));
-
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
             "DPNS Name Registered!".to_string(),
             vec![
-                (
-                    "Back to DPNS screen".to_string(),
-                    AppAction::PopScreenAndRefresh,
-                ),
+                ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
                     "Register another name".to_string(),
                     AppAction::Custom("register_another".to_string()),
                 ),
             ],
-            info_ref,
+            None,
         );
 
         // Handle the custom action to reset the form
@@ -195,21 +283,38 @@ impl ScreenLike for RegisterDpnsNameScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
-            &self.app_context,
-            vec![
-                ("DPNS", AppAction::GoToMainScreen),
+        // Build breadcrumbs based on where we came from
+        let breadcrumbs = match self.source {
+            RegisterDpnsNameSource::DPNS => vec![
+                (
+                    "DPNS",
+                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenDPNSActiveContests),
+                ),
                 ("Register Name", AppAction::None),
             ],
-            vec![],
-        );
+            RegisterDpnsNameSource::Identities => vec![
+                (
+                    "Identities",
+                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenIdentities),
+                ),
+                ("Register Name", AppAction::None),
+            ],
+        };
 
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            crate::ui::RootScreenType::RootScreenDPNSOwnedNames,
-        );
+        let mut action = add_top_panel(ctx, &self.app_context, breadcrumbs, vec![]);
+
+        // Use the appropriate left panel highlight based on source
+        let root_screen = match self.source {
+            RegisterDpnsNameSource::DPNS => {
+                crate::ui::RootScreenType::RootScreenDPNSActiveContests
+            }
+            RegisterDpnsNameSource::Identities => {
+                crate::ui::RootScreenType::RootScreenIdentities
+            }
+        };
+        action |= add_left_panel(ctx, &self.app_context, root_screen);
+
+        // Don't show the tools/dpns subscreen chooser panels for this screen
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
@@ -222,7 +327,12 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         return;
                     }
 
-                    ui.heading("Register DPNS Name");
+                    ui.horizontal(|ui| {
+                        ui.heading("Register DPNS Name");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                        });
+                    });
                     ui.add_space(10.0);
 
             // If no identities loaded, give message
@@ -254,7 +364,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             // Select the identity to register the name for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
-            self.render_identity_id_selection(ui);
+            inner_action |= self.render_identity_id_selection(ui);
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!("Identity balance: {:.6}", identity.identity.balance() as f64 * 1e-11));
@@ -321,10 +431,6 @@ impl ScreenLike for RegisterDpnsNameScreen {
                                 egui::Color32::DARK_GREEN,
                                 "This is not a contested name.",
                             );
-                            ui.colored_label(
-                                egui::Color32::DARK_GREEN,
-                                "Cost ≈ 0.0006 Dash",
-                            );
                         }
                     }
                     _ => {
@@ -340,17 +446,76 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
             ui.add_space(10.0);
 
+            // Fee estimation
+            let fee_estimator = PlatformFeeEstimator::new();
+            let estimated_fee = fee_estimator.estimate_document_create();
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Estimated fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(format_credits_as_dash(estimated_fee))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+                });
+
+            ui.add_space(10.0);
+
+            // Check if identity has enough balance
+            let has_enough_balance = self
+                .selected_qualified_identity
+                .as_ref()
+                .map(|id| id.identity.balance() > estimated_fee)
+                .unwrap_or(false);
+
             // Register button
             let mut new_style = (**ui.style()).clone();
             new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
             ui.set_style(new_style);
             let name_is_valid = validate_dpns_name(self.name_input.trim()) == DpnsNameValidationResult::Valid;
-            let button_enabled = self.selected_qualified_identity.is_some() && self.selected_key.is_some() && name_is_valid;
+            let button_enabled = self.selected_qualified_identity.is_some()
+                && self.selected_key.is_some()
+                && name_is_valid
+                && has_enough_balance;
+
+            let hover_text = if !has_enough_balance {
+                format!(
+                    "Insufficient identity balance for fee (need at least {})",
+                    format_credits_as_dash(estimated_fee)
+                )
+            } else if !name_is_valid {
+                "Please enter a valid name".to_string()
+            } else if self.selected_key.is_none() {
+                "Please select a signing key".to_string()
+            } else {
+                "Register DPNS name".to_string()
+            };
+
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
-                .fill(Color32::from_rgb(0, 128, 255))
+                .fill(if button_enabled {
+                    Color32::from_rgb(0, 128, 255)
+                } else {
+                    Color32::GRAY
+                })
                 .frame(true)
                 .corner_radius(3.0);
-            if ui.add_enabled(button_enabled, button).clicked() {
+            if ui
+                .add_enabled(button_enabled, button)
+                .on_hover_text(&hover_text)
+                .on_disabled_hover_text(&hover_text)
+                .clicked()
+            {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

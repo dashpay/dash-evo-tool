@@ -27,6 +27,7 @@ use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
@@ -57,6 +58,7 @@ pub struct IdentityKeys {
         KeyType,
         Purpose,
         SecurityLevel,
+        Option<ContractBounds>,
     )>,
 }
 
@@ -98,13 +100,13 @@ impl IdentityKeys {
         }
 
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, ((private_key, derivation_path), key_type, purpose, security_level))| {
+            |(i, ((private_key, derivation_path), key_type, purpose, security_level, contract_bounds))| {
                 let id = (i + 1) as KeyID;
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,
                     purpose: *purpose,
                     security_level: *security_level,
-                    contract_bounds: None,
+                    contract_bounds: contract_bounds.clone(),
                     key_type: *key_type,
                     read_only: false,
                     data: private_key.public_key(&secp).to_bytes().into(),
@@ -164,7 +166,7 @@ impl IdentityKeys {
             key_map.insert(0, key);
         }
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, ((private_key, _), key_type, purpose, security_level))| {
+            |(i, ((private_key, _), key_type, purpose, security_level, contract_bounds))| {
                 let id = (i + 1) as KeyID;
                 let data = match key_type {
                     KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
@@ -180,7 +182,7 @@ impl IdentityKeys {
                     id,
                     purpose: *purpose,
                     security_level: *security_level,
-                    contract_bounds: None,
+                    contract_bounds: contract_bounds.clone(),
                     key_type: *key_type,
                     read_only: false,
                     data,

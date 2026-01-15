@@ -857,11 +857,19 @@ impl AppContext {
     }
 
     /// Fetch Platform address balances using privacy-preserving sync with WalletAddressProvider
+    ///
+    /// This performs either a full sync or terminal-only sync depending on how long it's been
+    /// since the last full sync:
+    /// - If 6 days 20 hours or more have passed (or first sync): full sync + terminal updates
+    /// - Otherwise: terminal-only sync using the stored checkpoint height
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
         use crate::model::wallet::WalletAddressProvider;
+
+        // 6 days and 20 hours in seconds (to be safe before 7 days)
+        const FULL_SYNC_INTERVAL_SECS: u64 = 6 * 24 * 60 * 60 + 20 * 60 * 60; // 590400 seconds
 
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
@@ -873,6 +881,21 @@ impl AppContext {
                 .cloned()
                 .ok_or_else(|| "Wallet not found".to_string())?
         };
+
+        // Check last full sync time from database
+        let (last_full_sync, stored_checkpoint) = self
+            .db
+            .get_platform_sync_info(&seed_hash)
+            .unwrap_or((0, 0));
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let needs_full_sync = last_full_sync == 0
+            || stored_checkpoint == 0
+            || now.saturating_sub(last_full_sync) >= FULL_SYNC_INTERVAL_SECS;
 
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
@@ -892,65 +915,103 @@ impl AppContext {
             guard.clone()
         };
 
-        // trunk state query is faling if tree is empty with internal error
-        // this happen when we don't have any balances yet
-        // this case is most offen happen for local network
-        // so we do not ban addresses in case of failure
-        // and return empty `AddressSyncResult`
-        let config = if sdk.network == Network::Regtest {
-            Some(AddressSyncConfig {
-                request_settings: RequestSettings {
-                    ban_failed_address: Some(false),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-        } else {
-            None
-        };
-
-        let result = match sdk.sync_address_balances(&mut provider, config).await {
-            Ok(res) => res,
-            Err(e) if e.to_string().contains("empty tree") => {
-                tracing::debug!(
-                    "Platform address balance tree is empty. Returning empty sync result."
-                );
-                AddressSyncResult::default()
-            }
-            Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
-        };
-
-        tracing::info!(
-            "Platform address sync finish: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
-            start_time.elapsed(),
-            result.found.len(),
-            result.absent.len(),
-            result.highest_found_index,
-            result.checkpoint_height
-        );
-
-        // Log the found balances from provider
-        for (addr, balance) in provider.found_balances() {
-            use dash_sdk::dpp::address_funds::PlatformAddress;
-            let platform_addr_str = PlatformAddress::try_from(addr.clone())
-                .map(|p| p.to_bech32m_string(self.network))
-                .unwrap_or_else(|_| addr.to_string());
+        let checkpoint_height = if needs_full_sync {
             tracing::info!(
-                "Sync found address: {} with balance: {}",
-                platform_addr_str,
-                balance
+                "Performing full platform address sync (last sync: {} seconds ago)",
+                now.saturating_sub(last_full_sync)
             );
-        }
 
-        // Step 2: Fetch recent balance changes (terminal updates after checkpoint)
-        // This catches any balance changes that happened after the checkpoint the trunk/branch sync used
-        self.apply_recent_balance_changes(
-            &sdk,
-            &wallet_arc,
-            &mut provider,
-            result.checkpoint_height,
-        )
-        .await;
+            // trunk state query is failing if tree is empty with internal error
+            // this happens when we don't have any balances yet
+            // this case most often happens for local network
+            // so we do not ban addresses in case of failure
+            // and return empty `AddressSyncResult`
+            let config = if sdk.network == Network::Regtest {
+                Some(AddressSyncConfig {
+                    request_settings: RequestSettings {
+                        ban_failed_address: Some(false),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            } else {
+                None
+            };
+
+            let result = match sdk.sync_address_balances(&mut provider, config).await {
+                Ok(res) => res,
+                Err(e) if e.to_string().contains("empty tree") => {
+                    tracing::debug!(
+                        "Platform address balance tree is empty. Returning empty sync result."
+                    );
+                    AddressSyncResult::default()
+                }
+                Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
+            };
+
+            tracing::info!(
+                "Full sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
+                start_time.elapsed(),
+                result.found.len(),
+                result.absent.len(),
+                result.highest_found_index,
+                result.checkpoint_height
+            );
+
+            // Log the found balances from provider
+            for (addr, balance) in provider.found_balances() {
+                use dash_sdk::dpp::address_funds::PlatformAddress;
+                let platform_addr_str = PlatformAddress::try_from(addr.clone())
+                    .map(|p| p.to_bech32m_string(self.network))
+                    .unwrap_or_else(|_| addr.to_string());
+                tracing::info!(
+                    "Sync found address: {} with balance: {}",
+                    platform_addr_str,
+                    balance
+                );
+            }
+
+            // Save the new full sync timestamp and checkpoint
+            if let Err(e) = self
+                .db
+                .set_platform_sync_info(&seed_hash, now, result.checkpoint_height)
+            {
+                tracing::warn!("Failed to save platform sync info: {}", e);
+            }
+
+            result.checkpoint_height
+        } else {
+            tracing::info!(
+                "Performing terminal-only platform address sync (last full sync: {} seconds ago, using checkpoint {})",
+                now.saturating_sub(last_full_sync),
+                stored_checkpoint
+            );
+
+            // Pre-populate provider with existing balances from wallet for terminal-only sync
+            // Use the same address format that apply_recent_balance_changes will use for lookups
+            {
+                let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
+                for (core_addr, platform_addr) in wallet.platform_addresses(self.network) {
+                    if let Some(info) = wallet.get_platform_address_info(&core_addr) {
+                        // Use the core_addr derived the same way apply_recent_balance_changes does
+                        let lookup_addr = platform_addr.to_address_with_network(self.network);
+                        provider.update_balance(&lookup_addr, info.balance);
+                        tracing::debug!(
+                            "Pre-populated balance for {}: {}",
+                            platform_addr.to_bech32m_string(self.network),
+                            info.balance
+                        );
+                    }
+                }
+            }
+
+            stored_checkpoint
+        };
+
+        // Fetch recent balance changes (terminal updates after checkpoint)
+        // This catches any balance changes that happened after the checkpoint
+        self.apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, checkpoint_height)
+            .await;
 
         // Apply results to wallet and persist
         let balances = {

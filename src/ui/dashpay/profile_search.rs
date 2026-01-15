@@ -16,9 +16,9 @@ use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 const PROFILE_SEARCH_INFO_TEXT: &str = "About Profile Search:\n\n\
-    Search for public DashPay profiles on the Platform.\n\n\
-    Search by display name, username, or identity ID.\n\n\
-    View anyone's public profile information.\n\n\
+    Search for users by their DPNS username.\n\n\
+    Usernames are unique, verified identifiers on Dash Platform.\n\n\
+    Results show the username along with profile info (if available).\n\n\
     Add contacts directly from search results.";
 
 #[derive(Debug, Clone)]
@@ -188,26 +188,20 @@ impl ProfileSearchScreen {
                             ui.horizontal(|ui| {
                                 // No avatar display in search results
                                 ui.vertical(|ui| {
-                                    // Display name
-                                    if let Some(display_name) = &result.display_name {
+                                    // Username (primary identifier per DIP-15)
+                                    if let Some(username) = &result.username {
                                         ui.label(
-                                            RichText::new(display_name)
+                                            RichText::new(username)
                                                 .strong()
+                                                .size(16.0)
                                                 .color(DashColors::text_primary(dark_mode)),
-                                        );
-                                    } else {
-                                        ui.label(
-                                            RichText::new("No display name")
-                                                .color(DashColors::text_secondary(dark_mode))
-                                                .italics(),
                                         );
                                     }
 
-                                    // Username
-                                    if let Some(username) = &result.username {
+                                    // Display name (complementary info)
+                                    if let Some(display_name) = &result.display_name {
                                         ui.label(
-                                            RichText::new(format!("@{}", username))
-                                                .small()
+                                            RichText::new(display_name)
                                                 .color(DashColors::text_secondary(dark_mode)),
                                         );
                                     }
@@ -256,11 +250,11 @@ impl ProfileSearchScreen {
                     }
                 });
             } else if self.has_searched && !self.loading {
-                // Only show "No profiles found" if we've actually performed a search
+                // Only show "No users found" if we've actually performed a search
                 ui.group(|ui| {
-                    ui.label("No profiles found");
+                    ui.label("No users found");
                     ui.separator();
-                    ui.label("Try searching with different terms or check the identity ID format.");
+                    ui.label("Try searching with a different username prefix.");
                 });
             }
         });
@@ -344,28 +338,39 @@ impl ScreenLike for ProfileSearchScreen {
                 self.search_results.clear();
 
                 // Convert backend results to UI results
-                for (identity_id, document) in results {
-                    // Extract profile data from document
+                for (identity_id, profile_doc, username) in results {
+                    // Extract profile data from document if available
                     use dash_sdk::dpp::document::DocumentV0Getters;
-                    let properties = match &document {
-                        Document::V0(doc_v0) => doc_v0.properties(),
+                    let (display_name, public_message, avatar_url) = if let Some(document) =
+                        &profile_doc
+                    {
+                        let properties = match document {
+                            Document::V0(doc_v0) => doc_v0.properties(),
+                        };
+                        (
+                            properties
+                                .get("displayName")
+                                .and_then(|v| v.as_text())
+                                .map(|s| s.to_string()),
+                            properties
+                                .get("publicMessage")
+                                .and_then(|v| v.as_text())
+                                .map(|s| s.to_string()),
+                            properties
+                                .get("avatarUrl")
+                                .and_then(|v| v.as_text())
+                                .map(|s| s.to_string()),
+                        )
+                    } else {
+                        (None, None, None)
                     };
 
                     let search_result = ProfileSearchResult {
                         identity_id,
-                        display_name: properties
-                            .get("displayName")
-                            .and_then(|v| v.as_text())
-                            .map(|s| s.to_string()),
-                        public_message: properties
-                            .get("publicMessage")
-                            .and_then(|v| v.as_text())
-                            .map(|s| s.to_string()),
-                        avatar_url: properties
-                            .get("avatarUrl")
-                            .and_then(|v| v.as_text())
-                            .map(|s| s.to_string()),
-                        username: None, // TODO: Resolve from DPNS if needed
+                        display_name,
+                        public_message,
+                        avatar_url,
+                        username: Some(username), // DPNS username from search
                     };
 
                     self.search_results.push(search_result);

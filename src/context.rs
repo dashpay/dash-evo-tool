@@ -1488,11 +1488,8 @@ impl AppContext {
                 for (platform_addr, credit_op) in block_changes.changes {
                     if wallet_platform_addresses.contains(&platform_addr) {
                         let core_addr = platform_addr.to_address_with_network(self.network);
-                        let current_balance = provider
-                            .found_balances()
-                            .get(&core_addr)
-                            .copied()
-                            .unwrap_or(0);
+                        let current_funds = provider.found_balances().get(&core_addr);
+                        let current_balance = current_funds.map(|v| v.balance).unwrap_or(0);
                         let new_balance = match credit_op {
                             BlockAwareCreditOperation::SetCredits(credits) => credits,
                             BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
@@ -1531,7 +1528,7 @@ impl AppContext {
                         let current_balance = provider
                             .found_balances()
                             .get(&core_addr)
-                            .copied()
+                            .map(|funds| funds.balance)
                             .unwrap_or(0);
                         let new_balance = match credit_op {
                             CreditOperation::SetCredits(credits) => credits,

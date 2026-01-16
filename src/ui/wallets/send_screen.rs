@@ -915,6 +915,14 @@ impl WalletSendScreen {
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.amount);
+
+                // When Max is clicked for Core wallet, automatically enable subtract_fee
+                // so the transaction fee is deducted from the amount instead of failing
+                if response.inner.max_clicked
+                    && matches!(self.selected_source, Some(SourceSelection::CoreWallet))
+                {
+                    self.subtract_fee = true;
+                }
             });
 
         // Show transaction type hint
@@ -927,6 +935,25 @@ impl WalletSendScreen {
                     .italics()
                     .size(12.0),
             );
+        }
+
+        // Show subtract fee checkbox for Core wallet to Core address transactions
+        let dest_type = self.detect_address_type(&self.destination_address);
+        if matches!(self.selected_source, Some(SourceSelection::CoreWallet))
+            && dest_type == AddressType::Core
+        {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.subtract_fee, "Subtract fee from amount");
+                if self.subtract_fee {
+                    ui.label(
+                        RichText::new("(recipient receives amount minus fee)")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0)
+                            .italics(),
+                    );
+                }
+            });
         }
     }
 

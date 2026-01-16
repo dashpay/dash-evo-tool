@@ -157,7 +157,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: Some(label),
+            alias: Some(format!("{}.dash", label)),
             private_keys: encrypted_private_keys.into(),
             dpns_names: owned_dpns_names,
             associated_wallets: wallets

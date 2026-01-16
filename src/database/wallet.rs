@@ -996,25 +996,24 @@ impl Database {
         Ok(deleted)
     }
 
-    /// Get the last platform full sync timestamp and checkpoint height for a wallet
-    /// Returns (last_sync_timestamp, checkpoint_height) or (0, 0) if not set
-    pub fn get_platform_sync_info(
-        &self,
-        seed_hash: &[u8; 32],
-    ) -> rusqlite::Result<(u64, u64)> {
+    /// Get the last platform full sync timestamp, checkpoint height, and last terminal block for a wallet
+    /// Returns (last_sync_timestamp, checkpoint_height, last_terminal_block) or (0, 0, 0) if not set
+    pub fn get_platform_sync_info(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<(u64, u64, u64)> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT last_platform_full_sync, last_platform_sync_checkpoint FROM wallet WHERE seed_hash = ?",
+            "SELECT last_platform_full_sync, last_platform_sync_checkpoint, COALESCE(last_terminal_block, 0) FROM wallet WHERE seed_hash = ?",
             params![seed_hash],
             |row| {
                 let last_sync: i64 = row.get(0)?;
                 let checkpoint: i64 = row.get(1)?;
-                Ok((last_sync as u64, checkpoint as u64))
+                let last_terminal: i64 = row.get(2)?;
+                Ok((last_sync as u64, checkpoint as u64, last_terminal as u64))
             },
         )
     }
 
     /// Set the last platform full sync timestamp and checkpoint height for a wallet
+    /// Also resets last_terminal_block to 0 since a new full sync was performed
     pub fn set_platform_sync_info(
         &self,
         seed_hash: &[u8; 32],
@@ -1022,8 +1021,21 @@ impl Database {
         checkpoint_height: u64,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ? WHERE seed_hash = ?",
+            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ?, last_terminal_block = 0 WHERE seed_hash = ?",
             params![last_sync_timestamp as i64, checkpoint_height as i64, seed_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Update the last terminal block height after processing terminal balance updates
+    pub fn set_last_terminal_block(
+        &self,
+        seed_hash: &[u8; 32],
+        last_terminal_block: u64,
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "UPDATE wallet SET last_terminal_block = ? WHERE seed_hash = ?",
+            params![last_terminal_block as i64, seed_hash],
         )?;
         Ok(())
     }

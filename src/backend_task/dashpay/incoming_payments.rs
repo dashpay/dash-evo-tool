@@ -93,9 +93,10 @@ pub async fn register_dashpay_addresses_for_identity(
     };
 
     // Load all contacts for this identity from the database
+    let network_str = app_context.network.to_string();
     let contacts = app_context
         .db
-        .load_dashpay_contacts(&our_identity_id)
+        .load_dashpay_contacts(&our_identity_id, &network_str)
         .map_err(|e| format!("Failed to load contacts: {}", e))?;
 
     if contacts.is_empty() {

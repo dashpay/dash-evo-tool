@@ -6,13 +6,13 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
@@ -86,7 +86,11 @@ impl RegisterDataContractScreen {
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
-            .map(|qi| qi.identity.id().to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58))
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
             .unwrap_or_default();
 
         Self {

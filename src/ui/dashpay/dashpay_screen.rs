@@ -1,4 +1,4 @@
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -96,7 +96,7 @@ impl ScreenLike for DashPayScreen {
                 ),
             ],
             DashPaySubscreen::Profile => vec![(
-                "Refresh Profiles",
+                "Refresh",
                 DesiredAppAction::Custom("load_profile".to_string()),
             )],
             DashPaySubscreen::Payments => vec![(
@@ -127,15 +127,27 @@ impl ScreenLike for DashPayScreen {
         if let AppAction::Custom(command) = &action {
             match command.as_str() {
                 "fetch_contacts_and_requests" => {
-                    // Fetch both contacts and requests
-                    let contacts_action = self.contacts_list.trigger_fetch_contacts();
-                    let requests_action = self.contacts_list.trigger_fetch_requests();
-                    // Return the first non-none action (or combine them if needed)
-                    action = if contacts_action != AppAction::None {
-                        contacts_action
-                    } else {
-                        requests_action
-                    };
+                    // Fetch both contacts and requests - run both tasks concurrently
+                    let mut tasks = Vec::new();
+
+                    // Get contacts task
+                    if let AppAction::BackendTask(task) =
+                        self.contacts_list.trigger_fetch_contacts()
+                    {
+                        tasks.push(task);
+                    }
+
+                    // Get requests task
+                    if let AppAction::BackendTask(task) =
+                        self.contacts_list.trigger_fetch_requests()
+                    {
+                        tasks.push(task);
+                    }
+
+                    if !tasks.is_empty() {
+                        action =
+                            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent);
+                    }
                 }
                 "load_profile" => {
                     action = self.profile_screen.trigger_load_profile();
@@ -152,7 +164,13 @@ impl ScreenLike for DashPayScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match self.dashpay_subscreen {
-            DashPaySubscreen::Contacts => self.contacts_list.display_message(message, message_type),
+            DashPaySubscreen::Contacts => {
+                // Forward to both contacts list and embedded contact requests
+                self.contacts_list.display_message(message, message_type);
+                self.contacts_list
+                    .contact_requests
+                    .display_message(message, message_type);
+            }
             DashPaySubscreen::Profile => self.profile_screen.display_message(message, message_type),
             DashPaySubscreen::Payments => {
                 self.payment_history.display_message(message, message_type)

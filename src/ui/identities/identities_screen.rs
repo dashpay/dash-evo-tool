@@ -13,7 +13,9 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
+use crate::ui::identities::register_dpns_name_screen::{
+    RegisterDpnsNameScreen, RegisterDpnsNameSource,
+};
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::theme::DashColors;
@@ -65,6 +67,9 @@ pub struct IdentitiesScreen {
     use_custom_order: bool,
     refreshing_status: IdentitiesRefreshingStatus,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
+    // Alias editing state
+    editing_alias_identity: Option<Identifier>,
+    editing_alias_value: String,
 }
 
 impl IdentitiesScreen {
@@ -88,6 +93,8 @@ impl IdentitiesScreen {
             use_custom_order: true,
             refreshing_status: IdentitiesRefreshingStatus::NotRefreshing,
             backend_message: None,
+            editing_alias_identity: None,
+            editing_alias_value: String::new(),
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_identity_order() {
@@ -211,43 +218,28 @@ impl IdentitiesScreen {
         "".to_owned()
     }
 
-    fn show_alias(&self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        let placeholder_text = match qualified_identity.identity_type {
-            IdentityType::Masternode => "A Masternode",
-            IdentityType::Evonode => "An Evonode",
-            IdentityType::User => "An Identity",
-        };
-
-        let mut alias = qualified_identity.alias.clone().unwrap_or_default();
-
+    fn show_alias(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let text_edit = egui::TextEdit::singleline(&mut alias)
-            .hint_text(placeholder_text)
-            .desired_width(100.0)
-            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-            .background_color(crate::ui::theme::DashColors::input_background(dark_mode));
 
-        if ui.add(text_edit).changed() {
-            // If user edits alias, we do not necessarily turn on "custom order."
-            // This is a separate property. But we do update the stored alias.
-            let mut identities = self.identities.lock().unwrap();
-            let identity_to_update = identities
-                .get_mut(&qualified_identity.identity.id())
-                .unwrap();
+        if let Some(alias) = &qualified_identity.alias {
+            ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
+        } else {
+            let button = egui::Button::new(
+                RichText::new("Set Alias")
+                    .small()
+                    .color(DashColors::text_secondary(dark_mode)),
+            )
+            .small()
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(
+                1.0,
+                DashColors::text_secondary(dark_mode),
+            ))
+            .corner_radius(egui::CornerRadius::same(3));
 
-            if alias == placeholder_text || alias.is_empty() {
-                identity_to_update.alias = None;
-            } else {
-                identity_to_update.alias = Some(alias);
-            }
-            match self.app_context.set_identity_alias(
-                &identity_to_update.identity.id(),
-                identity_to_update.alias.as_deref(),
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("{}", e);
-                }
+            if ui.add(button).clicked() {
+                self.editing_alias_identity = Some(qualified_identity.identity.id());
+                self.editing_alias_value.clear();
             }
         }
     }
@@ -695,6 +687,12 @@ impl IdentitiesScreen {
                                                                 Screen::RegisterDpnsNameScreen(screen),
                                                             );
                                                         }
+
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("✏ Update Alias")).on_hover_text("Change the display name for this identity").clicked() {
+                                                            self.editing_alias_identity = Some(qualified_identity.identity.id());
+                                                            self.editing_alias_value = qualified_identity.alias.clone().unwrap_or_default();
+                                                            ui.close_kind(egui::UiKind::Menu);
+                                                        }
                                                     });
                                             });
                                             });
@@ -963,6 +961,127 @@ impl IdentitiesScreen {
         }
     }
 
+    fn show_alias_edit_popup(&mut self, ctx: &Context) -> AppAction {
+        if self.editing_alias_identity.is_none() {
+            return AppAction::None;
+        }
+
+        let identity_id = self.editing_alias_identity.unwrap();
+
+        // Draw dark overlay behind the popup
+        let screen_rect = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("edit_alias_overlay"),
+        ));
+        painter.rect_filled(
+            screen_rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+        );
+
+        egui::Window::new("Update Alias")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .frame(egui::Frame {
+                inner_margin: egui::Margin::same(20),
+                outer_margin: egui::Margin::same(0),
+                corner_radius: egui::CornerRadius::same(8),
+                shadow: egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                },
+                fill: ctx.style().visuals.window_fill,
+                stroke: egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                ),
+            })
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+                ui.label(
+                    RichText::new("Enter a new alias for this identity:")
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+
+                ui.add_space(8.0);
+
+                let text_edit = egui::TextEdit::singleline(&mut self.editing_alias_value)
+                    .hint_text("Enter alias...")
+                    .desired_width(260.0);
+                let response = ui.add(text_edit);
+
+                // Submit on Enter key
+                let submit = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                ui.add_space(16.0);
+
+                ui.horizontal(|ui| {
+                    // Cancel button
+                    let cancel_button = egui::Button::new(
+                        RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                    )
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        DashColors::text_secondary(dark_mode),
+                    ))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .min_size(egui::Vec2::new(80.0, 32.0));
+
+                    if ui.add(cancel_button).clicked() {
+                        self.editing_alias_identity = None;
+                        self.editing_alias_value.clear();
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Save button
+                    let save_button =
+                        egui::Button::new(RichText::new("Save").color(Color32::WHITE))
+                            .fill(DashColors::DASH_BLUE)
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .min_size(egui::Vec2::new(80.0, 32.0));
+
+                    if ui.add(save_button).clicked() || submit {
+                        // Update the alias
+                        let new_alias = if self.editing_alias_value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.editing_alias_value.trim().to_string())
+                        };
+
+                        // Update in memory
+                        {
+                            let mut identities = self.identities.lock().unwrap();
+                            if let Some(identity_to_update) = identities.get_mut(&identity_id) {
+                                identity_to_update.alias = new_alias.clone();
+                            }
+                        }
+
+                        // Update in database
+                        if let Err(e) = self
+                            .app_context
+                            .set_identity_alias(&identity_id, new_alias.as_deref())
+                        {
+                            eprintln!("Failed to save alias: {}", e);
+                        }
+
+                        self.editing_alias_identity = None;
+                        self.editing_alias_value.clear();
+                    }
+                });
+            });
+
+        AppAction::None
+    }
+
     fn dismiss_message(&mut self) {
         self.backend_message = None;
     }
@@ -1089,6 +1208,11 @@ impl ScreenLike for IdentitiesScreen {
             // Handle identity removal confirmation dialog
             if self.identity_to_remove.is_some() {
                 inner_action |= self.show_identity_to_remove(ctx);
+            }
+
+            // Handle alias editing popup
+            if self.editing_alias_identity.is_some() {
+                inner_action |= self.show_alias_edit_popup(ctx);
             }
 
             // Show either refreshing indicator or message, but not both

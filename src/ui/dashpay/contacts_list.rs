@@ -5,6 +5,7 @@ use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike, ScreenType};
@@ -112,9 +113,14 @@ impl ContactsList {
         // Load saved contacts for the selected identity from database
         if let Some(identity) = &self.selected_identity {
             let identity_id = identity.identity.id();
+            let network_str = self.app_context.network.to_string();
 
             // Load saved contacts from database
-            if let Ok(stored_contacts) = self.app_context.db.load_dashpay_contacts(&identity_id) {
+            if let Ok(stored_contacts) = self
+                .app_context
+                .db
+                .load_dashpay_contacts(&identity_id, &network_str)
+            {
                 for stored_contact in stored_contacts {
                     // Convert stored contact to Contact struct
                     if let Ok(contact_id) =
@@ -253,7 +259,10 @@ impl ContactsList {
                             rgba_image
                         };
 
-                        let size = [cropped_image.width() as usize, cropped_image.height() as usize];
+                        let size = [
+                            cropped_image.width() as usize,
+                            cropped_image.height() as usize,
+                        ];
                         let pixels = cropped_image.into_raw();
 
                         // Create ColorImage
@@ -398,6 +407,21 @@ impl ContactsList {
                 .set_selected_identity(self.selected_identity.clone());
             // Render the contact requests tab without its own header
             action |= self.contact_requests.render_embedded(ui);
+
+            // Show wallet unlock popup if open (needed because we're embedding contact_requests)
+            if self.contact_requests.wallet_unlock_popup.is_open() {
+                if let Some(wallet) = &self.contact_requests.selected_wallet {
+                    let result = self.contact_requests.wallet_unlock_popup.show(
+                        ui.ctx(),
+                        wallet,
+                        &self.app_context,
+                    );
+                    if result == WalletUnlockResult::Unlocked {
+                        // Wallet unlocked successfully, UI will update on next frame
+                    }
+                }
+            }
+
             return action;
         }
 
@@ -805,11 +829,19 @@ impl ContactsList {
                                             }
                                         } else {
                                             // Empty URL, show default emoji
-                                            ui.label(RichText::new("👤").size(AVATAR_SIZE));
+                                            ui.label(
+                                                RichText::new("👤")
+                                                    .size(AVATAR_SIZE)
+                                                    .color(DashColors::DEEP_BLUE),
+                                            );
                                         }
                                     } else {
                                         // No avatar URL, show default emoji
-                                        ui.label(RichText::new("👤").size(AVATAR_SIZE));
+                                        ui.label(
+                                            RichText::new("👤")
+                                                .size(AVATAR_SIZE)
+                                                .color(DashColors::DEEP_BLUE),
+                                        );
                                     }
                                 });
 
@@ -1008,10 +1040,14 @@ impl ScreenLike for ContactsList {
                 // Save contacts to database if we have a selected identity
                 if let Some(identity) = &self.selected_identity {
                     let owner_id = identity.identity.id();
+                    let network_str = self.app_context.network.to_string();
 
                     // Clear all existing contacts for this identity from database first
                     // This prevents stale contacts from persisting
-                    let _ = self.app_context.db.clear_dashpay_contacts(&owner_id);
+                    let _ = self
+                        .app_context
+                        .db
+                        .clear_dashpay_contacts(&owner_id, &network_str);
 
                     // Convert ContactData to Contact structs and save to database
                     for contact_data in contacts_data {
@@ -1021,13 +1057,15 @@ impl ScreenLike for ContactsList {
                         }
                         let contact = Contact {
                             identity_id: contact_data.identity_id,
-                            username: None,
-                            display_name: Some(format!(
-                                "Contact ({})",
-                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                            )),
-                            avatar_url: None,
-                            bio: None,
+                            username: contact_data.username.clone(),
+                            display_name: contact_data.display_name.clone().or_else(|| {
+                                Some(format!(
+                                    "Contact ({})",
+                                    &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
+                                ))
+                            }),
+                            avatar_url: contact_data.avatar_url.clone(),
+                            bio: contact_data.bio.clone(),
                             nickname: contact_data.nickname.clone(),
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
@@ -1038,10 +1076,11 @@ impl ScreenLike for ContactsList {
                         let _ = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_data.identity_id,
-                            None,       // username will be loaded when profile is fetched
-                            None,       // display_name will be loaded when profile is fetched
-                            None,       // avatar_url will be loaded when profile is fetched
-                            None,       // public_message will be loaded when profile is fetched
+                            &network_str,
+                            contact_data.username.as_deref(),
+                            contact_data.display_name.as_deref(),
+                            contact_data.avatar_url.as_deref(),
+                            None,       // public_message - not yet fetched
                             "accepted", // Only accepted contacts are returned from load_contacts
                         );
 
@@ -1061,13 +1100,15 @@ impl ScreenLike for ContactsList {
                     for contact_data in contacts_data {
                         let contact = Contact {
                             identity_id: contact_data.identity_id,
-                            username: None,
-                            display_name: Some(format!(
-                                "Contact ({})",
-                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                            )),
-                            avatar_url: None,
-                            bio: None,
+                            username: contact_data.username,
+                            display_name: contact_data.display_name.or_else(|| {
+                                Some(format!(
+                                    "Contact ({})",
+                                    &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
+                                ))
+                            }),
+                            avatar_url: contact_data.avatar_url,
+                            bio: contact_data.bio,
                             nickname: contact_data.nickname,
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
@@ -1121,9 +1162,11 @@ impl ScreenLike for ContactsList {
                     // Save updated profile to database if we have a selected identity
                     if let Some(identity) = &self.selected_identity {
                         let owner_id = identity.identity.id();
+                        let network_str = self.app_context.network.to_string();
                         let _ = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_id,
+                            &network_str,
                             contact.username.as_deref(),
                             contact.display_name.as_deref(),
                             contact.avatar_url.as_deref(),

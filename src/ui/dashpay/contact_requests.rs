@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -11,8 +12,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenLike, ScreenType};
+use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{Frame, Margin, RichText, ScrollArea, Ui};
@@ -52,8 +54,10 @@ pub struct ContactRequests {
     has_fetched_requests: bool,
     accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
     reject_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
-    selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_unlock_popup: WalletUnlockPopup,
+    pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    pub wallet_unlock_popup: WalletUnlockPopup,
+    /// Structured error for displaying with action buttons
+    error: Option<DashPayError>,
 }
 
 impl ContactRequests {
@@ -74,6 +78,7 @@ impl ContactRequests {
             reject_confirmation_dialog: None,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            error: None,
         };
 
         // Auto-select first identity on creation if available
@@ -149,51 +154,70 @@ impl ContactRequests {
             self.incoming_requests.clear();
             self.outgoing_requests.clear();
 
+            let network_str = self.app_context.network.to_string();
+            tracing::debug!(
+                "Loading contact requests from database for identity {} on network {}",
+                identity_id,
+                network_str
+            );
+
             // Load pending incoming requests from database
-            if let Ok(incoming) = self
-                .app_context
-                .db
-                .load_pending_contact_requests(&identity_id, "received")
-            {
-                for request in incoming {
-                    if let Ok(from_id) = Identifier::from_bytes(&request.from_identity_id) {
-                        let contact_request = ContactRequest {
-                            request_id: Identifier::new([0; 32]), // We'll need to store this in DB
-                            from_identity: from_id,
-                            to_identity: identity_id,
-                            from_username: request.to_username, // This field is misnamed in DB
-                            from_display_name: None,
-                            account_reference: 0,
-                            account_label: request.account_label,
-                            timestamp: request.created_at as u64,
-                            auto_accept_proof: None,
-                        };
-                        self.incoming_requests.insert(from_id, contact_request);
+            match self.app_context.db.load_pending_contact_requests(
+                &identity_id,
+                &network_str,
+                "received",
+            ) {
+                Ok(incoming) => {
+                    tracing::debug!("Loaded {} incoming requests from database", incoming.len());
+                    for request in incoming {
+                        if let Ok(from_id) = Identifier::from_bytes(&request.from_identity_id) {
+                            let contact_request = ContactRequest {
+                                request_id: Identifier::new([0; 32]), // We'll need to store this in DB
+                                from_identity: from_id,
+                                to_identity: identity_id,
+                                from_username: request.to_username, // This field is misnamed in DB
+                                from_display_name: None,
+                                account_reference: 0,
+                                account_label: request.account_label,
+                                timestamp: request.created_at as u64,
+                                auto_accept_proof: None,
+                            };
+                            self.incoming_requests.insert(from_id, contact_request);
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load incoming contact requests: {}", e);
                 }
             }
 
             // Load pending outgoing requests from database
-            if let Ok(outgoing) = self
-                .app_context
-                .db
-                .load_pending_contact_requests(&identity_id, "sent")
-            {
-                for request in outgoing {
-                    if let Ok(to_id) = Identifier::from_bytes(&request.to_identity_id) {
-                        let contact_request = ContactRequest {
-                            request_id: Identifier::new([0; 32]), // We'll need to store this in DB
-                            from_identity: identity_id,
-                            to_identity: to_id,
-                            from_username: None,
-                            from_display_name: None,
-                            account_reference: 0,
-                            account_label: request.account_label,
-                            timestamp: request.created_at as u64,
-                            auto_accept_proof: None,
-                        };
-                        self.outgoing_requests.insert(to_id, contact_request);
+            match self.app_context.db.load_pending_contact_requests(
+                &identity_id,
+                &network_str,
+                "sent",
+            ) {
+                Ok(outgoing) => {
+                    tracing::debug!("Loaded {} outgoing requests from database", outgoing.len());
+                    for request in outgoing {
+                        if let Ok(to_id) = Identifier::from_bytes(&request.to_identity_id) {
+                            let contact_request = ContactRequest {
+                                request_id: Identifier::new([0; 32]), // We'll need to store this in DB
+                                from_identity: identity_id,
+                                to_identity: to_id,
+                                from_username: None,
+                                from_display_name: None,
+                                account_reference: 0,
+                                account_label: request.account_label,
+                                timestamp: request.created_at as u64,
+                                auto_accept_proof: None,
+                            };
+                            self.outgoing_requests.insert(to_id, contact_request);
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load outgoing contact requests: {}", e);
                 }
             }
         }
@@ -244,11 +268,8 @@ impl ContactRequests {
             self.selected_identity_string = identities[0].display_string();
         }
 
-        // Load requests from database if we have an identity selected and no requests loaded
-        if self.selected_identity.is_some()
-            && self.incoming_requests.is_empty()
-            && self.outgoing_requests.is_empty()
-        {
+        // Load requests from database if we have an identity selected
+        if self.selected_identity.is_some() {
             self.load_requests_from_database();
         }
 
@@ -374,17 +395,51 @@ impl ContactRequests {
             }
         }
 
-        // Show error message if any
+        // Show structured error with action buttons if any
+        if let Some(err) = self.error.clone() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let error_color = if dark_mode {
+                egui::Color32::from_rgb(255, 100, 100)
+            } else {
+                egui::Color32::DARK_RED
+            };
+
+            ui.group(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(err.user_message()).color(error_color));
+
+                    // Show action button for missing encryption key
+                    if matches!(err, DashPayError::MissingEncryptionKey) {
+                        ui.add_space(5.0);
+                        if let Some(identity) = &self.selected_identity {
+                            if ui.button("Add Encryption Key").clicked() {
+                                action = AppAction::AddScreen(Screen::AddKeyScreen(
+                                    AddKeyScreen::new_for_dashpay_encryption(
+                                        identity.clone(),
+                                        &self.app_context,
+                                    ),
+                                ));
+                                self.error = None;
+                            }
+                        }
+                    }
+                });
+            });
+            ui.separator();
+        }
+
+        // Show regular message if any (non-error)
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
                 MessageType::Success => egui::Color32::DARK_GREEN,
                 MessageType::Error => egui::Color32::DARK_RED,
                 MessageType::Info => egui::Color32::LIGHT_BLUE,
             };
-            if message_type == &MessageType::Error {
+            // Only show error messages here if there's no structured error
+            if message_type == &MessageType::Error && self.error.is_none() {
                 ui.colored_label(color, RichText::new(message).strong());
+                ui.separator();
             }
-            ui.separator();
         }
 
         if self.selected_identity.is_none() {
@@ -495,7 +550,7 @@ impl ContactRequests {
                             ui.group(|ui| {
                                         ui.horizontal(|ui| {
                                     // Avatar placeholder
-                                    ui.add(egui::Label::new(RichText::new("👤").size(30.0)));
+                                    ui.add(egui::Label::new(RichText::new("👤").size(30.0).color(DashColors::DEEP_BLUE)));
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -687,7 +742,7 @@ impl ContactRequests {
                             ui.group(|ui| {
                                         ui.horizontal(|ui| {
                                     // Avatar placeholder
-                                    ui.add(egui::Label::new(RichText::new("👤").size(30.0)));
+                                    ui.add(egui::Label::new(RichText::new("👤").size(30.0).color(DashColors::DEEP_BLUE)));
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -749,10 +804,7 @@ impl ContactRequests {
 impl ScreenLike for ContactRequests {
     fn refresh_on_arrival(&mut self) {
         // Load requests from database when screen is shown
-        if self.selected_identity.is_some()
-            && self.incoming_requests.is_empty()
-            && self.outgoing_requests.is_empty()
-        {
+        if self.selected_identity.is_some() {
             self.load_requests_from_database();
         }
     }
@@ -782,6 +834,20 @@ impl ScreenLike for ContactRequests {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Clear loading state when displaying any message (including errors)
         self.loading = false;
+
+        // Check if this is an error about missing keys
+        if message_type == MessageType::Error {
+            if message.contains("ENCRYPTION key") {
+                self.error = Some(DashPayError::MissingEncryptionKey);
+                self.message = None;
+                return;
+            } else if message.contains("DECRYPTION key") {
+                self.error = Some(DashPayError::MissingDecryptionKey);
+                self.message = None;
+                return;
+            }
+        }
+
         self.message = Some((message.to_string(), message_type));
     }
 
@@ -792,6 +858,12 @@ impl ScreenLike for ContactRequests {
 
         match result {
             BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+                tracing::debug!(
+                    "Received DashPayContactRequests result: {} incoming, {} outgoing",
+                    incoming.len(),
+                    outgoing.len()
+                );
+
                 // Clear existing requests
                 self.incoming_requests.clear();
                 self.outgoing_requests.clear();
@@ -830,13 +902,24 @@ impl ScreenLike for ContactRequests {
                     self.incoming_requests.insert(*id, request.clone());
 
                     // Save to database as received request
-                    let _ = self.app_context.db.save_contact_request(
+                    let network_str = self.app_context.network.to_string();
+                    tracing::debug!(
+                        "Saving incoming contact request to database: from={}, to={}, network={}",
+                        from_identity,
+                        current_identity_id,
+                        network_str
+                    );
+                    match self.app_context.db.save_contact_request(
                         &from_identity,
                         &current_identity_id,
+                        &network_str,
                         None, // to_username
                         request.account_label.as_deref(),
                         "received",
-                    );
+                    ) {
+                        Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
+                        Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
+                    }
                 }
 
                 // Process outgoing requests
@@ -870,13 +953,24 @@ impl ScreenLike for ContactRequests {
                     self.outgoing_requests.insert(*id, request.clone());
 
                     // Save to database as sent request
-                    let _ = self.app_context.db.save_contact_request(
+                    let network_str = self.app_context.network.to_string();
+                    tracing::debug!(
+                        "Saving outgoing contact request to database: from={}, to={}, network={}",
+                        current_identity_id,
+                        to_identity,
+                        network_str
+                    );
+                    match self.app_context.db.save_contact_request(
                         &current_identity_id,
                         &to_identity,
+                        &network_str,
                         None, // to_username
                         request.account_label.as_deref(),
                         "sent",
-                    );
+                    ) {
+                        Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
+                        Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
+                    }
                 }
 
                 // Don't show a message, just display the results
@@ -898,7 +992,16 @@ impl ScreenLike for ContactRequests {
                 self.message = Some(("Contact already established".to_string(), MessageType::Info));
             }
             BackendTaskSuccessResult::Message(msg) => {
-                self.message = Some((msg, MessageType::Success));
+                // Check if this is an error message about missing keys
+                if msg.contains("ENCRYPTION key") {
+                    self.error = Some(DashPayError::MissingEncryptionKey);
+                    self.message = None;
+                } else if msg.contains("DECRYPTION key") {
+                    self.error = Some(DashPayError::MissingDecryptionKey);
+                    self.message = None;
+                } else {
+                    self.message = Some((msg, MessageType::Success));
+                }
             }
             _ => {
                 // Ignore other results

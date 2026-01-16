@@ -880,9 +880,7 @@ impl Screen {
             Screen::TopUpIdentityScreen(screen) => {
                 ScreenType::TopUpIdentity(screen.identity.clone())
             }
-            Screen::RegisterDpnsNameScreen(screen) => {
-                ScreenType::RegisterDpnsName(screen.source)
-            }
+            Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
             Screen::DocumentActionScreen(screen) => match screen.action_type {

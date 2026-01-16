@@ -230,6 +230,15 @@ impl AppContext {
             .map(|s| s.7) // core_backend_mode is the 8th element (index 7)
             .unwrap_or(CoreBackendMode::Spv.as_u8());
 
+        // Load saved wallet selection, validating that the wallets still exist
+        let (saved_wallet_hash, saved_single_key_hash) = db
+            .get_selected_wallet_hashes()
+            .unwrap_or((None, None));
+
+        // Only use the saved hash if the wallet still exists
+        let selected_wallet_hash = saved_wallet_hash.filter(|h| wallets.contains_key(h));
+        let selected_single_key_hash = saved_single_key_hash.filter(|h| single_key_wallets.contains_key(h));
+
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
@@ -259,8 +268,8 @@ impl AppContext {
             spv_manager,
             core_backend_mode: AtomicU8::new(saved_core_backend_mode),
             pending_wallet_selection: Mutex::new(None),
-            selected_wallet_hash: Mutex::new(None),
-            selected_single_key_hash: Mutex::new(None),
+            selected_wallet_hash: Mutex::new(selected_wallet_hash),
+            selected_single_key_hash: Mutex::new(selected_single_key_hash),
         };
 
         let app_context = Arc::new(app_context);
@@ -858,20 +867,22 @@ impl AppContext {
 
     /// Fetch Platform address balances using privacy-preserving sync with WalletAddressProvider
     ///
-    /// This performs either a full sync or terminal-only sync depending on how long it's been
-    /// since the last full sync:
-    /// - If 6 days 20 hours or more have passed (or first sync): full sync + terminal updates
-    /// - Otherwise: terminal-only sync using the stored checkpoint height
+    /// The sync mode determines how the sync is performed:
+    /// - `Auto`: Decides based on time since last full sync (full if 6d20h+ or first sync)
+    /// - `ForceFull`: Always performs a full sync
+    /// - `TerminalOnly`: Only does terminal sync (fails if no checkpoint exists)
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
+        sync_mode: crate::backend_task::wallet::PlatformSyncMode,
     ) -> Result<BackendTaskSuccessResult, String> {
+        use crate::backend_task::wallet::PlatformSyncMode;
         use crate::model::wallet::WalletAddressProvider;
 
         // 6 days and 20 hours in seconds (to be safe before 7 days)
         const FULL_SYNC_INTERVAL_SECS: u64 = 6 * 24 * 60 * 60 + 20 * 60 * 60; // 590400 seconds
 
-        tracing::info!("Platform address sync start");
+        tracing::info!("Platform address sync start (mode: {:?})", sync_mode);
         let start_time = std::time::Instant::now();
 
         let wallet_arc = {
@@ -882,20 +893,35 @@ impl AppContext {
                 .ok_or_else(|| "Wallet not found".to_string())?
         };
 
-        // Check last full sync time from database
-        let (last_full_sync, stored_checkpoint) = self
+        // Check last full sync time and terminal block from database
+        let (last_full_sync, stored_checkpoint, last_terminal_block) = self
             .db
             .get_platform_sync_info(&seed_hash)
-            .unwrap_or((0, 0));
+            .unwrap_or((0, 0, 0));
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let needs_full_sync = last_full_sync == 0
-            || stored_checkpoint == 0
-            || now.saturating_sub(last_full_sync) >= FULL_SYNC_INTERVAL_SECS;
+        // Determine if we need a full sync based on mode
+        let needs_full_sync = match sync_mode {
+            PlatformSyncMode::ForceFull => true,
+            PlatformSyncMode::TerminalOnly => {
+                if stored_checkpoint == 0 {
+                    return Err(
+                        "Terminal-only sync requested but no checkpoint exists. Run a full sync first."
+                            .to_string(),
+                    );
+                }
+                false
+            }
+            PlatformSyncMode::Auto => {
+                last_full_sync == 0
+                    || stored_checkpoint == 0
+                    || now.saturating_sub(last_full_sync) >= FULL_SYNC_INTERVAL_SECS
+            }
+        };
 
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
@@ -938,24 +964,110 @@ impl AppContext {
                 None
             };
 
-            let result = match sdk.sync_address_balances(&mut provider, config).await {
-                Ok(res) => res,
-                Err(e) if e.to_string().contains("empty tree") => {
-                    tracing::debug!(
-                        "Platform address balance tree is empty. Returning empty sync result."
-                    );
-                    AddressSyncResult::default()
+            // For ForceFull mode, run benchmark with 5 iterations
+            let benchmark_iterations = if sync_mode == PlatformSyncMode::ForceFull { 5 } else { 1 };
+            let mut base_sync_times: Vec<std::time::Duration> = Vec::new();
+            let mut terminal1_times: Vec<std::time::Duration> = Vec::new();
+            let mut terminal2_times: Vec<std::time::Duration> = Vec::new();
+            let mut final_result = AddressSyncResult::default();
+
+            for iteration in 1..=benchmark_iterations {
+                // Create fresh provider for each iteration
+                let mut iter_provider = {
+                    let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
+                    match WalletAddressProvider::new(&wallet, self.network) {
+                        Ok(p) => p,
+                        Err(e) => return Err(e),
+                    }
+                };
+
+                // Time the base sync
+                let base_start = std::time::Instant::now();
+                let result = match sdk.sync_address_balances(&mut iter_provider, config.clone()).await {
+                    Ok(res) => res,
+                    Err(e) if e.to_string().contains("empty tree") => {
+                        tracing::debug!(
+                            "Platform address balance tree is empty. Returning empty sync result."
+                        );
+                        AddressSyncResult::default()
+                    }
+                    Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
+                };
+                let base_duration = base_start.elapsed();
+                base_sync_times.push(base_duration);
+
+                tracing::info!(
+                    "Benchmark iteration {}/{}: base_sync={:?}, found={}, absent={}, checkpoint={}",
+                    iteration,
+                    benchmark_iterations,
+                    base_duration,
+                    result.found.len(),
+                    result.absent.len(),
+                    result.checkpoint_height
+                );
+
+                // Time terminal updates
+                let terminal_start_height = result.checkpoint_height.max(last_terminal_block);
+                let (t1_duration, t2_duration) = self
+                    .apply_recent_balance_changes_timed(
+                        &sdk,
+                        &wallet_arc,
+                        &mut iter_provider,
+                        terminal_start_height,
+                    )
+                    .await;
+                terminal1_times.push(t1_duration);
+                terminal2_times.push(t2_duration);
+
+                tracing::info!(
+                    "Benchmark iteration {}/{}: terminal1={:?}, terminal2={:?}",
+                    iteration,
+                    benchmark_iterations,
+                    t1_duration,
+                    t2_duration
+                );
+
+                // Keep the last result and provider
+                if iteration == benchmark_iterations {
+                    final_result = result;
+                    provider = iter_provider;
                 }
-                Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
-            };
+            }
+
+            // Calculate and log medians
+            if benchmark_iterations > 1 {
+                fn median(times: &mut Vec<std::time::Duration>) -> std::time::Duration {
+                    times.sort();
+                    times[times.len() / 2]
+                }
+
+                let base_median = median(&mut base_sync_times);
+                let t1_median = median(&mut terminal1_times);
+                let t2_median = median(&mut terminal2_times);
+
+                tracing::info!(
+                    "=== BENCHMARK RESULTS ({} iterations) ===",
+                    benchmark_iterations
+                );
+                tracing::info!("Base sync times: {:?}", base_sync_times);
+                tracing::info!("Terminal1 times: {:?}", terminal1_times);
+                tracing::info!("Terminal2 times: {:?}", terminal2_times);
+                tracing::info!(
+                    "MEDIANS: base_sync={:?}, terminal1={:?}, terminal2={:?}, total={:?}",
+                    base_median,
+                    t1_median,
+                    t2_median,
+                    base_median + t1_median + t2_median
+                );
+            }
 
             tracing::info!(
                 "Full sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
                 start_time.elapsed(),
-                result.found.len(),
-                result.absent.len(),
-                result.highest_found_index,
-                result.checkpoint_height
+                final_result.found.len(),
+                final_result.absent.len(),
+                final_result.highest_found_index,
+                final_result.checkpoint_height
             );
 
             // Log the found balances from provider
@@ -972,23 +1084,26 @@ impl AppContext {
             }
 
             // Save the new full sync timestamp and checkpoint
-            if let Err(e) = self
-                .db
-                .set_platform_sync_info(&seed_hash, now, result.checkpoint_height)
+            if let Err(e) =
+                self.db
+                    .set_platform_sync_info(&seed_hash, now, final_result.checkpoint_height)
             {
                 tracing::warn!("Failed to save platform sync info: {}", e);
             }
 
-            result.checkpoint_height
+            final_result.checkpoint_height
         } else {
+            let terminal_only_start = std::time::Instant::now();
             tracing::info!(
-                "Performing terminal-only platform address sync (last full sync: {} seconds ago, using checkpoint {})",
+                "Performing terminal-only platform address sync (last full sync: {} seconds ago, checkpoint={}, last_terminal_block={})",
                 now.saturating_sub(last_full_sync),
-                stored_checkpoint
+                stored_checkpoint,
+                last_terminal_block
             );
 
             // Pre-populate provider with existing balances from wallet for terminal-only sync
             // Use the same address format that apply_recent_balance_changes will use for lookups
+            let mut pre_populated_count = 0;
             {
                 let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
                 for (core_addr, platform_addr) in wallet.platform_addresses(self.network) {
@@ -996,6 +1111,7 @@ impl AppContext {
                         // Use the core_addr derived the same way apply_recent_balance_changes does
                         let lookup_addr = platform_addr.to_address_with_network(self.network);
                         provider.update_balance(&lookup_addr, info.balance);
+                        pre_populated_count += 1;
                         tracing::debug!(
                             "Pre-populated balance for {}: {}",
                             platform_addr.to_bech32m_string(self.network),
@@ -1004,14 +1120,41 @@ impl AppContext {
                     }
                 }
             }
+            tracing::info!(
+                "Terminal-only sync setup complete: duration={:?}, pre_populated={} addresses",
+                terminal_only_start.elapsed(),
+                pre_populated_count
+            );
 
             stored_checkpoint
         };
 
         // Fetch recent balance changes (terminal updates after checkpoint)
-        // This catches any balance changes that happened after the checkpoint
-        self.apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, checkpoint_height)
+        // This catches any balance changes that happened after the checkpoint.
+        // Use the higher of checkpoint_height or last_terminal_block to avoid
+        // re-applying changes we've already processed.
+        let terminal_start_height = checkpoint_height.max(last_terminal_block);
+        let terminal_sync_start = std::time::Instant::now();
+        let highest_block_processed = self
+            .apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, terminal_start_height)
             .await;
+        let terminal_sync_duration = terminal_sync_start.elapsed();
+        tracing::info!(
+            "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
+            terminal_sync_duration,
+            terminal_start_height,
+            highest_block_processed
+        );
+
+        // Save the highest block we've processed to avoid re-applying the same changes
+        if highest_block_processed > last_terminal_block {
+            if let Err(e) = self
+                .db
+                .set_last_terminal_block(&seed_hash, highest_block_processed)
+            {
+                tracing::warn!("Failed to save last terminal block: {}", e);
+            }
+        }
 
         // Apply results to wallet and persist
         let balances = {
@@ -1072,28 +1215,39 @@ impl AppContext {
                 .collect()
         };
 
+        let addresses_with_balance = provider.found_balances().len();
+        let total_duration = start_time.elapsed();
+        tracing::info!(
+            "Platform address sync complete: total_duration={:?}, mode={:?}, addresses_with_balance={}",
+            total_duration,
+            sync_mode,
+            addresses_with_balance
+        );
+
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {
             seed_hash,
             balances,
         })
     }
 
-    /// Apply recent balance changes (terminal updates) to catch changes after the checkpoint.
+    /// Apply recent balance changes (terminal updates) to catch changes after a starting block.
     ///
     /// The trunk/branch sync provides balances as of a checkpoint (every ~10 minutes).
-    /// This function fetches balance changes since the checkpoint to provide
+    /// This function fetches balance changes since the starting block to provide
     /// more up-to-date balances.
     ///
     /// Two queries are performed in sequence:
     /// 1. RecentCompactedAddressBalanceChanges - merged changes for ranges of blocks
     /// 2. RecentAddressBalanceChanges - individual per-block changes for most recent blocks
+    ///
+    /// Returns the highest block height processed, or the start_height if no changes were found.
     async fn apply_recent_balance_changes(
         &self,
         sdk: &Sdk,
         wallet_arc: &Arc<RwLock<Wallet>>,
         provider: &mut crate::model::wallet::WalletAddressProvider,
-        checkpoint_height: u64,
-    ) {
+        start_height: u64,
+    ) -> u64 {
         use dash_sdk::dpp::address_funds::PlatformAddress;
         use dash_sdk::dpp::balances::credits::{BlockAwareCreditOperation, CreditOperation};
         use dash_sdk::platform::{
@@ -1104,19 +1258,19 @@ impl AppContext {
         };
 
         // The trunk/branch sync provides balances as of the checkpoint height.
-        // We query for compacted changes starting from that checkpoint height,
+        // We query for compacted changes starting from that start height,
         // then query recent non-compacted changes starting from where compacted ends.
 
         tracing::debug!(
-            "Fetching terminal balance updates from checkpoint height {}",
-            checkpoint_height
+            "Fetching terminal balance updates from height {}",
+            start_height
         );
 
         // Get the wallet's platform addresses to filter relevant changes
         let wallet_platform_addresses: std::collections::HashSet<PlatformAddress> = {
             let wallet = match wallet_arc.read() {
                 Ok(w) => w,
-                Err(_) => return,
+                Err(_) => return start_height,
             };
             wallet
                 .platform_addresses(self.network)
@@ -1126,18 +1280,24 @@ impl AppContext {
         };
 
         let mut updates_applied = 0;
-        let mut latest_block_height = checkpoint_height;
+        let mut highest_block_seen = start_height;
 
         // Step 1: Fetch compacted balance changes (merged changes for ranges of blocks)
-        // Start from checkpoint_height to get changes since the trunk/branch sync
-        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(checkpoint_height);
-        if let Ok(Some(compacted_changes)) =
-            RecentCompactedAddressBalanceChanges::fetch(sdk, compacted_query).await
-        {
+        // Start from start_height to get changes since the last sync
+        let compacted_fetch_start = std::time::Instant::now();
+        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(start_height);
+        let compacted_result =
+            RecentCompactedAddressBalanceChanges::fetch(sdk, compacted_query).await;
+        tracing::info!(
+            "Compacted balance changes fetch: duration={:?}, from_height={}",
+            compacted_fetch_start.elapsed(),
+            start_height
+        );
+        if let Ok(Some(compacted_changes)) = compacted_result {
             for block_changes in compacted_changes.into_inner() {
-                // Track the latest block height we've processed
-                if block_changes.end_block_height > latest_block_height {
-                    latest_block_height = block_changes.end_block_height;
+                // Track the highest block height we've processed
+                if block_changes.end_block_height > highest_block_seen {
+                    highest_block_seen = block_changes.end_block_height;
                 }
 
                 for (platform_addr, credit_op) in block_changes.changes {
@@ -1150,14 +1310,28 @@ impl AppContext {
                             .unwrap_or(0);
 
                         let new_balance = match credit_op {
-                            BlockAwareCreditOperation::SetCredits(credits) => credits,
+                            BlockAwareCreditOperation::SetCredits(credits) => {
+                                tracing::debug!(
+                                    "Compacted SetCredits: {} = {}",
+                                    platform_addr.to_bech32m_string(self.network),
+                                    credits
+                                );
+                                credits
+                            }
                             BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
-                                // Only apply credits from blocks AFTER the checkpoint
+                                // Only apply credits from blocks AFTER our start height
                                 let total_to_add: u64 = operations
                                     .iter()
-                                    .filter(|(height, _)| **height > checkpoint_height)
+                                    .filter(|(height, _)| **height > start_height)
                                     .map(|(_, credits)| *credits)
                                     .sum();
+                                tracing::debug!(
+                                    "Compacted AddToCredits: {} current={} + add={} = {}",
+                                    platform_addr.to_bech32m_string(self.network),
+                                    current_balance,
+                                    total_to_add,
+                                    current_balance.saturating_add(total_to_add)
+                                );
                                 current_balance.saturating_add(total_to_add)
                             }
                         };
@@ -1179,12 +1353,22 @@ impl AppContext {
         }
 
         // Step 2: Fetch non-compacted balance changes (individual per-block changes)
-        // Use the latest block height from compacted changes + 1 as the start
-        let recent_query = RecentAddressBalanceChangesQuery::new(latest_block_height + 1);
-        if let Ok(Some(recent_changes)) =
-            RecentAddressBalanceChanges::fetch(sdk, recent_query).await
-        {
+        // Use the highest block height from compacted changes + 1 as the start
+        let recent_fetch_start = std::time::Instant::now();
+        let recent_query = RecentAddressBalanceChangesQuery::new(highest_block_seen + 1);
+        let recent_result = RecentAddressBalanceChanges::fetch(sdk, recent_query).await;
+        tracing::info!(
+            "Recent balance changes fetch: duration={:?}, from_height={}",
+            recent_fetch_start.elapsed(),
+            highest_block_seen + 1
+        );
+        if let Ok(Some(recent_changes)) = recent_result {
             for block_changes in recent_changes.into_inner() {
+                // Track the block height from non-compacted changes
+                if block_changes.block_height > highest_block_seen {
+                    highest_block_seen = block_changes.block_height;
+                }
+
                 for (platform_addr, credit_op) in block_changes.changes {
                     if wallet_platform_addresses.contains(&platform_addr) {
                         let core_addr = platform_addr.to_address_with_network(self.network);
@@ -1195,8 +1379,22 @@ impl AppContext {
                             .unwrap_or(0);
 
                         let new_balance = match credit_op {
-                            CreditOperation::SetCredits(credits) => credits,
+                            CreditOperation::SetCredits(credits) => {
+                                tracing::debug!(
+                                    "Recent SetCredits: {} = {}",
+                                    platform_addr.to_bech32m_string(self.network),
+                                    credits
+                                );
+                                credits
+                            }
                             CreditOperation::AddToCredits(credits) => {
+                                tracing::debug!(
+                                    "Recent AddToCredits: {} current={} + add={} = {}",
+                                    platform_addr.to_bech32m_string(self.network),
+                                    current_balance,
+                                    credits,
+                                    current_balance.saturating_add(credits)
+                                );
                                 current_balance.saturating_add(credits)
                             }
                         };
@@ -1219,10 +1417,134 @@ impl AppContext {
 
         if updates_applied > 0 {
             tracing::info!(
-                "Applied {} terminal balance updates from recent blocks",
-                updates_applied
+                "Applied {} terminal balance updates from recent blocks (up to block {})",
+                updates_applied,
+                highest_block_seen
             );
         }
+
+        highest_block_seen
+    }
+
+    /// Apply recent balance changes and return individual timings for benchmarking.
+    /// Returns (terminal1_duration, terminal2_duration).
+    async fn apply_recent_balance_changes_timed(
+        &self,
+        sdk: &Sdk,
+        wallet_arc: &Arc<RwLock<Wallet>>,
+        provider: &mut crate::model::wallet::WalletAddressProvider,
+        start_height: u64,
+    ) -> (std::time::Duration, std::time::Duration) {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::balances::credits::{BlockAwareCreditOperation, CreditOperation};
+        use dash_sdk::platform::{
+            Fetch, RecentAddressBalanceChangesQuery, RecentCompactedAddressBalanceChangesQuery,
+        };
+        use dash_sdk::query_types::{
+            RecentAddressBalanceChanges, RecentCompactedAddressBalanceChanges,
+        };
+
+        // Get the wallet's platform addresses to filter relevant changes
+        let wallet_platform_addresses: std::collections::HashSet<PlatformAddress> = {
+            let wallet = match wallet_arc.read() {
+                Ok(w) => w,
+                Err(_) => return (std::time::Duration::ZERO, std::time::Duration::ZERO),
+            };
+            wallet
+                .platform_addresses(self.network)
+                .into_iter()
+                .map(|(_, platform_addr)| platform_addr)
+                .collect()
+        };
+
+        let mut highest_block_seen = start_height;
+
+        // Step 1: Fetch compacted balance changes
+        tracing::debug!(
+            "Terminal sync: fetching compacted changes from height {}",
+            start_height
+        );
+        let t1_start = std::time::Instant::now();
+        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(start_height);
+        let compacted_result =
+            RecentCompactedAddressBalanceChanges::fetch(sdk, compacted_query).await;
+        let t1_duration = t1_start.elapsed();
+        tracing::debug!(
+            "Terminal sync: compacted fetch completed in {:?}",
+            t1_duration
+        );
+
+        if let Ok(Some(compacted_changes)) = compacted_result {
+            for block_changes in compacted_changes.into_inner() {
+                if block_changes.end_block_height > highest_block_seen {
+                    highest_block_seen = block_changes.end_block_height;
+                }
+                for (platform_addr, credit_op) in block_changes.changes {
+                    if wallet_platform_addresses.contains(&platform_addr) {
+                        let core_addr = platform_addr.to_address_with_network(self.network);
+                        let current_balance = provider
+                            .found_balances()
+                            .get(&core_addr)
+                            .copied()
+                            .unwrap_or(0);
+                        let new_balance = match credit_op {
+                            BlockAwareCreditOperation::SetCredits(credits) => credits,
+                            BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
+                                let total_to_add: u64 = operations
+                                    .iter()
+                                    .filter(|(height, _)| **height > start_height)
+                                    .map(|(_, credits)| *credits)
+                                    .sum();
+                                current_balance.saturating_add(total_to_add)
+                            }
+                        };
+                        if new_balance != current_balance {
+                            provider.update_balance(&core_addr, new_balance);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Fetch non-compacted balance changes
+        tracing::debug!(
+            "Terminal sync: fetching recent changes from height {}",
+            highest_block_seen + 1
+        );
+        let t2_start = std::time::Instant::now();
+        let recent_query = RecentAddressBalanceChangesQuery::new(highest_block_seen + 1);
+        let recent_result = RecentAddressBalanceChanges::fetch(sdk, recent_query).await;
+        let t2_duration = t2_start.elapsed();
+        tracing::debug!(
+            "Terminal sync: recent fetch completed in {:?}",
+            t2_duration
+        );
+
+        if let Ok(Some(recent_changes)) = recent_result {
+            for block_changes in recent_changes.into_inner() {
+                for (platform_addr, credit_op) in block_changes.changes {
+                    if wallet_platform_addresses.contains(&platform_addr) {
+                        let core_addr = platform_addr.to_address_with_network(self.network);
+                        let current_balance = provider
+                            .found_balances()
+                            .get(&core_addr)
+                            .copied()
+                            .unwrap_or(0);
+                        let new_balance = match credit_op {
+                            CreditOperation::SetCredits(credits) => credits,
+                            CreditOperation::AddToCredits(credits) => {
+                                current_balance.saturating_add(credits)
+                            }
+                        };
+                        if new_balance != current_balance {
+                            provider.update_balance(&core_addr, new_balance);
+                        }
+                    }
+                }
+            }
+        }
+
+        (t1_duration, t2_duration)
     }
 
     /// Update wallet platform address info from SDK-returned AddressInfos.
@@ -1303,8 +1625,8 @@ impl AppContext {
             (wallet, sdk)
         };
 
-        // Simple fee strategy: deduct from first input
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+        // Deduct fee from the first input address (not output, which may be too small)
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
         // Use the SDK to transfer - returns proof-verified updated address infos
         let address_infos = sdk
@@ -1452,7 +1774,11 @@ impl AppContext {
         }
 
         // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash).await?;
+        self.fetch_platform_address_balances(
+            seed_hash,
+            crate::backend_task::wallet::PlatformSyncMode::Auto,
+        )
+        .await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
     }
@@ -1505,7 +1831,11 @@ impl AppContext {
             .map_err(|e| format!("Failed to withdraw from Platform address: {}", e))?;
 
         // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash).await?;
+        self.fetch_platform_address_balances(
+            seed_hash,
+            crate::backend_task::wallet::PlatformSyncMode::Auto,
+        )
+        .await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash })
     }
@@ -1667,9 +1997,152 @@ impl AppContext {
             .map_err(|e| format!("Failed to fund platform address: {}", e))?;
 
         // Step 9: Refresh platform address balances
-        self.fetch_platform_address_balances(seed_hash).await?;
+        self.fetch_platform_address_balances(
+            seed_hash,
+            crate::backend_task::wallet::PlatformSyncMode::Auto,
+        )
+        .await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+    }
+
+    /// Fund multiple Platform addresses at once for testing/benchmarking.
+    /// Creates N new Platform addresses and funds each by transferring from the first
+    /// platform address (index 0) that has sufficient balance.
+    pub(crate) async fn fund_multiple_platform_addresses(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        count: u32,
+        amount_per_address: u64,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+
+        if count == 0 {
+            return Err("Count must be at least 1".to_string());
+        }
+
+        let credits_per_address = amount_per_address * 1000; // Convert duffs to credits
+        let total_credits_needed = credits_per_address
+            .checked_mul(count as u64)
+            .ok_or_else(|| "Amount overflow".to_string())?;
+
+        // Step 1: Find the first platform address with sufficient balance (index 0)
+        let source_platform_address: PlatformAddress = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+
+            let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
+
+            // Debug: log all platform addresses and their balances
+            tracing::info!("Looking for platform address with {} credits needed", total_credits_needed);
+            for (addr, info) in wallet.platform_address_info.iter() {
+                let platform_str = PlatformAddress::try_from(addr.clone())
+                    .map(|pa| pa.to_bech32m_string(self.network))
+                    .unwrap_or_else(|_| "invalid".to_string());
+                tracing::info!(
+                    "  Platform address: {} (core: {}), balance: {}, nonce: {}",
+                    platform_str,
+                    addr,
+                    info.balance,
+                    info.nonce
+                );
+            }
+
+            // Find the first platform address with sufficient balance
+            let mut source_addr = None;
+            for (addr, info) in wallet.platform_address_info.iter() {
+                if info.balance >= total_credits_needed + 1_000_000 {
+                    // Add buffer for fees
+                    if let Ok(platform_addr) = PlatformAddress::try_from(addr.clone()) {
+                        source_addr = Some(platform_addr);
+                        tracing::info!(
+                            "Selected source platform address {} with balance {} credits",
+                            platform_addr.to_bech32m_string(self.network),
+                            info.balance
+                        );
+                        break;
+                    }
+                }
+            }
+
+            source_addr.ok_or_else(|| {
+                format!(
+                    "No platform address with sufficient balance found. Need {} credits + fees.",
+                    total_credits_needed
+                )
+            })?
+        };
+
+        // Step 2: Generate N new Platform addresses
+        let destinations: Vec<PlatformAddress> = {
+            let wallet_arc = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+
+            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let mut addresses = Vec::with_capacity(count as usize);
+
+            for _ in 0..count {
+                // Generate a new Platform address (skip_known_addresses=true forces new address)
+                let addr = wallet.platform_receive_address(self.network, true, Some(self))?;
+                let platform_addr = PlatformAddress::try_from(addr)
+                    .map_err(|e| format!("Failed to convert to PlatformAddress: {}", e))?;
+                addresses.push(platform_addr);
+            }
+            addresses
+        };
+
+        tracing::info!(
+            "Generated {} new Platform addresses for funding",
+            destinations.len()
+        );
+
+        // Step 3: Build inputs (from source address) and outputs (to new addresses)
+        // Inputs must equal outputs; fee is deducted separately via fee strategy
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert(source_platform_address, total_credits_needed);
+
+        let mut outputs = std::collections::BTreeMap::new();
+        for dest in destinations {
+            outputs.insert(dest, credits_per_address);
+        }
+
+        // Step 4: Transfer credits from source to destinations
+        tracing::info!(
+            "Transferring {} credits to {} Platform addresses...",
+            total_credits_needed,
+            count
+        );
+        tracing::info!("Transfer inputs:");
+        for (addr, amount) in &inputs {
+            tracing::info!("  {} -> {} credits", addr.to_bech32m_string(self.network), amount);
+        }
+        tracing::info!("Transfer outputs:");
+        for (addr, amount) in &outputs {
+            tracing::info!("  {} <- {} credits", addr.to_bech32m_string(self.network), amount);
+        }
+
+        self.transfer_platform_credits(seed_hash, inputs, outputs)
+            .await?;
+
+        tracing::info!("Successfully funded {} Platform addresses", count);
+
+        // No need to sync - transfer_platform_credits already updates wallet
+        // from the proof-verified response
+
+        Ok(BackendTaskSuccessResult::Message(format!(
+            "Funded {} Platform addresses with {} credits each",
+            count, credits_per_address
+        )))
     }
 
     fn register_spv_address(

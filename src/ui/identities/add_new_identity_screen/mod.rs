@@ -206,7 +206,6 @@ impl AddNewIdentityScreen {
             let identity_id_number = self.identity_id_number;
 
             // Create DashPay contract bounds for ENCRYPTION/DECRYPTION keys
-            // Use the contract ID from app_context to ensure it matches the network
             let dashpay_contract_id = app_context.dashpay_contract.id();
             let dashpay_bounds = Some(ContractBounds::SingleContract {
                 id: dashpay_contract_id,
@@ -263,20 +262,22 @@ impl AddNewIdentityScreen {
             let other_keys = default_keys
                 .into_iter()
                 .enumerate()
-                .map(|(i, (key_type, purpose, security_level, contract_bounds))| {
-                    Ok((
-                        wallet.identity_authentication_ecdsa_private_key(
-                            app_context.network,
-                            identity_id_number,
-                            (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                            Some(app_context),
-                        )?,
-                        key_type,
-                        purpose,
-                        security_level,
-                        contract_bounds,
-                    ))
-                })
+                .map(
+                    |(i, (key_type, purpose, security_level, contract_bounds))| {
+                        Ok((
+                            wallet.identity_authentication_ecdsa_private_key(
+                                app_context.network,
+                                identity_id_number,
+                                (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
+                                Some(app_context),
+                            )?,
+                            key_type,
+                            purpose,
+                            security_level,
+                            contract_bounds,
+                        ))
+                    },
+                )
                 .collect::<Result<Vec<_>, String>>()?;
 
             self.identity_keys = IdentityKeys {
@@ -967,20 +968,22 @@ impl AddNewIdentityScreen {
                 .keys_input
                 .iter()
                 .enumerate()
-                .map(|(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
-                    Ok((
-                        wallet.identity_authentication_ecdsa_private_key(
-                            self.app_context.network,
-                            identity_index,
-                            key_index as u32 + 1,
-                            Some(&self.app_context),
-                        )?,
-                        *key_type,
-                        *purpose,
-                        *security_level,
-                        contract_bounds.clone(),
-                    ))
-                })
+                .map(
+                    |(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
+                        Ok((
+                            wallet.identity_authentication_ecdsa_private_key(
+                                self.app_context.network,
+                                identity_index,
+                                key_index as u32 + 1,
+                                Some(&self.app_context),
+                            )?,
+                            *key_type,
+                            *purpose,
+                            *security_level,
+                            contract_bounds.clone(),
+                        ))
+                    },
+                )
                 .collect::<Result<_, String>>()?;
 
             Ok(true)
@@ -1246,6 +1249,41 @@ impl ScreenLike for AddNewIdentityScreen {
 
                     self.render_key_selection(ui);
                 }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Local alias input section
+                ui.horizontal(|ui| {
+                    ui.heading(format!("{}. Set a local alias (optional).", step_number));
+                    crate::ui::helpers::info_icon_button(
+                        ui,
+                        "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
+                        This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
+                        You can change this alias anytime from the identity details screen.",
+                    );
+                });
+                step_number += 1;
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Alias:");
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.alias_input)
+                            .hint_text(egui::RichText::new("e.g., My Main Identity").color(crate::ui::theme::DashColors::text_secondary(dark_mode)))
+                            .desired_width(250.0),
+                    );
+                });
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                ui.label(
+                    egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
+                        .small()
+                        .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                );
 
                 ui.add_space(10.0);
                 ui.separator();

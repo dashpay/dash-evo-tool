@@ -69,9 +69,10 @@ impl ContactProfileViewerScreen {
             .unwrap_or((String::new(), String::new(), false));
 
         // Try to load cached contact profile from database
+        let network_str = app_context.network.to_string();
         let profile = if let Ok(contacts) = app_context
             .db
-            .load_dashpay_contacts(&identity.identity.id())
+            .load_dashpay_contacts(&identity.identity.id(), &network_str)
         {
             contacts
                 .iter()
@@ -169,7 +170,10 @@ impl ContactProfileViewerScreen {
                             rgba_image
                         };
 
-                        let size = [cropped_image.width() as usize, cropped_image.height() as usize];
+                        let size = [
+                            cropped_image.width() as usize,
+                            cropped_image.height() as usize,
+                        ];
                         let pixels = cropped_image.into_raw();
 
                         // Create ColorImage
@@ -319,7 +323,11 @@ impl ContactProfileViewerScreen {
                                                 .color(DashColors::text_secondary(dark_mode)),
                                         );
                                     } else {
-                                        ui.label(RichText::new("👤").size(60.0));
+                                        ui.label(
+                                            RichText::new("👤")
+                                                .size(60.0)
+                                                .color(DashColors::DEEP_BLUE),
+                                        );
                                         ui.label(
                                             RichText::new("No avatar")
                                                 .small()
@@ -327,7 +335,9 @@ impl ContactProfileViewerScreen {
                                         );
                                     }
                                 } else {
-                                    ui.label(RichText::new("👤").size(60.0));
+                                    ui.label(
+                                        RichText::new("👤").size(60.0).color(DashColors::DEEP_BLUE),
+                                    );
                                     ui.label(
                                         RichText::new("No avatar")
                                             .small()
@@ -440,7 +450,7 @@ impl ContactProfileViewerScreen {
 
                 // Action buttons
                 ui.horizontal(|ui| {
-                    if ui.button("Refresh Profile").clicked() {
+                    if ui.button("Refresh").clicked() {
                         action = self.fetch_profile();
                     }
 
@@ -452,8 +462,11 @@ impl ContactProfileViewerScreen {
 
                         if ui.add(pay_button).clicked() {
                             action = AppAction::AddScreen(
-                                ScreenType::DashPaySendPayment(self.identity.clone(), self.contact_id)
-                                    .create_screen(&self.app_context),
+                                ScreenType::DashPaySendPayment(
+                                    self.identity.clone(),
+                                    self.contact_id,
+                                )
+                                .create_screen(&self.app_context),
                             );
                         }
                     }

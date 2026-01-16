@@ -15,10 +15,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
     let dark_mode = ctx.style().visuals.dark_mode;
 
     // Build subscreens list - Payment History requires SPV which is dev mode only
-    let mut subscreens = vec![
-        DashPaySubscreen::Profile,
-        DashPaySubscreen::Contacts,
-    ];
+    let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
 
     // Only show Payment History in developer mode (requires SPV)
     if app_context.is_developer_mode() {

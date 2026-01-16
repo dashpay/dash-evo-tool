@@ -135,17 +135,18 @@ pub fn generate_auto_accept_proof(
         .as_secs()
         + (validity_hours as u64 * 3600);
 
-    // Get wallet seed for HD derivation - use first available private key as seed
+    // Get wallet seed for HD derivation - use ENCRYPTION key (ECDSA_SECP256K1) as per DIP-15
+    // The auto-accept proof uses HD derivation from the wallet, and ENCRYPTION keys are ECDSA_SECP256K1
     let signing_key = identity
         .identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
+            Purpose::ENCRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
         .ok_or(
-            "No suitable signing key found. This operation requires a CRITICAL ECDSA_SECP256K1 AUTHENTICATION key.",
+            "No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.",
         )?;
 
     let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
@@ -285,16 +286,17 @@ pub fn verify_auto_accept_proof(
         .map_err(|e| format!("Failed to create message: {}", e))?;
 
     // Derive expected pubkey from our seed and key index (timestamp)
+    // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
     let wallets: Vec<_> = our_identity.associated_wallets.values().cloned().collect();
     let signing_key = our_identity
         .identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
+            Purpose::ENCRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found. This operation requires a CRITICAL ECDSA_SECP256K1 AUTHENTICATION key.")?;
+        .ok_or("No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.")?;
     let wallet_seed = our_identity
         .private_keys
         .get_resolve(

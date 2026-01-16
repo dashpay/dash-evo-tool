@@ -214,6 +214,11 @@ impl AppContext {
 
         qualified_identity.dpns_names = owned_dpns_names;
 
+        // If alias is not set, set it to the newly registered DPNS name
+        if qualified_identity.alias.is_none() {
+            qualified_identity.alias = Some(format!("{}.dash", input.name_input));
+        }
+
         // Calculate actual fee paid
         // Note: We need to re-fetch the identity to get the updated balance
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(

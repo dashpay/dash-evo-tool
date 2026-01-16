@@ -98,6 +98,8 @@ pub struct ProfileScreen {
     show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    show_success: bool,
+    was_creating_new: bool, // Track if we were creating vs updating
 }
 
 impl ProfileScreen {
@@ -128,6 +130,8 @@ impl ProfileScreen {
             show_avatar_url_popup: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            show_success: false,
+            was_creating_new: false,
         };
 
         // Auto-select identity on creation - prefer one with a profile
@@ -137,17 +141,47 @@ impl ProfileScreen {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
             // Try to find an identity with an actual profile (not just a "no profile" marker)
+            let network_str = app_context.network.to_string();
+            tracing::info!(
+                "ProfileScreen::new - checking {} identities on network {}",
+                identities.len(),
+                network_str
+            );
+
             let mut selected_idx = 0;
             for (idx, identity) in identities.iter().enumerate() {
                 let identity_id = identity.identity.id();
-                if let Ok(Some(profile)) = app_context.db.load_dashpay_profile(&identity_id)
-                    && (profile.display_name.is_some()
-                        || profile.bio.is_some()
-                        || profile.avatar_url.is_some())
+                tracing::debug!("Checking identity {} for profile in DB", identity_id);
+                match app_context
+                    .db
+                    .load_dashpay_profile(&identity_id, &network_str)
                 {
-                    // Check if this is an actual profile with data (not a "no profile" marker)
-                    selected_idx = idx;
-                    break;
+                    Ok(Some(profile)) => {
+                        tracing::debug!(
+                            "Found profile for identity {}: display_name={:?}",
+                            identity_id,
+                            profile.display_name
+                        );
+                        if profile.display_name.is_some()
+                            || profile.bio.is_some()
+                            || profile.avatar_url.is_some()
+                        {
+                            // Check if this is an actual profile with data (not a "no profile" marker)
+                            selected_idx = idx;
+                            tracing::info!("Selected identity {} with profile", identity_id);
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!("No profile in DB for identity {}", identity_id);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Error loading profile for identity {}: {}",
+                            identity_id,
+                            e
+                        );
+                    }
                 }
             }
 
@@ -156,6 +190,11 @@ impl ProfileScreen {
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            tracing::info!(
+                "ProfileScreen::new - selected identity {}",
+                new_self.selected_identity_string
+            );
 
             // Get wallet for the selected identity
             let mut error_message = None;
@@ -221,10 +260,27 @@ impl ProfileScreen {
         if let Some(identity) = &self.selected_identity {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
             let identity_id = identity.identity.id();
+            let network_str = self.app_context.network.to_string();
+
+            tracing::debug!(
+                "Loading profile from database for identity {} on network {}",
+                identity_id,
+                network_str
+            );
 
             // Load profile from database
-            match self.app_context.db.load_dashpay_profile(&identity_id) {
+            match self
+                .app_context
+                .db
+                .load_dashpay_profile(&identity_id, &network_str)
+            {
                 Ok(Some(stored_profile)) => {
+                    tracing::debug!(
+                        "Found profile in database: display_name={:?}, bio={:?}, avatar_url={:?}",
+                        stored_profile.display_name,
+                        stored_profile.bio,
+                        stored_profile.avatar_url
+                    );
                     // Check if this is a "no profile exists" marker (all fields are None)
                     if stored_profile.display_name.is_none()
                         && stored_profile.bio.is_none()
@@ -257,8 +313,12 @@ impl ProfileScreen {
                         self.profile_load_attempted = true;
                     }
                 }
-                Ok(None) => {}
-                Err(_e) => {}
+                Ok(None) => {
+                    tracing::debug!("No profile found in database for identity {}", identity_id);
+                }
+                Err(e) => {
+                    tracing::error!("Error loading profile from database: {}", e);
+                }
             }
         }
     }
@@ -338,6 +398,8 @@ impl ProfileScreen {
         }
 
         if let Some(identity) = self.selected_identity.clone() {
+            // Track if this is a new profile creation
+            self.was_creating_new = self.profile.is_none();
             self.editing = false;
             self.saving = true;
             self.has_unsaved_changes = false;
@@ -412,7 +474,10 @@ impl ProfileScreen {
                             rgba_image
                         };
 
-                        let size = [cropped_image.width() as usize, cropped_image.height() as usize];
+                        let size = [
+                            cropped_image.width() as usize,
+                            cropped_image.height() as usize,
+                        ];
                         let pixels = cropped_image.into_raw();
 
                         // Create ColorImage
@@ -437,12 +502,46 @@ impl ProfileScreen {
         });
     }
 
+    fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
+        let success_message = if self.was_creating_new {
+            "DashPay Profile Created Successfully!"
+        } else {
+            "DashPay Profile Updated Successfully!"
+        };
+
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            success_message.to_string(),
+            vec![(
+                "View Profile".to_string(),
+                AppAction::Custom("view_profile".to_string()),
+            )],
+        );
+
+        // Handle the custom action
+        if let AppAction::Custom(ref s) = action {
+            if s == "view_profile" {
+                self.show_success = false;
+                self.profile_load_attempted = true; // We already have the profile in memory
+                // Profile is already in self.profile from display_task_result, no need to reload
+                return AppAction::None;
+            }
+        }
+
+        action
+    }
+
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Check for pending action from previous frame
         if let Some(pending) = self.pending_action.take() {
             action = *pending;
+        }
+
+        // Show success screen if profile was just created/updated
+        if self.show_success {
+            return self.show_success_screen(ui);
         }
 
         // Identity selector or no identities message
@@ -605,7 +704,7 @@ impl ProfileScreen {
 
                                 let display_name_response = ui.add(
                                     TextEdit::singleline(&mut self.edit_display_name)
-                                        .hint_text("Enter your display name (required)")
+                                        .hint_text(egui::RichText::new("Enter your display name (required)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0),
                                 );
 
@@ -641,7 +740,7 @@ impl ProfileScreen {
 
                                 let bio_response = ui.add(
                                     TextEdit::multiline(&mut self.edit_bio)
-                                        .hint_text("Tell others about yourself (optional)")
+                                        .hint_text(egui::RichText::new("Tell others about yourself (optional)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0)
                                         .desired_rows(4),
                                 );
@@ -686,7 +785,7 @@ impl ProfileScreen {
 
                                 let avatar_response = ui.add(
                                     TextEdit::singleline(&mut self.edit_avatar_url)
-                                        .hint_text("https://example.com/avatar.jpg (optional)")
+                                        .hint_text(egui::RichText::new("https://example.com/avatar.jpg (optional)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0),
                                 );
 
@@ -935,7 +1034,7 @@ impl ProfileScreen {
                                             }
                                         } else {
                                             // No avatar URL, show default emoji
-                                            ui.label(RichText::new("👤").size(80.0));
+                                            ui.label(RichText::new("👤").size(80.0).color(DashColors::DEEP_BLUE));
                                         }
                                     });
                                 });
@@ -1011,6 +1110,7 @@ impl ProfileScreen {
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
                             }
+                            ui.add_space(5.0);
 
                         });
                     } else if self.profile_load_attempted {
@@ -1072,8 +1172,7 @@ impl ProfileScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui.ctx(), |ui| {
-                    let mut popup =
-                        InfoPopup::new("Avatar Image Guidelines", AVATAR_URL_INFO_TEXT);
+                    let mut popup = InfoPopup::new("Avatar Image Guidelines", AVATAR_URL_INFO_TEXT);
                     if popup.show(ui).inner {
                         self.show_avatar_info_popup = false;
                     }
@@ -1176,9 +1275,11 @@ impl ProfileScreen {
                     if let Some(ref identity) = self.selected_identity {
                         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                         let identity_id = identity.identity.id();
+                        let network_str = self.app_context.network.to_string();
 
                         if let Err(e) = self.app_context.db.save_dashpay_profile(
                             &identity_id,
+                            &network_str,
                             Some(&display_name),
                             Some(&bio),
                             Some(&avatar_url),
@@ -1196,11 +1297,13 @@ impl ProfileScreen {
                     if let Some(ref identity) = self.selected_identity {
                         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                         let identity_id = identity.identity.id();
+                        let network_str = self.app_context.network.to_string();
 
                         // Save with all fields as None to indicate "no profile exists"
                         // This prevents unnecessary network queries on app restart
                         if let Err(e) = self.app_context.db.save_dashpay_profile(
                             &identity_id,
+                            &network_str,
                             None, // display_name
                             None, // bio
                             None, // avatar_url
@@ -1213,24 +1316,60 @@ impl ProfileScreen {
                 }
             }
             BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
-                // Profile was successfully updated, now load it to display
-                self.cancel_editing(); // Exit edit mode
-                self.profile_load_attempted = false; // Reset flag to allow reload
-                // Queue the load profile action to be executed
-                self.pending_action = Some(Box::new(self.trigger_load_profile()));
-            }
-            BackendTaskSuccessResult::Message(message) => {
-                if message.contains("successfully") {
-                    // Profile created/updated successfully, load it
-                    self.cancel_editing();
-                    self.profile_load_attempted = false;
-                    self.pending_action = Some(Box::new(self.trigger_load_profile()));
-                } else {
-                    self.display_message(&message, MessageType::Info);
+                // Profile was successfully created/updated
+                // Save the profile data to database BEFORE clearing edit fields
+                if let Some(ref identity) = self.selected_identity {
+                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                    let identity_id = identity.identity.id();
+                    let network_str = self.app_context.network.to_string();
+
+                    let display_name = self.edit_display_name.trim();
+                    let bio = self.edit_bio.trim();
+                    let avatar_url = self.edit_avatar_url.trim();
+
+                    tracing::info!(
+                        "Saving profile to database: identity={}, network={}, display_name={:?}, bio={:?}, avatar_url={:?}",
+                        identity_id,
+                        network_str,
+                        display_name,
+                        bio,
+                        avatar_url
+                    );
+
+                    // Save to database
+                    match self.app_context.db.save_dashpay_profile(
+                        &identity_id,
+                        &network_str,
+                        if display_name.is_empty() {
+                            None
+                        } else {
+                            Some(display_name)
+                        },
+                        if bio.is_empty() { None } else { Some(bio) },
+                        if avatar_url.is_empty() {
+                            None
+                        } else {
+                            Some(avatar_url)
+                        },
+                        None,
+                    ) {
+                        Ok(_) => tracing::info!("Profile saved to database successfully"),
+                        Err(e) => tracing::error!("Failed to save profile to database: {}", e),
+                    }
+
+                    // Update in-memory profile
+                    self.profile = Some(DashPayProfile {
+                        display_name: display_name.to_string(),
+                        bio: bio.to_string(),
+                        avatar_url: avatar_url.to_string(),
+                    });
                 }
+
+                self.cancel_editing(); // Exit edit mode (clears edit fields)
+                self.show_success = true;
             }
             _ => {
-                // Ignore other results
+                // Ignore other results - profile screen only handles DashPayProfile and DashPayProfileUpdated
             }
         }
     }

@@ -498,7 +498,10 @@ impl ScreenLike for DestroyFrozenFundsScreen {
 
                 // Frozen identity
                 let step_num = if self.show_advanced_options { 2 } else { 1 };
-                ui.heading(format!("{}. Frozen identity to destroy funds from", step_num));
+                ui.heading(format!(
+                    "{}. Frozen identity to destroy funds from",
+                    step_num
+                ));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(

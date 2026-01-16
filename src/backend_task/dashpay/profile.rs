@@ -8,7 +8,7 @@ use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::{
     DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
 };
@@ -56,12 +56,48 @@ pub async fn load_profile(
             .and_then(|v| v.as_text())
             .unwrap_or_default();
 
+        // Save to local database for caching
+        let network_str = app_context.network.to_string();
+        if let Err(e) = app_context.db.save_dashpay_profile(
+            &identity_id,
+            &network_str,
+            if display_name.is_empty() {
+                None
+            } else {
+                Some(display_name)
+            },
+            if bio.is_empty() { None } else { Some(bio) },
+            if avatar_url.is_empty() {
+                None
+            } else {
+                Some(avatar_url)
+            },
+            None,
+        ) {
+            tracing::error!("Failed to cache loaded profile in database: {}", e);
+        } else {
+            tracing::info!(
+                "Loaded profile cached in database for identity {}",
+                identity_id
+            );
+        }
+
         Ok(BackendTaskSuccessResult::DashPayProfile(Some((
             display_name.to_string(),
-            bio.to_string(), // Return bio, not publicMessage
+            bio.to_string(),
             avatar_url.to_string(),
         ))))
     } else {
+        // No profile found - cache this fact to avoid repeated network queries
+        let network_str = app_context.network.to_string();
+        if let Err(e) =
+            app_context
+                .db
+                .save_dashpay_profile(&identity_id, &network_str, None, None, None, None)
+        {
+            tracing::error!("Failed to cache 'no profile' state in database: {}", e);
+        }
+
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
     }
 }
@@ -105,6 +141,11 @@ pub async fn update_profile(
 
     // Prepare profile data
     let mut profile_data = BTreeMap::new();
+
+    // Keep copies for database save later
+    let display_name_for_db = display_name.clone();
+    let bio_for_db = bio.clone();
+    let avatar_url_for_db = avatar_url.clone();
 
     // Only add non-empty fields according to DashPay DIP
     if let Some(name) = display_name.filter(|name| !name.is_empty()) {
@@ -199,6 +240,21 @@ pub async fn update_profile(
             }
         }
 
+        // Save to local database for caching
+        let network_str = app_context.network.to_string();
+        if let Err(e) = app_context.db.save_dashpay_profile(
+            &identity_id,
+            &network_str,
+            display_name_for_db.as_deref(),
+            bio_for_db.as_deref(),
+            avatar_url_for_db.as_deref(),
+            None,
+        ) {
+            tracing::error!("Failed to cache updated profile in database: {}", e);
+        } else {
+            tracing::info!("Profile cached in database for identity {}", identity_id);
+        }
+
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),
         ))
@@ -259,6 +315,24 @@ pub async fn update_profile(
                     doc.revision()
                 );
             }
+        }
+
+        // Save to local database for caching
+        let network_str = app_context.network.to_string();
+        if let Err(e) = app_context.db.save_dashpay_profile(
+            &identity_id,
+            &network_str,
+            display_name_for_db.as_deref(),
+            bio_for_db.as_deref(),
+            avatar_url_for_db.as_deref(),
+            None,
+        ) {
+            tracing::error!("Failed to cache new profile in database: {}", e);
+        } else {
+            tracing::info!(
+                "New profile cached in database for identity {}",
+                identity_id
+            );
         }
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
@@ -400,7 +474,11 @@ pub async fn search_profiles(
             field: "normalizedLabel".to_string(),
             operator: WhereOperator::StartsWith,
             value: Value::Text(normalized_query.clone()),
-        });
+        })
+        .with_order_by(OrderClause {
+            field: "normalizedLabel".to_string(),
+            ascending: true,
+        }); // Required for StartsWith range query
     dpns_query.limit = 20; // Limit results
 
     let dpns_results = Document::fetch_many(sdk, dpns_query)

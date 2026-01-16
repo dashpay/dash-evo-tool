@@ -413,6 +413,7 @@ impl Database {
         self.add_use_local_spv_node_column(conn)?;
         self.add_auto_start_spv_column(conn)?;
         self.add_close_dash_qt_on_exit_column(conn)?;
+        self.add_selected_wallet_columns_if_missing(conn)?;
 
         // Ensure database_version column exists
         let version_column_exists: bool = conn.query_row(
@@ -428,6 +429,98 @@ impl Database {
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Adds selected wallet hash columns if they don't exist.
+    pub fn add_selected_wallet_columns_if_missing(&self, conn: &Connection) -> Result<()> {
+        let wallet_hash_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_wallet_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !wallet_hash_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN selected_wallet_hash BLOB DEFAULT NULL;",
+                (),
+            )?;
+        }
+
+        let single_key_hash_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_single_key_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !single_key_hash_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN selected_single_key_hash BLOB DEFAULT NULL;",
+                (),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Gets the selected wallet hashes from the settings table.
+    /// Returns (selected_wallet_hash, selected_single_key_hash).
+    pub fn get_selected_wallet_hashes(&self) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>)> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT selected_wallet_hash, selected_single_key_hash FROM settings WHERE id = 1",
+            [],
+            |row| {
+                let wallet_hash: Option<Vec<u8>> = row.get(0)?;
+                let single_key_hash: Option<Vec<u8>> = row.get(1)?;
+
+                // Convert Vec<u8> to [u8; 32] if present and valid length
+                let wallet_hash_arr = wallet_hash.and_then(|v| {
+                    if v.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&v);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                });
+
+                let single_key_hash_arr = single_key_hash.and_then(|v| {
+                    if v.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&v);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                });
+
+                Ok((wallet_hash_arr, single_key_hash_arr))
+            },
+        );
+
+        match result {
+            Ok(hashes) => Ok(hashes),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok((None, None)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Updates the selected wallet hash in the settings table.
+    pub fn update_selected_wallet_hash(&self, hash: Option<&[u8; 32]>) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET selected_wallet_hash = ? WHERE id = 1",
+            params![hash.map(|h| h.as_slice())],
+        )?;
+        Ok(())
+    }
+
+    /// Updates the selected single key hash in the settings table.
+    pub fn update_selected_single_key_hash(&self, hash: Option<&[u8; 32]>) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET selected_single_key_hash = ? WHERE id = 1",
+            params![hash.map(|h| h.as_slice())],
+        )?;
         Ok(())
     }
 

@@ -16,6 +16,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -83,6 +84,86 @@ impl AddKeyScreen {
             contract_id_input: String::new(),
             document_type_input: String::new(),
             enable_contract_bounds: false,
+            completed_fee_result: None,
+        }
+    }
+
+    /// Create a new AddKeyScreen pre-configured for adding a DashPay ENCRYPTION key.
+    /// This is required for sending contact requests.
+    pub fn new_for_dashpay_encryption(
+        identity: QualifiedIdentity,
+        app_context: &Arc<AppContext>,
+    ) -> Self {
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::MASTER]),
+            KeyType::all_key_types().into(),
+            false,
+        );
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+
+        let dashpay_contract_id = app_context
+            .dashpay_contract
+            .id()
+            .to_string(Encoding::Base58);
+
+        Self {
+            identity,
+            app_context: app_context.clone(),
+            private_key_input: String::new(),
+            key_type: KeyType::ECDSA_SECP256K1,
+            purpose: Purpose::ENCRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            add_key_status: AddKeyStatus::NotStarted,
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            error_message,
+            contract_id_input: dashpay_contract_id,
+            document_type_input: String::new(),
+            enable_contract_bounds: true,
+            completed_fee_result: None,
+        }
+    }
+
+    /// Create a new AddKeyScreen pre-configured for adding a DashPay DECRYPTION key.
+    /// This is required for receiving contact requests.
+    pub fn new_for_dashpay_decryption(
+        identity: QualifiedIdentity,
+        app_context: &Arc<AppContext>,
+    ) -> Self {
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::MASTER]),
+            KeyType::all_key_types().into(),
+            false,
+        );
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+
+        let dashpay_contract_id = app_context
+            .dashpay_contract
+            .id()
+            .to_string(Encoding::Base58);
+
+        Self {
+            identity,
+            app_context: app_context.clone(),
+            private_key_input: String::new(),
+            key_type: KeyType::ECDSA_SECP256K1,
+            purpose: Purpose::DECRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            add_key_status: AddKeyStatus::NotStarted,
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            error_message,
+            contract_id_input: dashpay_contract_id,
+            document_type_input: String::new(),
+            enable_contract_bounds: true,
             completed_fee_result: None,
         }
     }

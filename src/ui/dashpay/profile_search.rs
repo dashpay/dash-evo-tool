@@ -133,11 +133,16 @@ impl ProfileSearchScreen {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
-                    ui.add(
+                    let response = ui.add(
                         TextEdit::singleline(&mut self.search_query)
-                            .hint_text("Enter display name, username, or identity ID...")
+                            .hint_text("Enter DPNS username...")
                             .desired_width(400.0),
                     );
+
+                    // Trigger search on Enter key
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        action = self.search_profiles();
+                    }
                 });
 
                 if ui.button("Search").clicked() {
@@ -146,19 +151,9 @@ impl ProfileSearchScreen {
             });
 
             ui.label(
-                RichText::new(
-                    "Tip: You can search by partial display name, @username, or full identity ID",
-                )
-                .small()
-                .color(DashColors::text_secondary(dark_mode)),
-            );
-
-            ui.label(
-                RichText::new(
-                    "Note: Text search is limited to the most recent 100 profiles due to Platform limitations",
-                )
-                .small()
-                .color(DashColors::text_secondary(dark_mode)),
+                RichText::new("Tip: Search by DPNS username prefix (e.g., \"john\" finds \"john.dash\", \"johnny.dash\", etc.)")
+                    .small()
+                    .color(DashColors::text_secondary(dark_mode)),
             );
 
             ui.add_space(10.0);
@@ -341,29 +336,28 @@ impl ScreenLike for ProfileSearchScreen {
                 for (identity_id, profile_doc, username) in results {
                     // Extract profile data from document if available
                     use dash_sdk::dpp::document::DocumentV0Getters;
-                    let (display_name, public_message, avatar_url) = if let Some(document) =
-                        &profile_doc
-                    {
-                        let properties = match document {
-                            Document::V0(doc_v0) => doc_v0.properties(),
+                    let (display_name, public_message, avatar_url) =
+                        if let Some(document) = &profile_doc {
+                            let properties = match document {
+                                Document::V0(doc_v0) => doc_v0.properties(),
+                            };
+                            (
+                                properties
+                                    .get("displayName")
+                                    .and_then(|v| v.as_text())
+                                    .map(|s| s.to_string()),
+                                properties
+                                    .get("publicMessage")
+                                    .and_then(|v| v.as_text())
+                                    .map(|s| s.to_string()),
+                                properties
+                                    .get("avatarUrl")
+                                    .and_then(|v| v.as_text())
+                                    .map(|s| s.to_string()),
+                            )
+                        } else {
+                            (None, None, None)
                         };
-                        (
-                            properties
-                                .get("displayName")
-                                .and_then(|v| v.as_text())
-                                .map(|s| s.to_string()),
-                            properties
-                                .get("publicMessage")
-                                .and_then(|v| v.as_text())
-                                .map(|s| s.to_string()),
-                            properties
-                                .get("avatarUrl")
-                                .and_then(|v| v.as_text())
-                                .map(|s| s.to_string()),
-                        )
-                    } else {
-                        (None, None, None)
-                    };
 
                     let search_result = ProfileSearchResult {
                         identity_id,

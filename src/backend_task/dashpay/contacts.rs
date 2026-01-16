@@ -187,6 +187,11 @@ pub struct ContactData {
     pub note: Option<String>,
     pub is_hidden: bool,
     pub account_reference: u32,
+    // Profile data (fetched from Platform)
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
 }
 
 pub async fn load_contacts(
@@ -372,6 +377,10 @@ pub async fn load_contacts(
                             note,
                             is_hidden,
                             account_reference,
+                            username: None,
+                            display_name: None,
+                            avatar_url: None,
+                            bio: None,
                         },
                     );
                 }
@@ -379,8 +388,8 @@ pub async fn load_contacts(
         }
     }
 
-    // Build enriched contact list
-    let contact_list: Vec<ContactData> = contacts
+    // Build enriched contact list with basic data
+    let mut contact_list: Vec<ContactData> = contacts
         .into_iter()
         .map(|contact_id| {
             contact_info_map
@@ -392,9 +401,92 @@ pub async fn load_contacts(
                     note: None,
                     is_hidden: false,
                     account_reference: 0,
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                    bio: None,
                 })
         })
         .collect();
+
+    // Fetch profiles and usernames for all contacts
+    // First, collect all contact IDs
+    let contact_ids: Vec<Identifier> = contact_list.iter().map(|c| c.identity_id).collect();
+
+    // Fetch profiles for all contacts (batch query)
+    if !contact_ids.is_empty() {
+        // Query profiles for all contacts
+        for contact_id in &contact_ids {
+            // Fetch profile
+            let mut profile_query = DocumentQuery::new(dashpay_contract.clone(), "profile")
+                .map_err(|e| format!("Failed to create profile query: {}", e))?;
+
+            profile_query = profile_query.with_where(WhereClause {
+                field: "$ownerId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(contact_id.to_buffer()),
+            });
+            profile_query.limit = 1;
+
+            if let Ok(results) = Document::fetch_many(sdk, profile_query).await {
+                if let Some((_, Some(doc))) = results.into_iter().next() {
+                    let props = doc.properties();
+
+                    let display_name = props
+                        .get("displayName")
+                        .and_then(|v| v.as_text())
+                        .map(|s| s.to_string());
+
+                    let avatar_url = props
+                        .get("avatarUrl")
+                        .and_then(|v| v.as_text())
+                        .map(|s| s.to_string());
+
+                    let bio = props
+                        .get("bio")
+                        .and_then(|v| v.as_text())
+                        .map(|s| s.to_string());
+
+                    // Update the contact in the list
+                    if let Some(contact) = contact_list
+                        .iter_mut()
+                        .find(|c| c.identity_id == *contact_id)
+                    {
+                        contact.display_name = display_name;
+                        contact.avatar_url = avatar_url;
+                        contact.bio = bio;
+                    }
+                }
+            }
+
+            // Fetch DPNS username
+            let dpns_contract = app_context.dpns_contract.clone();
+            let mut dpns_query = DocumentQuery::new(dpns_contract, "domain")
+                .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
+
+            dpns_query = dpns_query.with_where(WhereClause {
+                field: "records.identity".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(contact_id.to_buffer()),
+            });
+            dpns_query.limit = 1;
+
+            if let Ok(results) = Document::fetch_many(sdk, dpns_query).await {
+                if let Some((_, Some(doc))) = results.into_iter().next() {
+                    let props = doc.properties();
+                    if let Some(label) = props.get("label").and_then(|v| v.as_text()) {
+                        // Update the contact in the list
+                        if let Some(contact) = contact_list
+                            .iter_mut()
+                            .find(|c| c.identity_id == *contact_id)
+                        {
+                            contact.username = Some(label.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
         contact_list,

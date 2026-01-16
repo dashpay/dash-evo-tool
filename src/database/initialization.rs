@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 20;
+pub const DEFAULT_DB_VERSION: u16 = 24;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,19 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            24 => {
+                self.add_selected_wallet_columns(tx)?;
+            }
+            23 => {
+                self.add_last_terminal_block_column(tx)?;
+            }
+            22 => {
+                self.add_network_column_to_dashpay_contact_requests(tx)?;
+                self.add_network_column_to_dashpay_contacts(tx)?;
+            }
+            21 => {
+                self.add_network_column_to_dashpay_profiles(tx)?;
+            }
             20 => {
                 self.add_platform_sync_columns(tx)?;
             }
@@ -524,6 +537,214 @@ impl Database {
             "ALTER TABLE wallet ADD COLUMN last_platform_sync_checkpoint INTEGER DEFAULT 0",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Migration: Add last_terminal_block column to wallet table (version 23).
+    /// Tracks the highest block height processed by terminal balance updates to avoid
+    /// re-applying the same balance changes on subsequent terminal-only syncs.
+    fn add_last_terminal_block_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN last_terminal_block INTEGER DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Add selected wallet hash columns to settings table (version 24).
+    /// Persists the user's selected wallet across app restarts.
+    fn add_selected_wallet_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if selected_wallet_hash column exists
+        let wallet_hash_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_wallet_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !wallet_hash_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN selected_wallet_hash BLOB DEFAULT NULL",
+                [],
+            )?;
+        }
+
+        // Check if selected_single_key_hash column exists
+        let single_key_hash_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_single_key_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !single_key_hash_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN selected_single_key_hash BLOB DEFAULT NULL",
+                [],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn add_network_column_to_dashpay_profiles(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if dashpay_profiles table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_profiles'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if network column already exists
+            let has_network_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_profiles') WHERE name='network'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_network_column {
+                // Add network column with default value
+                conn.execute(
+                    "ALTER TABLE dashpay_profiles ADD COLUMN network TEXT NOT NULL DEFAULT 'dash'",
+                    [],
+                )?;
+
+                // Drop the old primary key and recreate with composite key
+                // SQLite doesn't support dropping primary key, so we need to recreate the table
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS dashpay_profiles_new (
+                        identity_id BLOB NOT NULL,
+                        network TEXT NOT NULL,
+                        display_name TEXT,
+                        bio TEXT,
+                        avatar_url TEXT,
+                        avatar_hash BLOB,
+                        avatar_fingerprint BLOB,
+                        public_message TEXT,
+                        created_at INTEGER DEFAULT (unixepoch()),
+                        updated_at INTEGER DEFAULT (unixepoch()),
+                        PRIMARY KEY (identity_id, network)
+                    )",
+                    [],
+                )?;
+
+                // Copy data from old table
+                conn.execute(
+                    "INSERT OR REPLACE INTO dashpay_profiles_new
+                     SELECT identity_id, network, display_name, bio, avatar_url,
+                            avatar_hash, avatar_fingerprint, public_message, created_at, updated_at
+                     FROM dashpay_profiles",
+                    [],
+                )?;
+
+                // Drop old table and rename new one
+                conn.execute("DROP TABLE dashpay_profiles", [])?;
+                conn.execute(
+                    "ALTER TABLE dashpay_profiles_new RENAME TO dashpay_profiles",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_network_column_to_dashpay_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        // Check if dashpay_contact_requests table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_contact_requests'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if network column already exists
+            let has_network_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests') WHERE name='network'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_network_column {
+                // Add network column with default value
+                conn.execute(
+                    "ALTER TABLE dashpay_contact_requests ADD COLUMN network TEXT NOT NULL DEFAULT 'dash'",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_network_column_to_dashpay_contacts(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if dashpay_contacts table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_contacts'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if network column already exists
+            let has_network_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contacts') WHERE name='network'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_network_column {
+                // Add network column with default value
+                conn.execute(
+                    "ALTER TABLE dashpay_contacts ADD COLUMN network TEXT NOT NULL DEFAULT 'dash'",
+                    [],
+                )?;
+
+                // Recreate the table with composite primary key
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS dashpay_contacts_new (
+                        owner_identity_id BLOB NOT NULL,
+                        contact_identity_id BLOB NOT NULL,
+                        network TEXT NOT NULL,
+                        username TEXT,
+                        display_name TEXT,
+                        avatar_url TEXT,
+                        public_message TEXT,
+                        contact_status TEXT DEFAULT 'pending',
+                        created_at INTEGER DEFAULT (unixepoch()),
+                        updated_at INTEGER DEFAULT (unixepoch()),
+                        last_seen INTEGER,
+                        PRIMARY KEY (owner_identity_id, contact_identity_id, network)
+                    )",
+                    [],
+                )?;
+
+                // Copy data from old table
+                conn.execute(
+                    "INSERT OR REPLACE INTO dashpay_contacts_new
+                     SELECT owner_identity_id, contact_identity_id, network, username, display_name,
+                            avatar_url, public_message, contact_status, created_at, updated_at, last_seen
+                     FROM dashpay_contacts",
+                    [],
+                )?;
+
+                // Drop old table and rename new one
+                conn.execute("DROP TABLE dashpay_contacts", [])?;
+                conn.execute(
+                    "ALTER TABLE dashpay_contacts_new RENAME TO dashpay_contacts",
+                    [],
+                )?;
+            }
+        }
+
         Ok(())
     }
 }

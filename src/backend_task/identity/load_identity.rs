@@ -319,17 +319,22 @@ impl AppContext {
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
+        // Determine alias: use user input, or fall back to first DPNS name if available
+        let alias = if !alias_input.is_empty() {
+            Some(alias_input)
+        } else if !maybe_owned_dpns_names.is_empty() {
+            Some(format!("{}.dash", maybe_owned_dpns_names[0].name))
+        } else {
+            None
+        };
+
         let qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity,
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type,
-            alias: if alias_input.is_empty() {
-                None
-            } else {
-                Some(alias_input)
-            },
+            alias,
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets

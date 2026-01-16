@@ -145,6 +145,19 @@ impl AppContext {
                     .send_raw_transaction(&asset_lock_transaction)
                     .map_err(|e| e.to_string())?;
 
+                // Store the asset lock transaction in the database immediately after sending.
+                // This ensures it's tracked even if the proof times out or identity creation fails.
+                // SPV will update the instant_lock_data when it detects the transaction.
+                self.db
+                    .store_asset_lock_transaction(
+                        &asset_lock_transaction,
+                        amount,
+                        None, // No islock yet - SPV will update this
+                        &wallet_id,
+                        self.network,
+                    )
+                    .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+
                 // TODO: UTXO removal timing issue - UTXOs are removed here BEFORE the asset
                 // lock proof is confirmed below. If the transaction fails or times out after
                 // this point, the UTXOs will be "lost" from wallet tracking even though they
@@ -254,6 +267,19 @@ impl AppContext {
                     .expect("Core client lock was poisoned")
                     .send_raw_transaction(&asset_lock_transaction)
                     .map_err(|e| e.to_string())?;
+
+                // Store the asset lock transaction in the database immediately after sending.
+                // This ensures it's tracked even if the proof times out or identity creation fails.
+                // SPV will update the instant_lock_data when it detects the transaction.
+                self.db
+                    .store_asset_lock_transaction(
+                        &asset_lock_transaction,
+                        tx_out.value,
+                        None, // No islock yet - SPV will update this
+                        &wallet_id,
+                        self.network,
+                    )
+                    .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
                 // TODO: UTXO removal timing issue - see comment above for FundWithWallet case.
                 {

@@ -170,7 +170,7 @@ impl ContactDetailsScreen {
                     ui.horizontal(|ui| {
                         // Avatar placeholder
                         ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("👤").size(60.0));
+                            ui.label(RichText::new("👤").size(60.0).color(DashColors::DEEP_BLUE));
                             ui.small("Contact");
                         });
 

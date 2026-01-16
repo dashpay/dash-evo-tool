@@ -16,7 +16,7 @@ use dash_sdk::{
             group::{Group, accessors::v0::GroupV0Getters},
         },
         identity::{
-            KeyType, Purpose, SecurityLevel, accessors::IdentityGettersV0,
+            Purpose, SecurityLevel, accessors::IdentityGettersV0,
             identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
         },
         platform_value::string_encoding::Encoding,
@@ -129,7 +129,7 @@ pub enum TransactionType {
     TokenTransfer,
     /// Token action of claiming
     TokenClaim,
-    /// DashPay contact request - requires Authentication keys with ECDSA_SECP256K1 key type for ECDH
+    /// DashPay contact request - requires Authentication keys for signing (ENCRYPTION key for ECDH is auto-selected)
     ContactRequest,
 }
 
@@ -167,11 +167,7 @@ impl TransactionType {
             TransactionType::TokenAction
             | TransactionType::TokenTransfer
             | TransactionType::TokenClaim => vec![SecurityLevel::CRITICAL],
-            TransactionType::ContactRequest => vec![
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ],
+            TransactionType::ContactRequest => vec![SecurityLevel::CRITICAL, SecurityLevel::HIGH],
         }
     }
 
@@ -251,11 +247,7 @@ pub fn add_key_chooser_with_doc_type(
                 let basic_ok = allowed_purposes.contains(&key.purpose())
                     && allowed_security_levels.contains(&key.security_level());
 
-                if transaction_type == TransactionType::ContactRequest {
-                    basic_ok && key.key_type() == KeyType::ECDSA_SECP256K1
-                } else {
-                    basic_ok
-                }
+                basic_ok
             });
 
     // Check if there are eligible public keys without private keys
@@ -264,19 +256,13 @@ pub fn add_key_chooser_with_doc_type(
             let basic_ok = allowed_purposes.contains(&pub_key.purpose())
                 && allowed_security_levels.contains(&pub_key.security_level());
 
-            let type_ok = if transaction_type == TransactionType::ContactRequest {
-                pub_key.key_type() == KeyType::ECDSA_SECP256K1
-            } else {
-                true
-            };
-
             let has_private = identity
                 .private_keys
                 .identity_public_keys()
                 .iter()
                 .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
 
-            basic_ok && type_ok && !has_private
+            basic_ok && !has_private
         });
 
     if !is_dev_mode && !has_suitable_keys_with_private {
@@ -285,11 +271,7 @@ pub fn add_key_chooser_with_doc_type(
             ui.set_min_width(220.0);
             ui.vertical(|ui| {
                 ui.label("No eligible key. This transaction type requires:");
-                if transaction_type == TransactionType::ContactRequest {
-                    ui.label("ECDSA secp256k1 key");
-                } else {
-                    ui.label(format!("{} key", transaction_type.label()));
-                }
+                ui.label(format!("{} key", transaction_type.label()));
 
                 if has_eligible_public_keys_without_private {
                     ui.label(
@@ -340,11 +322,7 @@ pub fn add_key_chooser_with_doc_type(
                             let basic_requirements = allowed_purposes.contains(&key.purpose())
                                 && allowed_security_levels.contains(&key.security_level());
 
-                            if transaction_type == TransactionType::ContactRequest {
-                                basic_requirements && key.key_type() == KeyType::ECDSA_SECP256K1
-                            } else {
-                                basic_requirements
-                            }
+                            basic_requirements
                         };
 
                         if is_allowed {
@@ -490,12 +468,7 @@ where
                             let basic_ok = allowed_purposes.contains(&key.purpose())
                                 && allowed_security_levels.contains(&key.security_level());
 
-                            // For ContactRequest, also check key type
-                            if transaction_type == TransactionType::ContactRequest {
-                                basic_ok && key.key_type() == KeyType::ECDSA_SECP256K1
-                            } else {
-                                basic_ok
-                            }
+                            basic_ok
                         });
 
                     // Check if there are eligible public keys without private keys
@@ -508,19 +481,13 @@ where
                             let basic_ok = allowed_purposes.contains(&pub_key.purpose())
                                 && allowed_security_levels.contains(&pub_key.security_level());
 
-                            let type_ok = if transaction_type == TransactionType::ContactRequest {
-                                pub_key.key_type() == KeyType::ECDSA_SECP256K1
-                            } else {
-                                true
-                            };
-
                             // Check if we don't have the private key for this public key
                             let has_private = qi.private_keys
                                 .identity_public_keys()
                                 .iter()
                                 .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
 
-                            basic_ok && type_ok && !has_private
+                            basic_ok && !has_private
                         });
 
                     if !is_dev_mode && !has_suitable_keys_with_private {
@@ -531,11 +498,7 @@ where
                             ui.vertical(|ui| {
                                 // Identity has eligible keys but private keys not loaded
                                 ui.label("⚠ No eligible key. This transaction type requires:");
-                                if transaction_type == TransactionType::ContactRequest {
-                                    ui.label("• ECDSA secp256k1 key");
-                                } else {
-                                    ui.label(format!("• {} key", transaction_type.label()));
-                                }
+                                ui.label(format!("• {} key", transaction_type.label()));
 
                                 if has_eligible_public_keys_without_private {
                                     ui.label(
@@ -617,13 +580,7 @@ where
                                         .contains(&key.purpose())
                                         && allowed_security_levels.contains(&key.security_level());
 
-                                    // Additional filtering for ContactRequest - only ECDSA_SECP256K1 keys for ECDH
-                                    if transaction_type == TransactionType::ContactRequest {
-                                        basic_requirements
-                                            && key.key_type() == KeyType::ECDSA_SECP256K1
-                                    } else {
-                                        basic_requirements
-                                    }
+                                    basic_requirements
                                 };
 
                                 if is_allowed {

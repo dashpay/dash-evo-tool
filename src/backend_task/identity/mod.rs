@@ -100,7 +100,16 @@ impl IdentityKeys {
         }
 
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, ((private_key, derivation_path), key_type, purpose, security_level, contract_bounds))| {
+            |(
+                i,
+                (
+                    (private_key, derivation_path),
+                    key_type,
+                    purpose,
+                    security_level,
+                    contract_bounds,
+                ),
+            )| {
                 let id = (i + 1) as KeyID;
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,

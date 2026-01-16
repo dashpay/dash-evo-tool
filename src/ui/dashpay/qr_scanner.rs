@@ -336,11 +336,8 @@ impl ScreenLike for QRScannerScreen {
         action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // Add DashPay subscreen chooser panel
-        action |= add_dashpay_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-            DashPaySubscreen::Contacts,
-        );
+        action |=
+            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content area with island styling
         action |= island_central_panel(ctx, |ui| self.render(ui));

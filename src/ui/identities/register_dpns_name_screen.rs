@@ -5,15 +5,15 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -92,7 +92,11 @@ impl RegisterDpnsNameScreen {
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
-            .map(|qi| qi.identity.id().to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58))
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
             .unwrap_or_default();
 
         let show_identity_selector = qualified_identities.len() > 1;
@@ -123,7 +127,10 @@ impl RegisterDpnsNameScreen {
         {
             // Set the selected_qualified_identity to the found identity
             self.selected_qualified_identity = Some(qi.clone());
-            self.selected_identity_string = qi.identity.id().to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+            self.selected_identity_string = qi
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Auto-select a suitable key for DPNS registration
             use dash_sdk::dpp::identity::KeyType;
@@ -288,7 +295,9 @@ impl ScreenLike for RegisterDpnsNameScreen {
             RegisterDpnsNameSource::DPNS => vec![
                 (
                     "DPNS",
-                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenDPNSActiveContests),
+                    AppAction::SetMainScreen(
+                        crate::ui::RootScreenType::RootScreenDPNSActiveContests,
+                    ),
                 ),
                 ("Register Name", AppAction::None),
             ],
@@ -305,12 +314,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
         // Use the appropriate left panel highlight based on source
         let root_screen = match self.source {
-            RegisterDpnsNameSource::DPNS => {
-                crate::ui::RootScreenType::RootScreenDPNSActiveContests
-            }
-            RegisterDpnsNameSource::Identities => {
-                crate::ui::RootScreenType::RootScreenIdentities
-            }
+            RegisterDpnsNameSource::DPNS => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
+            RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentities,
         };
         action |= add_left_panel(ctx, &self.app_context, root_screen);
 

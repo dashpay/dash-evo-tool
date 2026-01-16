@@ -70,6 +70,12 @@ impl AppContext {
 
             qualified_identity.dpns_names = owned_dpns_names;
 
+            // If alias is not set and we have DPNS names, set alias to the first DPNS name
+            if qualified_identity.alias.is_none() && !qualified_identity.dpns_names.is_empty() {
+                let dpns_name = &qualified_identity.dpns_names[0].name;
+                qualified_identity.alias = Some(format!("{}.dash", dpns_name));
+            }
+
             // Update qualified identity in the database
             self.update_local_qualified_identity(&qualified_identity)
                 .map_err(|e| format!("Error refreshing owned DPNS names: Database error: {}", e))?;

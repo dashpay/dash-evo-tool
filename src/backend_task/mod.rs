@@ -151,7 +151,7 @@ pub enum BackendTaskSuccessResult {
     // DashPay related results
     DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
     DashPayContactProfile(Option<Document>),          // Contact's public profile document
-    DashPayProfileSearchResults(Vec<(Identifier, Document)>), // Search results: (identity_id, profile_document)
+    DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
     DashPayContactRequests {
         incoming: Vec<(Identifier, Document)>, // (request_id, document)
         outgoing: Vec<(Identifier, Document)>, // (request_id, document)
@@ -251,6 +251,10 @@ pub enum BackendTaskSuccessResult {
 
     // Wallet operation results (replacing string messages)
     RefreshedWallet,
+    RecoveredAssetLocks {
+        recovered_count: usize,
+        total_amount: u64,
+    },
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,
@@ -356,9 +360,10 @@ impl AppContext {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await
             }
-            WalletTask::FetchPlatformAddressBalances { seed_hash } => {
-                self.fetch_platform_address_balances(seed_hash).await
-            }
+            WalletTask::FetchPlatformAddressBalances {
+                seed_hash,
+                sync_mode,
+            } => self.fetch_platform_address_balances(seed_hash, sync_mode).await,
             WalletTask::TransferPlatformCredits {
                 seed_hash,
                 inputs,
@@ -401,6 +406,14 @@ impl AppContext {
                 destination,
             } => {
                 self.fund_platform_address_from_wallet_utxos(seed_hash, amount, destination)
+                    .await
+            }
+            WalletTask::FundMultiplePlatformAddresses {
+                seed_hash,
+                count,
+                amount_per_address,
+            } => {
+                self.fund_multiple_platform_addresses(seed_hash, count, amount_per_address)
                     .await
             }
         }

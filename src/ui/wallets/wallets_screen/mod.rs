@@ -52,6 +52,48 @@ enum SortOrder {
     Descending,
 }
 
+/// Refresh mode for dev mode dropdown - controls what gets refreshed
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum RefreshMode {
+    /// Current behavior: Core wallet + Platform (auto decides full vs terminal)
+    #[default]
+    All,
+    /// Only refresh Core wallet balances
+    CoreOnly,
+    /// Only Platform sync - force full sync
+    PlatformFull,
+    /// Only Platform sync - terminal only
+    PlatformTerminal,
+    /// Core wallet + Platform full sync
+    CoreAndPlatformFull,
+    /// Core wallet + Platform terminal sync
+    CoreAndPlatformTerminal,
+}
+
+impl RefreshMode {
+    fn label(&self) -> &'static str {
+        match self {
+            RefreshMode::All => "All (Auto)",
+            RefreshMode::CoreOnly => "Core Only",
+            RefreshMode::PlatformFull => "Platform (Full)",
+            RefreshMode::PlatformTerminal => "Platform (Terminal)",
+            RefreshMode::CoreAndPlatformFull => "Core + Platform (Full)",
+            RefreshMode::CoreAndPlatformTerminal => "Core + Platform (Terminal)",
+        }
+    }
+
+    fn all_modes() -> &'static [RefreshMode] {
+        &[
+            RefreshMode::All,
+            RefreshMode::CoreOnly,
+            RefreshMode::PlatformFull,
+            RefreshMode::PlatformTerminal,
+            RefreshMode::CoreAndPlatformFull,
+            RefreshMode::CoreAndPlatformTerminal,
+        ]
+    }
+}
+
 pub struct WalletsBalancesScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
@@ -79,8 +121,16 @@ pub struct WalletsBalancesScreen {
     pending_platform_balance_refresh: Option<WalletSeedHash>,
     /// Whether we should refresh the wallet after it's unlocked
     pending_refresh_after_unlock: bool,
+    /// The refresh mode to use after unlock (if pending_refresh_after_unlock is true)
+    pending_refresh_mode: RefreshMode,
+    /// Whether we should search for asset locks after wallet is unlocked
+    pending_asset_lock_search_after_unlock: bool,
     /// Current page for single key wallet UTXO pagination (0-indexed)
     utxo_page: usize,
+    /// Selected refresh mode (only shown in dev mode)
+    refresh_mode: RefreshMode,
+    /// Selected count for "Fund Multiple Addresses" dev tool
+    fund_addresses_count: u32,
 }
 
 // Define a struct to hold the address data
@@ -252,7 +302,11 @@ impl WalletsBalancesScreen {
             selected_account: None,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
+            pending_refresh_mode: RefreshMode::default(),
+            pending_asset_lock_search_after_unlock: false,
             utxo_page: 0,
+            refresh_mode: RefreshMode::default(),
+            fund_addresses_count: 4,
         }
     }
 
@@ -473,34 +527,40 @@ impl WalletsBalancesScreen {
                                         WalletItem::Hd(w) => {
                                             self.selected_wallet = Some(w.clone());
                                             self.selected_single_key_wallet = None;
-                                            // Persist selection to AppContext
+                                            // Persist selection to AppContext and database
                                             if let Ok(hash) = w.read().map(|g| g.seed_hash())
                                                 && let Ok(mut guard) =
                                                     self.app_context.selected_wallet_hash.lock()
                                             {
                                                 *guard = Some(hash);
+                                                // Save to database for persistence across restarts
+                                                let _ = self.app_context.db.update_selected_wallet_hash(Some(&hash));
                                             }
                                             if let Ok(mut guard) =
                                                 self.app_context.selected_single_key_hash.lock()
                                             {
                                                 *guard = None;
+                                                let _ = self.app_context.db.update_selected_single_key_hash(None);
                                             }
                                         }
                                         WalletItem::SingleKey(w) => {
                                             self.selected_single_key_wallet = Some(w.clone());
                                             self.selected_wallet = None;
                                             self.utxo_page = 0; // Reset pagination
-                                            // Persist selection to AppContext
+                                            // Persist selection to AppContext and database
                                             if let Ok(hash) = w.read().map(|g| g.key_hash)
                                                 && let Ok(mut guard) =
                                                     self.app_context.selected_single_key_hash.lock()
                                             {
                                                 *guard = Some(hash);
+                                                // Save to database for persistence across restarts
+                                                let _ = self.app_context.db.update_selected_single_key_hash(Some(&hash));
                                             }
                                             if let Ok(mut guard) =
                                                 self.app_context.selected_wallet_hash.lock()
                                             {
                                                 *guard = None;
+                                                let _ = self.app_context.db.update_selected_wallet_hash(None);
                                             }
                                         }
                                     }
@@ -588,12 +648,13 @@ impl WalletsBalancesScreen {
                                     wallets.remove(&key_hash);
                                 }
                                 self.selected_single_key_wallet = None;
-                                // Clear persisted selection
+                                // Clear persisted selection in AppContext and database
                                 if let Ok(mut guard) =
                                     self.app_context.selected_single_key_hash.lock()
                                 {
                                     *guard = None;
                                 }
+                                let _ = self.app_context.db.update_selected_single_key_hash(None);
                                 self.display_message("Wallet removed", MessageType::Success);
                             }
                         }
@@ -1083,12 +1144,15 @@ impl WalletsBalancesScreen {
 
                 self.selected_wallet = next_wallet.clone();
 
-                // Update persisted selection
+                // Update persisted selection in AppContext and database
+                let new_hash = next_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
                 if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
-                    *guard = next_wallet
-                        .as_ref()
-                        .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                    *guard = new_hash;
                 }
+                // Persist to database
+                let _ = self.app_context.db.update_selected_wallet_hash(new_hash.as_ref());
 
                 self.show_rename_dialog = false;
                 self.rename_input.clear();
@@ -1110,8 +1174,9 @@ impl WalletsBalancesScreen {
     }
 
     fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
-        let app_action = AppAction::None;
+        let mut app_action = AppAction::None;
         let mut open_fund_dialog_for_idx: Option<(usize, Vec<(String, u64)>)> = None;
+        let mut recover_asset_locks_clicked = false;
 
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
@@ -1124,7 +1189,14 @@ impl WalletsBalancesScreen {
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
                 .show(ui, |ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.heading(RichText::new("Unused Asset Locks").color(DashColors::text_primary(dark_mode)));
+                    ui.horizontal(|ui| {
+                        ui.heading(RichText::new("Unused Asset Locks").color(DashColors::text_primary(dark_mode)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Search for Unused Asset Locks").on_hover_text("Scan Core wallet for untracked asset locks").clicked() {
+                                recover_asset_locks_clicked = true;
+                            }
+                        });
+                    });
                     ui.add_space(10.0);
 
                     if wallet.unused_asset_locks.is_empty() {
@@ -1157,6 +1229,7 @@ impl WalletsBalancesScreen {
 
                         egui::ScrollArea::both()
                             .id_salt("asset_locks_table")
+                            .min_scrolled_height(200.0)
                             .show(ui, |ui| {
                                 TableBuilder::new(ui)
                         .striped(false)
@@ -1235,6 +1308,11 @@ impl WalletsBalancesScreen {
             self.fund_platform_dialog.selected_platform_address = None;
             self.fund_platform_dialog.status = None;
             self.fund_platform_dialog.is_processing = false;
+        }
+
+        // Handle recover asset locks button click - use custom action to check lock status
+        if recover_asset_locks_clicked {
+            app_action = AppAction::Custom("SearchAssetLocks".to_string());
         }
 
         app_action
@@ -1682,9 +1760,12 @@ impl WalletsBalancesScreen {
                         ui.add_space(8.0);
                         action |= self.render_address_table(ui);
 
-                        ui.add_space(10.0);
-                        ui.separator();
-                        self.render_transactions_section(ui);
+                        // Transactions section - requires SPV which is dev mode only
+                        if self.app_context.is_developer_mode() {
+                            ui.add_space(10.0);
+                            ui.separator();
+                            self.render_transactions_section(ui);
+                        }
 
                         ui.add_space(14.0);
                         self.render_bottom_options(ui);
@@ -3037,6 +3118,120 @@ impl WalletsBalancesScreen {
 
         action
     }
+
+    /// Creates the appropriate refresh action based on the current refresh mode
+    fn create_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
+        use crate::backend_task::wallet::PlatformSyncMode;
+
+        let seed_hash = wallet_arc
+            .read()
+            .ok()
+            .map(|w| w.seed_hash())
+            .unwrap_or_default();
+
+        match self.refresh_mode {
+            RefreshMode::All => {
+                // Default behavior: Core + Platform (Auto)
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    Some(PlatformSyncMode::Auto),
+                )))
+            }
+            RefreshMode::CoreOnly => {
+                // Core only, no Platform sync
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    None,
+                )))
+            }
+            RefreshMode::PlatformFull => {
+                // Platform only with forced full sync
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
+                        seed_hash,
+                        sync_mode: PlatformSyncMode::ForceFull,
+                    },
+                ))
+            }
+            RefreshMode::PlatformTerminal => {
+                // Platform only with terminal sync
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
+                        seed_hash,
+                        sync_mode: PlatformSyncMode::TerminalOnly,
+                    },
+                ))
+            }
+            RefreshMode::CoreAndPlatformFull => {
+                // Core + Platform with forced full sync
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    Some(PlatformSyncMode::ForceFull),
+                )))
+            }
+            RefreshMode::CoreAndPlatformTerminal => {
+                // Core + Platform with terminal sync
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    Some(PlatformSyncMode::TerminalOnly),
+                )))
+            }
+        }
+    }
+
+    /// Creates the appropriate refresh action using the pending refresh mode
+    fn create_pending_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
+        use crate::backend_task::wallet::PlatformSyncMode;
+
+        let seed_hash = wallet_arc
+            .read()
+            .ok()
+            .map(|w| w.seed_hash())
+            .unwrap_or_default();
+
+        match self.pending_refresh_mode {
+            RefreshMode::All => {
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    Some(PlatformSyncMode::Auto),
+                )))
+            }
+            RefreshMode::CoreOnly => {
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    None,
+                )))
+            }
+            RefreshMode::PlatformFull => {
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
+                        seed_hash,
+                        sync_mode: PlatformSyncMode::ForceFull,
+                    },
+                ))
+            }
+            RefreshMode::PlatformTerminal => {
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
+                        seed_hash,
+                        sync_mode: PlatformSyncMode::TerminalOnly,
+                    },
+                ))
+            }
+            RefreshMode::CoreAndPlatformFull => {
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    Some(PlatformSyncMode::ForceFull),
+                )))
+            }
+            RefreshMode::CoreAndPlatformTerminal => {
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+                    wallet_arc.clone(),
+                    Some(PlatformSyncMode::TerminalOnly),
+                )))
+            }
+        }
+    }
 }
 
 impl ScreenLike for WalletsBalancesScreen {
@@ -3048,7 +3243,10 @@ impl ScreenLike for WalletsBalancesScreen {
             self.pending_platform_balance_refresh.take()
         {
             AppAction::BackendTask(BackendTask::WalletTask(
-                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
+                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
+                    seed_hash,
+                    sync_mode: crate::backend_task::wallet::PlatformSyncMode::Auto,
+                },
             ))
         } else {
             AppAction::None
@@ -3112,24 +3310,87 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 
-                // Display message in a prominent frame
+                // Display message in a prominent frame with text wrapping
+                Frame::new()
+                    .fill(message_color.gamma_multiply(0.1))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .stroke(egui::Stroke::new(1.0, message_color))
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&message).color(message_color))
+                                    .wrap(),
+                            );
+                            ui.add_space(5.0);
+                            if ui.small_button("Dismiss").clicked() {
+                                self.dismiss_message();
+                            }
+                        });
+                    });
+                ui.add_space(10.0);
+            }
+
+            // Dev mode: Refresh mode selector and Fund Multiple Addresses tool
+            if self.app_context.is_developer_mode() {
                 ui.horizontal(|ui| {
-                    Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(message).color(message_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.dismiss_message();
+                    ui.label("Refresh mode:");
+                    ComboBox::from_id_salt("refresh_mode_selector")
+                        .selected_text(self.refresh_mode.label())
+                        .show_ui(ui, |ui| {
+                            for mode in RefreshMode::all_modes() {
+                                ui.selectable_value(&mut self.refresh_mode, *mode, mode.label());
+                            }
+                        });
+                    ui.label(
+                        RichText::new("(Dev Mode)")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                });
+                ui.add_space(5.0);
+
+                // Fund Multiple Platform Addresses tool
+                if self.selected_wallet.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.label("Fund Platform addresses:");
+                        ComboBox::from_id_salt("fund_addresses_count_selector")
+                            .selected_text(format!("{}", self.fund_addresses_count))
+                            .width(60.0)
+                            .show_ui(ui, |ui| {
+                                for count in [4, 5, 10, 30, 50] {
+                                    ui.selectable_value(
+                                        &mut self.fund_addresses_count,
+                                        count,
+                                        format!("{}", count),
+                                    );
                                 }
                             });
-                        });
-                });
-                ui.add_space(10.0);
+                        if ui.button("Fund").clicked() {
+                            if let Some(wallet_arc) = &self.selected_wallet {
+                                if let Ok(wallet) = wallet_arc.read() {
+                                    let seed_hash = wallet.seed_hash();
+                                    // 20000 duffs per address to cover both the deposit and Platform fees
+                                    let amount_per_address = 20000u64;
+                                    inner_action = AppAction::BackendTask(BackendTask::WalletTask(
+                                        crate::backend_task::wallet::WalletTask::FundMultiplePlatformAddresses {
+                                            seed_hash,
+                                            count: self.fund_addresses_count,
+                                            amount_per_address,
+                                        },
+                                    ));
+                                    self.refreshing = true;
+                                }
+                            }
+                        }
+                        ui.label(
+                            RichText::new("(20M credits each, from addr 0)")
+                                .small()
+                                .color(Color32::GRAY),
+                        );
+                    });
+                    ui.add_space(5.0);
+                }
             }
 
             egui::ScrollArea::vertical()
@@ -3281,8 +3542,20 @@ impl ScreenLike for WalletsBalancesScreen {
                         self.pending_refresh_after_unlock = false;
                         if let Some(wallet_arc) = &self.selected_wallet {
                             self.refreshing = true;
+                            action |= self.create_pending_refresh_action(wallet_arc);
+                        }
+                    }
+
+                    // Check if we were trying to search for asset locks
+                    if self.pending_asset_lock_search_after_unlock {
+                        self.pending_asset_lock_search_after_unlock = false;
+                        if let Some(wallet_arc) = self.selected_wallet.clone() {
+                            self.display_message(
+                                "Searching for unused asset locks...",
+                                MessageType::Info,
+                            );
                             action |= AppAction::BackendTask(BackendTask::CoreTask(
-                                CoreTask::RefreshWalletInfo(wallet_arc.clone()),
+                                CoreTask::RecoverAssetLocks(wallet_arc),
                             ));
                         }
                     }
@@ -3297,6 +3570,9 @@ impl ScreenLike for WalletsBalancesScreen {
 
                     // Clear pending refresh request on cancel
                     self.pending_refresh_after_unlock = false;
+
+                    // Clear pending asset lock search on cancel
+                    self.pending_asset_lock_search_after_unlock = false;
                 }
                 WalletUnlockResult::Pending => {}
             }
@@ -3419,7 +3695,7 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_))) =
+        if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_, _))) =
             action
         {
             self.refreshing = true;
@@ -3431,16 +3707,15 @@ impl ScreenLike for WalletsBalancesScreen {
                 if let Some(wallet_arc) = &self.selected_wallet {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
-                        // Wallet is locked - open unlock popup
+                        // Wallet is locked - open unlock popup and store the refresh mode
                         self.pending_refresh_after_unlock = true;
+                        self.pending_refresh_mode = self.refresh_mode;
                         self.wallet_unlock_popup.open();
                         action = AppAction::None;
                     } else {
-                        // Wallet is unlocked - proceed with refresh
+                        // Wallet is unlocked - proceed with refresh using selected mode
                         self.refreshing = true;
-                        action = AppAction::BackendTask(BackendTask::CoreTask(
-                            CoreTask::RefreshWalletInfo(wallet_arc.clone()),
-                        ));
+                        action = self.create_refresh_action(wallet_arc);
                     }
                 }
             } else if cmd == "RefreshSKWallet"
@@ -3458,6 +3733,25 @@ impl ScreenLike for WalletsBalancesScreen {
                     action = AppAction::BackendTask(BackendTask::CoreTask(
                         CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
                     ));
+                }
+            } else if cmd == "SearchAssetLocks" {
+                if let Some(wallet_arc) = self.selected_wallet.clone() {
+                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                    if is_locked {
+                        // Wallet is locked - open unlock popup
+                        self.pending_asset_lock_search_after_unlock = true;
+                        self.wallet_unlock_popup.open();
+                        action = AppAction::None;
+                    } else {
+                        // Wallet is unlocked - proceed with search
+                        self.display_message(
+                            "Searching for unused asset locks...",
+                            MessageType::Info,
+                        );
+                        action = AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::RecoverAssetLocks(wallet_arc),
+                        ));
+                    }
                 }
             }
         }
@@ -3494,6 +3788,21 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success,
                     Utc::now(),
                 ));
+            }
+            crate::ui::BackendTaskSuccessResult::RecoveredAssetLocks {
+                recovered_count,
+                total_amount,
+            } => {
+                let msg = if recovered_count == 0 {
+                    "No additional unused asset locks found".to_string()
+                } else {
+                    format!(
+                        "Found {} unused asset lock(s) worth {} Dash",
+                        recovered_count,
+                        Self::format_dash(total_amount)
+                    )
+                };
+                self.display_message(&msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::WalletPayment {
                 txid,
@@ -3562,6 +3871,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 seed_hash,
                 balances,
             } => {
+                self.refreshing = false;
                 // Update wallet's platform_address_info if this is for the selected wallet
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(mut wallet) = selected.write()
@@ -3581,6 +3891,15 @@ impl ScreenLike for WalletsBalancesScreen {
                         }
                     }
                 }
+                self.message = Some((
+                    "Successfully synced Platform balances".to_string(),
+                    MessageType::Success,
+                    Utc::now(),
+                ));
+            }
+            crate::ui::BackendTaskSuccessResult::Message(msg) => {
+                self.refreshing = false;
+                self.display_message(&msg, MessageType::Success);
             }
             _ => {}
         }
@@ -3596,6 +3915,15 @@ impl ScreenLike for WalletsBalancesScreen {
             self.selected_wallet = Some(wallet.clone());
             self.selected_single_key_wallet = None; // Clear SK selection
             self.selected_account = None;
+            // Persist selection to AppContext and database
+            if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
+                *guard = Some(seed_hash);
+            }
+            if let Ok(mut guard) = self.app_context.selected_single_key_hash.lock() {
+                *guard = None;
+            }
+            let _ = self.app_context.db.update_selected_wallet_hash(Some(&seed_hash));
+            let _ = self.app_context.db.update_selected_single_key_hash(None);
             return;
         }
 

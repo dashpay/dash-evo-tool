@@ -55,7 +55,7 @@ use egui::Context;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
-use identities::register_dpns_name_screen::RegisterDpnsNameScreen;
+use identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -253,7 +253,7 @@ pub enum ScreenType {
     Keys(Identity),
     DocumentQuery,
     NetworkChooser,
-    RegisterDpnsName,
+    RegisterDpnsName(RegisterDpnsNameSource),
     RegisterContract,
     UpdateContract,
     ProofLog,
@@ -337,7 +337,7 @@ impl PartialEq for ScreenType {
             (ScreenType::Keys(a), ScreenType::Keys(b)) => a == b,
             (ScreenType::DocumentQuery, ScreenType::DocumentQuery) => true,
             (ScreenType::NetworkChooser, ScreenType::NetworkChooser) => true,
-            (ScreenType::RegisterDpnsName, ScreenType::RegisterDpnsName) => true,
+            (ScreenType::RegisterDpnsName(a), ScreenType::RegisterDpnsName(b)) => a == b,
             (ScreenType::RegisterContract, ScreenType::RegisterContract) => true,
             (ScreenType::UpdateContract, ScreenType::UpdateContract) => true,
             (ScreenType::ProofLog, ScreenType::ProofLog) => true,
@@ -444,8 +444,8 @@ impl ScreenType {
                     app_context,
                 ))
             }
-            ScreenType::RegisterDpnsName => {
-                Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(app_context))
+            ScreenType::RegisterDpnsName(source) => {
+                Screen::RegisterDpnsNameScreen(RegisterDpnsNameScreen::new(app_context, *source))
             }
             ScreenType::RegisterContract => {
                 Screen::RegisterDataContractScreen(RegisterDataContractScreen::new(app_context))
@@ -880,7 +880,7 @@ impl Screen {
             Screen::TopUpIdentityScreen(screen) => {
                 ScreenType::TopUpIdentity(screen.identity.clone())
             }
-            Screen::RegisterDpnsNameScreen(_) => ScreenType::RegisterDpnsName,
+            Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
             Screen::DocumentActionScreen(screen) => match screen.action_type {

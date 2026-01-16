@@ -16,7 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
+use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -53,11 +53,12 @@ pub struct DestroyFrozenFundsScreen {
     /// Identity that is authorized to destroy
     pub identity: QualifiedIdentity,
 
-    /// Info on which token contract we’re dealing with
+    /// Info on which token contract we're dealing with
     pub identity_token_info: IdentityTokenInfo,
 
     /// The key used to sign the operation
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
 
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
@@ -203,6 +204,7 @@ impl DestroyFrozenFundsScreen {
             frozen_identities: all_identities,
             identity_token_info,
             selected_key: possible_key,
+            show_advanced_options: false,
             group,
             is_unilateral_group_member,
             group_action_id: None,
@@ -314,19 +316,6 @@ impl DestroyFrozenFundsScreen {
     }
     /// Simple "Success" screen
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_str = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee", fee_str)
-        });
-
-        let fee_ref = fee_info
-            .as_ref()
-            .map(|(title, desc)| (*title, desc.as_str()));
-
         crate::ui::helpers::show_group_token_success_screen_with_fee(
             ui,
             "Destroy Frozen Funds",
@@ -334,7 +323,7 @@ impl DestroyFrozenFundsScreen {
             self.is_unilateral_group_member,
             self.group.is_some(),
             &self.app_context,
-            fee_ref,
+            None,
         )
     }
 }
@@ -482,26 +471,37 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     }
                 }
 
-                // Key selection
-                ui.heading("1. Select the key to sign the Destroy operation");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Destroy Frozen Funds");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenAction,
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the Destroy operation");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
 
                 // Frozen identity
-                ui.heading("2. Frozen identity to destroy funds from");
+                let step_num = if self.show_advanced_options { 2 } else { 1 };
+                ui.heading(format!(
+                    "{}. Frozen identity to destroy funds from",
+                    step_num
+                ));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -518,7 +518,8 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 ui.add_space(10.0);
 
                 // Render text input for the public note
-                ui.heading("3. Public note (optional)");
+                let step_num = if self.show_advanced_options { 3 } else { 2 };
+                ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(

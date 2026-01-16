@@ -8,11 +8,12 @@ use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::{
     DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
 };
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use rand::RngCore;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -55,12 +56,48 @@ pub async fn load_profile(
             .and_then(|v| v.as_text())
             .unwrap_or_default();
 
+        // Save to local database for caching
+        let network_str = app_context.network.to_string();
+        if let Err(e) = app_context.db.save_dashpay_profile(
+            &identity_id,
+            &network_str,
+            if display_name.is_empty() {
+                None
+            } else {
+                Some(display_name)
+            },
+            if bio.is_empty() { None } else { Some(bio) },
+            if avatar_url.is_empty() {
+                None
+            } else {
+                Some(avatar_url)
+            },
+            None,
+        ) {
+            tracing::error!("Failed to cache loaded profile in database: {}", e);
+        } else {
+            tracing::info!(
+                "Loaded profile cached in database for identity {}",
+                identity_id
+            );
+        }
+
         Ok(BackendTaskSuccessResult::DashPayProfile(Some((
             display_name.to_string(),
-            bio.to_string(), // Return bio, not publicMessage
+            bio.to_string(),
             avatar_url.to_string(),
         ))))
     } else {
+        // No profile found - cache this fact to avoid repeated network queries
+        let network_str = app_context.network.to_string();
+        if let Err(e) =
+            app_context
+                .db
+                .save_dashpay_profile(&identity_id, &network_str, None, None, None, None)
+        {
+            tracing::error!("Failed to cache 'no profile' state in database: {}", e);
+        }
+
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
     }
 }
@@ -105,6 +142,11 @@ pub async fn update_profile(
     // Prepare profile data
     let mut profile_data = BTreeMap::new();
 
+    // Keep copies for database save later
+    let display_name_for_db = display_name.clone();
+    let bio_for_db = bio.clone();
+    let avatar_url_for_db = avatar_url.clone();
+
     // Only add non-empty fields according to DashPay DIP
     if let Some(name) = display_name.filter(|name| !name.is_empty()) {
         profile_data.insert("displayName".to_string(), Value::Text(name));
@@ -112,7 +154,7 @@ pub async fn update_profile(
     if let Some(bio_text) = bio.filter(|bio| !bio.is_empty()) {
         profile_data.insert("publicMessage".to_string(), Value::Text(bio_text));
     }
-    if let Some(url) = avatar_url.filter(|url| !url.is_empty()) {
+    if let Some(url) = avatar_url.as_ref().filter(|url| !url.is_empty()) {
         profile_data.insert("avatarUrl".to_string(), Value::Text(url.clone()));
 
         // Try to fetch and process the avatar image
@@ -158,6 +200,15 @@ pub async fn update_profile(
             updated_document.set(&key, value);
         }
 
+        // Handle avatar removal: if avatar_url is None or empty, remove avatar-related fields
+        if avatar_url.as_ref().map_or(true, |url| url.is_empty()) {
+            // Remove avatar-related fields from the document
+            let Document::V0(ref mut doc_v0) = updated_document;
+            doc_v0.properties_mut().remove("avatarUrl");
+            doc_v0.properties_mut().remove("avatarHash");
+            doc_v0.properties_mut().remove("avatarFingerprint");
+        }
+
         // Bump revision for replacement
         updated_document.bump_revision();
 
@@ -189,17 +240,35 @@ pub async fn update_profile(
             }
         }
 
+        // Save to local database for caching
+        let network_str = app_context.network.to_string();
+        if let Err(e) = app_context.db.save_dashpay_profile(
+            &identity_id,
+            &network_str,
+            display_name_for_db.as_deref(),
+            bio_for_db.as_deref(),
+            avatar_url_for_db.as_deref(),
+            None,
+        ) {
+            tracing::error!("Failed to cache updated profile in database: {}", e);
+        } else {
+            tracing::info!("Profile cached in database for identity {}", identity_id);
+        }
+
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),
         ))
     } else {
         // Create new profile using DocumentCreateTransitionBuilder
-        // Generate document ID
+        // Generate random entropy for document ID (security: prevents predictable IDs)
+        let mut entropy = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut entropy);
+
         let profile_doc_id = Document::generate_document_id_v0(
             &dashpay_contract.id(),
             &identity_id,
             "profile",
-            &[0u8; 32], // entropy
+            &entropy,
         );
 
         let document = Document::V0(DocumentV0 {
@@ -223,7 +292,7 @@ pub async fn update_profile(
             dashpay_contract,
             "profile".to_string(),
             document,
-            [0u8; 32], // entropy - using zero for deterministic behavior
+            entropy, // Use same entropy as document ID generation
         );
 
         // Add state transition options if available
@@ -246,6 +315,24 @@ pub async fn update_profile(
                     doc.revision()
                 );
             }
+        }
+
+        // Save to local database for caching
+        let network_str = app_context.network.to_string();
+        if let Err(e) = app_context.db.save_dashpay_profile(
+            &identity_id,
+            &network_str,
+            display_name_for_db.as_deref(),
+            bio_for_db.as_deref(),
+            avatar_url_for_db.as_deref(),
+            None,
+        ) {
+            tracing::error!("Failed to cache new profile in database: {}", e);
+        } else {
+            tracing::info!(
+                "New profile cached in database for identity {}",
+                identity_id
+            );
         }
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
@@ -347,14 +434,21 @@ pub async fn fetch_contact_profile(
     }
 }
 
-/// Search for public profiles on the Platform
+/// Search for users on the Platform by DPNS username (per DIP-12/DIP-15)
+///
+/// Per the DIPs, search should:
+/// 1. Query DPNS for username prefix matches
+/// 2. Get the identity IDs from those results
+/// 3. Fetch profiles for display info (avatar, displayName)
+/// 4. Return the DPNS username prominently (it's the verified identifier)
 pub async fn search_profiles(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, String> {
+    let dpns_contract = app_context.dpns_contract.clone();
     let dashpay_contract = app_context.dashpay_contract.clone();
-    let mut results = Vec::new();
+    let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
 
     let query_trimmed = search_query.trim();
     if query_trimmed.is_empty() {
@@ -363,70 +457,73 @@ pub async fn search_profiles(
         ));
     }
 
-    // First, try to parse as identity ID (exact match)
-    if let Ok(identity_id) = Identifier::from_string(query_trimmed, Encoding::Base58) {
-        // Query for specific identity's profile
-        let mut query = DocumentQuery::new(dashpay_contract.clone(), "profile")
+    // Normalize the search query (DPNS uses lowercase normalized labels)
+    let normalized_query = query_trimmed.to_lowercase();
+
+    // Search DPNS for usernames starting with the query
+    let mut dpns_query = DocumentQuery::new(dpns_contract, "domain")
+        .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
+
+    dpns_query = dpns_query
+        .with_where(WhereClause {
+            field: "normalizedParentDomainName".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text("dash".to_string()),
+        })
+        .with_where(WhereClause {
+            field: "normalizedLabel".to_string(),
+            operator: WhereOperator::StartsWith,
+            value: Value::Text(normalized_query.clone()),
+        })
+        .with_order_by(OrderClause {
+            field: "normalizedLabel".to_string(),
+            ascending: true,
+        }); // Required for StartsWith range query
+    dpns_query.limit = 20; // Limit results
+
+    let dpns_results = Document::fetch_many(sdk, dpns_query)
+        .await
+        .map_err(|e| format!("Failed to search DPNS: {}", e))?;
+
+    // Collect identity IDs and usernames from DPNS results
+    let mut identity_usernames: Vec<(Identifier, String)> = Vec::new();
+    for (_, doc) in dpns_results {
+        if let Some(document) = doc {
+            let identity_id = document.owner_id();
+
+            // Get the label (username) from the document
+            let username = document
+                .get("normalizedLabel")
+                .and_then(|v| v.as_text())
+                .map(|s| format!("{}.dash", s))
+                .unwrap_or_else(|| format!("{}.dash", identity_id.to_string(Encoding::Base58)));
+
+            identity_usernames.push((identity_id, username));
+        }
+    }
+
+    // Fetch profiles for each identity
+    for (identity_id, username) in identity_usernames {
+        // Query for profile document owned by this identity
+        let mut profile_query = DocumentQuery::new(dashpay_contract.clone(), "profile")
             .map_err(|e| format!("Failed to create profile query: {}", e))?;
 
-        query = query.with_where(WhereClause {
+        profile_query = profile_query.with_where(WhereClause {
             field: "$ownerId".to_string(),
             operator: WhereOperator::Equal,
             value: Value::Identifier(identity_id.to_buffer()),
         });
-        query.limit = 1;
+        profile_query.limit = 1;
 
-        let identity_results = Document::fetch_many(sdk, query)
-            .await
-            .map_err(|e| format!("Failed to fetch profile by identity: {}", e))?;
+        let profile_results = Document::fetch_many(sdk, profile_query).await;
 
-        // Add identity results
-        for (_, doc) in identity_results {
-            if let Some(document) = doc {
-                results.push((identity_id, document));
-            }
-        }
-    }
+        // Get the profile document if it exists (profile is optional)
+        let profile_doc = match profile_results {
+            Ok(docs) => docs.into_iter().next().and_then(|(_, doc)| doc),
+            Err(_) => None, // Profile fetch failed, but user exists
+        };
 
-    // If no results from identity search or query doesn't look like identity ID,
-    // search by display name (partial match)
-    if results.is_empty() {
-        // Query all profiles and filter by display name client-side
-        // Note: Platform queries don't support partial text matching yet,
-        // so we fetch multiple profiles and filter
-        let mut query = DocumentQuery::new(dashpay_contract, "profile")
-            .map_err(|e| format!("Failed to create profile query: {}", e))?;
-
-        // Set to max allowed limit - Platform doesn't support text search
-        // so we need to fetch as many as possible and filter client-side
-        query.limit = 100;
-
-        let all_results = Document::fetch_many(sdk, query)
-            .await
-            .map_err(|e| format!("Failed to search profiles: {}", e))?;
-
-        // Filter results by display name match
-        let search_lower = query_trimmed.to_lowercase();
-        for (_, doc) in all_results {
-            if let Some(document) = doc {
-                // Extract display name from document
-                let properties = match &document {
-                    Document::V0(doc_v0) => doc_v0.properties(),
-                };
-
-                if properties
-                    .get("displayName")
-                    .and_then(|value| value.as_text())
-                    .is_some_and(|display_name| display_name.to_lowercase().contains(&search_lower))
-                {
-                    // Get the identity ID from document owner
-                    let identity_id = match &document {
-                        Document::V0(doc_v0) => doc_v0.owner_id(),
-                    };
-                    results.push((identity_id, document));
-                }
-            }
-        }
+        results.push((identity_id, profile_doc, username));
     }
 
     Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(

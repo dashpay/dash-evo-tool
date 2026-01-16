@@ -8,6 +8,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
@@ -15,8 +16,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::helpers::{
-    TransactionType, add_contract_doc_type_chooser_with_filtering,
-    add_identity_key_chooser_with_doc_type, show_success_screen_with_info,
+    TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
+    show_success_screen_with_info,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -91,7 +92,9 @@ pub struct DocumentActionScreen {
     // Common fields
     pub backend_message: Option<String>,
     pub selected_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     pub wallet: Option<Arc<RwLock<Wallet>>>,
     pub wallet_unlock_popup: WalletUnlockPopup,
     pub wallet_failure: Option<String>,
@@ -148,12 +151,19 @@ impl DocumentActionScreen {
 
         let selected_contract = known_contracts.into_iter().next();
 
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58))
+            .unwrap_or_default();
+
         Self {
             app_context,
             action_type,
             backend_message: None,
             selected_identity,
+            selected_identity_string,
             selected_key: None,
+            show_advanced_options: false,
             wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_failure: None,
@@ -176,7 +186,9 @@ impl DocumentActionScreen {
     fn reset_screen(&mut self) {
         self.backend_message = None;
         self.selected_identity = None;
+        self.selected_identity_string = String::new();
         self.selected_key = None;
+        self.show_advanced_options = false;
         self.wallet = None;
         self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
@@ -208,19 +220,73 @@ impl DocumentActionScreen {
     }
 
     fn render_identity_and_key_selection(&mut self, ui: &mut Ui) {
-        ui.heading("2. Select an identity and key:");
+        ui.horizontal(|ui| {
+            ui.heading("2. Select an identity:");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+            });
+        });
         ui.add_space(10.0);
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
-        add_identity_key_chooser_with_doc_type(
-            ui,
-            &self.app_context,
-            identities_vec.iter(),
-            &mut self.selected_identity,
-            &mut self.selected_key,
-            TransactionType::DocumentAction,
-            self.selected_document_type.as_ref(),
+
+        // Identity selector
+        let response = ui.add(
+            IdentitySelector::new(
+                "document_action_identity_selector",
+                &mut self.selected_identity_string,
+                &identities_vec,
+            )
+            .selected_identity(&mut self.selected_identity)
+            .unwrap()
+            .width(300.0)
+            .label("Identity:")
+            .other_option(false),
         );
+
+        // Handle identity change - auto-select key and update wallet
+        if response.changed() {
+            if let Some(identity) = &self.selected_identity {
+                // Auto-select a suitable key for document actions
+                use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+                self.selected_key = identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        SecurityLevel::full_range().into(),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                    .cloned();
+
+                // Update wallet
+                self.wallet = get_selected_wallet(
+                    identity,
+                    Some(&self.app_context),
+                    None,
+                    &mut self.backend_message,
+                );
+            } else {
+                self.selected_key = None;
+                self.wallet = None;
+            }
+        }
+
+        // Key selector (only shown in advanced mode)
+        if self.show_advanced_options {
+            ui.add_space(10.0);
+            if let Some(identity) = &self.selected_identity {
+                add_key_chooser_with_doc_type(
+                    ui,
+                    &self.app_context,
+                    identity,
+                    &mut self.selected_key,
+                    TransactionType::DocumentAction,
+                    self.selected_document_type.as_ref(),
+                );
+            }
+        }
+
         ui.add_space(10.0);
     }
 
@@ -1511,12 +1577,6 @@ impl ScreenLike for DocumentActionScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Contracts sub-left panel
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-        );
-
         action |= island_central_panel(ctx, |ui| match &self.broadcast_status {
             BroadcastStatus::Broadcasted => {
                 let success_message = format!("{} successful!", self.action_type.display_name());
@@ -1526,24 +1586,11 @@ impl ScreenLike for DocumentActionScreen {
                     AppAction::Custom("Reset".to_string()),
                 );
 
-                // Prepare fee info for display
-                let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
-                    let fee_str = format!(
-                        "Estimated: {}  •  Actual: {}",
-                        format_credits_as_dash(fee_result.estimated_fee),
-                        format_credits_as_dash(fee_result.actual_fee)
-                    );
-                    ("Transaction Fee".to_string(), fee_str)
-                });
-                let fee_ref = fee_info
-                    .as_ref()
-                    .map(|(title, desc)| (title.as_str(), desc.as_str()));
-
                 let inner_action = show_success_screen_with_info(
                     ui,
                     success_message,
                     vec![back_button, reset_button],
-                    fee_ref,
+                    None,
                 );
 
                 if inner_action == AppAction::Custom("Reset".to_string()) {

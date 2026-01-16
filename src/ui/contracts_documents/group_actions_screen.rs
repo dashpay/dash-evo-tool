@@ -491,12 +491,6 @@ impl ScreenLike for GroupActionsScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Contracts sub-left panel
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-        );
-
         let central_panel_action = island_central_panel(ctx, |ui| {
             ui.heading("Active Group Actions");
 

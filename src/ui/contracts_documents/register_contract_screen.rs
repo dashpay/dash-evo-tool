@@ -6,13 +6,14 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
@@ -45,7 +46,9 @@ pub struct RegisterDataContractScreen {
 
     pub qualified_identities: Vec<QualifiedIdentity>,
     pub selected_qualified_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -67,6 +70,29 @@ impl RegisterDataContractScreen {
             None
         };
 
+        // Auto-select a suitable key for contract registration
+        use dash_sdk::dpp::identity::KeyType;
+        let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
+            identity
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned()
+        });
+
+        let selected_identity_string = selected_qualified_identity
+            .as_ref()
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context: app_context.clone(),
             contract_json_input: String::new(),
@@ -75,7 +101,9 @@ impl RegisterDataContractScreen {
 
             qualified_identities,
             selected_qualified_identity,
-            selected_key: None,
+            selected_identity_string,
+            selected_key,
+            show_advanced_options: false,
 
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -276,19 +304,6 @@ impl RegisterDataContractScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        // Prepare fee info for display
-        let fee_info = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_str = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee".to_string(), fee_str)
-        });
-        let fee_ref = fee_info
-            .as_ref()
-            .map(|(title, desc)| (title.as_str(), desc.as_str()));
-
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Data Contract Registered Successfully!".to_string(),
@@ -302,7 +317,7 @@ impl RegisterDataContractScreen {
                     AppAction::Custom("register_another".to_string()),
                 ),
             ],
-            fee_ref,
+            None,
         );
 
         // Handle the custom action to reset the form
@@ -375,19 +390,18 @@ impl ScreenLike for RegisterDataContractScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Contracts sub-left panel
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-        );
-
         action |= island_central_panel(ctx, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
                 return self.show_success(ui);
             }
 
             ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Register Data Contract");
+                ui.horizontal(|ui| {
+                    ui.heading("Register Data Contract");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
                 // Show error message at the top if there's an error
@@ -424,17 +438,69 @@ impl ScreenLike for RegisterDataContractScreen {
                     return AppAction::None;
                 }
 
-                // Select the identity to register the name for
+                // Select the identity to register the contract for
                 ui.heading("1. Select Identity");
                 ui.add_space(5.0);
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    self.qualified_identities.iter(),
-                    &mut self.selected_qualified_identity,
-                    &mut self.selected_key,
-                    TransactionType::RegisterContract,
+
+                // Identity selector
+                let response = ui.add(
+                    IdentitySelector::new(
+                        "register_contract_identity_selector",
+                        &mut self.selected_identity_string,
+                        &self.qualified_identities,
+                    )
+                    .selected_identity(&mut self.selected_qualified_identity)
+                    .unwrap()
+                    .width(300.0)
+                    .label("Identity:")
+                    .other_option(false),
                 );
+
+                // Handle identity change - auto-select key and update wallet
+                if response.changed() {
+                    if let Some(identity) = &self.selected_qualified_identity {
+                        // Auto-select a suitable key for contract registration
+                        use dash_sdk::dpp::identity::KeyType;
+                        self.selected_key = identity
+                            .identity
+                            .get_first_public_key_matching(
+                                Purpose::AUTHENTICATION,
+                                [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
+                                KeyType::all_key_types().into(),
+                                false,
+                            )
+                            .cloned();
+
+                        // Update wallet
+                        self.selected_wallet = get_selected_wallet(
+                            identity,
+                            Some(&self.app_context),
+                            None,
+                            &mut self.error_message,
+                        );
+
+                        // Re-parse contract with new owner ID
+                        self.parse_contract();
+                    } else {
+                        self.selected_key = None;
+                        self.selected_wallet = None;
+                    }
+                }
+
+                // Key selector (only shown in advanced mode)
+                if self.show_advanced_options {
+                    ui.add_space(10.0);
+                    if let Some(identity) = &self.selected_qualified_identity {
+                        add_key_chooser(
+                            ui,
+                            &self.app_context,
+                            identity,
+                            &mut self.selected_key,
+                            TransactionType::RegisterContract,
+                        );
+                    }
+                }
+
                 ui.add_space(5.0);
                 if let Some(identity) = &self.selected_qualified_identity {
                     ui.label(format!(

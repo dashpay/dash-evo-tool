@@ -21,18 +21,25 @@ const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
     The recipient can scan to automatically send and accept contact requests.\n\n\
     QR codes expire after the specified validity period.\n\n\
     Each QR code is unique and can only be used once.\n\n\
-    The account reference determines which wallet account to use.\n\n\
     WARNING: Anyone with this QR code can automatically become your contact.";
+
+const ACCOUNT_INDEX_INFO_TEXT: &str = "Account Index:\n\n\
+    The account index determines which HD wallet account is used for this contact relationship.\n\n\
+    Most users should leave this at 0 (the default).\n\n\
+    Advanced users may use different account indices to segregate contacts \
+    (e.g., separate personal and business contacts into different wallet accounts).\n\n\
+    The account index is used in the derivation path: m/9'/5'/15'/account'/...";
 
 pub struct QRCodeGeneratorScreen {
     pub app_context: Arc<AppContext>,
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
-    account_reference: String,
+    account_index: String,
     validity_hours: String,
     generated_qr_data: Option<String>,
     message: Option<(String, MessageType)>,
     show_info_popup: bool,
+    show_advanced_options: bool,
 }
 
 impl QRCodeGeneratorScreen {
@@ -41,20 +48,21 @@ impl QRCodeGeneratorScreen {
             app_context,
             selected_identity: None,
             selected_identity_string: String::new(),
-            account_reference: "0".to_string(),
+            account_index: "0".to_string(),
             validity_hours: "24".to_string(),
             generated_qr_data: None,
             message: None,
             show_info_popup: false,
+            show_advanced_options: false,
         }
     }
 
     fn generate_qr_code(&mut self) {
         if let Some(identity) = &self.selected_identity {
-            let account_ref = match self.account_reference.parse::<u32>() {
+            let account_idx = match self.account_index.parse::<u32>() {
                 Ok(v) => v,
                 Err(_) => {
-                    self.display_message("Invalid account reference number", MessageType::Error);
+                    self.display_message("Invalid account index number", MessageType::Error);
                     return;
                 }
             };
@@ -70,7 +78,7 @@ impl QRCodeGeneratorScreen {
                 }
             };
 
-            match generate_auto_accept_proof(identity, account_ref, validity) {
+            match generate_auto_accept_proof(identity, account_idx, validity) {
                 Ok(proof_data) => {
                     let qr_string = proof_data.to_qr_string();
                     self.generated_qr_data = Some(qr_string);
@@ -102,6 +110,9 @@ impl QRCodeGeneratorScreen {
             if crate::ui::helpers::info_icon_button(ui, QR_CODE_INFO_TEXT).clicked() {
                 self.show_info_popup = true;
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+            });
         });
 
         ui.separator();
@@ -157,43 +168,48 @@ impl QRCodeGeneratorScreen {
                             .other_option(false),
                         );
                         ui.end_row();
+                    });
 
-                        ui.label(
-                            RichText::new("Account Reference:")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.horizontal(|ui| {
+                // Advanced options (only shown when checkbox is checked)
+                if self.show_advanced_options {
+                    ui.add_space(10.0);
+                    egui::Grid::new("qr_advanced_config_grid")
+                        .num_columns(2)
+                        .spacing([10.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Account Index:")
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                crate::ui::helpers::info_icon_button(ui, ACCOUNT_INDEX_INFO_TEXT);
+                            });
                             ui.add(
-                                TextEdit::singleline(&mut self.account_reference)
+                                TextEdit::singleline(&mut self.account_index)
                                     .hint_text("0")
                                     .desired_width(100.0),
                             );
-                            ui.label(
-                                RichText::new("Which account index to use for this contact")
-                                    .small()
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                        });
-                        ui.end_row();
+                            ui.end_row();
 
-                        ui.label(
-                            RichText::new("Validity (hours):")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                TextEdit::singleline(&mut self.validity_hours)
-                                    .hint_text("24")
-                                    .desired_width(100.0),
-                            );
                             ui.label(
-                                RichText::new("How long the QR code remains valid")
-                                    .small()
-                                    .color(DashColors::text_secondary(dark_mode)),
+                                RichText::new("Validity (hours):")
+                                    .color(DashColors::text_primary(dark_mode)),
                             );
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    TextEdit::singleline(&mut self.validity_hours)
+                                        .hint_text("24")
+                                        .desired_width(100.0),
+                                );
+                                ui.label(
+                                    RichText::new("How long the QR code remains valid (default: 24)")
+                                        .small()
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            });
+                            ui.end_row();
                         });
-                        ui.end_row();
-                    });
+                }
 
                 ui.add_space(10.0);
 

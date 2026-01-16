@@ -17,11 +17,12 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel;
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
+use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -902,6 +903,7 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // DPNS Name
                 .column(Column::auto().resizable(true)) // Owner ID
                 .column(Column::auto().resizable(true)) // Acquired At
+                .column(Column::auto().resizable(true)) // Actions
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -918,14 +920,27 @@ impl DPNSScreen {
                             self.toggle_sort(SortColumn::EndingTime);
                         }
                     });
+                    header.col(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        ui.label(
+                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
+                        );
+                    });
                 })
                 .body(|mut body| {
                     for (identifier, dpns_info) in filtered_names {
+                        let name_for_alias = dpns_info.name.clone();
+                        // Display name with .dash suffix
+                        let display_name = if name_for_alias.ends_with(".dash") {
+                            name_for_alias.clone()
+                        } else {
+                            format!("{}.dash", name_for_alias)
+                        };
                         body.row(25.0, |mut row| {
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 ui.label(
-                                    RichText::new(dpns_info.name)
+                                    RichText::new(&display_name)
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
                             });
@@ -947,6 +962,35 @@ impl DPNSScreen {
                                 ui.label(
                                     RichText::new(dt).color(DashColors::text_primary(dark_mode)),
                                 );
+                            });
+                            row.col(|ui| {
+                                if ui.small_button("Set Alias").clicked() {
+                                    // Append .dash suffix for DPNS names
+                                    let alias_with_suffix = if name_for_alias.ends_with(".dash") {
+                                        name_for_alias.clone()
+                                    } else {
+                                        format!("{}.dash", name_for_alias)
+                                    };
+                                    if let Err(e) = self
+                                        .app_context
+                                        .db
+                                        .set_identity_alias(&identifier, Some(&alias_with_suffix))
+                                    {
+                                        self.display_message(
+                                            &format!("Failed to set alias: {}", e),
+                                            MessageType::Error,
+                                        );
+                                    } else {
+                                        self.display_message(
+                                            &format!(
+                                                "Alias set to '{}' for identity {}",
+                                                alias_with_suffix,
+                                                identifier.to_string(Encoding::Base58)
+                                            ),
+                                            MessageType::Success,
+                                        );
+                                    }
+                                }
                             });
                         });
                     }
@@ -1953,7 +1997,9 @@ impl ScreenLike for DPNSScreen {
                 0,
                 (
                     "Register Name",
-                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName)),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName(
+                        RegisterDpnsNameSource::DPNS,
+                    ))),
                 ),
             );
         }
@@ -1976,11 +2022,11 @@ impl ScreenLike for DPNSScreen {
         action |= add_left_panel(
             ctx,
             &self.app_context,
-            RootScreenType::RootScreenDocumentQuery,
+            RootScreenType::RootScreenToolsPlatformInfoScreen,
         );
 
-        // Contracts area chooser (DPNS / Dashpay / Contracts)
-        action |= add_contracts_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        // Tools area chooser
+        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // DPNS subscreen chooser
         action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());

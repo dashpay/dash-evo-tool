@@ -5,7 +5,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -52,6 +52,7 @@ pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    show_advanced_options: bool,
     pub public_note: Option<String>,
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
@@ -121,6 +122,7 @@ impl ClaimTokensScreen {
             identity,
             identity_token_basic_info,
             selected_key: possible_key.cloned(),
+            show_advanced_options: false,
             public_note: None,
             token_contract,
             token_configuration,
@@ -231,24 +233,11 @@ impl ClaimTokensScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let info_section = self.completed_fee_result.as_ref().map(|fee_result| {
-            let fee_info = format!(
-                "Estimated: {}  •  Actual: {}",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            ("Transaction Fee", fee_info)
-        });
-
-        let info_ref = info_section
-            .as_ref()
-            .map(|(title, desc)| (*title, desc.as_str()));
-
         crate::ui::helpers::show_success_screen_with_info(
             ui,
             "Claimed Successfully!".to_string(),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
-            info_ref,
+            None,
         )
     }
 }
@@ -382,19 +371,28 @@ impl ScreenLike for ClaimTokensScreen {
                     }
                 }
 
-                ui.heading("1. Select the key to sign the Claim transition");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Claim Tokens");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenClaim,
-                );
-                ui.add_space(10.0);
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the Claim transition");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenClaim,
+                    );
+                    ui.add_space(10.0);
+                }
 
                 self.render_token_distribution_type_selector(ui);
 

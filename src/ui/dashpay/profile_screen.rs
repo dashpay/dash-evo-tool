@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
@@ -23,6 +24,14 @@ const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
     Bios are limited to 250 characters.\n\n\
     Avatar URLs should point to publicly accessible images (max 500 chars).\n\n\
     Profiles are public and visible to all DashPay users.";
+
+const AVATAR_URL_INFO_TEXT: &str = "Avatar Image Guidelines:\n\n\
+    The URL must point to a publicly accessible image.\n\n\
+    Recommended: Square images (e.g., 256x256 or 512x512 pixels).\n\n\
+    Supported formats: JPEG, PNG, WebP, or GIF.\n\n\
+    Maximum URL length: 500 characters.\n\n\
+    Example URL:\nhttps://example.com/images/avatar.jpg\n\n\
+    Tip: Use image hosting services like Imgur, Cloudinary, or your own server.";
 
 #[derive(Debug, Clone)]
 pub struct DashPayProfile {
@@ -85,8 +94,12 @@ pub struct ProfileScreen {
     avatar_loading: bool,                            // Track if avatar is being loaded
     pending_action: Option<Box<AppAction>>,          // Action to execute on next frame
     show_info_popup: bool,
+    show_avatar_info_popup: bool,
+    show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    show_success: bool,
+    was_creating_new: bool, // Track if we were creating vs updating
 }
 
 impl ProfileScreen {
@@ -113,8 +126,12 @@ impl ProfileScreen {
             avatar_loading: false,
             pending_action: None,
             show_info_popup: false,
+            show_avatar_info_popup: false,
+            show_avatar_url_popup: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            show_success: false,
+            was_creating_new: false,
         };
 
         // Auto-select identity on creation - prefer one with a profile
@@ -124,17 +141,47 @@ impl ProfileScreen {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
             // Try to find an identity with an actual profile (not just a "no profile" marker)
+            let network_str = app_context.network.to_string();
+            tracing::info!(
+                "ProfileScreen::new - checking {} identities on network {}",
+                identities.len(),
+                network_str
+            );
+
             let mut selected_idx = 0;
             for (idx, identity) in identities.iter().enumerate() {
                 let identity_id = identity.identity.id();
-                if let Ok(Some(profile)) = app_context.db.load_dashpay_profile(&identity_id)
-                    && (profile.display_name.is_some()
-                        || profile.bio.is_some()
-                        || profile.avatar_url.is_some())
+                tracing::debug!("Checking identity {} for profile in DB", identity_id);
+                match app_context
+                    .db
+                    .load_dashpay_profile(&identity_id, &network_str)
                 {
-                    // Check if this is an actual profile with data (not a "no profile" marker)
-                    selected_idx = idx;
-                    break;
+                    Ok(Some(profile)) => {
+                        tracing::debug!(
+                            "Found profile for identity {}: display_name={:?}",
+                            identity_id,
+                            profile.display_name
+                        );
+                        if profile.display_name.is_some()
+                            || profile.bio.is_some()
+                            || profile.avatar_url.is_some()
+                        {
+                            // Check if this is an actual profile with data (not a "no profile" marker)
+                            selected_idx = idx;
+                            tracing::info!("Selected identity {} with profile", identity_id);
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!("No profile in DB for identity {}", identity_id);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Error loading profile for identity {}: {}",
+                            identity_id,
+                            e
+                        );
+                    }
                 }
             }
 
@@ -143,6 +190,11 @@ impl ProfileScreen {
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            tracing::info!(
+                "ProfileScreen::new - selected identity {}",
+                new_self.selected_identity_string
+            );
 
             // Get wallet for the selected identity
             let mut error_message = None;
@@ -208,10 +260,27 @@ impl ProfileScreen {
         if let Some(identity) = &self.selected_identity {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
             let identity_id = identity.identity.id();
+            let network_str = self.app_context.network.to_string();
+
+            tracing::debug!(
+                "Loading profile from database for identity {} on network {}",
+                identity_id,
+                network_str
+            );
 
             // Load profile from database
-            match self.app_context.db.load_dashpay_profile(&identity_id) {
+            match self
+                .app_context
+                .db
+                .load_dashpay_profile(&identity_id, &network_str)
+            {
                 Ok(Some(stored_profile)) => {
+                    tracing::debug!(
+                        "Found profile in database: display_name={:?}, bio={:?}, avatar_url={:?}",
+                        stored_profile.display_name,
+                        stored_profile.bio,
+                        stored_profile.avatar_url
+                    );
                     // Check if this is a "no profile exists" marker (all fields are None)
                     if stored_profile.display_name.is_none()
                         && stored_profile.bio.is_none()
@@ -244,8 +313,12 @@ impl ProfileScreen {
                         self.profile_load_attempted = true;
                     }
                 }
-                Ok(None) => {}
-                Err(_e) => {}
+                Ok(None) => {
+                    tracing::debug!("No profile found in database for identity {}", identity_id);
+                }
+                Err(e) => {
+                    tracing::error!("Error loading profile from database: {}", e);
+                }
             }
         }
     }
@@ -325,6 +398,8 @@ impl ProfileScreen {
         }
 
         if let Some(identity) = self.selected_identity.clone() {
+            // Track if this is a new profile creation
+            self.was_creating_new = self.profile.is_none();
             self.editing = false;
             self.saving = true;
             self.has_unsaved_changes = false;
@@ -372,7 +447,6 @@ impl ProfileScreen {
     }
 
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
-        let _texture_id = format!("avatar_{}", url);
         let ctx_clone = ctx.clone();
         let url_clone = url.to_string();
 
@@ -386,8 +460,25 @@ impl ProfileScreen {
                     if let Ok(image) = image::load_from_memory(&image_bytes) {
                         // Convert to RGBA
                         let rgba_image = image.to_rgba8();
-                        let size = [rgba_image.width() as usize, rgba_image.height() as usize];
-                        let pixels = rgba_image.into_raw();
+                        let width = rgba_image.width();
+                        let height = rgba_image.height();
+
+                        // Center-crop to square if not already square
+                        let cropped_image = if width != height {
+                            let size = width.min(height);
+                            let x_offset = (width - size) / 2;
+                            let y_offset = (height - size) / 2;
+                            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size)
+                                .to_image()
+                        } else {
+                            rgba_image
+                        };
+
+                        let size = [
+                            cropped_image.width() as usize,
+                            cropped_image.height() as usize,
+                        ];
+                        let pixels = cropped_image.into_raw();
 
                         // Create ColorImage
                         let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
@@ -411,12 +502,46 @@ impl ProfileScreen {
         });
     }
 
+    fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
+        let success_message = if self.was_creating_new {
+            "DashPay Profile Created Successfully!"
+        } else {
+            "DashPay Profile Updated Successfully!"
+        };
+
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            success_message.to_string(),
+            vec![(
+                "View Profile".to_string(),
+                AppAction::Custom("view_profile".to_string()),
+            )],
+        );
+
+        // Handle the custom action
+        if let AppAction::Custom(ref s) = action {
+            if s == "view_profile" {
+                self.show_success = false;
+                self.profile_load_attempted = true; // We already have the profile in memory
+                // Profile is already in self.profile from display_task_result, no need to reload
+                return AppAction::None;
+            }
+        }
+
+        action
+    }
+
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Check for pending action from previous frame
         if let Some(pending) = self.pending_action.take() {
             action = *pending;
+        }
+
+        // Show success screen if profile was just created/updated
+        if self.show_success {
+            return self.show_success_screen(ui);
         }
 
         // Identity selector or no identities message
@@ -497,9 +622,33 @@ impl ProfileScreen {
             return action;
         }
 
-        // Profile loading status
+        // Profile loading status - styled card when no profile loaded
         if !self.profile_load_attempted && !self.loading {
-            ui.label("No profile loaded for the selected identity. Press 'Refresh' to load.");
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            Frame::group(ui.style())
+                .fill(ui.visuals().extreme_bg_color)
+                .corner_radius(5.0)
+                .outer_margin(Margin::same(20))
+                .shadow(ui.visuals().window_shadow)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(5.0);
+                        ui.label(
+                            RichText::new("No Profile Loaded")
+                                .strong()
+                                .size(25.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                        ui.add_space(5.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        ui.label("The profile for this identity hasn't been loaded yet.");
+                        ui.add_space(10.0);
+                        ui.label("Click the 'Refresh' button above to fetch it from the network.");
+                        ui.add_space(10.0);
+                    });
+                });
+            return action;
         }
 
         // Loading or saving indicator
@@ -555,7 +704,7 @@ impl ProfileScreen {
 
                                 let display_name_response = ui.add(
                                     TextEdit::singleline(&mut self.edit_display_name)
-                                        .hint_text("Enter your display name (required)")
+                                        .hint_text(egui::RichText::new("Enter your display name (required)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0),
                                 );
 
@@ -591,7 +740,7 @@ impl ProfileScreen {
 
                                 let bio_response = ui.add(
                                     TextEdit::multiline(&mut self.edit_bio)
-                                        .hint_text("Tell others about yourself (optional)")
+                                        .hint_text(egui::RichText::new("Tell others about yourself (optional)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0)
                                         .desired_rows(4),
                                 );
@@ -624,11 +773,19 @@ impl ProfileScreen {
                                         RichText::new("Avatar URL:")
                                             .color(DashColors::text_primary(dark_mode)),
                                     );
+                                    if crate::ui::helpers::info_icon_button(
+                                        ui,
+                                        AVATAR_URL_INFO_TEXT,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.show_avatar_info_popup = true;
+                                    }
                                 });
 
                                 let avatar_response = ui.add(
                                     TextEdit::singleline(&mut self.edit_avatar_url)
-                                        .hint_text("https://example.com/avatar.jpg (optional)")
+                                        .hint_text(egui::RichText::new("https://example.com/avatar.jpg (optional)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0),
                                 );
 
@@ -701,6 +858,43 @@ impl ProfileScreen {
                                         }
                                     });
                                 } else {
+                                    // Fee estimation display
+                                    let fee_estimator = PlatformFeeEstimator::new();
+                                    // Profile creation/update is a document operation
+                                    let estimated_fee = if self.profile.is_some() {
+                                        fee_estimator.estimate_document_replace()
+                                    } else {
+                                        fee_estimator.estimate_document_create()
+                                    };
+
+                                    Frame::group(ui.style())
+                                        .fill(DashColors::surface(dark_mode))
+                                        .inner_margin(Margin::symmetric(10, 8))
+                                        .corner_radius(5.0)
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new("Estimated fee:")
+                                                        .color(DashColors::text_secondary(dark_mode))
+                                                        .size(14.0),
+                                                );
+                                                ui.label(
+                                                    RichText::new(format_credits_as_dash(estimated_fee))
+                                                        .color(DashColors::text_primary(dark_mode))
+                                                        .size(14.0),
+                                                );
+                                            });
+                                        });
+
+                                    ui.add_space(10.0);
+
+                                    // Check if identity has enough balance
+                                    let has_enough_balance = self
+                                        .selected_identity
+                                        .as_ref()
+                                        .map(|id| id.identity.balance() > estimated_fee)
+                                        .unwrap_or(false);
+
                                     // Action buttons
                                     ui.horizontal(|ui| {
                                         if ui.button("Cancel").clicked() {
@@ -715,21 +909,36 @@ impl ProfileScreen {
 
                                         ui.add_space(10.0);
 
+                                        let can_save = self.is_valid() && has_enough_balance;
                                         let save_button = egui::Button::new(
                                             RichText::new("Save Profile")
                                                 .color(egui::Color32::WHITE),
                                         )
-                                        .fill(if self.is_valid() {
+                                        .fill(if can_save {
                                             egui::Color32::from_rgb(0, 141, 228) // Dash blue
                                         } else {
                                             egui::Color32::GRAY
                                         });
 
-                                        if ui.add_enabled(self.is_valid(), save_button).clicked() {
+                                        let hover_text = if !has_enough_balance {
+                                            format!(
+                                                "Insufficient identity balance for fee (need at least {})",
+                                                format_credits_as_dash(estimated_fee)
+                                            )
+                                        } else if !self.is_valid() {
+                                            "Please fix validation errors".to_string()
+                                        } else {
+                                            "Save profile changes".to_string()
+                                        };
+
+                                        if ui
+                                            .add_enabled(can_save, save_button)
+                                            .on_hover_text(&hover_text)
+                                            .on_disabled_hover_text(&hover_text)
+                                            .clicked()
+                                        {
                                             action |= self.save_profile();
                                         }
-
-                                        // Save status removed to avoid UI disruption
                                     });
                                 }
                             });
@@ -744,8 +953,6 @@ impl ProfileScreen {
                                 ui.vertical(|ui| {
                                     ui.add_space(5.0);
                                     ui.horizontal(|ui| {
-                                        ui.add_space(10.0);
-
                                         // Check if we have an avatar URL and try to display it
                                         if !profile.avatar_url.is_empty() {
                                             let texture_id =
@@ -755,12 +962,16 @@ impl ProfileScreen {
                                             if let Some(texture) =
                                                 self.avatar_textures.get(&texture_id)
                                             {
-                                                // Display the cached avatar image
-                                                ui.add(
+                                                // Display the cached avatar image (clickable)
+                                                let image_response = ui.add(
                                                     egui::Image::new(texture)
-                                                        .fit_to_exact_size(egui::vec2(50.0, 50.0))
-                                                        .corner_radius(5.0),
-                                                );
+                                                        .fit_to_exact_size(egui::vec2(80.0, 80.0))
+                                                        .corner_radius(8.0)
+                                                        .sense(egui::Sense::click()),
+                                                ).on_hover_text("Click to view avatar URL");
+                                                if image_response.clicked() {
+                                                    self.show_avatar_url_popup = true;
+                                                }
                                             } else {
                                                 // Check if image data was loaded by async task
                                                 let data_id =
@@ -779,14 +990,16 @@ impl ProfileScreen {
                                                         egui::TextureOptions::LINEAR,
                                                     );
 
-                                                    // Display the image
-                                                    ui.add(
+                                                    // Display the image (clickable)
+                                                    let image_response = ui.add(
                                                         egui::Image::new(&texture)
-                                                            .fit_to_exact_size(egui::vec2(
-                                                                50.0, 50.0,
-                                                            ))
-                                                            .corner_radius(5.0),
-                                                    );
+                                                            .fit_to_exact_size(egui::vec2(80.0, 80.0))
+                                                            .corner_radius(8.0)
+                                                            .sense(egui::Sense::click()),
+                                                    ).on_hover_text("Click to view avatar URL");
+                                                    if image_response.clicked() {
+                                                        self.show_avatar_url_popup = true;
+                                                    }
 
                                                     // Cache the texture
                                                     self.avatar_textures
@@ -821,7 +1034,7 @@ impl ProfileScreen {
                                             }
                                         } else {
                                             // No avatar URL, show default emoji
-                                            ui.label(RichText::new("👤").size(50.0));
+                                            ui.label(RichText::new("👤").size(80.0).color(DashColors::DEEP_BLUE));
                                         }
                                     });
                                 });
@@ -838,12 +1051,13 @@ impl ProfileScreen {
                                     if let Some(identity) = &self.selected_identity
                                         && !identity.dpns_names.is_empty()
                                     {
+                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                                         ui.label(
                                             RichText::new(format!(
                                                 "@{}",
                                                 identity.dpns_names[0].name
                                             ))
-                                            .strong(),
+                                            .color(DashColors::text_secondary(dark_mode)),
                                         );
                                     }
 
@@ -896,35 +1110,8 @@ impl ProfileScreen {
                                         .color(DashColors::text_secondary(dark_mode)),
                                 );
                             }
+                            ui.add_space(5.0);
 
-                            ui.separator();
-
-                            // Avatar URL
-                            ui.label(
-                                RichText::new("Avatar URL:")
-                                    .strong()
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-                            if !profile.avatar_url.is_empty() {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(&profile.avatar_url)
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                    if ui.small_button("Copy").clicked() {
-                                        ui.ctx().copy_text(profile.avatar_url.clone());
-                                        self.display_message(
-                                            "Avatar URL copied to clipboard",
-                                            MessageType::Info,
-                                        );
-                                    }
-                                });
-                            } else {
-                                ui.label(
-                                    RichText::new("No avatar URL set")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                            }
                         });
                     } else if self.profile_load_attempted {
                         // No profile exists (only show after we've tried to load)
@@ -980,6 +1167,71 @@ impl ProfileScreen {
                 });
         }
 
+        // Show avatar info popup if requested
+        if self.show_avatar_info_popup {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui.ctx(), |ui| {
+                    let mut popup = InfoPopup::new("Avatar Image Guidelines", AVATAR_URL_INFO_TEXT);
+                    if popup.show(ui).inner {
+                        self.show_avatar_info_popup = false;
+                    }
+                });
+        }
+
+        // Show avatar URL popup when clicking on avatar image
+        if self.show_avatar_url_popup {
+            if let Some(profile) = &self.profile {
+                let avatar_url = profile.avatar_url.clone();
+                let texture_id = format!("avatar_{}", avatar_url);
+                egui::Window::new("Avatar")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(5.0);
+
+                            // Display larger avatar image
+                            if let Some(texture) = self.avatar_textures.get(&texture_id) {
+                                ui.add(
+                                    egui::Image::new(texture)
+                                        .fit_to_exact_size(egui::vec2(200.0, 200.0))
+                                        .corner_radius(10.0),
+                                );
+                            }
+
+                            ui.add_space(10.0);
+
+                            // Show URL in smaller, secondary text
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            ui.label(
+                                RichText::new(&avatar_url)
+                                    .small()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Copy URL").clicked() {
+                                    ui.ctx().copy_text(avatar_url.clone());
+                                    self.display_message(
+                                        "Avatar URL copied to clipboard",
+                                        MessageType::Info,
+                                    );
+                                    self.show_avatar_url_popup = false;
+                                }
+                                if ui.button("Close").clicked() {
+                                    self.show_avatar_url_popup = false;
+                                }
+                            });
+                        });
+                    });
+            } else {
+                self.show_avatar_url_popup = false;
+            }
+        }
+
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
             && let Some(wallet) = &self.selected_wallet
@@ -1023,9 +1275,11 @@ impl ProfileScreen {
                     if let Some(ref identity) = self.selected_identity {
                         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                         let identity_id = identity.identity.id();
+                        let network_str = self.app_context.network.to_string();
 
                         if let Err(e) = self.app_context.db.save_dashpay_profile(
                             &identity_id,
+                            &network_str,
                             Some(&display_name),
                             Some(&bio),
                             Some(&avatar_url),
@@ -1043,11 +1297,13 @@ impl ProfileScreen {
                     if let Some(ref identity) = self.selected_identity {
                         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                         let identity_id = identity.identity.id();
+                        let network_str = self.app_context.network.to_string();
 
                         // Save with all fields as None to indicate "no profile exists"
                         // This prevents unnecessary network queries on app restart
                         if let Err(e) = self.app_context.db.save_dashpay_profile(
                             &identity_id,
+                            &network_str,
                             None, // display_name
                             None, // bio
                             None, // avatar_url
@@ -1060,24 +1316,60 @@ impl ProfileScreen {
                 }
             }
             BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
-                // Profile was successfully updated, now load it to display
-                self.cancel_editing(); // Exit edit mode
-                self.profile_load_attempted = false; // Reset flag to allow reload
-                // Queue the load profile action to be executed
-                self.pending_action = Some(Box::new(self.trigger_load_profile()));
-            }
-            BackendTaskSuccessResult::Message(message) => {
-                if message.contains("successfully") {
-                    // Profile created/updated successfully, load it
-                    self.cancel_editing();
-                    self.profile_load_attempted = false;
-                    self.pending_action = Some(Box::new(self.trigger_load_profile()));
-                } else {
-                    self.display_message(&message, MessageType::Info);
+                // Profile was successfully created/updated
+                // Save the profile data to database BEFORE clearing edit fields
+                if let Some(ref identity) = self.selected_identity {
+                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                    let identity_id = identity.identity.id();
+                    let network_str = self.app_context.network.to_string();
+
+                    let display_name = self.edit_display_name.trim();
+                    let bio = self.edit_bio.trim();
+                    let avatar_url = self.edit_avatar_url.trim();
+
+                    tracing::info!(
+                        "Saving profile to database: identity={}, network={}, display_name={:?}, bio={:?}, avatar_url={:?}",
+                        identity_id,
+                        network_str,
+                        display_name,
+                        bio,
+                        avatar_url
+                    );
+
+                    // Save to database
+                    match self.app_context.db.save_dashpay_profile(
+                        &identity_id,
+                        &network_str,
+                        if display_name.is_empty() {
+                            None
+                        } else {
+                            Some(display_name)
+                        },
+                        if bio.is_empty() { None } else { Some(bio) },
+                        if avatar_url.is_empty() {
+                            None
+                        } else {
+                            Some(avatar_url)
+                        },
+                        None,
+                    ) {
+                        Ok(_) => tracing::info!("Profile saved to database successfully"),
+                        Err(e) => tracing::error!("Failed to save profile to database: {}", e),
+                    }
+
+                    // Update in-memory profile
+                    self.profile = Some(DashPayProfile {
+                        display_name: display_name.to_string(),
+                        bio: bio.to_string(),
+                        avatar_url: avatar_url.to_string(),
+                    });
                 }
+
+                self.cancel_editing(); // Exit edit mode (clears edit fields)
+                self.show_success = true;
             }
             _ => {
-                // Ignore other results
+                // Ignore other results - profile screen only handles DashPayProfile and DashPayProfileUpdated
             }
         }
     }

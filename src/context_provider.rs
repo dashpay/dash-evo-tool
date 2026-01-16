@@ -56,15 +56,24 @@ impl Provider {
         })
     }
     /// Set app context to the provider.
-    pub fn bind_app_context(&self, app_context: Arc<AppContext>) {
+    ///
+    /// Returns an error if any lock is poisoned (indicates a prior panic).
+    pub fn bind_app_context(&self, app_context: Arc<AppContext>) -> Result<(), String> {
         // order matters - can cause deadlock
         let cloned = app_context.clone();
-        let mut ac = self.app_context.lock().expect("lock poisoned");
+        let mut ac = self
+            .app_context
+            .lock()
+            .map_err(|_| "Provider app_context lock poisoned".to_string())?;
         ac.replace(cloned);
         drop(ac);
 
-        let sdk = app_context.sdk.write().expect("lock poisoned");
+        let sdk = app_context
+            .sdk
+            .write()
+            .map_err(|_| "SDK lock poisoned".to_string())?;
         sdk.set_context_provider(self.clone());
+        Ok(())
     }
 }
 
@@ -74,7 +83,10 @@ impl ContextProvider for Provider {
         data_contract_id: &dash_sdk::platform::Identifier,
         _platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("Provider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -106,7 +118,10 @@ impl ContextProvider for Provider {
         token_id: &dash_sdk::platform::Identifier,
     ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
     {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("Provider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -139,11 +154,20 @@ impl ContextProvider for Provider {
 
 impl Clone for Provider {
     fn clone(&self) -> Self {
-        let app_guard = self.app_context.lock().expect("lock poisoned");
+        // Clone trait doesn't allow returning Result, so we use a fallback
+        // If the lock is poisoned, clone with None app_context (will require rebinding)
+        let app_context_clone = self
+            .app_context
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!("Provider lock poisoned during clone, using fallback");
+                poisoned.into_inner().clone()
+            });
         Self {
             core: self.core.clone(),
             db: self.db.clone(),
-            app_context: Mutex::new(app_guard.clone()),
+            app_context: Mutex::new(app_context_clone),
         }
     }
 }

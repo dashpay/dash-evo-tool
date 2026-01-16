@@ -30,6 +30,12 @@ pub enum DashPayError {
         operation: String,
     },
 
+    #[error("Missing ENCRYPTION key required for DashPay")]
+    MissingEncryptionKey,
+
+    #[error("Missing DECRYPTION key required for DashPay")]
+    MissingDecryptionKey,
+
     #[error("ECDH key generation failed: {reason}")]
     EcdhFailed { reason: String },
 
@@ -162,6 +168,12 @@ impl DashPayError {
                 // Show the actual internal error message
                 message.clone()
             }
+            DashPayError::MissingEncryptionKey => {
+                "Your identity is missing an ENCRYPTION key required for DashPay. Please add a DashPay-compatible encryption key.".to_string()
+            }
+            DashPayError::MissingDecryptionKey => {
+                "Your identity is missing a DECRYPTION key required for DashPay. Please add a DashPay-compatible decryption key.".to_string()
+            }
             _ => "An error occurred. Please try again.".to_string(),
         }
     }
@@ -189,6 +201,8 @@ impl DashPayError {
                 | DashPayError::AccountLabelTooLong { .. }
                 | DashPayError::InvalidUsername { .. }
                 | DashPayError::MissingField { .. }
+                | DashPayError::MissingEncryptionKey
+                | DashPayError::MissingDecryptionKey
         )
     }
 }

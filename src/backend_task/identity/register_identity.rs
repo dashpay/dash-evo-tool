@@ -149,6 +149,24 @@ impl AppContext {
                     .send_raw_transaction(&asset_lock_transaction)
                     .map_err(|e| e.to_string())?;
 
+                // Store the asset lock transaction in the database immediately after sending.
+                // This ensures it's tracked even if the proof times out or identity creation fails.
+                // SPV will update the instant_lock_data when it detects the transaction.
+                self.db
+                    .store_asset_lock_transaction(
+                        &asset_lock_transaction,
+                        amount,
+                        None, // No islock yet - SPV will update this
+                        &wallet_id,
+                        self.network,
+                    )
+                    .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+
+                // TODO: UTXO removal timing issue - UTXOs are removed here BEFORE the asset
+                // lock proof is confirmed below. If the transaction fails or times out after
+                // this point, the UTXOs will be "lost" from wallet tracking even though they
+                // weren't actually spent. This should be refactored to remove UTXOs only AFTER
+                // successful proof confirmation. See Phase 2.2 in PR review plan.
                 {
                     let mut wallet = wallet.write().unwrap();
                     wallet.utxos.retain(|_, utxo_map| {
@@ -175,18 +193,33 @@ impl AppContext {
                     }
                 }
 
-                let asset_lock_proof;
-
-                loop {
-                    {
-                        let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        if let Some(Some(proof)) = proofs.get(&tx_id) {
-                            asset_lock_proof = proof.clone();
-                            break;
+                // Wait for asset lock proof with timeout (2 minutes)
+                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                    loop {
+                        {
+                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                            if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                return proof.clone();
+                            }
                         }
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
+                })
+                .await
+                {
+                    Ok(proof) => proof,
+                    Err(_) => {
+                        // Clean up on timeout
+                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        proofs.remove(&tx_id);
+                        return Err(format!(
+                            "Timeout waiting for asset lock proof after {} seconds. \
+                             The transaction may not have been confirmed by the network.",
+                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                        ));
+                    }
+                };
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -250,6 +283,20 @@ impl AppContext {
                     .send_raw_transaction(&asset_lock_transaction)
                     .map_err(|e| e.to_string())?;
 
+                // Store the asset lock transaction in the database immediately after sending.
+                // This ensures it's tracked even if the proof times out or identity creation fails.
+                // SPV will update the instant_lock_data when it detects the transaction.
+                self.db
+                    .store_asset_lock_transaction(
+                        &asset_lock_transaction,
+                        tx_out.value,
+                        None, // No islock yet - SPV will update this
+                        &wallet_id,
+                        self.network,
+                    )
+                    .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+
+                // TODO: UTXO removal timing issue - see comment above for FundWithWallet case.
                 {
                     let mut wallet = wallet.write().unwrap();
                     wallet.utxos.retain(|_, utxo_map| {
@@ -269,18 +316,33 @@ impl AppContext {
                     let _ = wallet.update_address_balance(&input_address, new_balance, self);
                 }
 
-                let asset_lock_proof;
-
-                loop {
-                    {
-                        let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        if let Some(Some(proof)) = proofs.get(&tx_id) {
-                            asset_lock_proof = proof.clone();
-                            break;
+                // Wait for asset lock proof with timeout (2 minutes)
+                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                    loop {
+                        {
+                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                            if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                return proof.clone();
+                            }
                         }
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
+                })
+                .await
+                {
+                    Ok(proof) => proof,
+                    Err(_) => {
+                        // Clean up on timeout
+                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        proofs.remove(&tx_id);
+                        return Err(format!(
+                            "Timeout waiting for asset lock proof after {} seconds. \
+                             The transaction may not have been confirmed by the network.",
+                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                        ));
+                    }
+                };
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -291,6 +353,22 @@ impl AppContext {
             .expect("expected to create an identifier");
 
         let public_keys = keys.to_public_keys_map();
+
+        // Debug: Log the keys being registered to verify contract bounds are set
+        for (key_id, key) in &public_keys {
+            match key {
+                dash_sdk::dpp::identity::IdentityPublicKey::V0(key_v0) => {
+                    tracing::info!(
+                        "Identity key {}: purpose={:?}, security_level={:?}, key_type={:?}, contract_bounds={:?}",
+                        key_id,
+                        key_v0.purpose,
+                        key_v0.security_level,
+                        key_v0.key_type,
+                        key_v0.contract_bounds
+                    );
+                }
+            }
+        }
 
         // Calculate fee estimate for identity creation
         let key_count = public_keys.len();
@@ -536,17 +614,17 @@ impl AppContext {
                 // Log proof errors first
                 if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
                 {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
+                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                        request_type: RequestType::BroadcastStateTransition,
+                        request_bytes: vec![],
+                        verification_path_query_bytes: vec![],
+                        height: block_info.height,
+                        time_ms: block_info.time_ms,
+                        proof_bytes: proof_bytes.clone(),
+                        error: Some(proof_error.to_string()),
+                    }) {
+                        tracing::warn!("Failed to persist proof log: {}", e);
+                    }
                     return Err(format!(
                         "Error registering identity: {}, proof error logged",
                         proof_error
@@ -571,17 +649,17 @@ impl AppContext {
                                 ref block_info,
                             ) = e
                             {
-                                self.db
-                                    .insert_proof_log_item(ProofLogItem {
-                                        request_type: RequestType::BroadcastStateTransition,
-                                        request_bytes: vec![],
-                                        verification_path_query_bytes: vec![],
-                                        height: block_info.height,
-                                        time_ms: block_info.time_ms,
-                                        proof_bytes: proof_bytes.clone(),
-                                        error: Some(proof_error.to_string()),
-                                    })
-                                    .ok();
+                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes: proof_bytes.clone(),
+                                    error: Some(proof_error.to_string()),
+                                }) {
+                                    tracing::warn!("Failed to persist proof log: {}", e);
+                                }
                                 return format!(
                                     "Error registering identity: {}, proof error logged",
                                     proof_error
@@ -715,17 +793,17 @@ impl AppContext {
                 // Log proof errors
                 if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
                 {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
+                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                        request_type: RequestType::BroadcastStateTransition,
+                        request_bytes: vec![],
+                        verification_path_query_bytes: vec![],
+                        height: block_info.height,
+                        time_ms: block_info.time_ms,
+                        proof_bytes: proof_bytes.clone(),
+                        error: Some(proof_error.to_string()),
+                    }) {
+                        tracing::warn!("Failed to persist proof log: {}", e);
+                    }
 
                     qualified_identity
                         .status

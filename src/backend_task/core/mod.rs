@@ -1,3 +1,4 @@
+mod recover_asset_locks;
 mod refresh_single_key_wallet_info;
 mod refresh_wallet_info;
 mod send_single_key_wallet_payment;
@@ -42,12 +43,18 @@ fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     )
 }
 
+use crate::backend_task::wallet::PlatformSyncMode;
+
 #[derive(Debug, Clone)]
 pub enum CoreTask {
     #[allow(dead_code)] // May be used for getting single chain lock
     GetBestChainLock,
     GetBestChainLocks,
-    RefreshWalletInfo(Arc<RwLock<Wallet>>),
+    /// Refresh wallet info from Core. The optional PlatformSyncMode controls whether
+    /// and how to sync Platform address balances:
+    /// - None: Skip Platform sync entirely (Core only)
+    /// - Some(mode): Sync Platform with the specified mode
+    RefreshWalletInfo(Arc<RwLock<Wallet>>, Option<PlatformSyncMode>),
     RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
     StartDashQT(Network, PathBuf, bool),
     SendWalletPayment {
@@ -58,6 +65,7 @@ pub enum CoreTask {
         wallet: Arc<RwLock<SingleKeyWallet>>,
         request: WalletPaymentRequest,
     },
+    RecoverAssetLocks(Arc<RwLock<Wallet>>),
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -66,8 +74,8 @@ impl PartialEq for CoreTask {
             (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock)
                 | (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
                 | (
-                    CoreTask::RefreshWalletInfo(_),
-                    CoreTask::RefreshWalletInfo(_)
+                    CoreTask::RefreshWalletInfo(_, _),
+                    CoreTask::RefreshWalletInfo(_, _)
                 )
                 | (
                     CoreTask::RefreshSingleKeyWalletInfo(_),
@@ -84,6 +92,10 @@ impl PartialEq for CoreTask {
                 | (
                     CoreTask::SendSingleKeyWalletPayment { .. },
                     CoreTask::SendSingleKeyWalletPayment { .. },
+                )
+                | (
+                    CoreTask::RecoverAssetLocks(_),
+                    CoreTask::RecoverAssetLocks(_),
                 )
         )
     }
@@ -178,7 +190,7 @@ impl AppContext {
                     local_chainlock,
                 )))
             }
-            CoreTask::RefreshWalletInfo(wallet) => {
+            CoreTask::RefreshWalletInfo(wallet, platform_sync_mode) => {
                 // Get wallet seed hash for Platform balance refresh
                 let seed_hash = {
                     let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
@@ -198,9 +210,14 @@ impl AppContext {
                         .map_err(|e| format!("Error refreshing wallet: {}", e))?;
                 }
 
-                // Also refresh Platform address balances
-                if let Err(e) = self.fetch_platform_address_balances(seed_hash).await {
-                    tracing::warn!("Failed to fetch Platform address balances: {}", e);
+                // Also refresh Platform address balances if a sync mode is specified
+                if let Some(sync_mode) = platform_sync_mode {
+                    if let Err(e) = self
+                        .fetch_platform_address_balances(seed_hash, sync_mode)
+                        .await
+                    {
+                        tracing::warn!("Failed to fetch Platform address balances: {}", e);
+                    }
                 }
 
                 Ok(BackendTaskSuccessResult::RefreshedWallet)
@@ -223,6 +240,13 @@ impl AppContext {
             }
             CoreTask::SendSingleKeyWalletPayment { wallet, request } => {
                 self.send_single_key_wallet_payment(wallet, request).await
+            }
+            CoreTask::RecoverAssetLocks(wallet) => {
+                // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
+                let ctx = self.clone();
+                tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet))
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))?
             }
         }
     }

@@ -1,3 +1,4 @@
+use super::error::{SpvError, SpvResult};
 use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
@@ -25,7 +26,7 @@ use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -123,6 +124,8 @@ pub struct SpvManager {
     stop_token: Mutex<Option<CancellationToken>>,
     // Channel to send requests to the SPV runtime thread
     request_tx: Mutex<Option<mpsc::Sender<SpvRequest>>>,
+    // Network manager clone for broadcasting transactions (set when client is running)
+    network_manager: Arc<AsyncRwLock<Option<PeerNetworkManager>>>,
 }
 
 /// Requests that can be sent to the SPV runtime thread
@@ -131,7 +134,6 @@ pub struct SpvManager {
 /// allowing direct access to client methods without additional locking overhead.
 enum SpvRequest {
     BroadcastTransaction {
-        #[allow(dead_code)]
         tx: Box<Transaction>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
@@ -144,6 +146,108 @@ pub struct SpvDerivedAddress {
 }
 
 impl SpvManager {
+    // ==================== Lock Helper Methods ====================
+    // These methods provide safe access to locks with proper error handling
+    // instead of panicking on lock poisoning.
+
+    fn read_status(&self) -> SpvResult<SpvStatus> {
+        self.status
+            .read()
+            .map(|g| *g)
+            .map_err(|_| SpvError::LockPoisoned("status".into()))
+    }
+
+    fn write_status(&self, value: SpvStatus) -> SpvResult<()> {
+        let mut guard = self
+            .status
+            .write()
+            .map_err(|_| SpvError::LockPoisoned("status".into()))?;
+        *guard = value;
+        Ok(())
+    }
+
+    fn read_last_error(&self) -> SpvResult<Option<String>> {
+        self.last_error
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| SpvError::LockPoisoned("last_error".into()))
+    }
+
+    fn write_last_error(&self, value: Option<String>) -> SpvResult<()> {
+        let mut guard = self
+            .last_error
+            .write()
+            .map_err(|_| SpvError::LockPoisoned("last_error".into()))?;
+        *guard = value;
+        Ok(())
+    }
+
+    fn read_started_at(&self) -> SpvResult<Option<SystemTime>> {
+        self.started_at
+            .read()
+            .map(|g| *g)
+            .map_err(|_| SpvError::LockPoisoned("started_at".into()))
+    }
+
+    fn write_started_at(&self, value: Option<SystemTime>) -> SpvResult<()> {
+        let mut guard = self
+            .started_at
+            .write()
+            .map_err(|_| SpvError::LockPoisoned("started_at".into()))?;
+        *guard = value;
+        Ok(())
+    }
+
+    fn read_sync_progress(&self) -> SpvResult<Option<SyncProgress>> {
+        self.sync_progress_state
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| SpvError::LockPoisoned("sync_progress".into()))
+    }
+
+    fn write_sync_progress(&self, value: Option<SyncProgress>) -> SpvResult<()> {
+        let mut guard = self
+            .sync_progress_state
+            .write()
+            .map_err(|_| SpvError::LockPoisoned("sync_progress".into()))?;
+        *guard = value;
+        Ok(())
+    }
+
+    fn read_detailed_progress(&self) -> SpvResult<Option<DetailedSyncProgress>> {
+        self.detailed_progress_state
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| SpvError::LockPoisoned("detailed_progress".into()))
+    }
+
+    fn write_detailed_progress(&self, value: Option<DetailedSyncProgress>) -> SpvResult<()> {
+        let mut guard = self
+            .detailed_progress_state
+            .write()
+            .map_err(|_| SpvError::LockPoisoned("detailed_progress".into()))?;
+        *guard = value;
+        Ok(())
+    }
+
+    fn read_progress_updated_at(&self) -> SpvResult<Option<SystemTime>> {
+        self.progress_updated_at
+            .read()
+            .map(|g| *g)
+            .map_err(|_| SpvError::LockPoisoned("progress_updated_at".into()))
+    }
+
+    fn write_progress_updated_at(&self, value: Option<SystemTime>) -> SpvResult<()> {
+        let mut guard = self
+            .progress_updated_at
+            .write()
+            .map_err(|_| SpvError::LockPoisoned("progress_updated_at".into()))?;
+        *guard = value;
+        Ok(())
+    }
+
+    // ==================== Public API ====================
+
     pub fn new(
         network: Network,
         config: Arc<RwLock<NetworkConfig>>,
@@ -173,6 +277,7 @@ impl SpvManager {
             use_local_node: Arc::new(AtomicBool::new(false)),
             stop_token: Mutex::new(None),
             request_tx: Mutex::new(None),
+            network_manager: Arc::new(AsyncRwLock::new(None)),
         });
 
         Ok(manager)
@@ -189,33 +294,18 @@ impl SpvManager {
         self.use_local_node.load(Ordering::SeqCst)
     }
 
-    /// Async status method for getting full details including progress
+    /// Async status method for getting full details including progress.
+    /// Returns default snapshot on lock errors to avoid panics.
     pub async fn status_async(&self) -> SpvStatusSnapshot {
-        let status = *self.status.read().expect("SPV status lock poisoned");
-        let last_error = self
-            .last_error
-            .read()
-            .expect("SPV last_error lock poisoned")
-            .clone();
-        let started_at = *self
-            .started_at
-            .read()
-            .expect("SPV started_at lock poisoned");
-        let sync_progress = self
-            .sync_progress_state
-            .read()
-            .expect("SPV sync_progress lock poisoned")
-            .clone();
-        let detailed_progress = self
-            .detailed_progress_state
-            .read()
-            .expect("SPV detailed_progress lock poisoned")
-            .clone();
-        let last_updated = (*self
-            .progress_updated_at
-            .read()
-            .expect("SPV progress_updated lock poisoned"))
-        .or(Some(SystemTime::now()));
+        let status = self.read_status().unwrap_or(SpvStatus::Idle);
+        let last_error = self.read_last_error().unwrap_or(None);
+        let started_at = self.read_started_at().unwrap_or(None);
+        let sync_progress = self.read_sync_progress().unwrap_or(None);
+        let detailed_progress = self.read_detailed_progress().unwrap_or(None);
+        let last_updated = self
+            .read_progress_updated_at()
+            .unwrap_or(None)
+            .or(Some(SystemTime::now()));
 
         SpvStatusSnapshot {
             status,
@@ -227,33 +317,18 @@ impl SpvManager {
         }
     }
 
-    /// Sync status method for UI updates (doesn't fetch detailed progress)
+    /// Sync status method for UI updates (doesn't fetch detailed progress).
+    /// Returns default snapshot on lock errors to avoid panics.
     pub fn status(&self) -> SpvStatusSnapshot {
-        let status = *self.status.read().expect("SPV status lock poisoned");
-        let last_error = self
-            .last_error
-            .read()
-            .expect("SPV last_error lock poisoned")
-            .clone();
-        let started_at = *self
-            .started_at
-            .read()
-            .expect("SPV started_at lock poisoned");
-        let sync_progress = self
-            .sync_progress_state
-            .read()
-            .expect("SPV sync_progress lock poisoned")
-            .clone();
-        let detailed_progress = self
-            .detailed_progress_state
-            .read()
-            .expect("SPV detailed_progress lock poisoned")
-            .clone();
-        let last_updated = (*self
-            .progress_updated_at
-            .read()
-            .expect("SPV progress_updated lock poisoned"))
-        .or(Some(SystemTime::now()));
+        let status = self.read_status().unwrap_or(SpvStatus::Idle);
+        let last_error = self.read_last_error().unwrap_or(None);
+        let started_at = self.read_started_at().unwrap_or(None);
+        let sync_progress = self.read_sync_progress().unwrap_or(None);
+        let detailed_progress = self.read_detailed_progress().unwrap_or(None);
+        let last_updated = self
+            .read_progress_updated_at()
+            .unwrap_or(None)
+            .or(Some(SystemTime::now()));
 
         SpvStatusSnapshot {
             status,
@@ -271,39 +346,31 @@ impl SpvManager {
             let stop_token_guard = self
                 .stop_token
                 .lock()
-                .expect("SPV stop_token lock poisoned");
+                .map_err(|_| "SPV stop_token lock poisoned")?;
             if stop_token_guard.is_some() {
                 return Ok(());
             }
         }
 
-        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Starting;
-        *self
-            .last_error
-            .write()
-            .expect("SPV last_error lock poisoned") = None;
-        *self
-            .started_at
-            .write()
-            .expect("SPV started_at lock poisoned") = Some(SystemTime::now());
-        *self
-            .sync_progress_state
-            .write()
-            .expect("SPV sync_progress lock poisoned") = None;
-        *self
-            .detailed_progress_state
-            .write()
-            .expect("SPV detailed_progress lock poisoned") = None;
-        *self
-            .progress_updated_at
-            .write()
-            .expect("SPV progress_updated lock poisoned") = None;
+        self.write_status(SpvStatus::Starting)
+            .map_err(|e| e.to_string())?;
+        self.write_last_error(None).map_err(|e| e.to_string())?;
+        self.write_started_at(Some(SystemTime::now()))
+            .map_err(|e| e.to_string())?;
+        self.write_sync_progress(None).map_err(|e| e.to_string())?;
+        self.write_detailed_progress(None)
+            .map_err(|e| e.to_string())?;
+        self.write_progress_updated_at(None)
+            .map_err(|e| e.to_string())?;
 
         let stop_token = CancellationToken::new();
-        *self
-            .stop_token
-            .lock()
-            .expect("SPV stop_token lock poisoned") = Some(stop_token.clone());
+        {
+            let mut guard = self
+                .stop_token
+                .lock()
+                .map_err(|_| "SPV stop_token lock poisoned")?;
+            *guard = Some(stop_token.clone());
+        }
 
         let manager = Arc::clone(self);
         let global_cancel = self.subtasks.cancellation_token.clone();
@@ -324,12 +391,18 @@ impl SpvManager {
                     let manager_for_loop = Arc::clone(&manager);
                     if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel).await {
                         tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
-                        *manager.last_error.write().expect("SPV last_error lock poisoned") = Some(err.clone());
-                        *manager.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
+                        if let Err(e) = manager.write_last_error(Some(err.clone())) {
+                            tracing::error!("Failed to write SPV error: {}", e);
+                        }
+                        if let Err(e) = manager.write_status(SpvStatus::Error) {
+                            tracing::error!("Failed to write SPV status: {}", e);
+                        }
                     }
 
                     // Clean up on exit
-                    *manager.stop_token.lock().expect("SPV stop_token lock poisoned") = None;
+                    if let Ok(mut guard) = manager.stop_token.lock() {
+                        *guard = None;
+                    }
                 });
             })
             .map_err(|e| format!("Failed to spawn SPV thread: {e}"))?;
@@ -338,17 +411,13 @@ impl SpvManager {
     }
 
     pub fn stop(&self) {
-        let maybe_token = self
-            .stop_token
-            .lock()
-            .expect("SPV stop_token lock poisoned")
-            .clone();
+        let maybe_token = self.stop_token.lock().ok().and_then(|g| g.clone());
 
         if let Some(token) = maybe_token {
-            *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopping;
+            let _ = self.write_status(SpvStatus::Stopping);
             token.cancel();
         } else {
-            *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+            let _ = self.write_status(SpvStatus::Stopped);
         }
     }
 
@@ -397,7 +466,7 @@ impl SpvManager {
         let request_tx = self
             .request_tx
             .lock()
-            .expect("request_tx poisoned")
+            .map_err(|_| "SPV request_tx lock poisoned")?
             .clone()
             .ok_or_else(|| "SPV client not running".to_string())?;
 
@@ -420,8 +489,9 @@ impl SpvManager {
     /// Returns a receiver that will get a signal when SPV wallet state likely changed.
     pub fn register_reconcile_channel(&self) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel(64);
-        let mut guard = self.reconcile_tx.lock().expect("reconcile_tx poisoned");
-        *guard = Some(tx);
+        if let Ok(mut guard) = self.reconcile_tx.lock() {
+            *guard = Some(tx);
+        }
         rx
     }
 
@@ -430,55 +500,36 @@ impl SpvManager {
     /// This requires the SPV runtime to be stopped first; otherwise the
     /// on-disk files could be re-created immediately by the running client.
     pub fn clear_data_dir(&self) -> Result<(), String> {
-        let status = *self.status.read().expect("SPV status lock poisoned");
+        let status = self.read_status().map_err(|e| e.to_string())?;
         if status.is_active() {
             return Err("Stop the SPV client before clearing its data".to_string());
         }
 
-        {
-            let mut storage_guard = self.storage.lock().expect("storage lock poisoned");
+        if let Ok(mut storage_guard) = self.storage.lock() {
             *storage_guard = None;
         }
 
-        {
-            let mut interface_guard = self
-                .client_interface
-                .write()
-                .expect("client_interface lock poisoned");
+        if let Ok(mut interface_guard) = self.client_interface.write() {
             *interface_guard = None;
         }
 
-        {
-            let mut request_guard = self.request_tx.lock().expect("request_tx poisoned");
+        if let Ok(mut request_guard) = self.request_tx.lock() {
             *request_guard = None;
         }
 
-        {
-            let mut wallet_map = self.det_wallets.write().map_err(|e| e.to_string())?;
+        if let Ok(mut wallet_map) = self.det_wallets.write() {
             wallet_map.clear();
         }
 
-        *self
-            .sync_progress_state
-            .write()
-            .expect("SPV sync_progress lock poisoned") = None;
-        *self
-            .detailed_progress_state
-            .write()
-            .expect("SPV detailed_progress lock poisoned") = None;
-        *self
-            .progress_updated_at
-            .write()
-            .expect("SPV progress_updated lock poisoned") = None;
-        *self
-            .started_at
-            .write()
-            .expect("SPV started_at lock poisoned") = None;
-        *self
-            .last_error
-            .write()
-            .expect("SPV last_error lock poisoned") = None;
-        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Idle;
+        self.write_sync_progress(None).map_err(|e| e.to_string())?;
+        self.write_detailed_progress(None)
+            .map_err(|e| e.to_string())?;
+        self.write_progress_updated_at(None)
+            .map_err(|e| e.to_string())?;
+        self.write_started_at(None).map_err(|e| e.to_string())?;
+        self.write_last_error(None).map_err(|e| e.to_string())?;
+        self.write_status(SpvStatus::Idle)
+            .map_err(|e| e.to_string())?;
 
         if self.data_dir.exists() {
             fs::remove_dir_all(&self.data_dir).map_err(|e| {
@@ -707,8 +758,9 @@ impl SpvManager {
         // Store the shared storage reference for later access
         {
             let storage = client.storage();
-            let mut storage_guard = self.storage.lock().expect("storage lock poisoned");
-            *storage_guard = Some(storage);
+            if let Ok(mut storage_guard) = self.storage.lock() {
+                *storage_guard = Some(storage);
+            }
         }
 
         // Set up progress handler
@@ -724,14 +776,17 @@ impl SpvManager {
         // Set up request handler with access to shared components
         let (request_tx, request_rx) = mpsc::channel(32);
         {
-            let mut guard = self.request_tx.lock().expect("request_tx poisoned");
-            *guard = Some(request_tx);
+            if let Ok(mut guard) = self.request_tx.lock() {
+                *guard = Some(request_tx);
+            }
         }
 
         // Spawn request handler in a separate task
         self.spawn_request_handler(request_rx, stop_token.clone());
 
         // Create command channel for the DashSpvClientInterface
+        // Note: Unbounded channel is required by SDK's DashSpvClientInterface API.
+        // Memory usage is bounded in practice by SPV command processing speed.
         let (command_tx, command_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         // Store the interface for external queries (quorum lookups, etc.)
@@ -744,7 +799,7 @@ impl SpvManager {
             *guard = Some(interface);
         }
 
-        *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Syncing;
+        let _ = self.write_status(SpvStatus::Syncing);
 
         // Run sync and monitor with the client owned in this scope
         let result = self
@@ -752,11 +807,15 @@ impl SpvManager {
             .run_sync_and_monitor(client, command_receiver, stop_token, global_cancel)
             .await;
 
-        // Clear the interface since the client is done
+        // Clear the interface and network manager since the client is done
         {
             if let Ok(mut guard) = self.client_interface.write() {
                 *guard = None;
             }
+        }
+        {
+            let mut nm_guard = self.network_manager.write().await;
+            *nm_guard = None;
         }
 
         result
@@ -775,7 +834,7 @@ impl SpvManager {
             // Check for cancellation
             if stop_token.is_cancelled() || global_cancel.is_cancelled() {
                 let _ = client.stop().await;
-                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                let _ = self.write_status(SpvStatus::Stopped);
                 return Ok(());
             }
 
@@ -790,37 +849,37 @@ impl SpvManager {
             }
         }
 
-        // Sync to tip
-        match client.sync_to_tip().await {
-            Ok(progress) => {
+        // Sync to tip with timeout to prevent indefinite hangs
+        const SYNC_TIMEOUT_SECS: u64 = 300; // 5 minutes
+        match tokio::time::timeout(Duration::from_secs(SYNC_TIMEOUT_SECS), client.sync_to_tip())
+            .await
+        {
+            Ok(Ok(progress)) => {
                 tracing::info!("Initial sync progress snapshot: {:?}", progress);
-                {
-                    let mut stored_sync = self
-                        .sync_progress_state
-                        .write()
-                        .expect("SPV sync_progress lock poisoned");
-                    *stored_sync = Some(progress.clone());
-                }
-                {
-                    let mut updated_at = self
-                        .progress_updated_at
-                        .write()
-                        .expect("SPV progress_updated lock poisoned");
-                    *updated_at = Some(SystemTime::now());
-                }
+                let _ = self.write_sync_progress(Some(progress.clone()));
+                let _ = self.write_progress_updated_at(Some(SystemTime::now()));
                 // Stay in Syncing mode until detailed progress reports completion.
-                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Syncing;
+                let _ = self.write_status(SpvStatus::Syncing);
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::error!("Initial sync failed: {}", err);
                 let _ = client.stop().await;
-                *self
-                    .last_error
-                    .write()
-                    .expect("SPV last_error lock poisoned") =
-                    Some(format!("Initial sync failed: {err}"));
-                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
+                let _ = self.write_last_error(Some(format!("Initial sync failed: {err}")));
+                let _ = self.write_status(SpvStatus::Error);
                 return Err(format!("Initial sync failed: {err}"));
+            }
+            Err(_) => {
+                tracing::error!("Initial sync timed out after {} seconds", SYNC_TIMEOUT_SECS);
+                let _ = client.stop().await;
+                let _ = self.write_last_error(Some(format!(
+                    "Initial sync timed out after {} seconds",
+                    SYNC_TIMEOUT_SECS
+                )));
+                let _ = self.write_status(SpvStatus::Error);
+                return Err(format!(
+                    "Initial sync timed out after {} seconds",
+                    SYNC_TIMEOUT_SECS
+                ));
             }
         }
 
@@ -855,20 +914,17 @@ impl SpvManager {
 
         match outcome {
             Outcome::MonitorCompleted(Ok(())) => {
-                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                let _ = self.write_status(SpvStatus::Stopped);
                 Ok(())
             }
             Outcome::MonitorCompleted(Err(err)) => {
                 let message = format!("monitor_network failed: {err}");
-                *self
-                    .last_error
-                    .write()
-                    .expect("SPV last_error lock poisoned") = Some(message.clone());
-                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Error;
+                let _ = self.write_last_error(Some(message.clone()));
+                let _ = self.write_status(SpvStatus::Error);
                 Err(message)
             }
             Outcome::StopRequested | Outcome::GlobalCancelled => {
-                *self.status.write().expect("SPV status lock poisoned") = SpvStatus::Stopped;
+                let _ = self.write_status(SpvStatus::Stopped);
                 Ok(())
             }
         }
@@ -880,6 +936,7 @@ impl SpvManager {
         cancel: CancellationToken,
     ) {
         tracing::info!("SPV request handler started");
+        let network_manager = Arc::clone(&self.network_manager);
         self.subtasks.spawn_sync(async move {
             loop {
                 tokio::select! {
@@ -889,11 +946,36 @@ impl SpvManager {
                     }
                     request = request_rx.recv() => {
                         match request {
-                            Some(SpvRequest::BroadcastTransaction { response_tx, .. }) => {
+                            Some(SpvRequest::BroadcastTransaction { tx, response_tx }) => {
                                 tracing::debug!("Received BroadcastTransaction request");
-                                // Note: broadcast_transaction would need access to the client
-                                // For now, just return not implemented
-                                let _ = response_tx.send(Err("Broadcast not yet implemented".to_string()));
+                                let result = {
+                                    let nm_guard = network_manager.read().await;
+                                    if let Some(ref nm) = *nm_guard {
+                                        // Broadcast the transaction to all connected peers
+                                        let message = dash_sdk::dpp::dashcore::network::message::NetworkMessage::Tx((*tx).clone());
+                                        let results = nm.broadcast(message).await;
+                                        // Check if at least one broadcast succeeded
+                                        let mut success = false;
+                                        let mut errors = Vec::new();
+                                        for res in results {
+                                            match res {
+                                                Ok(_) => success = true,
+                                                Err(e) => errors.push(e.to_string()),
+                                            }
+                                        }
+                                        if success {
+                                            tracing::info!("Transaction {} broadcast successfully", tx.txid());
+                                            Ok(())
+                                        } else if errors.is_empty() {
+                                            Err("No peers connected to broadcast transaction".to_string())
+                                        } else {
+                                            Err(format!("Broadcast failed: {}", errors.join(", ")))
+                                        }
+                                    } else {
+                                        Err("SPV network manager not available".to_string())
+                                    }
+                                };
+                                let _ = response_tx.send(result);
                             }
                             None => {
                                 tracing::warn!("SPV request channel closed");
@@ -928,48 +1010,37 @@ impl SpvManager {
                     msg = progress_rx.recv() => {
                         match msg {
                             Some(detailed) => {
-                                {
-                                    let mut stored_detailed = detailed_progress_state
-                                        .write()
-                                        .expect("SPV detailed_progress lock poisoned");
+                                if let Ok(mut stored_detailed) = detailed_progress_state.write() {
                                     *stored_detailed = Some(detailed.clone());
                                 }
-                                {
-                                    let mut stored_sync = sync_progress_state
-                                        .write()
-                                        .expect("SPV sync_progress lock poisoned");
+                                if let Ok(mut stored_sync) = sync_progress_state.write() {
                                     *stored_sync = Some(detailed.sync_progress.clone());
                                 }
-                                {
-                                    let mut updated_at = progress_updated_at
-                                        .write()
-                                        .expect("SPV progress_updated lock poisoned");
+                                if let Ok(mut updated_at) = progress_updated_at.write() {
                                     *updated_at = Some(detailed.last_update_time);
                                 }
 
                                 if last_update.elapsed() >= min_interval {
                                     // Update status based on progress stage and completeness
-                                    let mut status_guard = status
-                                        .write()
-                                        .expect("SPV status lock poisoned");
-                                    let current = *status_guard;
-                                    match &detailed.sync_stage {
-                                        SyncStage::Complete => {
-                                            *status_guard = SpvStatus::Running;
-                                        }
-                                        SyncStage::Failed(message) => {
-                                            *status_guard = SpvStatus::Error;
-                                            let mut err_guard = last_error
-                                                .write()
-                                                .expect("SPV last_error lock poisoned");
-                                            *err_guard = Some(format!("SPV sync failed: {message}"));
-                                        }
-                                        _ => {
-                                            if !matches!(
-                                                current,
-                                                SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error
-                                            ) {
-                                                *status_guard = SpvStatus::Syncing;
+                                    if let Ok(mut status_guard) = status.write() {
+                                        let current = *status_guard;
+                                        match &detailed.sync_stage {
+                                            SyncStage::Complete => {
+                                                *status_guard = SpvStatus::Running;
+                                            }
+                                            SyncStage::Failed(message) => {
+                                                *status_guard = SpvStatus::Error;
+                                                if let Ok(mut err_guard) = last_error.write() {
+                                                    *err_guard = Some(format!("SPV sync failed: {message}"));
+                                                }
+                                            }
+                                            _ => {
+                                                if !matches!(
+                                                    current,
+                                                    SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error
+                                                ) {
+                                                    *status_guard = SpvStatus::Syncing;
+                                                }
                                             }
                                         }
                                     }
@@ -985,11 +1056,7 @@ impl SpvManager {
     }
 
     fn spawn_event_handler(&self, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SpvEvent>) {
-        let reconcile_tx = self
-            .reconcile_tx
-            .lock()
-            .expect("reconcile_tx poisoned")
-            .clone();
+        let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync(async move {
@@ -1056,6 +1123,12 @@ impl SpvManager {
         let network_manager = PeerNetworkManager::new(&config)
             .await
             .map_err(|e| format!("Failed to initialize SPV network manager: {e}"))?;
+
+        // Store a clone of the network manager for broadcasting transactions
+        {
+            let mut nm_guard = self.network_manager.write().await;
+            *nm_guard = Some(network_manager.clone());
+        }
 
         let storage_manager = DiskStorageManager::new(self.data_dir.clone())
             .await

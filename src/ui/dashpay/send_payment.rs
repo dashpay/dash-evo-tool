@@ -523,8 +523,11 @@ impl PaymentHistory {
                     // Try to resolve contact name
                     let contact_name = if let Ok(contact_id) = Identifier::from_bytes(&contact_id) {
                         // First check if we have a saved contact with username
-                        if let Ok(contacts) =
-                            self.app_context.db.load_dashpay_contacts(&identity_id)
+                        let network_str = self.app_context.network.to_string();
+                        if let Ok(contacts) = self
+                            .app_context
+                            .db
+                            .load_dashpay_contacts(&identity_id, &network_str)
                         {
                             contacts
                                 .iter()
@@ -702,7 +705,9 @@ impl PaymentHistory {
                             // Avatar placeholder
                             ui.vertical(|ui| {
                                 ui.add_space(5.0);
-                                ui.label(RichText::new("👤").size(30.0));
+                                ui.label(
+                                    RichText::new("👤").size(30.0).color(DashColors::DEEP_BLUE),
+                                );
                             });
 
                             ui.add_space(5.0);

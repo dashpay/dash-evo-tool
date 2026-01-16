@@ -170,7 +170,7 @@ impl ContactDetailsScreen {
                     ui.horizontal(|ui| {
                         // Avatar placeholder
                         ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("👤").size(60.0));
+                            ui.label(RichText::new("👤").size(60.0).color(DashColors::DEEP_BLUE));
                             ui.small("Contact");
                         });
 
@@ -203,14 +203,17 @@ impl ContactDetailsScreen {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui.button("Send Payment").clicked() {
-                                action = AppAction::AddScreen(
-                                    ScreenType::DashPaySendPayment(
-                                        self.identity.clone(),
-                                        self.contact_id,
-                                    )
-                                    .create_screen(&self.app_context),
-                                );
+                            // Send Payment requires SPV which is dev mode only
+                            if self.app_context.is_developer_mode() {
+                                if ui.button("Send Payment").clicked() {
+                                    action = AppAction::AddScreen(
+                                        ScreenType::DashPaySendPayment(
+                                            self.identity.clone(),
+                                            self.contact_id,
+                                        )
+                                        .create_screen(&self.app_context),
+                                    );
+                                }
                             }
                         });
                     });

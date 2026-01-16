@@ -69,9 +69,10 @@ impl ContactProfileViewerScreen {
             .unwrap_or((String::new(), String::new(), false));
 
         // Try to load cached contact profile from database
+        let network_str = app_context.network.to_string();
         let profile = if let Ok(contacts) = app_context
             .db
-            .load_dashpay_contacts(&identity.identity.id())
+            .load_dashpay_contacts(&identity.identity.id(), &network_str)
         {
             contacts
                 .iter()
@@ -155,8 +156,25 @@ impl ContactProfileViewerScreen {
                     if let Ok(image) = image::load_from_memory(&image_bytes) {
                         // Convert to RGBA
                         let rgba_image = image.to_rgba8();
-                        let size = [rgba_image.width() as usize, rgba_image.height() as usize];
-                        let pixels = rgba_image.into_raw();
+                        let width = rgba_image.width();
+                        let height = rgba_image.height();
+
+                        // Center-crop to square if not already square
+                        let cropped_image = if width != height {
+                            let size = width.min(height);
+                            let x_offset = (width - size) / 2;
+                            let y_offset = (height - size) / 2;
+                            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size)
+                                .to_image()
+                        } else {
+                            rgba_image
+                        };
+
+                        let size = [
+                            cropped_image.width() as usize,
+                            cropped_image.height() as usize,
+                        ];
+                        let pixels = cropped_image.into_raw();
 
                         // Create ColorImage
                         let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
@@ -305,7 +323,11 @@ impl ContactProfileViewerScreen {
                                                 .color(DashColors::text_secondary(dark_mode)),
                                         );
                                     } else {
-                                        ui.label(RichText::new("👤").size(60.0));
+                                        ui.label(
+                                            RichText::new("👤")
+                                                .size(60.0)
+                                                .color(DashColors::DEEP_BLUE),
+                                        );
                                         ui.label(
                                             RichText::new("No avatar")
                                                 .small()
@@ -313,7 +335,9 @@ impl ContactProfileViewerScreen {
                                         );
                                     }
                                 } else {
-                                    ui.label(RichText::new("👤").size(60.0));
+                                    ui.label(
+                                        RichText::new("👤").size(60.0).color(DashColors::DEEP_BLUE),
+                                    );
                                     ui.label(
                                         RichText::new("No avatar")
                                             .small()
@@ -426,19 +450,25 @@ impl ContactProfileViewerScreen {
 
                 // Action buttons
                 ui.horizontal(|ui| {
-                    if ui.button("Refresh Profile").clicked() {
+                    if ui.button("Refresh").clicked() {
                         action = self.fetch_profile();
                     }
 
-                    let pay_button =
-                        egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                            .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                    // Pay button - requires SPV which is dev mode only
+                    if self.app_context.is_developer_mode() {
+                        let pay_button =
+                            egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
+                                .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
-                    if ui.add(pay_button).clicked() {
-                        action = AppAction::AddScreen(
-                            ScreenType::DashPaySendPayment(self.identity.clone(), self.contact_id)
+                        if ui.add(pay_button).clicked() {
+                            action = AppAction::AddScreen(
+                                ScreenType::DashPaySendPayment(
+                                    self.identity.clone(),
+                                    self.contact_id,
+                                )
                                 .create_screen(&self.app_context),
-                        );
+                            );
+                        }
                     }
                 });
             } else if !self.loading {
@@ -456,18 +486,21 @@ impl ContactProfileViewerScreen {
                             action = self.fetch_profile();
                         }
 
-                        let pay_button =
-                            egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                        // Pay button - requires SPV which is dev mode only
+                        if self.app_context.is_developer_mode() {
+                            let pay_button =
+                                egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
+                                    .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
 
-                        if ui.add(pay_button).clicked() {
-                            action = AppAction::AddScreen(
-                                ScreenType::DashPaySendPayment(
-                                    self.identity.clone(),
-                                    self.contact_id,
-                                )
-                                .create_screen(&self.app_context),
-                            );
+                            if ui.add(pay_button).clicked() {
+                                action = AppAction::AddScreen(
+                                    ScreenType::DashPaySendPayment(
+                                        self.identity.clone(),
+                                        self.contact_id,
+                                    )
+                                    .create_screen(&self.app_context),
+                                );
+                            }
                         }
                     });
                 });

@@ -135,17 +135,18 @@ pub fn generate_auto_accept_proof(
         .as_secs()
         + (validity_hours as u64 * 3600);
 
-    // Get wallet seed for HD derivation - use first available private key as seed
+    // Get wallet seed for HD derivation - use ENCRYPTION key (ECDSA_SECP256K1) as per DIP-15
+    // The auto-accept proof uses HD derivation from the wallet, and ENCRYPTION keys are ECDSA_SECP256K1
     let signing_key = identity
         .identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
+            Purpose::ENCRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
         .ok_or(
-            "No suitable signing key found. This operation requires a CRITICAL ECDSA_SECP256K1 AUTHENTICATION key.",
+            "No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.",
         )?;
 
     let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
@@ -254,6 +255,10 @@ pub fn verify_auto_accept_proof(
     let key_index =
         u32::from_be_bytes([proof_data[1], proof_data[2], proof_data[3], proof_data[4]]);
     let sig_len = proof_data[5] as usize;
+    // Compact ECDSA signatures are exactly 64 bytes
+    if sig_len != 64 {
+        return Ok(false);
+    }
     if proof_data.len() < 6 + sig_len {
         return Ok(false);
     }
@@ -281,16 +286,17 @@ pub fn verify_auto_accept_proof(
         .map_err(|e| format!("Failed to create message: {}", e))?;
 
     // Derive expected pubkey from our seed and key index (timestamp)
+    // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
     let wallets: Vec<_> = our_identity.associated_wallets.values().cloned().collect();
     let signing_key = our_identity
         .identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
+            Purpose::ENCRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found. This operation requires a CRITICAL ECDSA_SECP256K1 AUTHENTICATION key.")?;
+        .ok_or("No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.")?;
     let wallet_seed = our_identity
         .private_keys
         .get_resolve(

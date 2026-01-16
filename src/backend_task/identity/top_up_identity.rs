@@ -101,9 +101,16 @@ impl AppContext {
                     top_up_index,
                 ) => {
                     // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
+                    let (
+                        asset_lock_transaction,
+                        asset_lock_proof_private_key,
+                        _,
+                        used_utxos,
+                        wallet_seed_hash,
+                    ) = {
                         let mut wallet = wallet.write().unwrap();
-                        match wallet.top_up_asset_lock_transaction(
+                        let seed_hash = wallet.seed_hash();
+                        let tx_result = match wallet.top_up_asset_lock_transaction(
                             sdk.network,
                             amount,
                             true,
@@ -132,7 +139,14 @@ impl AppContext {
                                     Some(self),
                                 )?
                             }
-                        }
+                        };
+                        (
+                            tx_result.0,
+                            tx_result.1,
+                            tx_result.2,
+                            tx_result.3,
+                            seed_hash,
+                        )
                     };
 
                     let tx_id = asset_lock_transaction.txid();
@@ -153,6 +167,19 @@ impl AppContext {
                         .expect("Core client lock was poisoned")
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
+
+                    // Store the asset lock transaction in the database immediately after sending.
+                    // This ensures it's tracked even if the proof times out or top-up fails.
+                    // SPV will update the instant_lock_data when it detects the transaction.
+                    self.db
+                        .store_asset_lock_transaction(
+                            &asset_lock_transaction,
+                            amount,
+                            None, // No islock yet - SPV will update this
+                            &wallet_seed_hash,
+                            self.network,
+                        )
+                        .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
                     {
                         let mut wallet = wallet.write().unwrap();
@@ -180,18 +207,36 @@ impl AppContext {
                         }
                     }
 
-                    let asset_lock_proof;
-
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                asset_lock_proof = proof.clone();
-                                break;
+                    // Wait for asset lock proof with timeout (2 minutes)
+                    const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                    let asset_lock_proof =
+                        match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                            loop {
+                                {
+                                    let proofs =
+                                        self.transactions_waiting_for_finality.lock().unwrap();
+                                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                        return proof.clone();
+                                    }
+                                }
+                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
+                        })
+                        .await
+                        {
+                            Ok(proof) => proof,
+                            Err(_) => {
+                                // Clean up on timeout
+                                let mut proofs =
+                                    self.transactions_waiting_for_finality.lock().unwrap();
+                                proofs.remove(&tx_id);
+                                return Err(format!(
+                                    "Timeout waiting for asset lock proof after {} seconds. \
+                                 The transaction may not have been confirmed by the network.",
+                                    ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                                ));
+                            }
+                        };
 
                     (
                         asset_lock_proof,
@@ -208,9 +253,10 @@ impl AppContext {
                     top_up_index,
                 ) => {
                     // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key) = {
+                    let (asset_lock_transaction, asset_lock_proof_private_key, wallet_seed_hash) = {
                         let mut wallet = wallet.write().unwrap();
-                        wallet.top_up_asset_lock_transaction_for_utxo(
+                        let seed_hash = wallet.seed_hash();
+                        let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
                             sdk.network,
                             utxo,
                             tx_out.clone(),
@@ -218,7 +264,8 @@ impl AppContext {
                             identity_index,
                             top_up_index,
                             Some(self),
-                        )?
+                        )?;
+                        (tx_result.0, tx_result.1, seed_hash)
                     };
 
                     let tx_id = asset_lock_transaction.txid();
@@ -240,6 +287,19 @@ impl AppContext {
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
+                    // Store the asset lock transaction in the database immediately after sending.
+                    // This ensures it's tracked even if the proof times out or top-up fails.
+                    // SPV will update the instant_lock_data when it detects the transaction.
+                    self.db
+                        .store_asset_lock_transaction(
+                            &asset_lock_transaction,
+                            tx_out.value,
+                            None, // No islock yet - SPV will update this
+                            &wallet_seed_hash,
+                            self.network,
+                        )
+                        .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+
                     {
                         let mut wallet = wallet.write().unwrap();
                         wallet.utxos.retain(|_, utxo_map| {
@@ -259,18 +319,36 @@ impl AppContext {
                         let _ = wallet.update_address_balance(&input_address, new_balance, self);
                     }
 
-                    let asset_lock_proof;
-
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                asset_lock_proof = proof.clone();
-                                break;
+                    // Wait for asset lock proof with timeout (2 minutes)
+                    const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                    let asset_lock_proof =
+                        match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                            loop {
+                                {
+                                    let proofs =
+                                        self.transactions_waiting_for_finality.lock().unwrap();
+                                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                        return proof.clone();
+                                    }
+                                }
+                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
+                        })
+                        .await
+                        {
+                            Ok(proof) => proof,
+                            Err(_) => {
+                                // Clean up on timeout
+                                let mut proofs =
+                                    self.transactions_waiting_for_finality.lock().unwrap();
+                                proofs.remove(&tx_id);
+                                return Err(format!(
+                                    "Timeout waiting for asset lock proof after {} seconds. \
+                                 The transaction may not have been confirmed by the network.",
+                                    ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                                ));
+                            }
+                        };
 
                     (
                         asset_lock_proof,
@@ -308,17 +386,17 @@ impl AppContext {
                 // Log proof errors first
                 if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
                 {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
+                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                        request_type: RequestType::BroadcastStateTransition,
+                        request_bytes: vec![],
+                        verification_path_query_bytes: vec![],
+                        height: block_info.height,
+                        time_ms: block_info.time_ms,
+                        proof_bytes: proof_bytes.clone(),
+                        error: Some(proof_error.to_string()),
+                    }) {
+                        tracing::warn!("Failed to persist proof log: {}", e);
+                    }
                     return Err(format!(
                         "Error topping up identity: {}, proof error logged",
                         proof_error
@@ -369,8 +447,8 @@ impl AppContext {
                                         ref block_info,
                                     ) = e
                                     {
-                                        self.db
-                                            .insert_proof_log_item(ProofLogItem {
+                                        if let Err(e) =
+                                            self.db.insert_proof_log_item(ProofLogItem {
                                                 request_type: RequestType::BroadcastStateTransition,
                                                 request_bytes: vec![],
                                                 verification_path_query_bytes: vec![],
@@ -379,7 +457,9 @@ impl AppContext {
                                                 proof_bytes: proof_bytes.clone(),
                                                 error: Some(proof_error.to_string()),
                                             })
-                                            .ok();
+                                        {
+                                            tracing::warn!("Failed to persist proof log: {}", e);
+                                        }
                                         return format!(
                                             "Error topping up identity: {}, proof error logged",
                                             proof_error
@@ -418,17 +498,17 @@ impl AppContext {
                                 ref block_info,
                             ) = e
                             {
-                                self.db
-                                    .insert_proof_log_item(ProofLogItem {
-                                        request_type: RequestType::BroadcastStateTransition,
-                                        request_bytes: vec![],
-                                        verification_path_query_bytes: vec![],
-                                        height: block_info.height,
-                                        time_ms: block_info.time_ms,
-                                        proof_bytes: proof_bytes.clone(),
-                                        error: Some(proof_error.to_string()),
-                                    })
-                                    .ok();
+                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                                    request_type: RequestType::BroadcastStateTransition,
+                                    request_bytes: vec![],
+                                    verification_path_query_bytes: vec![],
+                                    height: block_info.height,
+                                    time_ms: block_info.time_ms,
+                                    proof_bytes: proof_bytes.clone(),
+                                    error: Some(proof_error.to_string()),
+                                }) {
+                                    tracing::warn!("Failed to persist proof log: {}", e);
+                                }
                                 return format!(
                                     "Error topping up identity: {}, proof error logged",
                                     proof_error

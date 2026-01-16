@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, ScrollArea, SidePanel};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {
@@ -15,6 +15,7 @@ pub enum ToolsSubscreen {
     ContractViewer,
     GroveSTARK,
     MasternodeListDiff,
+    DPNS,
 }
 
 impl ToolsSubscreen {
@@ -29,6 +30,7 @@ impl ToolsSubscreen {
             Self::ContractViewer => "Contract deserializer",
             Self::GroveSTARK => "ZK Proofs",
             Self::MasternodeListDiff => "Masternode list diff inspector",
+            Self::DPNS => "DPNS",
         }
     }
 }
@@ -47,6 +49,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::ContractViewer,
         ToolsSubscreen::GroveSTARK,
         ToolsSubscreen::MasternodeListDiff,
+        ToolsSubscreen::DPNS,
     ];
 
     let active_screen = match app_context.get_settings() {
@@ -70,6 +73,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::MasternodeListDiff
             }
             ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
+            ui::RootScreenType::RootScreenDPNSActiveContests
+            | ui::RootScreenType::RootScreenDPNSPastContests
+            | ui::RootScreenType::RootScreenDPNSOwnedNames
+            | ui::RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
             _ => ToolsSubscreen::PlatformInfo,
         },
         _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
@@ -93,7 +100,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
-                    ui.vertical(|ui| {
+                    ScrollArea::vertical().show(ui, |ui| {
                         ui.add_space(Spacing::SM);
 
                         for subscreen in subscreens {
@@ -167,6 +174,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                     ToolsSubscreen::GroveSTARK => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsGroveSTARKScreen)
+                                    }
+                                    ToolsSubscreen::DPNS => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDPNSActiveContests)
                                     }
                                 }
                             }

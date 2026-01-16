@@ -1,7 +1,9 @@
 use super::encryption::{
     encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
 };
-use super::hd_derivation::generate_contact_xpub_data;
+use super::hd_derivation::{
+    calculate_account_reference, derive_dashpay_incoming_xpub, generate_contact_xpub_data,
+};
 use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::auto_accept_proof::{
@@ -35,6 +37,11 @@ pub async fn load_contact_requests(
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
+    tracing::info!(
+        "Loading contact requests for identity: {}",
+        identity_id.to_string(Encoding::Base58)
+    );
+
     // Query for incoming contact requests (where toUserId == our identity)
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
         .map_err(|e| format!("Failed to create query: {}", e))?;
@@ -63,16 +70,26 @@ pub async fn load_contact_requests(
         operator: WhereOperator::Equal,
         value: Value::Identifier(identity_id.to_buffer()),
     });
+
+    // Without this orderBy, the query may return 0 results even when documents exist
+    outgoing_query = outgoing_query.with_order_by(OrderClause {
+        field: "$createdAt".to_string(),
+        ascending: true,
+    });
     outgoing_query.limit = 50;
 
     // Fetch both types of requests
+    tracing::info!("Fetching incoming contact requests...");
     let incoming_docs = Document::fetch_many(sdk, incoming_query)
         .await
         .map_err(|e| format!("Error fetching incoming requests: {}", e))?;
+    tracing::info!("Fetched {} incoming documents", incoming_docs.len());
 
+    tracing::info!("Fetching outgoing contact requests...");
     let outgoing_docs = Document::fetch_many(sdk, outgoing_query)
         .await
         .map_err(|e| format!("Error fetching outgoing requests: {}", e))?;
+    tracing::info!("Fetched {} outgoing documents", outgoing_docs.len());
 
     // Convert to vec of tuples (id, document)
     // TODO: Process autoAcceptProof for incoming requests
@@ -102,7 +119,11 @@ pub async fn load_contact_requests(
         for (_, outgoing_doc) in outgoing.iter() {
             if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
             {
-                let to_id = Identifier::from_bytes(to_id_bytes.as_slice()).unwrap();
+                // Parse the identifier, skip if invalid
+                let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
+                    tracing::warn!("Invalid toUserId in contact request document, skipping");
+                    continue;
+                };
                 if to_id == from_id {
                     // Mutual request found - they are now contacts
                     contacts_established.insert(from_id);
@@ -116,12 +137,22 @@ pub async fn load_contact_requests(
 
     outgoing.retain(|(_, doc)| {
         if let Some(Value::Identifier(to_id_bytes)) = doc.properties().get("toUserId") {
-            let to_id = Identifier::from_bytes(to_id_bytes.as_slice()).unwrap();
+            // Parse the identifier, keep the document if we can't parse (defensive)
+            let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
+                tracing::warn!("Invalid toUserId in outgoing contact request, keeping in list");
+                return true;
+            };
             !contacts_established.contains(&to_id)
         } else {
             true
         }
     });
+
+    tracing::info!(
+        "After filtering: {} incoming, {} outgoing contact requests",
+        incoming.len(),
+        outgoing.len()
+    );
 
     Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
 }
@@ -212,18 +243,33 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Get key indices for ECDH
-    let sender_key = &signing_key; // Use the selected key
-
-    // Find a recipient key that supports ECDH (must be ECDSA_SECP256K1)
-    let recipient_key = to_identity
+    // Per DIP-11/DIP-15: Use ENCRYPTION key for sender (to encrypt outgoing),
+    // DECRYPTION key for recipient (they will decrypt incoming)
+    // Note: signing_key is an AUTHENTICATION key used to sign the state transition
+    // We need a separate ENCRYPTION key for ECDH
+    let sender_encryption_key = identity
+        .identity
         .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM]),
+            Purpose::ENCRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
         .ok_or_else(|| {
-            "Recipient does not have a compatible ECDSA_SECP256K1 authentication key for ECDH encryption".to_string()
+            "Sender does not have a compatible ECDSA_SECP256K1 ENCRYPTION key for ECDH. Please add a DashPay-compatible encryption key to your identity.".to_string()
+        })?;
+
+    // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
+    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
+    let recipient_key = to_identity
+        .get_first_public_key_matching(
+            Purpose::DECRYPTION,
+            HashSet::from([SecurityLevel::MEDIUM]),
+            HashSet::from([KeyType::ECDSA_SECP256K1]),
+            false,
+        )
+        .ok_or_else(|| {
+            "Recipient does not have a compatible ECDSA_SECP256K1 DECRYPTION key for ECDH. They need to add a DashPay-compatible decryption key to their identity.".to_string()
         })?;
 
     // Step 4: Generate ECDH shared key and encrypt data
@@ -233,14 +279,14 @@ pub async fn send_contact_request_with_proof(
         .get_resolve(
             &(
                 crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                sender_key.id(),
+                sender_encryption_key.id(),
             ),
             &wallets,
             identity.network,
         )
-        .map_err(|e| format!("Error resolving private key: {}", e))?
+        .map_err(|e| format!("Error resolving ENCRYPTION private key: {}", e))?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| "Sender does not have a ECDSA_SECP256K1 authentication private key loaded into Dash Evo Tool.".to_string())?;
+        .ok_or_else(|| "Sender does not have an ECDSA_SECP256K1 ENCRYPTION private key loaded into Dash Evo Tool.".to_string())?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| format!("Failed to generate ECDH shared key: {}", e))?;
@@ -266,6 +312,25 @@ pub async fn send_contact_request_with_proof(
     )
     .map_err(|e| format!("Failed to generate contact extended public key: {}", e))?;
 
+    // Also derive the full xpub for account reference calculation per DIP-0015
+    let contact_xpub = derive_dashpay_incoming_xpub(
+        &wallet_seed,
+        network,
+        account_index,
+        &identity.identity.id(),
+        &to_identity_id,
+    )
+    .map_err(|e| format!("Failed to derive contact xpub: {}", e))?;
+
+    // Calculate account reference per DIP-0015 (ASK-based shortening)
+    // Version 0 is the current version
+    let account_reference = calculate_account_reference(
+        &sender_private_key,
+        &contact_xpub,
+        account_index,
+        0, // version
+    );
+
     let encrypted_public_key = encrypt_extended_public_key(
         parent_fingerprint,
         chain_code,
@@ -290,13 +355,14 @@ pub async fn send_contact_request_with_proof(
         };
 
     // Step 5.5: Validate the contact request before proceeding
+    // Note: We validate the ENCRYPTION key (used for ECDH), not the signing key
     let validation = validate_contact_request_before_send(
         sdk,
         &identity,
-        sender_key.id(),
+        sender_encryption_key.id(),
         to_identity.id(),
         recipient_key.id(),
-        0, // account_reference - using 0 for now
+        account_reference,
         core_height,
         current_height_for_validation,
     )
@@ -321,15 +387,19 @@ pub async fn send_contact_request_with_proof(
         "toUserId".to_string(),
         Value::Identifier(to_identity_id.to_buffer()),
     );
-    properties.insert("senderKeyIndex".to_string(), Value::U32(sender_key.id()));
+    properties.insert(
+        "senderKeyIndex".to_string(),
+        Value::U32(sender_encryption_key.id()),
+    );
     properties.insert(
         "recipientKeyIndex".to_string(),
         Value::U32(recipient_key.id()),
     );
-    // Calculate account reference
-    // For now, use the account index directly.
-    // In production, calculate per DIP-0015 (ASK-based shortening)
-    properties.insert("accountReference".to_string(), Value::U32(account_index));
+    // Account reference calculated per DIP-0015 (ASK-based shortening)
+    properties.insert(
+        "accountReference".to_string(),
+        Value::U32(account_reference),
+    );
     properties.insert(
         "encryptedPublicKey".to_string(),
         Value::Bytes(encrypted_public_key),
@@ -358,7 +428,7 @@ pub async fn send_contact_request_with_proof(
             &qr.proof_key,
             &identity.identity.id(),
             &to_identity_id,
-            account_index,
+            account_reference,
         )?;
         eprintln!(
             "DEBUG: Including autoAcceptProof in contact request ({} bytes)",
@@ -540,20 +610,17 @@ pub async fn accept_contact_request(
         ));
     }
 
-    // Get a signing key for the identity
+    // Get an AUTHENTICATION key for signing the state transition
+    // Platform requires CRITICAL or HIGH security level for document creation
     let signing_key = identity
         .identity
         .get_first_public_key_matching(
             Purpose::AUTHENTICATION,
-            HashSet::from([
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
+            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
+            KeyType::all_key_types().into(),
             false,
         )
-        .ok_or("Cannot accept contact request: This identity does not have a suitable ECDSA_SECP256K1 authentication key. Please add one in the Identities screen.")?
+        .ok_or("Cannot accept contact request: This identity does not have a suitable AUTHENTICATION key. Please add an authentication key to your identity.")?
         .clone();
 
     let result = send_contact_request(

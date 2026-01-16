@@ -806,9 +806,11 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::Message(ref msg) => {
+                        BackendTaskSuccessResult::Message(ref _msg) => {
+                            // Let the screen handle Message via display_task_result
+                            // so it can do custom handling (like clearing spinners)
                             self.visible_screen_mut()
-                                .display_message(msg, MessageType::Success);
+                                .display_task_result(unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;

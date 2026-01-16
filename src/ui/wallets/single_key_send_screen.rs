@@ -779,14 +779,22 @@ impl SingleKeyWalletSendScreen {
                     if ui.button("Unlock").clicked()
                         && let Some(wallet) = &self.selected_wallet
                     {
-                        let mut wallet_guard = wallet.write().unwrap();
-                        match wallet_guard.open(&self.wallet_password) {
-                            Ok(_) => {
-                                self.error_message = None;
-                                self.wallet_password.clear();
+                        match wallet.write() {
+                            Ok(mut wallet_guard) => {
+                                match wallet_guard.open(&self.wallet_password) {
+                                    Ok(_) => {
+                                        self.error_message = None;
+                                        self.wallet_password.clear();
+                                    }
+                                    Err(e) => {
+                                        self.error_message =
+                                            Some(format!("Failed to unlock: {}", e));
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                self.error_message = Some(format!("Failed to unlock: {}", e));
+                            Err(_) => {
+                                self.error_message =
+                                    Some("Wallet lock error, please try again".to_string());
                             }
                         }
                     }

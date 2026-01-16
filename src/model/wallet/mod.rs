@@ -265,7 +265,14 @@ pub struct WalletArcRef {
 
 impl From<Arc<RwLock<Wallet>>> for WalletArcRef {
     fn from(wallet: Arc<RwLock<Wallet>>) -> Self {
-        let seed_hash = { wallet.read().unwrap().seed_hash() };
+        // From trait doesn't allow returning Result, so use a fallback for poisoned locks
+        let seed_hash = wallet
+            .read()
+            .map(|w| w.seed_hash())
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!("Wallet lock poisoned during WalletArcRef conversion");
+                poisoned.into_inner().seed_hash()
+            });
         Self { wallet, seed_hash }
     }
 }
@@ -413,7 +420,7 @@ impl WalletSeed {
                     OpenWalletSeed {
                         seed: closed_seed.encrypted_seed.clone().try_into().map_err(
                             |e: Vec<u8>| {
-                                format!("incorred seed size, expected 64 bytes, got {}", e.len())
+                                format!("incorrect seed size, expected 64 bytes, got {}", e.len())
                             },
                         )?,
                         wallet_info: closed_seed.clone(),
@@ -1589,15 +1596,17 @@ impl Wallet {
             .map(|(i, input)| {
                 let script_pubkey = utxos
                     .get(&input.previous_output)
-                    .expect("missing utxo when computing sighash")
+                    .ok_or_else(|| {
+                        format!("missing utxo for outpoint {:?}", input.previous_output)
+                    })?
                     .0
                     .script_pubkey
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .expect("failed to compute sighash")
+                    .map_err(|e| format!("failed to compute sighash: {}", e))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
 
         let secp = Secp256k1::new();
         let mut utxo_lookup = utxos.clone();
@@ -1606,9 +1615,10 @@ impl Wallet {
             .iter_mut()
             .zip(sighashes.into_iter())
             .try_for_each(|(input, sighash)| {
-                let (_, input_address) = utxo_lookup
-                    .remove(&input.previous_output)
-                    .expect("utxo missing when signing");
+                let (_, input_address) =
+                    utxo_lookup.remove(&input.previous_output).ok_or_else(|| {
+                        format!("utxo missing for outpoint {:?}", input.previous_output)
+                    })?;
                 let private_key = self
                     .private_key_for_address(&input_address, network)?
                     .ok_or_else(|| format!("Address {} not managed by wallet", input_address))?;
@@ -1727,15 +1737,17 @@ impl Wallet {
             .map(|(i, input)| {
                 let script_pubkey = utxos
                     .get(&input.previous_output)
-                    .expect("missing utxo when computing sighash")
+                    .ok_or_else(|| {
+                        format!("missing utxo for outpoint {:?}", input.previous_output)
+                    })?
                     .0
                     .script_pubkey
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .expect("failed to compute sighash")
+                    .map_err(|e| format!("failed to compute sighash: {}", e))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
 
         let secp = Secp256k1::new();
         let mut utxo_lookup = utxos.clone();
@@ -1744,9 +1756,10 @@ impl Wallet {
             .iter_mut()
             .zip(sighashes.into_iter())
             .try_for_each(|(input, sighash)| {
-                let (_, input_address) = utxo_lookup
-                    .remove(&input.previous_output)
-                    .expect("utxo missing when signing");
+                let (_, input_address) =
+                    utxo_lookup.remove(&input.previous_output).ok_or_else(|| {
+                        format!("utxo missing for outpoint {:?}", input.previous_output)
+                    })?;
                 let private_key = self
                     .private_key_for_address(&input_address, network)?
                     .ok_or_else(|| format!("Address {} not managed by wallet", input_address))?;
@@ -1958,8 +1971,12 @@ impl Signer<PlatformAddress> for Wallet {
             ));
         }
 
-        // We need the network to derive the key, but we don't have it here.
-        // Try both networks - the address will only exist in one
+        // The Signer trait doesn't pass network info, so we try each network.
+        // This is safe because:
+        // 1. A wallet instance only stores keys for ONE network (set at creation)
+        // 2. Platform addresses encode their network in the bech32m prefix (dashevo/tdashevo)
+        // 3. get_platform_address_private_key will only succeed for the correct network
+        // 4. Only one network's derivation will match the wallet's seed
         let private_key = self
             .get_platform_address_private_key(platform_address, Network::Dash)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
@@ -1987,7 +2004,8 @@ impl Signer<PlatformAddress> for Wallet {
             ));
         }
 
-        // Get the private key (try all networks)
+        // The Signer trait doesn't pass network info, so we try each network.
+        // This is safe - see comment in sign() above for explanation.
         let private_key = self
             .get_platform_address_private_key(platform_address, Network::Dash)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))

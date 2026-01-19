@@ -11,7 +11,7 @@ build-test/
 .env
 .env.backups
 .testnet_nodes.yml
-test_db
+test_db*
 
 # Visual Studo Code configuration
 .vscode/

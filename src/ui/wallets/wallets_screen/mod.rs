@@ -587,9 +587,11 @@ impl WalletsBalancesScreen {
 
                     // Dev mode: Refresh mode selector
                     if self.app_context.is_developer_mode() {
-                        ui.label(egui::RichText::new("Refresh Mode:").color(
-                            DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
-                        ));
+                        ui.label(
+                            egui::RichText::new("Refresh Mode:").color(DashColors::text_primary(
+                                ui.ctx().style().visuals.dark_mode,
+                            )),
+                        );
 
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                             ComboBox::from_id_salt("refresh_mode_selector")
@@ -3338,7 +3340,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     .corner_radius(5.0)
                     .stroke(egui::Stroke::new(1.0, message_color))
                     .show(ui, |ui| {
-                        ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(&message).color(message_color),

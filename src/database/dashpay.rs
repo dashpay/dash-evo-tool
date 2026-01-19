@@ -11,6 +11,7 @@ pub struct StoredProfile {
     pub avatar_url: Option<String>,
     pub avatar_hash: Option<Vec<u8>>,
     pub avatar_fingerprint: Option<Vec<u8>>,
+    pub avatar_bytes: Option<Vec<u8>>,
     pub public_message: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -88,6 +89,7 @@ impl crate::database::Database {
                 avatar_url TEXT,
                 avatar_hash BLOB,
                 avatar_fingerprint BLOB,
+                avatar_bytes BLOB,
                 public_message TEXT,
                 created_at INTEGER DEFAULT (unixepoch()),
                 updated_at INTEGER DEFAULT (unixepoch()),
@@ -249,6 +251,26 @@ impl crate::database::Database {
         Ok(())
     }
 
+    /// Save avatar bytes for a profile (called after fetching avatar from network)
+    pub fn save_dashpay_profile_avatar_bytes(
+        &self,
+        identity_id: &Identifier,
+        network: &str,
+        avatar_bytes: Option<&[u8]>,
+    ) -> rusqlite::Result<()> {
+        let sql = "
+            UPDATE dashpay_profiles
+            SET avatar_bytes = ?1, updated_at = unixepoch()
+            WHERE identity_id = ?2 AND network = ?3
+        ";
+
+        self.execute(
+            sql,
+            params![avatar_bytes, identity_id.to_buffer().to_vec(), network,],
+        )?;
+        Ok(())
+    }
+
     pub fn load_dashpay_profile(
         &self,
         identity_id: &Identifier,
@@ -258,7 +280,7 @@ impl crate::database::Database {
 
         let mut stmt = conn.prepare(
             "SELECT identity_id, display_name, bio, avatar_url, avatar_hash,
-                    avatar_fingerprint, public_message, created_at, updated_at
+                    avatar_fingerprint, avatar_bytes, public_message, created_at, updated_at
              FROM dashpay_profiles
              WHERE identity_id = ?1 AND network = ?2",
         )?;
@@ -271,9 +293,10 @@ impl crate::database::Database {
                 avatar_url: row.get(3)?,
                 avatar_hash: row.get(4)?,
                 avatar_fingerprint: row.get(5)?,
-                public_message: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                avatar_bytes: row.get(6)?,
+                public_message: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
             })
         });
 

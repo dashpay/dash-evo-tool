@@ -79,7 +79,16 @@ impl AppContext {
                 },
                 _ = cancel.cancelled() => {
                     // Check the setting to determine if we should close Dash-Qt
-                    let should_close = db.get_close_dash_qt_on_exit().unwrap_or(true);
+                    let should_close = match db.get_close_dash_qt_on_exit() {
+                        Ok(value) => {
+                            tracing::debug!("close_dash_qt_on_exit setting read successfully: {}", value);
+                            value
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to read close_dash_qt_on_exit setting: {:?}, defaulting to true", e);
+                            true
+                        }
+                    };
                     if should_close {
                         tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
                         signal_term(&dash_qt)

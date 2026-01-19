@@ -3020,7 +3020,8 @@ mod tests {
 
     #[test]
     fn test_token_creator_ui_builds_correct_contract() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_token_creator";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
@@ -3325,7 +3326,8 @@ mod tests {
 
     #[test]
     fn test_distribution_function_random() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_distribution_random";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
@@ -3444,7 +3446,8 @@ mod tests {
 
     #[test]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_empty_token_name";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 

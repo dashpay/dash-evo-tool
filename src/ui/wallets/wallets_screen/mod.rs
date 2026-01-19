@@ -587,9 +587,11 @@ impl WalletsBalancesScreen {
 
                     // Dev mode: Refresh mode selector
                     if self.app_context.is_developer_mode() {
-                        ui.label(egui::RichText::new("Refresh Mode:").color(
-                            DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
-                        ));
+                        ui.label(
+                            egui::RichText::new("Refresh Mode:").color(DashColors::text_primary(
+                                ui.ctx().style().visuals.dark_mode,
+                            )),
+                        );
 
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                             ComboBox::from_id_salt("refresh_mode_selector")

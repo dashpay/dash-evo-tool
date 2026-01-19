@@ -16,6 +16,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Free disk space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          # Remove large unnecessary directories
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /opt/hostedtoolcache/go
+          sudo rm -rf /opt/hostedtoolcache/node
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/graalvm
+          sudo rm -rf /usr/local/.ghcup
+          # Clean docker
+          sudo docker image prune --all --force || true
+          sudo docker system prune --all --force || true
+          # Clean apt cache
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo "=== Disk space after cleanup ==="
+          df -h
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -25,11 +49,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
@@ -37,15 +59,6 @@ jobs:
           toolchain: 1.92
           components: clippy
           override: true
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          df -h
 
       - name: Install system dependencies
         run: |

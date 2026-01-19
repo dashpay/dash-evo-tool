@@ -1,3 +1,10 @@
+mod fetch_platform_address_balances;
+mod fund_platform_address_from_asset_lock;
+mod fund_platform_address_from_wallet_utxos;
+mod generate_receive_address;
+mod transfer_platform_credits;
+mod withdraw_from_platform_address;
+
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
@@ -64,14 +71,8 @@ pub enum WalletTask {
         amount: u64,
         /// Destination platform address to fund
         destination: PlatformAddress,
-    },
-    /// Fund multiple Platform addresses at once (for testing/benchmarking)
-    /// Derives N new Platform addresses and funds each with the specified amount
-    FundMultiplePlatformAddresses {
-        seed_hash: WalletSeedHash,
-        /// Number of addresses to create and fund
-        count: u32,
-        /// Amount in duffs per address (total locked = count * amount_per_address)
-        amount_per_address: u64,
+        /// If true, fees are deducted from the output amount (recipient receives less).
+        /// If false, fees are paid from extra wallet balance (recipient receives exact amount).
+        fee_deduct_from_output: bool,
     },
 }

@@ -846,7 +846,12 @@ impl Database {
                 let address = address.assume_checked();
                 wallet.platform_address_info.insert(
                     address,
-                    crate::model::wallet::PlatformAddressInfo { balance, nonce },
+                    crate::model::wallet::PlatformAddressInfo {
+                        balance,
+                        nonce,
+                        // Assume database balance is from sync (safe default)
+                        last_synced_balance: Some(balance),
+                    },
                 );
             }
         }
@@ -998,7 +1003,10 @@ impl Database {
 
     /// Get the last platform full sync timestamp, checkpoint height, and last terminal block for a wallet
     /// Returns (last_sync_timestamp, checkpoint_height, last_terminal_block) or (0, 0, 0) if not set
-    pub fn get_platform_sync_info(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<(u64, u64, u64)> {
+    pub fn get_platform_sync_info(
+        &self,
+        seed_hash: &[u8; 32],
+    ) -> rusqlite::Result<(u64, u64, u64)> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT last_platform_full_sync, last_platform_sync_checkpoint, COALESCE(last_terminal_block, 0) FROM wallet WHERE seed_hash = ?",

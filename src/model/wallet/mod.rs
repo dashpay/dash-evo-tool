@@ -288,6 +288,9 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
+    /// Balance as of last full sync (used for terminal-only sync pre-population)
+    /// This prevents double-counting when proof-verified updates happen between syncs
+    pub last_synced_balance: Option<Credits>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1901,8 +1904,37 @@ impl Wallet {
             }
         }
 
-        self.platform_address_info
-            .insert(address, PlatformAddressInfo { balance, nonce });
+        // Preserve last_synced_balance if it exists
+        let last_synced_balance = self
+            .platform_address_info
+            .get(&address)
+            .and_then(|info| info.last_synced_balance);
+
+        self.platform_address_info.insert(
+            address,
+            PlatformAddressInfo {
+                balance,
+                nonce,
+                last_synced_balance,
+            },
+        );
+    }
+
+    /// Set platform address info from a sync operation (updates last_synced_balance)
+    pub fn set_platform_address_info_from_sync(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+    ) {
+        self.platform_address_info.insert(
+            address,
+            PlatformAddressInfo {
+                balance,
+                nonce,
+                last_synced_balance: Some(balance),
+            },
+        );
     }
 
     /// Get the private key for a Platform address
@@ -2168,7 +2200,8 @@ impl WalletAddressProvider {
                 .map(|info| info.nonce)
                 .unwrap_or(0);
 
-            wallet.set_platform_address_info(address.clone(), *balance, nonce);
+            // Use sync-specific method that also updates last_synced_balance
+            wallet.set_platform_address_info_from_sync(address.clone(), *balance, nonce);
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(address)

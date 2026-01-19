@@ -3741,13 +3741,21 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
-            crate::ui::BackendTaskSuccessResult::RefreshedWallet => {
+            crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
-                self.message = Some((
-                    "Successfully refreshed wallet".to_string(),
-                    MessageType::Success,
-                    Utc::now(),
-                ));
+                if let Some(warn_msg) = warning {
+                    self.message = Some((
+                        format!("Wallet refreshed with warning: {}", warn_msg),
+                        MessageType::Info,
+                        Utc::now(),
+                    ));
+                } else {
+                    self.message = Some((
+                        "Successfully refreshed wallet".to_string(),
+                        MessageType::Success,
+                        Utc::now(),
+                    ));
+                }
             }
             crate::ui::BackendTaskSuccessResult::RecoveredAssetLocks {
                 recovered_count,

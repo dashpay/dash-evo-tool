@@ -1382,7 +1382,8 @@ impl ProfileScreen {
                     // Preserve cached avatar bytes if URL hasn't changed
                     let avatar_bytes = if avatar_url_changed {
                         // URL changed, clear cached bytes and texture so new avatar is fetched
-                        self.avatar_textures.remove(&format!("avatar_{}", old_avatar_url.unwrap_or_default()));
+                        self.avatar_textures
+                            .remove(&format!("avatar_{}", old_avatar_url.unwrap_or_default()));
                         self.avatar_loading = false;
 
                         // Clear old avatar bytes from database since URL changed

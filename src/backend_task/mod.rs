@@ -248,7 +248,10 @@ pub enum BackendTaskSuccessResult {
     ProofErrorLogged,
 
     // Wallet operation results (replacing string messages)
-    RefreshedWallet,
+    RefreshedWallet {
+        /// Optional warning message (e.g., Platform sync failed but Core refresh succeeded)
+        warning: Option<String>,
+    },
     RecoveredAssetLocks {
         recovered_count: usize,
         total_amount: u64,

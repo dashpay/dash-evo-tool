@@ -12,10 +12,11 @@ use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -23,14 +24,16 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
-use crate::ui::{BackendTaskSuccessResult, MessageType, Screen, ScreenLike};
+use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::IdentityPublicKey;
@@ -50,6 +53,7 @@ pub struct PurchaseTokenScreen {
 
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
 
     // Specific to this transition - using AmountInput components following design pattern
     amount_to_purchase_input: Option<AmountInput>,
@@ -65,8 +69,9 @@ pub struct PurchaseTokenScreen {
 
     // Wallet fields
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl PurchaseTokenScreen {
@@ -95,6 +100,7 @@ impl PurchaseTokenScreen {
         Self {
             identity_token_info,
             selected_key: possible_key,
+            show_advanced_options: false,
             amount_to_purchase_input: None,
             amount_to_purchase_value: None,
             fetched_pricing_schedule: None,
@@ -105,8 +111,8 @@ impl PurchaseTokenScreen {
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -312,65 +318,51 @@ impl PurchaseTokenScreen {
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Purchase Successful!");
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Tokens").clicked() {
-                // Pop this screen and refresh
-                action = AppAction::PopScreenAndRefresh;
-            }
-        });
-        action
+        crate::ui::helpers::show_success_screen_with_info(
+            ui,
+            "Purchase Successful!".to_string(),
+            vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            None,
+        )
     }
 }
 
 impl ScreenLike for PurchaseTokenScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TokenPricing {
-            token_id: _,
-            prices,
-        } = result
-        {
-            self.pricing_fetch_attempted = true;
-            if let Some(schedule) = prices {
-                self.fetched_pricing_schedule = Some(schedule);
-                self.recalculate_price();
-                self.status = PurchaseTokensStatus::NotStarted;
-            } else {
-                // No pricing schedule found - token is not for sale
-                self.status = PurchaseTokensStatus::ErrorMessage(
-                    "This token is not available for direct purchase. No pricing has been set."
-                        .to_string(),
-                );
-                self.error_message = Some(
-                    "This token is not available for direct purchase. No pricing has been set."
-                        .to_string(),
-                );
+        match result {
+            BackendTaskSuccessResult::TokenPricing {
+                token_id: _,
+                prices,
+            } => {
+                self.pricing_fetch_attempted = true;
+                if let Some(schedule) = prices {
+                    self.fetched_pricing_schedule = Some(schedule);
+                    self.recalculate_price();
+                    self.status = PurchaseTokensStatus::NotStarted;
+                } else {
+                    // No pricing schedule found - token is not for sale
+                    self.status = PurchaseTokensStatus::ErrorMessage(
+                        "This token is not available for direct purchase. No pricing has been set."
+                            .to_string(),
+                    );
+                    self.error_message = Some(
+                        "This token is not available for direct purchase. No pricing has been set."
+                            .to_string(),
+                    );
+                }
             }
+            BackendTaskSuccessResult::PurchasedTokens(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
+                self.status = PurchaseTokensStatus::Complete;
+            }
+            _ => {}
         }
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Successfully purchaseed tokens") || message == "PurchaseTokens"
-                {
-                    self.status = PurchaseTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = PurchaseTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = PurchaseTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
         }
     }
 
@@ -477,35 +469,52 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
             } else {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        // Must unlock before we can proceed
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
                         return;
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the Purchase transaction");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Purchase Tokens");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity_token_info.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity_token_info.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenAction,
-                );
-
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the Purchase transaction");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity_token_info.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
 
-                // 2) Amount to purchase
-                ui.heading("2. Amount to purchase and price");
+                // Amount to purchase
+                let step_num = if self.show_advanced_options { 2 } else { 1 };
+                ui.heading(format!("{}. Amount to purchase and price", step_num));
                 ui.add_space(5.0);
                 action |= self.render_amount_input(ui);
 
@@ -534,6 +543,28 @@ impl ScreenLike for PurchaseTokenScreen {
 
                 ui.add_space(10.0);
                 ui.separator();
+                ui.add_space(10.0);
+
+                // Display estimated fee before action button
+                let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                egui::Frame::new()
+                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated Fee:")
+                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            );
+                        });
+                    });
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no valid amounts are available)
@@ -626,37 +657,19 @@ impl ScreenLike for PurchaseTokenScreen {
             }
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for PurchaseTokenScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }
 

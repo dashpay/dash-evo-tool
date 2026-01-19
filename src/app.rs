@@ -11,7 +11,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
-use crate::ui::contracts_documents::dashpay_coming_soon_screen::DashpayScreen;
+use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
@@ -19,6 +19,7 @@ use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
+use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
@@ -28,6 +29,7 @@ use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
+use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
 use crate::utils::tasks::TaskManager;
@@ -68,19 +70,23 @@ pub struct AppState {
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub mainnet_core_zmq_listener: CoreZMQListener,
+    pub mainnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub testnet_core_zmq_listener: CoreZMQListener,
+    pub testnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub devnet_core_zmq_listener: CoreZMQListener,
+    pub devnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub local_core_zmq_listener: CoreZMQListener,
+    pub local_core_zmq_listener: Option<CoreZMQListener>,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
+    /// Whether to show the welcome/onboarding screen
+    pub show_welcome_screen: bool,
+    /// The welcome screen instance (only created if needed)
+    pub welcome_screen: Option<WelcomeScreen>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +141,13 @@ pub enum AppAction {
     BackendTask(BackendTask),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
+    /// Mark onboarding as complete, hide welcome screen, and optionally navigate
+    OnboardingComplete {
+        /// The main screen to show
+        main_screen: RootScreenType,
+        /// Optional sub-screen to push onto the stack
+        add_screen: Option<Box<crate::ui::ScreenType>>,
+    },
 }
 
 impl BitOrAssign for AppAction {
@@ -166,6 +179,7 @@ impl AppState {
         let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
+        let onboarding_completed = settings.onboarding_completed;
 
         let subtasks = Arc::new(TaskManager::new());
         let mainnet_app_context = match AppContext::new(
@@ -221,6 +235,7 @@ impl AppState {
         let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
         let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
         let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
+        let mut address_balance_screen = AddressBalanceScreen::new(&mainnet_app_context);
         let mut grovestark_screen = GroveSTARKScreen::new(&mainnet_app_context);
         let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
         let mut tokens_balances_screen =
@@ -229,7 +244,18 @@ impl AppState {
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
         let mut token_creator_screen =
             TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
-        let mut contracts_dashpay_screen = DashpayScreen::new(&mainnet_app_context);
+        let mut contracts_dashpay_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
+
+        // Create DashPay screens
+        let mut dashpay_contacts_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Contacts);
+        let mut dashpay_profile_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
+        let mut dashpay_payments_screen =
+            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Payments);
+        let mut dashpay_profile_search_screen =
+            ProfileSearchScreen::new(mainnet_app_context.clone());
 
         let mut network_chooser_screen = NetworkChooserScreen::new(
             &mainnet_app_context,
@@ -267,14 +293,23 @@ impl AppState {
             wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
             proof_log_screen = ProofLogScreen::new(testnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
+            address_balance_screen = AddressBalanceScreen::new(testnet_app_context);
             masternode_list_diff_screen = MasternodeListDiffScreen::new(testnet_app_context);
-            contracts_dashpay_screen = DashpayScreen::new(testnet_app_context);
+            contracts_dashpay_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
             tokens_balances_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
+            dashpay_contacts_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Contacts);
+            dashpay_profile_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
+            dashpay_payments_screen =
+                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Payments);
+            dashpay_profile_search_screen = ProfileSearchScreen::new(testnet_app_context.clone());
         } else if let (Network::Devnet, Some(devnet_app_context)) =
             (chosen_network, devnet_app_context.as_ref())
         {
@@ -295,12 +330,20 @@ impl AppState {
             wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
             proof_log_screen = ProofLogScreen::new(devnet_app_context);
             platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
+            address_balance_screen = AddressBalanceScreen::new(devnet_app_context);
             tokens_balances_screen =
                 TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
                 TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
+            dashpay_contacts_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Contacts);
+            dashpay_profile_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Profile);
+            dashpay_payments_screen =
+                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Payments);
+            dashpay_profile_search_screen = ProfileSearchScreen::new(devnet_app_context.clone());
         } else if let (Network::Regtest, Some(local_app_context)) =
             (chosen_network, local_app_context.as_ref())
         {
@@ -320,13 +363,22 @@ impl AppState {
             masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
             proof_log_screen = ProofLogScreen::new(local_app_context);
             platform_info_screen = PlatformInfoScreen::new(local_app_context);
-            contracts_dashpay_screen = DashpayScreen::new(local_app_context);
+            address_balance_screen = AddressBalanceScreen::new(local_app_context);
+            contracts_dashpay_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
             tokens_balances_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
             token_search_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
             token_creator_screen =
                 TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
+            dashpay_contacts_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Contacts);
+            dashpay_profile_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
+            dashpay_payments_screen =
+                DashPayScreen::new(local_app_context, DashPaySubscreen::Payments);
+            dashpay_profile_search_screen = ProfileSearchScreen::new(local_app_context.clone());
         }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
@@ -344,13 +396,25 @@ impl AppState {
             .core_zmq_endpoint
             .clone()
             .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
-        let mainnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Dash,
-            &mainnet_core_zmq_endpoint,
-            core_message_sender.clone(), // Clone the sender for each listener
-            Some(mainnet_app_context.sx_zmq_status.clone()),
-        )
-        .expect("Failed to create mainnet InstantSend listener");
+        let mainnet_disable_zmq = mainnet_app_context
+            .get_settings()
+            .ok()
+            .flatten()
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Dash,
+                    &mainnet_core_zmq_endpoint,
+                    core_message_sender.clone(), // Clone the sender for each listener
+                    Some(mainnet_app_context.sx_zmq_status.clone()),
+                )
+                .expect("Failed to create mainnet InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         let testnet_tx_zmq_status_option = testnet_app_context
             .as_ref()
@@ -360,13 +424,24 @@ impl AppState {
             .as_ref()
             .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:23709".to_string());
-        let testnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Testnet,
-            &testnet_core_zmq_endpoint,
-            core_message_sender.clone(), // Use the original sender or create a new one if needed
-            testnet_tx_zmq_status_option,
-        )
-        .expect("Failed to create testnet InstantSend listener");
+        let testnet_disable_zmq = testnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.get_settings().ok().flatten())
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let testnet_core_zmq_listener = if !testnet_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Testnet,
+                    &testnet_core_zmq_endpoint,
+                    core_message_sender.clone(), // Use the original sender or create a new one if needed
+                    testnet_tx_zmq_status_option,
+                )
+                .expect("Failed to create testnet InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         let devnet_tx_zmq_status_option = devnet_app_context
             .as_ref()
@@ -376,13 +451,24 @@ impl AppState {
             .as_ref()
             .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:23710".to_string());
-        let devnet_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Devnet,
-            &devnet_core_zmq_endpoint,
-            core_message_sender.clone(),
-            devnet_tx_zmq_status_option,
-        )
-        .expect("Failed to create devnet InstantSend listener");
+        let devnet_disable_zmq = devnet_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.get_settings().ok().flatten())
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let devnet_core_zmq_listener = if !devnet_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Devnet,
+                    &devnet_core_zmq_endpoint,
+                    core_message_sender.clone(),
+                    devnet_tx_zmq_status_option,
+                )
+                .expect("Failed to create devnet InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
         let local_tx_zmq_status_option = local_app_context
             .as_ref()
@@ -392,15 +478,26 @@ impl AppState {
             .as_ref()
             .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:20302".to_string());
-        let local_core_zmq_listener = CoreZMQListener::spawn_listener(
-            Network::Regtest,
-            &local_core_zmq_endpoint,
-            core_message_sender,
-            local_tx_zmq_status_option,
-        )
-        .expect("Failed to create local InstantSend listener");
+        let local_disable_zmq = local_app_context
+            .as_ref()
+            .and_then(|ctx| ctx.get_settings().ok().flatten())
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        let local_core_zmq_listener = if !local_disable_zmq {
+            Some(
+                CoreZMQListener::spawn_listener(
+                    Network::Regtest,
+                    &local_core_zmq_endpoint,
+                    core_message_sender,
+                    local_tx_zmq_status_option,
+                )
+                .expect("Failed to create local InstantSend listener"),
+            )
+        } else {
+            None
+        };
 
-        Self {
+        let mut app_state = Self {
             main_screens: [
                 (
                     RootScreenType::RootScreenIdentities,
@@ -451,6 +548,10 @@ impl AppState {
                     Screen::PlatformInfoScreen(platform_info_screen),
                 ),
                 (
+                    RootScreenType::RootScreenToolsAddressBalanceScreen,
+                    Screen::AddressBalanceScreen(address_balance_screen),
+                ),
+                (
                     RootScreenType::RootScreenToolsGroveSTARKScreen,
                     Screen::GroveSTARKScreen(grovestark_screen),
                 ),
@@ -460,7 +561,7 @@ impl AppState {
                 ),
                 (
                     RootScreenType::RootScreenDashpay,
-                    Screen::DashpayScreen(contracts_dashpay_screen),
+                    Screen::DashPayScreen(contracts_dashpay_screen),
                 ),
                 (
                     RootScreenType::RootScreenNetworkChooser,
@@ -482,6 +583,22 @@ impl AppState {
                     RootScreenType::RootScreenTokenCreator,
                     Screen::TokensScreen(Box::new(token_creator_screen)),
                 ),
+                (
+                    RootScreenType::RootScreenDashPayContacts,
+                    Screen::DashPayScreen(dashpay_contacts_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayProfile,
+                    Screen::DashPayScreen(dashpay_profile_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayPayments,
+                    Screen::DashPayScreen(dashpay_payments_screen),
+                ),
+                (
+                    RootScreenType::RootScreenDashPayProfileSearch,
+                    Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
+                ),
             ]
             .into(),
             selected_main_screen,
@@ -501,7 +618,41 @@ impl AppState {
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
             subtasks,
+            show_welcome_screen: !onboarding_completed,
+            welcome_screen: None,
+        };
+
+        // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
+        if app_state.show_welcome_screen {
+            app_state.welcome_screen =
+                Some(WelcomeScreen::new(app_state.mainnet_app_context.clone()));
+        } else {
+            // Auto-start SPV sync if onboarding is completed, backend mode is SPV, auto-start is enabled,
+            // and developer mode is enabled.
+            // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+            // Remove the is_developer_mode() check once SPV is production-ready.
+            let current_context = app_state.current_app_context();
+            let auto_start_spv = db.get_auto_start_spv().unwrap_or(true);
+            if auto_start_spv
+                && current_context.is_developer_mode()
+                && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
+            {
+                if let Err(e) = current_context.start_spv() {
+                    tracing::warn!("Failed to auto-start SPV sync: {}", e);
+                } else {
+                    tracing::info!("SPV sync started automatically for {:?}", chosen_network);
+                }
+            }
+
+            // Refresh ALL main screens so they load data properly
+            // This ensures screens like DashPay Profile have identities loaded
+            // even if they're not the initially selected screen
+            for screen in app_state.main_screens.values_mut() {
+                screen.refresh_on_arrival();
+            }
         }
+
+        app_state
     }
 
     /// Allows enabling or disabling animations globally for the app.
@@ -583,6 +734,7 @@ impl AppState {
     pub fn change_network(&mut self, network: Network) {
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
+
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
         }
@@ -654,9 +806,11 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::Message(ref msg) => {
+                        BackendTaskSuccessResult::Message(ref _msg) => {
+                            // Let the screen handle Message via display_task_result
+                            // so it can do custom handling (like clearing spinners)
                             self.visible_screen_mut()
-                                .display_message(msg, MessageType::Success);
+                                .display_task_result(unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
@@ -829,7 +983,16 @@ impl App for AppState {
             }
         }
 
-        let action = self.visible_screen_mut().ui(ctx);
+        // Show welcome screen if onboarding not completed
+        let action = if self.show_welcome_screen {
+            if let Some(welcome_screen) = &mut self.welcome_screen {
+                welcome_screen.ui(ctx)
+            } else {
+                AppAction::None
+            }
+        } else {
+            self.visible_screen_mut().ui(ctx)
+        };
 
         match action {
             AppAction::AddScreen(screen) => self.screen_stack.push(screen),
@@ -900,21 +1063,47 @@ impl App for AppState {
                     .ok();
             }
             AppAction::Custom(_) => {}
+            AppAction::OnboardingComplete {
+                main_screen,
+                add_screen,
+            } => {
+                self.show_welcome_screen = false;
+                self.welcome_screen = None;
+                self.selected_main_screen = main_screen;
+                self.active_root_screen_mut().refresh_on_arrival();
+                self.current_app_context().update_settings(main_screen).ok();
+                // If there's an additional screen to push, create and push it
+                if let Some(screen_type) = add_screen {
+                    let screen = screen_type.create_screen(self.current_app_context());
+                    self.screen_stack.push(screen);
+                }
+                // Start SPV sync after onboarding completes (if auto-start is enabled and developer mode is on)
+                // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+                // Remove the is_developer_mode() check once SPV is production-ready.
+                let current_context = self.current_app_context();
+                let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(true);
+                if auto_start_spv
+                    && current_context.is_developer_mode()
+                    && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
+                {
+                    if let Err(e) = current_context.start_spv() {
+                        tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
+                    } else {
+                        tracing::info!("SPV sync started after onboarding");
+                    }
+                }
+            }
         }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Signal all background tasks to cancel
-        tracing::debug!("App received on_exit event, cancelling all background tasks");
-
-        // if ctx.input(|i| i.viewport().close_requested()) {
-        if !self.subtasks.cancellation_token.is_cancelled() {
-            self.subtasks.shutdown().unwrap_or_else(|e| {
-                tracing::debug!("Failed to shutdown subtasks: {}", e);
-            });
-        } else {
-            tracing::debug!("Shutdown already in progress, ignoring close request");
+        // Gracefully shutdown all background tasks, waiting for them to complete
+        // This ensures tasks like the dash-qt handler have time to check their settings
+        // and decide whether to terminate the process or leave it running
+        tracing::debug!("App received on_exit event, initiating graceful shutdown");
+        if let Err(e) = self.subtasks.shutdown() {
+            tracing::error!("Error during task shutdown: {}", e);
         }
-        // }
+        tracing::debug!("App shutdown complete");
     }
 }

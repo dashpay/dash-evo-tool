@@ -13,8 +13,12 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identities::register_dpns_name_screen::{
+    RegisterDpnsNameScreen, RegisterDpnsNameSource,
+};
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -63,6 +67,9 @@ pub struct IdentitiesScreen {
     use_custom_order: bool,
     refreshing_status: IdentitiesRefreshingStatus,
     backend_message: Option<(String, MessageType, DateTime<Utc>)>,
+    // Alias editing state
+    editing_alias_identity: Option<Identifier>,
+    editing_alias_value: String,
 }
 
 impl IdentitiesScreen {
@@ -86,6 +93,8 @@ impl IdentitiesScreen {
             use_custom_order: true,
             refreshing_status: IdentitiesRefreshingStatus::NotRefreshing,
             backend_message: None,
+            editing_alias_identity: None,
+            editing_alias_value: String::new(),
         };
 
         if let Ok(saved_ids) = screen.app_context.db.load_identity_order() {
@@ -209,43 +218,28 @@ impl IdentitiesScreen {
         "".to_owned()
     }
 
-    fn show_alias(&self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        let placeholder_text = match qualified_identity.identity_type {
-            IdentityType::Masternode => "A Masternode",
-            IdentityType::Evonode => "An Evonode",
-            IdentityType::User => "An Identity",
-        };
-
-        let mut alias = qualified_identity.alias.clone().unwrap_or_default();
-
+    fn show_alias(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let text_edit = egui::TextEdit::singleline(&mut alias)
-            .hint_text(placeholder_text)
-            .desired_width(100.0)
-            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-            .background_color(crate::ui::theme::DashColors::input_background(dark_mode));
 
-        if ui.add(text_edit).changed() {
-            // If user edits alias, we do not necessarily turn on "custom order."
-            // This is a separate property. But we do update the stored alias.
-            let mut identities = self.identities.lock().unwrap();
-            let identity_to_update = identities
-                .get_mut(&qualified_identity.identity.id())
-                .unwrap();
+        if let Some(alias) = &qualified_identity.alias {
+            ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
+        } else {
+            let button = egui::Button::new(
+                RichText::new("Set Alias")
+                    .small()
+                    .color(DashColors::text_secondary(dark_mode)),
+            )
+            .small()
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(
+                1.0,
+                DashColors::text_secondary(dark_mode),
+            ))
+            .corner_radius(egui::CornerRadius::same(3));
 
-            if alias == placeholder_text || alias.is_empty() {
-                identity_to_update.alias = None;
-            } else {
-                identity_to_update.alias = Some(alias);
-            }
-            match self.app_context.set_identity_alias(
-                &identity_to_update.identity.id(),
-                identity_to_update.alias.as_deref(),
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("{}", e);
-                }
+            if ui.add(button).clicked() {
+                self.editing_alias_identity = Some(qualified_identity.identity.id());
+                self.editing_alias_value.clear();
             }
         }
     }
@@ -260,7 +254,7 @@ impl IdentitiesScreen {
         let identifier_as_string = qualified_identity.identity.id().to_string(encoding);
         ui.add(
             egui::Label::new(identifier_as_string)
-                .sense(egui::Sense::hover())
+                .selectable(true)
                 .truncate(),
         )
         .on_hover_text(helper);
@@ -411,10 +405,7 @@ impl IdentitiesScreen {
                     ui.add_space(10.0);
 
                     // Description
-                    ui.label(
-                        "It looks like you are not tracking any Identities, \
-                         Evonodes, or Masternodes yet.",
-                    );
+                    ui.label("It looks like you are not tracking any Identities yet.");
 
                     ui.add_space(10.0);
 
@@ -433,7 +424,7 @@ impl IdentitiesScreen {
                          on \"Load Identity\" at the top right, or",
                     );
                     ui.add_space(1.0);
-                    ui.label("• REGISTER an Identity after creating or importing a wallet.");
+                    ui.label("• CREATE an Identity after creating or importing a wallet.");
 
                     ui.add_space(10.0);
                     ui.separator();
@@ -569,9 +560,8 @@ impl IdentitiesScreen {
                                     row.col(|ui| {
                                         ui.vertical_centered(|ui| {
                                             ui.horizontal_centered(|ui| {
-                                                ui.add_enabled_ui(is_active, |ui| {
-                                                    Self::show_identity_id(ui, qualified_identity);
-                                                });
+                                                // Always allow copying identity ID, even for failed identities
+                                                Self::show_identity_id(ui, qualified_identity);
                                             });
                                         });
                                     });
@@ -623,17 +613,36 @@ impl IdentitiesScreen {
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💸 Withdraw")).on_hover_text("Withdraw credits from this identity to a Dash Core address").clicked() {
-                                                            action = AppAction::AddScreen(
-                                                                Screen::WithdrawalScreen(WithdrawalScreen::new(
-                                                                    qualified_identity.clone(),
-                                                                    &self.app_context,
-                                                                )),
-                                                            );
-                                                        }
+                                                        // Minimum balance needed for withdrawal (0.005 DASH fee in credits)
+                                                        let min_withdrawal_balance: u64 = 500_000_000; // 0.005 DASH in credits
+                                                        let can_withdraw = qualified_identity.identity.balance() > min_withdrawal_balance;
+
+                                                        let withdraw_hover = if can_withdraw {
+                                                            "Withdraw credits from this identity to a Dash Core address"
+                                                        } else {
+                                                            "Insufficient balance for withdrawal (need at least 0.005 DASH for fees)"
+                                                        };
+                                                        let width = ui.available_width();
+                                                        ui.scope(|ui| {
+                                                            if !can_withdraw {
+                                                                ui.disable();
+                                                            }
+                                                            if ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"))
+                                                                .on_hover_text(withdraw_hover)
+                                                                .clicked()
+                                                            {
+                                                                action = AppAction::AddScreen(
+                                                                    Screen::WithdrawalScreen(WithdrawalScreen::new(
+                                                                        qualified_identity.clone(),
+                                                                        &self.app_context,
+                                                                    )),
+                                                                );
+                                                            }
+                                                        });
 
                                                         if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
                                                             action = AppAction::AddScreen(
@@ -644,13 +653,45 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📤 Transfer")).on_hover_text("Transfer credits from this identity to another identity").clicked() {
+                                                        // Minimum balance needed for transfer (0.0002 DASH fee in credits)
+                                                        let min_transfer_balance: u64 = 20_000_000;
+                                                        let can_transfer = qualified_identity.identity.balance() > min_transfer_balance;
+
+                                                        let transfer_hover = if can_transfer {
+                                                            "Transfer credits from this identity to another identity"
+                                                        } else {
+                                                            "Insufficient balance for transfer (need at least 0.0002 DASH for fees)"
+                                                        };
+                                                        let width = ui.available_width();
+                                                        ui.scope(|ui| {
+                                                            if !can_transfer {
+                                                                ui.disable();
+                                                            }
+                                                            if ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"))
+                                                                .on_hover_text(transfer_hover)
+                                                                .clicked()
+                                                            {
+                                                                action = AppAction::AddScreen(
+                                                                    Screen::TransferScreen(TransferScreen::new(
+                                                                        qualified_identity.clone(),
+                                                                        &self.app_context,
+                                                                    )),
+                                                                );
+                                                            }
+                                                        });
+
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📛 Register DPNS Name")).on_hover_text("Register a DPNS username for this identity").clicked() {
+                                                            let mut screen = RegisterDpnsNameScreen::new(&self.app_context, RegisterDpnsNameSource::Identities);
+                                                            screen.select_identity(qualified_identity.identity.id());
                                                             action = AppAction::AddScreen(
-                                                                Screen::TransferScreen(TransferScreen::new(
-                                                                    qualified_identity.clone(),
-                                                                    &self.app_context,
-                                                                )),
+                                                                Screen::RegisterDpnsNameScreen(screen),
                                                             );
+                                                        }
+
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("✏ Update Alias")).on_hover_text("Change the display name for this identity").clicked() {
+                                                            self.editing_alias_identity = Some(qualified_identity.identity.id());
+                                                            self.editing_alias_value = qualified_identity.alias.clone().unwrap_or_default();
+                                                            ui.close_kind(egui::UiKind::Menu);
                                                         }
                                                     });
                                             });
@@ -680,40 +721,24 @@ impl IdentitiesScreen {
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
                                                         .show(|ui| {
-                                                            ui.set_min_width(200.0);
+                                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                                             // Main Identity Keys
                                                             if !public_keys.is_empty() {
-                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                                                ui.label(RichText::new("Main Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
-                                                                ui.separator();
-
                                                                 for (key_id, key) in public_keys.iter() {
                                                                     let holding_private_key = qualified_identity.private_keys
                                                                         .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
 
-                                                                    let button_color = if holding_private_key.is_some() {
-                                                                        if dark_mode {
-                                                                            Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
-                                                                        } else {
-                                                                            Color32::from_rgb(167, 232, 232) // Light blue for light mode
-                                                                        }
+                                                                    let key_label = self.format_key_name(key);
+                                                                    let button = if holding_private_key.is_some() {
+                                                                        egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
                                                                     } else {
-                                                                        crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
+                                                                        egui::Button::new(&key_label)
                                                                     };
 
-                                                                    let text_color = if holding_private_key.is_some() {
-                                                                        Color32::BLACK // Black text on light blue background
-                                                                    } else {
-                                                                        crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
-                                                                    };
-
-                                                                    let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
-                                                                        .fill(button_color)
-                                                                        .frame(true);
-
-                                                                    if ui.add(button).clicked() {
+                                                                    if ui.add_sized([ui.available_width(), 0.0], button).clicked() {
                                                                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                                                             qualified_identity.clone(),
                                                                             key.clone(),
@@ -732,35 +757,19 @@ impl IdentitiesScreen {
                                                                     if !public_keys.is_empty() {
                                                                         ui.add_space(5.0);
                                                                     }
-                                                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                                                    ui.label(RichText::new("Voter Identity Keys:").strong().color(crate::ui::theme::DashColors::text_primary(dark_mode)));
-                                                                    ui.separator();
 
                                                                     for (key_id, key) in voter_public_keys.iter() {
                                                                         let holding_private_key = qualified_identity.private_keys
                                                                             .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
 
-                                                                        let button_color = if holding_private_key.is_some() {
-                                                                            if dark_mode {
-                                                                                Color32::from_rgb(100, 180, 180) // Darker blue for dark mode
-                                                                            } else {
-                                                                                Color32::from_rgb(167, 232, 232) // Light blue for light mode
-                                                                            }
+                                                                        let key_label = self.format_key_name(key);
+                                                                        let button = if holding_private_key.is_some() {
+                                                                            egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
                                                                         } else {
-                                                                            crate::ui::theme::DashColors::glass_white(dark_mode) // Theme-aware for unloaded keys
+                                                                            egui::Button::new(&key_label)
                                                                         };
 
-                                                                        let text_color = if holding_private_key.is_some() {
-                                                                            Color32::BLACK // Black text on light blue background
-                                                                        } else {
-                                                                            crate::ui::theme::DashColors::text_primary(dark_mode) // Theme-aware text
-                                                                        };
-
-                                                                        let button = egui::Button::new(RichText::new(self.format_key_name(key)).color(text_color))
-                                                                            .fill(button_color)
-                                                                            .frame(true);
-
-                                                                        if ui.add(button).clicked() {
+                                                                        if ui.add_sized([ui.available_width(), 0.0], button).clicked() {
                                                                             action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                                                                 qualified_identity.clone(),
                                                                                 key.clone(),
@@ -774,21 +783,14 @@ impl IdentitiesScreen {
                                                             }
 
                                                             // Add Key button
-                                                            if qualified_identity.can_sign_with_master_key().is_some() {
-                                                                ui.separator();
-                                                                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                                                let add_button = egui::Button::new("➕ Add Key")
-                                                                    .fill(crate::ui::theme::DashColors::glass_white(dark_mode))
-                                                                    .frame(true);
-
-                                                                    if ui.add(add_button).on_hover_text("Add a new key to this identity").clicked() {
+                                                            if qualified_identity.can_sign_with_master_key().is_some()
+                                                                && ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
                                                                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
-                                                            }
                                                         },
                                                     );
                                                 }
@@ -828,6 +830,9 @@ impl IdentitiesScreen {
                                 });
                             }
                         });
+
+            // Add space at the bottom so the horizontal scrollbar doesn't cover content
+            ui.add_space(15.0);
         });
 
         action
@@ -836,23 +841,94 @@ impl IdentitiesScreen {
     fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
         if let Some(identity_to_remove) = self.identity_to_remove.clone() {
             let action = AppAction::None;
+
+            // Draw dark overlay behind the popup
+            let screen_rect = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("confirm_removal_overlay"),
+            ));
+            painter.rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
+
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .frame(egui::Frame {
+                    inner_margin: egui::Margin::same(20),
+                    outer_margin: egui::Margin::same(0),
+                    corner_radius: egui::CornerRadius::same(8),
+                    shadow: egui::epaint::Shadow {
+                        offset: [0, 8],
+                        blur: 16,
+                        spread: 0,
+                        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                    },
+                    fill: ctx.style().visuals.window_fill,
+                    stroke: egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                    ),
+                })
                 .show(ctx, |ui| {
-                    ui.label(format!(
-                        "Are you sure you want to no longer track this {} identity?",
-                        identity_to_remove.identity_type
-                    ));
-                    ui.label(format!(
-                        "Identity ID: {}",
-                        identity_to_remove
-                            .identity
-                            .id()
-                            .to_string(identity_to_remove.identity_type.default_encoding())
-                    ));
+                    ui.set_min_width(350.0);
+
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+                    ui.label(
+                        RichText::new(format!(
+                            "Are you sure you want to no longer track this {} identity?",
+                            identity_to_remove.identity_type
+                        ))
+                        .color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    ui.add_space(8.0);
+
+                    ui.label(
+                        RichText::new(format!(
+                            "Identity ID: {}",
+                            identity_to_remove
+                                .identity
+                                .id()
+                                .to_string(identity_to_remove.identity_type.default_encoding())
+                        ))
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+
+                    ui.add_space(16.0);
+
                     ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
+                        // No button
+                        let no_button = egui::Button::new(
+                            RichText::new("No").color(DashColors::text_primary(dark_mode)),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            DashColors::text_secondary(dark_mode),
+                        ))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(no_button).clicked() {
+                            self.identity_to_remove = None;
+                        }
+
+                        ui.add_space(8.0);
+
+                        // Yes button
+                        let yes_button =
+                            egui::Button::new(RichText::new("Yes").color(Color32::WHITE))
+                                .fill(Color32::from_rgb(200, 60, 60))
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
                             let mut lock = self.identities.lock().unwrap();
                             lock.shift_remove(&identity_id);
@@ -877,15 +953,133 @@ impl IdentitiesScreen {
 
                             self.identity_to_remove = None;
                         }
-                        if ui.button("No").clicked() {
-                            self.identity_to_remove = None;
-                        }
                     });
                 });
             action
         } else {
             AppAction::None
         }
+    }
+
+    fn show_alias_edit_popup(&mut self, ctx: &Context) -> AppAction {
+        if self.editing_alias_identity.is_none() {
+            return AppAction::None;
+        }
+
+        let identity_id = self.editing_alias_identity.unwrap();
+
+        // Draw dark overlay behind the popup
+        let screen_rect = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("edit_alias_overlay"),
+        ));
+        painter.rect_filled(
+            screen_rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+        );
+
+        egui::Window::new("Update Alias")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .frame(egui::Frame {
+                inner_margin: egui::Margin::same(20),
+                outer_margin: egui::Margin::same(0),
+                corner_radius: egui::CornerRadius::same(8),
+                shadow: egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                },
+                fill: ctx.style().visuals.window_fill,
+                stroke: egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                ),
+            })
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+                ui.label(
+                    RichText::new("Enter a new alias for this identity:")
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+
+                ui.add_space(8.0);
+
+                let text_edit = egui::TextEdit::singleline(&mut self.editing_alias_value)
+                    .hint_text("Enter alias...")
+                    .desired_width(260.0);
+                let response = ui.add(text_edit);
+
+                // Submit on Enter key
+                let submit = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                ui.add_space(16.0);
+
+                ui.horizontal(|ui| {
+                    // Cancel button
+                    let cancel_button = egui::Button::new(
+                        RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                    )
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        DashColors::text_secondary(dark_mode),
+                    ))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .min_size(egui::Vec2::new(80.0, 32.0));
+
+                    if ui.add(cancel_button).clicked() {
+                        self.editing_alias_identity = None;
+                        self.editing_alias_value.clear();
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Save button
+                    let save_button =
+                        egui::Button::new(RichText::new("Save").color(Color32::WHITE))
+                            .fill(DashColors::DASH_BLUE)
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .min_size(egui::Vec2::new(80.0, 32.0));
+
+                    if ui.add(save_button).clicked() || submit {
+                        // Update the alias
+                        let new_alias = if self.editing_alias_value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.editing_alias_value.trim().to_string())
+                        };
+
+                        // Update in memory
+                        {
+                            let mut identities = self.identities.lock().unwrap();
+                            if let Some(identity_to_update) = identities.get_mut(&identity_id) {
+                                identity_to_update.alias = new_alias.clone();
+                            }
+                        }
+
+                        // Update in database
+                        if let Err(e) = self
+                            .app_context
+                            .set_identity_alias(&identity_id, new_alias.as_deref())
+                        {
+                            eprintln!("Failed to save alias: {}", e);
+                        }
+
+                        self.editing_alias_identity = None;
+                        self.editing_alias_value.clear();
+                    }
+                });
+            });
+
+        AppAction::None
     }
 
     fn dismiss_message(&mut self) {
@@ -925,9 +1119,7 @@ impl ScreenLike for IdentitiesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
-        if message.contains("Error refreshing identity")
-            || message.contains("Successfully refreshed identity")
-        {
+        if let crate::ui::MessageType::Error = message_type {
             self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
         }
         self.backend_message = Some((message.to_string(), message_type, Utc::now()));
@@ -935,10 +1127,18 @@ impl ScreenLike for IdentitiesScreen {
 
     fn display_task_result(
         &mut self,
-        _backend_task_success_result: crate::ui::BackendTaskSuccessResult,
+        backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        // Nothing
-        // If we don't include this, success messages from ZMQ listener will keep popping up
+        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
+            backend_task_success_result
+        {
+            self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
+            self.backend_message = Some((
+                "Successfully refreshed identity".to_string(),
+                crate::ui::MessageType::Success,
+                Utc::now(),
+            ));
+        }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -948,7 +1148,7 @@ impl ScreenLike for IdentitiesScreen {
             vec![
                 (
                     "Import Wallet",
-                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportWallet)),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
                 ),
                 (
                     "Create Wallet",
@@ -1010,6 +1210,11 @@ impl ScreenLike for IdentitiesScreen {
                 inner_action |= self.show_identity_to_remove(ctx);
             }
 
+            // Handle alias editing popup
+            if self.editing_alias_identity.is_some() {
+                inner_action |= self.show_alias_edit_popup(ctx);
+            }
+
             // Show either refreshing indicator or message, but not both
             if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
                 ui.add_space(25.0); // Space above
@@ -1018,7 +1223,7 @@ impl ScreenLike for IdentitiesScreen {
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     ui.label(format!("Refreshing... Time taken so far: {}", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
                 ui.add_space(2.0); // Space below
             } else if let Some((message, message_type, timestamp)) = self.backend_message.clone() {

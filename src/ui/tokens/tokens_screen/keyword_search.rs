@@ -10,8 +10,16 @@ use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
-use egui::{RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+
+const KEYWORD_SEARCH_INFO_TEXT: &str = "Keyword Search allows you to find tokens by searching their associated keywords.\n\n\
+    When token creators register tokens on Dash Platform, they can add searchable keywords \
+    to make their tokens discoverable.\n\n\
+    Tips:\n\n\
+    - Try common terms like 'game', 'music', 'art', etc.\n\n\
+    - Keywords are case-insensitive.\n\n\
+    - Each keyword costs 0.1 Dash to register, so creators choose them carefully.";
 
 impl TokensScreen {
     pub(super) fn render_keyword_search(&mut self, ui: &mut Ui) -> AppAction {
@@ -20,8 +28,13 @@ impl TokensScreen {
 
         let mut action = AppAction::None;
 
-        // 1) Input & “Go” button
-        ui.heading("Search Tokens by Keyword");
+        // 1) Input & "Go" button
+        ui.horizontal(|ui| {
+            ui.heading("Search Tokens by Keyword");
+            if crate::ui::helpers::info_icon_button(ui, KEYWORD_SEARCH_INFO_TEXT).clicked() {
+                self.show_pop_up_info = Some(KEYWORD_SEARCH_INFO_TEXT.to_string());
+            }
+        });
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
@@ -96,7 +109,7 @@ impl TokensScreen {
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
                     ui.label(format!("Searching... {} seconds", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
             }
             ContractSearchStatus::Complete => {
@@ -127,7 +140,22 @@ impl TokensScreen {
                 }
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                ui.colored_label(Color32::DARK_RED, format!("Error: {}", e));
+                let error_color = Color32::from_rgb(255, 100, 100);
+                let msg = e.clone();
+                Frame::new()
+                    .fill(error_color.gamma_multiply(0.1))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .stroke(egui::Stroke::new(1.0, error_color))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                            ui.add_space(10.0);
+                            if ui.small_button("Dismiss").clicked() {
+                                self.contract_search_status = ContractSearchStatus::NotStarted;
+                            }
+                        });
+                    });
             }
         }
 

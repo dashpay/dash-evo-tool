@@ -98,7 +98,7 @@ impl AppContext {
             .map_err(|e| format!("Error signing Token Config Update transition: {}", e))?;
 
         // Broadcast the state transition
-        let _proof_result = state_transition
+        let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
             .map_err(|e| match e {
@@ -122,8 +122,12 @@ impl AppContext {
                 e => format!("Error broadcasting Update token config transition: {}", e),
             })?;
 
+        // Log proof result for audit trail
+        tracing::info!("TokenConfigUpdate proof result: {}", proof_result);
+
         // Now update the data contract in the local database
-        // First, fetch the updated contract from the platform
+        // The proof result contains an action document, not the updated contract,
+        // so we need to fetch the updated contract from the platform
         let data_contract =
             DataContract::fetch(sdk, identity_token_info.data_contract.contract.id())
                 .await
@@ -164,10 +168,14 @@ impl AppContext {
         )
         .map_err(|e| format!("Error inserting token into local database: {}", e))?;
 
-        // Return success
-        Ok(BackendTaskSuccessResult::Message(format!(
-            "Successfully updated token config item: {}",
-            change_item
-        )))
+        // Return success with fee result
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::UpdatedTokenConfig(
+            change_item.to_string(),
+            fee_result,
+        ))
     }
 }

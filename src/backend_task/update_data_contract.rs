@@ -1,8 +1,9 @@
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::{
     app::TaskResult,
     context::AppContext,
     model::{
+        fee_estimation::PlatformFeeEstimator,
         proof_log_item::{ProofLogItem, RequestType},
         qualified_identity::QualifiedIdentity,
     },
@@ -61,6 +62,9 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Estimate fee for contract update
+        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_update();
+
         // Increment the version of the data contract
         data_contract.increment_version();
 
@@ -73,7 +77,7 @@ impl AppContext {
         // Update UI
         sender
             .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::Message("Nonce fetched successfully".to_string()),
+                BackendTaskSuccessResult::FetchedNonce,
             )))
             .await
             .map_err(|e| format!("Failed to send message: {}", e))?;
@@ -110,49 +114,12 @@ impl AppContext {
                 self.db
                     .replace_contract(data_contract.id(), &returned_contract, self)
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::Message(
-                    "DataContract successfully updated".to_string(),
-                ))
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+                Ok(BackendTaskSuccessResult::UpdatedContract(fee_result))
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    sender
-                        .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::Message(
-                                "Transaction returned proof error".to_string(),
-                            ),
-                        )))
-                        .await
-                        .map_err(|e| format!("Failed to send message: {}", e))?;
-                    match self.network {
-                        Network::Regtest => sleep(Duration::from_secs(3)).await,
-                        _ => sleep(Duration::from_secs(10)).await,
-                    }
-
-                    let id = match extract_contract_id_from_error(proof_error.to_string().as_str())
-                    {
-                        Ok(id) => id,
-                        Err(e) => {
-                            return Err(format!("Failed to extract id from error message: {}", e));
-                        }
-                    };
-
-                    let maybe_contract = match DataContract::fetch(sdk, id).await {
-                        Ok(contract) => contract,
-                        Err(e) => {
-                            return Err(format!(
-                                "Failed to fetch contract from Platform state: {}",
-                                e
-                            ));
-                        }
-                    };
-                    if let Some(contract) = maybe_contract {
-                        self.db
-                            .replace_contract(contract.id(), &contract, self)
-                            .map_err(|e| {
-                                format!("Error inserting contract into the database: {}", e)
-                            })?;
-                    }
+                    // Log the proof error first, before any other operations
                     self.db
                         .insert_proof_log_item(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,
@@ -164,8 +131,36 @@ impl AppContext {
                             error: Some(proof_error.to_string()),
                         })
                         .ok();
+
+                    sender
+                        .send(TaskResult::Success(Box::new(
+                            BackendTaskSuccessResult::ProofErrorLogged,
+                        )))
+                        .await
+                        .map_err(|e| format!("Failed to send message: {}", e))?;
+
+                    // Try to extract contract ID and fetch the contract if it exists
+                    // This handles the case where the contract was actually updated despite the proof error
+                    if let Ok(id) = extract_contract_id_from_error(proof_error.to_string().as_str())
+                    {
+                        match self.network {
+                            Network::Regtest => sleep(Duration::from_secs(3)).await,
+                            _ => sleep(Duration::from_secs(10)).await,
+                        }
+                        if let Ok(Some(contract)) = DataContract::fetch(sdk, id).await {
+                            self.db
+                                .replace_contract(contract.id(), &contract, self)
+                                .ok();
+
+                            return Err(format!(
+                                "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
+                                proof_error
+                            ));
+                        }
+                    }
+
                     Err(format!(
-                        "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
+                        "Error broadcasting Contract Update transition: {}, proof error logged",
                         proof_error
                     ))
                 }

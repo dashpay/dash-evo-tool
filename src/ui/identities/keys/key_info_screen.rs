@@ -6,10 +6,13 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
@@ -26,7 +29,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
-use egui::{Color32, RichText, ScrollArea};
+use egui::{Color32, Frame, Margin, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 
 pub struct KeyInfoScreen {
@@ -38,8 +41,7 @@ pub struct KeyInfoScreen {
     private_key_input: String,
     error_message: Option<String>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     message_input: String,
     signed_message: Option<String>,
     sign_error_message: Option<String>,
@@ -490,32 +492,47 @@ impl ScreenLike for KeyInfoScreen {
                     }
 
                     // Display error message if validation fails
-                    if let Some(error_message) = &self.error_message {
-                        ui.colored_label(egui::Color32::RED, error_message);
+                    if let Some(error_message) = self.error_message.clone() {
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", error_message))
+                                            .color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.error_message = None;
+                                    }
+                                });
+                            });
                     }
                 }
 
-                if self.view_wallet_unlock {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-                    if !needed_unlock || just_unlocked {
+                if self.view_wallet_unlock
+                    && let Some(wallet) = &self.selected_wallet
+                {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                    } else {
                         self.wallet_open = true;
                     }
-                }
-
-                // Show the popup window if `show_popup` is true
-                if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-                    egui::Window::new("Sign Message Info")
-                        .collapsible(false) // Prevent collapsing
-                        .resizable(false) // Prevent resizing
-                        .show(ctx, |ui| {
-                            ui.label(RichText::new(show_pop_up_info_text).color(Color32::BLACK));
-                            ui.add_space(10.0);
-
-                            // Add a close button to dismiss the popup
-                            if ui.button("Close").clicked() {
-                                self.show_pop_up_info = None
-                            }
-                        });
                 }
 
                 // Show the remove private key confirmation popup
@@ -528,6 +545,31 @@ impl ScreenLike for KeyInfoScreen {
 
             inner_action
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
+        // Show the popup window if `show_popup` is true
+        if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup = InfoPopup::new("Sign Message Info", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
+                    }
+                });
+        }
+
         action
     }
 }
@@ -557,8 +599,7 @@ impl KeyInfoScreen {
             private_key_input: String::new(),
             error_message: None,
             selected_wallet,
-            wallet_password: "".to_string(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             message_input: "".to_string(),
             signed_message: None,
             sign_error_message: None,
@@ -604,7 +645,7 @@ impl KeyInfoScreen {
             );
             match self
                 .app_context
-                .insert_local_qualified_identity(&self.identity, &None)
+                .update_local_qualified_identity(&self.identity)
             {
                 Ok(_) => {
                     self.error_message = None;
@@ -650,8 +691,24 @@ impl KeyInfoScreen {
             self.sign_message();
         }
 
-        if let Some(error_message) = &self.sign_error_message {
-            ui.colored_label(egui::Color32::RED, error_message);
+        if let Some(error_message) = self.sign_error_message.clone() {
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("Error: {}", error_message)).color(error_color),
+                        );
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.sign_error_message = None;
+                        }
+                    });
+                });
         }
 
         if let Some(signed_message) = &self.signed_message {
@@ -740,7 +797,7 @@ impl KeyInfoScreen {
                             .remove(&(self.key.purpose().into(), self.key.id()));
                         match self
                             .app_context
-                            .insert_local_qualified_identity(&self.identity, &None)
+                            .update_local_qualified_identity(&self.identity)
                         {
                             Ok(_) => {
                                 self.error_message = None;
@@ -753,35 +810,5 @@ impl KeyInfoScreen {
                     }
                 });
             });
-    }
-}
-
-impl ScreenWithWalletUnlock for KeyInfoScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

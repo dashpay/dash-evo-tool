@@ -48,6 +48,65 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
         })
 }
 
+// Function to load an SVG as a texture with specified dimensions
+pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Option<TextureHandle> {
+    let cache_key = format!("{}_{}_{}", path, width, height);
+    // Use ctx.data_mut to check if texture is already cached
+    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(&cache_key)))
+        .or_else(|| {
+            // Only do expensive operations if texture is not cached
+            if let Some(content) = Assets::get(path) {
+                // Parse SVG
+                let options = resvg::usvg::Options::default();
+                let tree = match resvg::usvg::Tree::from_data(&content.data, &options) {
+                    Ok(tree) => tree,
+                    Err(e) => {
+                        eprintln!("Failed to parse SVG at {}: {}", path, e);
+                        return None;
+                    }
+                };
+
+                // Create a pixmap to render into
+                let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+
+                // Calculate scale to fit the SVG into the desired dimensions
+                let svg_size = tree.size();
+                let scale_x = width as f32 / svg_size.width();
+                let scale_y = height as f32 / svg_size.height();
+                let scale = scale_x.min(scale_y);
+
+                // Center the SVG
+                let offset_x = (width as f32 - svg_size.width() * scale) / 2.0;
+                let offset_y = (height as f32 - svg_size.height() * scale) / 2.0;
+
+                let transform = resvg::tiny_skia::Transform::from_scale(scale, scale)
+                    .post_translate(offset_x, offset_y);
+
+                // Render the SVG
+                resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+                // Convert to egui texture
+                let pixels = pixmap.data().to_vec();
+                let texture = ctx.load_texture(
+                    &cache_key,
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [width as usize, height as usize],
+                        &pixels,
+                    ),
+                    egui::TextureOptions::LINEAR,
+                );
+
+                // Cache the texture
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(&cache_key), texture.clone()));
+
+                Some(texture)
+            } else {
+                eprintln!("SVG not found in embedded assets at path: {}", path);
+                None
+            }
+        })
+}
+
 pub fn add_left_panel(
     ctx: &Context,
     app_context: &Arc<AppContext>,
@@ -57,6 +116,11 @@ pub fn add_left_panel(
 
     // Define the button details directly in this function
     let buttons = [
+        (
+            "Dashpay",
+            RootScreenType::RootScreenDashPayProfile,
+            "dashpay.png",
+        ),
         (
             "Identities",
             RootScreenType::RootScreenIdentities,
@@ -89,12 +153,11 @@ pub fn add_left_panel(
         ),
     ];
 
-    let panel_width = 60.0 + (Spacing::MD * 2.0); // Button width + margins
-
     let dark_mode = ctx.style().visuals.dark_mode;
 
     SidePanel::left("left_panel")
-        .default_width(panel_width + 20.0) // Add extra width for margins
+        .min_width(140.0)
+        .max_width(140.0)
         .resizable(false)
         .frame(
             Frame::new()
@@ -117,7 +180,7 @@ pub fn add_left_panel(
                         bottom_reserved += 22.0; // network label + spacing
                     }
                     if app_context.is_developer_mode() {
-                        bottom_reserved += Spacing::MD + 16.0; // dev label area
+                        bottom_reserved += 2.0 + 16.0; // dev label area (spacing + label height)
                     }
 
                     StripBuilder::new(ui)
@@ -133,7 +196,49 @@ pub fn add_left_panel(
                                         ui.vertical_centered(|ui| {
                                             for (label, screen_type, icon_path) in buttons.iter() {
                                                 let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
-                                                let is_selected = selected_screen == *screen_type;
+                                                // Check if this button's category is selected
+                                                let is_selected = match *screen_type {
+                                                    // DashPay: check if any DashPay subscreen is selected
+                                                    RootScreenType::RootScreenDashPayProfile => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenDashpay
+                                                            | RootScreenType::RootScreenDashPayProfile
+                                                            | RootScreenType::RootScreenDashPayContacts
+                                                            | RootScreenType::RootScreenDashPayPayments
+                                                            | RootScreenType::RootScreenDashPayProfileSearch
+                                                    ),
+                                                    // Tokens: check if any Tokens subscreen is selected
+                                                    RootScreenType::RootScreenMyTokenBalances => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenMyTokenBalances
+                                                            | RootScreenType::RootScreenTokenSearch
+                                                            | RootScreenType::RootScreenTokenCreator
+                                                    ),
+                                                    // Tools: check if any Tools subscreen is selected
+                                                    RootScreenType::RootScreenToolsPlatformInfoScreen => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenToolsPlatformInfoScreen
+                                                            | RootScreenType::RootScreenToolsProofLogScreen
+                                                            | RootScreenType::RootScreenToolsTransitionVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsDocumentVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsProofVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsMasternodeListDiffScreen
+                                                            | RootScreenType::RootScreenToolsContractVisualizerScreen
+                                                            | RootScreenType::RootScreenToolsGroveSTARKScreen
+                                                            | RootScreenType::RootScreenToolsAddressBalanceScreen
+                                                    ),
+                                                    // Contracts: check if any Contracts/DPNS subscreen is selected
+                                                    RootScreenType::RootScreenDocumentQuery => matches!(
+                                                        selected_screen,
+                                                        RootScreenType::RootScreenDocumentQuery
+                                                            | RootScreenType::RootScreenDPNSActiveContests
+                                                            | RootScreenType::RootScreenDPNSPastContests
+                                                            | RootScreenType::RootScreenDPNSOwnedNames
+                                                            | RootScreenType::RootScreenDPNSScheduledVotes
+                                                    ),
+                                                    // All other screens: exact match
+                                                    _ => selected_screen == *screen_type,
+                                                };
 
                                                 let button_color = if is_selected {
                                                     Color32::WHITE
@@ -208,7 +313,8 @@ pub fn add_left_panel(
                                     egui::Layout::bottom_up(egui::Align::Center),
                                     |ui| {
                                         // Dash logo at the very bottom
-                                        if let Some(dash_texture) = load_icon(ctx, "dash.png") {
+                                        // Use 100x40 for rendering (2x for crisp display), then scale down
+                                        if let Some(dash_texture) = load_svg_icon(ctx, "dashlogo.svg", 100, 40) {
                                             if app_context.network == Network::Dash {
                                                 ui.add_space(Spacing::SM);
                                             }
@@ -258,10 +364,10 @@ pub fn add_left_panel(
                                             );
                                         }
 
-                                        // Dev mode label (above network label if present)
+                                        // Dev mode label (below network label if present)
                                         if app_context.is_developer_mode() {
-                                            ui.add_space(Spacing::MD);
-                                            let dev_label = egui::RichText::new("🔧 Dev mode")
+                                            ui.add_space(2.0);
+                                            let dev_label = egui::RichText::new("🔧 Dev Mode")
                                                 .color(DashColors::GRADIENT_PURPLE)
                                                 .size(12.0);
                                             if ui.label(dev_label).clicked() {

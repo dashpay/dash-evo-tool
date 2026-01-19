@@ -1,7 +1,9 @@
 use crate::app::AppAction;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
-use egui::{Color32, RichText, Ui};
+use crate::ui::theme::DashColors;
+use egui::{Color32, Frame, Margin, RichText, Ui};
 
 impl TopUpIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
@@ -92,6 +94,32 @@ impl TopUpIdentityScreen {
         self.render_choose_funding_asset_lock(ui);
         ui.add_space(10.0);
 
+        // Fee estimation display
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_identity_topup();
+
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated fee:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+            });
+
+        ui.add_space(10.0);
+
         // Top up button
         let mut new_style = (**ui.style()).clone();
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -107,20 +135,18 @@ impl TopUpIdentityScreen {
 
         ui.add_space(20.0);
 
-        if let Some(error_message) = self.error_message.as_ref() {
-            ui.colored_label(Color32::DARK_RED, error_message);
-            ui.add_space(20.0);
+        // Only show status messages if there's no error
+        if self.error_message.is_none() {
+            ui.vertical_centered(|ui| match step {
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
+            });
         }
-
-        ui.vertical_centered(|ui| match step {
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("=> Waiting for Platform acknowledgement <=");
-            }
-            WalletFundedScreenStep::Success => {
-                ui.heading("...Success...");
-            }
-            _ => {}
-        });
 
         ui.add_space(40.0);
         action

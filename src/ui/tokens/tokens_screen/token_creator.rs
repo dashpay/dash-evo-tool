@@ -11,16 +11,19 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context,  RichText, TextEdit, Ui};
+use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
 use crate::ui::theme::DashColors;
+use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::Component;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
 
 impl TokensScreen {
@@ -33,11 +36,29 @@ impl TokensScreen {
             return action;
         }
 
-        ui.heading("Token Creator");
-        ui.label(
-            "Create custom tokens on Dash Platform with advanced features and distribution rules",
-        );
-        ui.add_space(20.0);
+        // Heading with checkbox on the same line
+        ui.horizontal(|ui| {
+            ui.heading("Token Creator");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(
+                    &mut self.show_advanced_token_creator,
+                    "Show Advanced Options",
+                );
+            });
+        });
+        ui.add_space(5.0);
+        if self.show_advanced_token_creator {
+            ui.label(
+                "Create custom tokens on Dash Platform with advanced features and distribution rules.",
+            );
+        } else {
+            ui.label(
+                "Create a simple token on Dash Platform. Enable Advanced Options for more control.",
+            );
+        }
+        ui.add_space(10.0);
+
+        let mut load_identity_clicked = false;
 
         egui::ScrollArea::horizontal()
             .show(ui, |ui| {
@@ -55,61 +76,437 @@ impl TokensScreen {
                             }
                         };
                         if all_identities.is_empty() {
-                            ui.colored_label(
-                                Color32::DARK_RED,
-                                "No identities loaded. Please load or create one to register the token contract with first.",
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            Frame::group(ui.style())
+                                .fill(ui.visuals().extreme_bg_color)
+                                .corner_radius(5.0)
+                                .outer_margin(Margin::same(20))
+                                .shadow(ui.visuals().window_shadow)
+                                .show(ui, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add_space(5.0);
+                                        ui.label(
+                                            RichText::new("No Identities Loaded")
+                                                .strong()
+                                                .size(25.0)
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+
+                                        ui.add_space(5.0);
+                                        ui.separator();
+                                        ui.add_space(10.0);
+
+                                        ui.label(
+                                            "To create a token, you need to load or create an identity first.",
+                                        );
+
+                                        ui.add_space(10.0);
+
+                                        ui.heading(
+                                            RichText::new("Here's what you can do:")
+                                                .strong()
+                                                .size(18.0)
+                                                .color(DashColors::text_primary(dark_mode)),
+                                        );
+                                        ui.add_space(5.0);
+
+                                        ui.label("- LOAD an existing identity by clicking the button below, or");
+                                        ui.add_space(1.0);
+                                        ui.label("- CREATE a new identity from the Identities screen after setting up a wallet.");
+
+                                        ui.add_space(15.0);
+
+                                        let button = egui::Button::new(
+                                            RichText::new("Load Identity")
+                                                .color(egui::Color32::WHITE)
+                                                .strong(),
+                                        )
+                                        .fill(DashColors::DASH_BLUE)
+                                        .min_size(egui::vec2(150.0, 36.0));
+
+                                        if ui.add(button).clicked() {
+                                            load_identity_clicked = true;
+                                        }
+
+                                        ui.add_space(10.0);
+                                    });
+                                });
+                            return;
+                        }
+
+                        // Branch: Simple mode vs Advanced mode for identity/key selection
+                        if !self.show_advanced_token_creator {
+                            // =====================================================
+                            // SIMPLE MODE - Identity selector only (no key selector)
+                            // =====================================================
+                            ui.heading("1. Select an identity:");
+                            ui.add_space(5.0);
+
+                            // Use IdentitySelector for simple mode
+                            let response = ui.add(
+                                IdentitySelector::new(
+                                    "simple_identity_selector",
+                                    &mut self.identity_id_string,
+                                    &all_identities,
+                                )
+                                .selected_identity(&mut self.selected_identity)
+                                .expect("selected_identity should not fail")
+                                .other_option(false)
+                                .label("Identity:")
+                                .width(300.0),
                             );
-                            return;
-                        }
 
-                        ui.heading("1. Select an identity and key to register the token contract with:");
-                        ui.add_space(5.0);
+                            // Auto-select the first eligible key when:
+                            // 1. Identity changed, OR
+                            // 2. Identity is selected but no key is selected yet (first load)
+                            let should_auto_select_key = response.changed()
+                                || (self.selected_identity.is_some() && self.selected_key.is_none());
 
-                        // Use the helper function for identity and key selection
-                        add_identity_key_chooser(
-                            ui,
-                            &self.app_context,
-                            all_identities.iter(),
-                            &mut self.selected_identity,
-                            &mut self.selected_key,
-                            TransactionType::RegisterContract,
-                        );
+                            if should_auto_select_key {
+                                if response.changed() {
+                                    self.selected_key = None; // Clear previous key only on identity change
+                                }
+                                if let Some(ref identity) = self.selected_identity {
+                                    // Find first eligible key for RegisterContract
+                                    // Requires Authentication purpose with High or Critical security level
+                                    let first_eligible_key = identity
+                                        .private_keys
+                                        .identity_public_keys()
+                                        .iter()
+                                        .find(|key_ref| {
+                                            let key = &key_ref.1.identity_public_key;
+                                            key.purpose() == Purpose::AUTHENTICATION
+                                                && (key.security_level() == SecurityLevel::CRITICAL
+                                                    || key.security_level() == SecurityLevel::HIGH)
+                                        })
+                                        .map(|key_ref| key_ref.1.identity_public_key.clone());
 
-                        ui.add_space(5.0);
+                                    if first_eligible_key.is_some() {
+                                        self.selected_key = first_eligible_key;
+                                    }
+                                }
+                            }
 
-                        // If a key was selected, set the wallet reference
-                        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-                            // If the key belongs to a wallet, set that wallet reference:
-                            self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                qid,
-                                None,
-                                Some(key),
-                                &mut self.token_creator_error_message,
+                            // If identity is selected but no eligible key could be found, show warning
+                            if self.selected_identity.is_some() && self.selected_key.is_none() {
+                                ui.add_space(5.0);
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(200, 100, 100),
+                                    "No eligible key found for this identity. Please use Advanced Options or add a suitable key.",
+                                );
+                                return;
+                            }
+
+                            if self.selected_identity.is_none() {
+                                return;
+                            }
+
+                            // Set wallet reference for the auto-selected key
+                            if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
+                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                                    qid,
+                                    None,
+                                    Some(key),
+                                    &mut self.token_creator_error_message,
+                                );
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+
+                            // Wallet unlock check for simple mode
+                            if let Some(wallet) = &self.selected_wallet {
+                                use crate::ui::components::wallet_unlock_popup::{
+                                    wallet_needs_unlock, try_open_wallet_no_password,
+                                };
+
+                                if let Err(e) = try_open_wallet_no_password(wallet) {
+                                    self.token_creator_error_message = Some(e);
+                                }
+
+                                if wallet_needs_unlock(wallet) {
+                                    ui.add_space(10.0);
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(200, 150, 50),
+                                        "Wallet is locked. Please unlock to continue.",
+                                    );
+                                    ui.add_space(8.0);
+                                    if ui.button("Unlock Wallet").clicked() {
+                                        self.wallet_unlock_popup.open();
+                                    }
+                                    return;
+                                }
+                            }
+                        } else {
+                            // =====================================================
+                            // ADVANCED MODE - Full identity and key selection
+                            // =====================================================
+                            ui.heading("1. Select an identity and key to register the token contract with:");
+                            ui.add_space(5.0);
+
+                            // Use the helper function for identity and key selection
+                            add_identity_key_chooser(
+                                ui,
+                                &self.app_context,
+                                all_identities.iter(),
+                                &mut self.selected_identity,
+                                &mut self.selected_key,
+                                TransactionType::RegisterContract,
                             );
+
+                            ui.add_space(5.0);
+
+                            // If a key was selected, set the wallet reference
+                            if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
+                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                                    qid,
+                                    None,
+                                    Some(key),
+                                    &mut self.token_creator_error_message,
+                                );
+                            }
+
+                            if self.selected_key.is_none() {
+                                return;
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+
+                            // Wallet unlock check for advanced mode
+                            if let Some(wallet) = &self.selected_wallet {
+                                use crate::ui::components::wallet_unlock_popup::{
+                                    wallet_needs_unlock, try_open_wallet_no_password,
+                                };
+
+                                if let Err(e) = try_open_wallet_no_password(wallet) {
+                                    self.token_creator_error_message = Some(e);
+                                }
+
+                                if wallet_needs_unlock(wallet) {
+                                    ui.add_space(10.0);
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(200, 150, 50),
+                                        "Wallet is locked. Please unlock to continue.",
+                                    );
+                                    ui.add_space(8.0);
+                                    if ui.button("Unlock Wallet").clicked() {
+                                        self.wallet_unlock_popup.open();
+                                    }
+                                    return;
+                                }
+                            }
                         }
 
-                        if self.selected_key.is_none() {
-                            return;
-                        }
+                        // Continue with mode-specific content
+                        if !self.show_advanced_token_creator {
+                            // =====================================================
+                            // SIMPLE MODE - Beginner-friendly options with info icons
+                            // =====================================================
+                            ui.add_space(10.0);
+                            ui.heading("2. Enter token details:");
+                            ui.add_space(5.0);
 
-                        ui.add_space(10.0);
-                        ui.separator();
+                            egui::Grid::new("simple_token_info_grid")
+                                .num_columns(2)
+                                .spacing([8.0, 8.0])
+                                .show(ui, |ui| {
+                                    // Token Name
+                                    ui.horizontal(|ui| {
+                                        ui.label("Token Name*:");
+                                        if crate::ui::helpers::info_icon_button(ui,
+                                            "The name of your token (e.g., 'MyCoin', 'GameToken').\n\n\
+                                            This is how your token will be displayed to users.\n\n\
+                                            Must be between 3 and 50 characters.").clicked() {
+                                            self.show_pop_up_info = Some(
+                                                "Token Name\n\n\
+                                                The name of your token (e.g., 'MyCoin', 'GameToken').\n\n\
+                                                This is how your token will be displayed to users.\n\n\
+                                                Must be between 3 and 50 characters.".to_string()
+                                            );
+                                        }
+                                    });
+                                    ui.text_edit_singleline(&mut self.token_names_input[0].0);
+                                    ui.end_row();
 
-                        // 3) If the wallet is locked, show unlock
-                        //    But only do this step if we actually have a wallet reference:
-                        let mut need_unlock = false;
-                        let mut just_unlocked = false;
+                                    // Token Description
+                                    ui.horizontal(|ui| {
+                                        ui.label("Description:");
+                                        if crate::ui::helpers::info_icon_button(ui,
+                                            "An optional description explaining what your token is for.\n\n\
+                                            This helps users understand the purpose of your token.\n\n\
+                                            Maximum 100 characters.").clicked() {
+                                            self.show_pop_up_info = Some(
+                                                "Description\n\n\
+                                                An optional description explaining what your token is for.\n\n\
+                                                This helps users understand the purpose of your token.\n\n\
+                                                Maximum 100 characters.".to_string()
+                                            );
+                                        }
+                                    });
+                                    ui.text_edit_singleline(&mut self.token_description_input);
+                                    ui.end_row();
 
-                        if self.selected_wallet.is_some() {
-                            let (n, j) = self.render_wallet_unlock_if_needed(ui);
-                            need_unlock = n;
-                            just_unlocked = j;
-                        }
+                                    // Initial Supply
+                                    ui.horizontal(|ui| {
+                                        ui.label("Initial Supply*:");
+                                        if crate::ui::helpers::info_icon_button(ui,
+                                            "The number of tokens to create when the token is registered.\n\n\
+                                            These tokens will be owned by you (the token creator).\n\n\
+                                            You can mint more tokens later if minting is enabled.").clicked() {
+                                            self.show_pop_up_info = Some(
+                                                "Initial Supply\n\n\
+                                                The number of tokens to create when the token is registered.\n\n\
+                                                These tokens will be owned by you (the token creator).\n\n\
+                                                You can mint more tokens later if minting is enabled.".to_string()
+                                            );
+                                        }
+                                    });
+                                    self.render_base_supply_input(ui);
+                                    ui.end_row();
 
-                        if need_unlock && !just_unlocked {
-                            // We must wait for unlock before continuing
-                            return;
-                        }
+                                    // Max Supply
+                                    ui.horizontal(|ui| {
+                                        ui.label("Max Supply:");
+                                        if crate::ui::helpers::info_icon_button(ui,
+                                            "The maximum number of tokens that can ever exist.\n\n\
+                                            Leave empty or set to 0 for no maximum (unlimited supply).\n\n\
+                                            Once set, this cannot be increased.").clicked() {
+                                            self.show_pop_up_info = Some(
+                                                "Max Supply\n\n\
+                                                The maximum number of tokens that can ever exist.\n\n\
+                                                Leave empty or set to 0 for no maximum (unlimited supply).\n\n\
+                                                Once set, this cannot be increased.".to_string()
+                                            );
+                                        }
+                                    });
+                                    self.render_max_supply_input(ui);
+                                    ui.end_row();
+
+                                    // Preset selector
+                                    ui.vertical(|ui| {
+                                        ui.add_space(15.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label("Token Preset*:");
+                                            if crate::ui::helpers::info_icon_button(ui,
+                                                "Choose a preset that determines what actions are allowed on your token.\n\n\
+                                            Click for more details on each preset.").clicked() {
+                                                self.show_pop_up_info = Some(
+                                                    "Token Presets\n\n\
+                                                Presets control what actions can be performed on your token after creation:\n\n\
+                                                - Most Restrictive: No additional actions allowed. Token is fixed after creation. Best for simple, immutable tokens.\n\n\
+                                                - Only Emergency Action: Allows pausing/unpausing the token in emergencies. Good for tokens that need a safety mechanism.\n\n\
+                                                - Minting and Burning: Allows creating new tokens (minting) and destroying tokens (burning). Good for flexible supply tokens.\n\n\
+                                                - Advanced Actions: Allows minting, burning, freezing accounts, and more. For tokens needing moderation capabilities.\n\n\
+                                                - All Allowed: All actions enabled including destroying frozen funds. Maximum flexibility but requires careful management.".to_string()
+                                                );
+                                            }
+                                        });
+                                    });
+                                    ComboBox::from_id_salt("simple_preset_selector")
+                                        .width(200.0)
+                                        .selected_text(
+                                            self.selected_token_preset
+                                                .map(|p| match p {
+                                                    MostRestrictive => "Most Restrictive",
+                                                    WithOnlyEmergencyAction => "Only Emergency Action",
+                                                    WithMintingAndBurningActions => "Minting and Burning",
+                                                    WithAllAdvancedActions => "Advanced Actions",
+                                                    WithExtremeActions => "All Allowed",
+                                                })
+                                                .unwrap_or("Select a preset..."),
+                                        )
+                                        .show_ui(ui, |ui| {
+                                            for variant in [
+                                                MostRestrictive,
+                                                WithOnlyEmergencyAction,
+                                                WithMintingAndBurningActions,
+                                                WithAllAdvancedActions,
+                                                WithExtremeActions,
+                                            ] {
+                                                let (text, description) = match variant {
+                                                    MostRestrictive => ("Most Restrictive", "No actions allowed after creation"),
+                                                    WithOnlyEmergencyAction => ("Only Emergency Action", "Can pause/unpause token"),
+                                                    WithMintingAndBurningActions => ("Minting and Burning", "Can mint and burn tokens"),
+                                                    WithAllAdvancedActions => ("Advanced Actions", "Mint, burn, freeze, and more"),
+                                                    WithExtremeActions => ("All Allowed", "All actions enabled"),
+                                                };
+                                                if ui.selectable_value(
+                                                    &mut self.selected_token_preset,
+                                                    Some(variant),
+                                                    format!("{} - {}", text, description),
+                                                ).clicked() {
+                                                    let preset = TokenConfigurationPreset {
+                                                        features: variant,
+                                                        action_taker: AuthorizedActionTakers::ContractOwner,
+                                                    };
+                                                    self.change_to_preset(preset);
+                                                }
+                                            }
+                                        });
+                                    ui.end_row();
+                                });
+
+                            ui.add_space(20.0);
+
+                            // Create Token button
+                            let can_create = !self.token_names_input[0].0.trim().is_empty()
+                                && self.base_supply_amount.is_some()
+                                && self.selected_token_preset.is_some();
+
+                            ui.horizontal(|ui| {
+                                let button = egui::Button::new(
+                                    RichText::new("Create Token")
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(if can_create {
+                                    DashColors::DASH_BLUE
+                                } else {
+                                    egui::Color32::GRAY
+                                })
+                                .min_size(egui::vec2(150.0, 36.0));
+
+                                if ui.add_enabled(can_create, button).clicked() {
+                                    // Auto-set plural name if empty (singular + "s")
+                                    let singular = self.token_names_input[0].0.trim().to_string();
+                                    if self.token_names_input[0].1.trim().is_empty() {
+                                        self.token_names_input[0].1 = format!("{}s", singular);
+                                    }
+
+                                    // Trigger the token creation confirmation
+                                    match self.parse_token_build_args() {
+                                        Ok(args) => {
+                                            self.cached_build_args = Some(args);
+                                            self.token_creator_error_message = None;
+                                            self.show_token_creator_confirmation_popup = true;
+                                        }
+                                        Err(err_msg) => {
+                                            self.token_creator_error_message = Some(err_msg);
+                                        }
+                                    }
+                                }
+                            });
+
+                            if !can_create {
+                                ui.add_space(5.0);
+                                let missing = if self.token_names_input[0].0.trim().is_empty() {
+                                    "token name"
+                                } else if self.base_supply_amount.is_none() {
+                                    "initial supply"
+                                } else {
+                                    "token preset"
+                                };
+                                ui.label(
+                                    RichText::new(format!("Please select a {}", missing))
+                                        .color(egui::Color32::GRAY)
+                                        .italics(),
+                                );
+                            }
+                        } else {
+                            // =====================================================
+                            // ADVANCED MODE - Full options
+                            // =====================================================
 
                         // 4) Show input fields for token name, decimals, base supply, etc.
                         ui.add_space(10.0);
@@ -585,11 +982,16 @@ impl TokensScreen {
 
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
-                        let mut new_style = (**ui.style()).clone();
-                        new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
-                        ui.set_style(new_style);
                         ui.horizontal(|ui| {
-                            if ui.button("Register Token Contract").clicked() {
+                            let register_button = egui::Button::new(
+                                RichText::new("Register Token Contract")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(DashColors::DASH_BLUE)
+                            .min_size(egui::vec2(200.0, 36.0));
+
+                            if ui.add(register_button).clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -604,7 +1006,15 @@ impl TokensScreen {
                                 }
                             }
 
-                            if ui.button("View JSON").clicked() {
+                            let view_json_button = egui::Button::new(
+                                RichText::new("View JSON")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(DashColors::DASH_BLUE)
+                            .min_size(egui::vec2(120.0, 36.0));
+
+                            if ui.add(view_json_button).clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // We have the parsed token creation arguments
@@ -682,6 +1092,8 @@ impl TokensScreen {
             self.should_reset_collapsing_states = false;
         }
 
+                        } // Close advanced mode else block
+
         // 7) If the user pressed "Register Token Contract," show a popup confirmation
         if self.show_token_creator_confirmation_popup {
             action |= self.render_token_creator_confirmation_popup(ui);
@@ -701,18 +1113,39 @@ impl TokensScreen {
                     "Registering token contract... elapsed {}s",
                     elapsed
                 ));
-                ui.add(egui::widgets::Spinner::default());
+                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
             });
         }
 
         // Show an error if we have one
-        if let Some(err_msg) = &self.token_creator_error_message {
+        if let Some(err_msg) = self.token_creator_error_message.clone() {
             ui.add_space(10.0);
-            ui.colored_label(Color32::DARK_RED, err_msg.to_string());
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", err_msg)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.token_creator_error_message = None;
+                        }
+                    });
+                });
             ui.add_space(10.0);
         }
 
             }); // Close the ScrollArea from line 40
+
+        // Handle Load Identity button click from within the ScrollArea
+        if load_identity_clicked {
+            return AppAction::AddScreen(
+                ScreenType::AddExistingIdentity.create_screen(&self.app_context),
+            );
+        }
 
         action
     }

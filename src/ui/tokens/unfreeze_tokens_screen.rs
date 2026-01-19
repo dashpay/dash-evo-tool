@@ -1,8 +1,9 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -12,13 +13,15 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -31,7 +34,7 @@ use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -51,6 +54,7 @@ pub struct UnfreezeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     pub public_note: Option<String>,
 
     group: Option<(GroupContractPosition, Group)>,
@@ -75,8 +79,9 @@ pub struct UnfreezeTokensScreen {
 
     // If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl UnfreezeTokensScreen {
@@ -191,6 +196,7 @@ impl UnfreezeTokensScreen {
             identity: identity_token_info.identity.clone(),
             identity_token_info,
             selected_key: possible_key,
+            show_advanced_options: false,
             group,
             is_unilateral_group_member,
             group_action_id: None,
@@ -201,9 +207,9 @@ impl UnfreezeTokensScreen {
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             frozen_identities,
+            completed_fee_result: None,
         }
     }
 
@@ -305,65 +311,30 @@ impl UnfreezeTokensScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            if self.group_action_id.is_some() {
-                // This is already initiated by the group, we are just signing it
-                ui.heading("Group Unfreeze Signing Successful.");
-            } else if !self.is_unilateral_group_member && self.group.is_some() {
-                ui.heading("Group Unfreeze Initiated.");
-            } else {
-                ui.heading("Unfroze Identity Successfully.");
-            }
-
-            ui.add_space(20.0);
-
-            if self.group_action_id.is_some() {
-                if ui.button("Back to Group Actions").clicked() {
-                    action |= AppAction::PopScreenAndRefresh;
-                }
-                if ui.button("Back to Tokens").clicked() {
-                    action |= AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenMyTokenBalances,
-                    );
-                }
-            } else {
-                if ui.button("Back to Tokens").clicked() {
-                    action |= AppAction::PopScreenAndRefresh;
-                }
-
-                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
-                    action |= AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                        Screen::GroupActionsScreen(GroupActionsScreen::new(
-                            &self.app_context.clone(),
-                        )),
-                    );
-                }
-            }
-        });
-        action
+        crate::ui::helpers::show_group_token_success_screen_with_fee(
+            ui,
+            "Unfreeze",
+            self.group_action_id.is_some(),
+            self.is_unilateral_group_member,
+            self.group.is_some(),
+            &self.app_context,
+            None,
+        )
     }
 }
 
 impl ScreenLike for UnfreezeTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                // Possibly "UnfreezeTokens" or something else from your backend
-                if message.contains("Successfully unfroze identity") || message == "UnfreezeTokens"
-                {
-                    self.status = UnfreezeTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = UnfreezeTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {}
+        if let MessageType::Error = message_type {
+            self.status = UnfreezeTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::UnfrozeTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
+            self.status = UnfreezeTokensStatus::Complete;
         }
     }
 
@@ -472,34 +443,52 @@ impl ScreenLike for UnfreezeTokensScreen {
                 }
             } else {
                 // Possibly handle locked wallet scenario
-                if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
                         return;
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the Unfreeze transition");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Unfreeze Tokens");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenAction,
-                );
-
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the Unfreeze transition");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
 
-                // 2) Identity to unfreeze
-                ui.heading("2. Enter the identity ID to unfreeze");
+                // Identity to unfreeze
+                let step_num = if self.show_advanced_options { 2 } else { 1 };
+                ui.heading(format!("{}. Enter the identity ID to unfreeze", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -516,7 +505,8 @@ impl ScreenLike for UnfreezeTokensScreen {
                 ui.add_space(10.0);
 
                 // Render text input for the public note
-                ui.heading("3. Public note (optional)");
+                let step_num = if self.show_advanced_options { 3 } else { 2 };
+                ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -543,6 +533,30 @@ impl ScreenLike for UnfreezeTokensScreen {
                         }
                     });
                 }
+
+                // Fee estimation display
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
 
                 let button_text = render_group_action_text(
                     ui,
@@ -594,7 +608,24 @@ impl ScreenLike for UnfreezeTokensScreen {
                         ui.label(format!("Unfreezing... elapsed: {}s", elapsed));
                     }
                     UnfreezeTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.status = UnfreezeTokensStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     UnfreezeTokensStatus::Complete => {
                         // handled above
@@ -603,36 +634,18 @@ impl ScreenLike for UnfreezeTokensScreen {
             }
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for UnfreezeTokensScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

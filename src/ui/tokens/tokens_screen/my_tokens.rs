@@ -2,9 +2,6 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
-use crate::ui::Screen;
-use crate::ui::components::styled::StyledButton;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -24,6 +21,7 @@ use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
+use crate::ui::{Screen, ScreenType};
 use chrono::{Local, Utc};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -33,7 +31,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
-use egui::{RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
 
@@ -165,7 +163,7 @@ impl TokensScreen {
                 // Otherwise, show the list of all tokens
                 match self.render_token_list(ui) {
                     Ok(list_action) => action |= list_action,
-                    Err(e) => self.set_error_message(Some(e)),
+                    Err(e) => self.token_creator_error_message = Some(e),
                 }
             }
         }
@@ -214,64 +212,81 @@ impl TokensScreen {
     }
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(20.0);
-            match self.tokens_subscreen {
-                TokensSubscreen::MyTokens => {
-                    ui.label(
-                        RichText::new("No tracked tokens.")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
-                TokensSubscreen::SearchTokens => {
-                    ui.label(
-                        RichText::new("No matching tokens found.")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
-                TokensSubscreen::TokenCreator => {
-                    ui.label(
-                        RichText::new("Cannot render token creator for some reason")
-                            .heading()
-                            .strong()
-                            .color(Color32::GRAY),
-                    );
-                }
-            }
-            ui.add_space(10.0);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.label(
-                RichText::new("Please check back later or try refreshing the list.")
-                    .color(DashColors::text_primary(dark_mode)),
-            );
-            ui.add_space(20.0);
-            if StyledButton::primary("Refresh").show(ui).clicked() {
-                if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
-                    app_action = AppAction::None;
-                } else {
-                    let now = Utc::now().timestamp() as u64;
-                    self.refreshing_status = RefreshingStatus::Refreshing(now);
+        Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .corner_radius(5.0)
+            .outer_margin(Margin::same(20))
+            .shadow(ui.visuals().window_shadow)
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+
+                    let (title, description) = match self.tokens_subscreen {
+                        TokensSubscreen::MyTokens => {
+                            ("No Tracked Tokens", "You don't have any tokens yet.")
+                        }
+                        TokensSubscreen::SearchTokens => (
+                            "No Matching Tokens",
+                            "No tokens match your search criteria.",
+                        ),
+                        TokensSubscreen::TokenCreator => {
+                            ("Token Creator Error", "Cannot render token creator.")
+                        }
+                    };
+
+                    ui.label(
+                        RichText::new(title)
+                            .strong()
+                            .size(20.0)
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new(description).color(DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.add_space(15.0);
+
                     match self.tokens_subscreen {
                         TokensSubscreen::MyTokens => {
-                            app_action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                                TokenTask::QueryMyTokenBalances,
-                            )));
+                            let button = egui::Button::new(
+                                RichText::new("Add Token")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(DashColors::DASH_BLUE)
+                            .min_size(egui::vec2(150.0, 36.0));
+
+                            if ui.add(button).clicked() {
+                                app_action = AppAction::AddScreen(
+                                    ScreenType::AddTokenById.create_screen(&self.app_context),
+                                );
+                            }
                         }
-                        TokensSubscreen::SearchTokens => {
-                            app_action = AppAction::Refresh;
-                        }
-                        TokensSubscreen::TokenCreator => {
-                            app_action = AppAction::Refresh;
+                        TokensSubscreen::SearchTokens | TokensSubscreen::TokenCreator => {
+                            let button = egui::Button::new(
+                                RichText::new("Refresh")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(DashColors::DASH_BLUE)
+                            .min_size(egui::vec2(150.0, 36.0));
+
+                            if ui.add(button).clicked() {
+                                if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+                                    app_action = AppAction::None;
+                                } else {
+                                    self.refreshing_status =
+                                        RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                    app_action = AppAction::Refresh;
+                                }
+                            }
                         }
                     }
-                }
-            }
-        });
+                    ui.add_space(10.0);
+                });
+            });
 
         app_action
     }
@@ -632,10 +647,12 @@ impl TokensScreen {
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     Ok(None) => {
-                        self.set_error_message(Some("Token contract not found".to_string()));
+                        self.token_creator_error_message =
+                            Some("Token contract not found".to_string());
                     }
                     Err(e) => {
-                        self.set_error_message(Some(format!("Error fetching token contract: {e}")));
+                        self.token_creator_error_message =
+                            Some(format!("Error fetching token contract: {e}"));
                     }
                 }
             }
@@ -656,7 +673,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
 
@@ -678,7 +695,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -699,7 +716,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -720,7 +737,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -741,7 +758,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -763,7 +780,7 @@ impl TokensScreen {
                                 );
                             }
                             Err(e) => {
-                                self.set_error_message(Some(e));
+                                self.token_creator_error_message = Some(e);
                             }
                         };
                     ui.close_kind(egui::UiKind::Menu);
@@ -785,7 +802,7 @@ impl TokensScreen {
                                 );
                             }
                             Err(e) => {
-                                self.set_error_message(Some(e));
+                                self.token_creator_error_message = Some(e);
                             }
                         };
                     ui.close_kind(egui::UiKind::Menu);
@@ -816,7 +833,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -835,7 +852,7 @@ impl TokensScreen {
 
                 if is_loading {
                     // Show loading spinner
-                    ui.add(egui::Spinner::new());
+                    ui.add(egui::Spinner::new().color(crate::ui::theme::DashColors::DASH_BLUE));
                 } else if has_pricing_data {
                     // Check if identity has enough credits for at least one token
                     let has_credits = self
@@ -874,7 +891,7 @@ impl TokensScreen {
                                         );
                                     }
                                     Err(e) => {
-                                        self.set_error_message(Some(e));
+                                        self.token_creator_error_message = Some(e);
                                     }
                                 };
                             ui.close_kind(egui::UiKind::Menu);
@@ -913,7 +930,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.set_error_message(Some(e));
+                            self.token_creator_error_message = Some(e);
                         }
                     };
 

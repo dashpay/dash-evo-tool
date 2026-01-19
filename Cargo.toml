@@ -4,7 +4,7 @@ version = "1.0.0-dev"
 license = "MIT"
 edition = "2024"
 default-run = "dash-evo-tool"
-rust-version = "1.89"
+rust-version = "1.92"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }
@@ -18,8 +18,16 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://www.github.com/dashpay/platform", tag = "v2.1.2", features = ["core_key_wallet", "core_bincode", "core_quorum-validation", "core_verification", "core_rpc_client"] }
-grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "5313ba9df590f114e11934e281f1e8c8bc462794" }
+dash-sdk = { git = "https://github.com/dashpay/platform.git", rev = "eace6d1c4563c3d9d58e6a12f4d5ed8bdd53d167", features = [
+    "core_key_wallet",
+    "core_key_wallet_manager",
+    "core_bincode",
+    "core_quorum-validation",
+    "core_verification",
+    "core_rpc_client",
+    "core_spv",
+] }
+grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "c5823c8239792f75f93f59f025aa335ab6d42c36" }
 rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"
@@ -46,7 +54,12 @@ arboard = { version = "3.6.0", default-features = false, features = [
 directories = "6.0.0"
 rusqlite = { version = "0.37.0", features = ["functions"] }
 dark-light = "2.0.0"
-image = { version = "0.25.6", default-features = false, features = ["png"] }
+image = { version = "0.25.6", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
+resvg = "0.45"
+reqwest = { version = "0.12", features = ["json", "stream"] }
 bitflags = "2.9.1"
 libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
 rust-embed = "8.7.2"
@@ -54,6 +67,7 @@ zeroize = "1.8.1"
 zxcvbn = "3.1.0"
 argon2 = "0.5.3" # For Argon2 key derivation
 aes-gcm = "0.10.3" # For AES-256-GCM encryption
+cbc = "0.1.2" # For CBC mode encryption
 crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
@@ -79,6 +93,3 @@ winres = "0.1"
 
 [lints.clippy]
 uninlined_format_args = "allow"
-
-[patch.crates-io]
-elliptic-curve-tools = { git = "https://github.com/mikelodder7/elliptic-curve-tools", rev = "c989865fa71503d2cbf5c5795c4ebcf4a2f3221c" }

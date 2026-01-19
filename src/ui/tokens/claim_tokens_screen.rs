@@ -1,9 +1,11 @@
+use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,7 +21,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -28,9 +30,10 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -49,6 +52,7 @@ pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    show_advanced_options: bool,
     pub public_note: Option<String>,
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
@@ -58,8 +62,9 @@ pub struct ClaimTokensScreen {
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl ClaimTokensScreen {
@@ -117,6 +122,7 @@ impl ClaimTokensScreen {
             identity,
             identity_token_basic_info,
             selected_key: possible_key.cloned(),
+            show_advanced_options: false,
             public_note: None,
             token_contract,
             token_configuration,
@@ -126,8 +132,8 @@ impl ClaimTokensScreen {
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -227,38 +233,27 @@ impl ClaimTokensScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Claimed Successfully!");
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Tokens").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-        });
-        action
+        crate::ui::helpers::show_success_screen_with_info(
+            ui,
+            "Claimed Successfully!".to_string(),
+            vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            None,
+        )
     }
 }
 
 impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Claimed") || message == "ClaimTokens" {
-                    self.status = ClaimTokensStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
+            self.status = ClaimTokensStatus::Complete;
         }
     }
 
@@ -358,27 +353,46 @@ impl ScreenLike for ClaimTokensScreen {
                 }
             } else {
                 // Possibly handle locked wallet scenario
-                if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
                         return;
                     }
                 }
 
-                ui.heading("1. Select the key to sign the Claim transition");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Claim Tokens");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenClaim,
-                );
-                ui.add_space(10.0);
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the Claim transition");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenClaim,
+                    );
+                    ui.add_space(10.0);
+                }
 
                 self.render_token_distribution_type_selector(ui);
 
@@ -497,6 +511,32 @@ impl ScreenLike for ClaimTokensScreen {
                     ui.add_space(10.0);
                 }
 
+                // Fee estimation display
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
+
                 let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 0))
                     .corner_radius(3.0);
@@ -532,43 +572,42 @@ impl ScreenLike for ClaimTokensScreen {
                         ui.label(format!("Claiming... elapsed: {}s", elapsed));
                     }
                     ClaimTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.status = ClaimTokensStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     ClaimTokensStatus::Complete => {}
                 }
             }
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for ClaimTokensScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

@@ -9,7 +9,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;
-use eframe::egui::{self, Context, ScrollArea, Ui};
+use eframe::egui::{self, Context, Frame, Margin, RichText, ScrollArea, Ui};
 use egui::Color32;
 use std::sync::Arc;
 
@@ -108,20 +108,17 @@ impl PlatformInfoScreen {
         action
     }
 
-    fn render_results(&self, ui: &mut Ui) {
+    fn render_results(&mut self, ui: &mut Ui) {
         // Check if any task is loading
         if !self.active_tasks.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
 
-                // Show spinner with theme-aware color
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let spinner_color = if dark_mode {
-                    Color32::from_gray(200)
-                } else {
-                    Color32::from_gray(60)
-                };
-                ui.add(egui::widgets::Spinner::default().color(spinner_color));
+                // Show spinner with Dash blue color
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                );
 
                 ui.add_space(10.0);
                 ui.heading("Loading...");
@@ -132,9 +129,22 @@ impl PlatformInfoScreen {
 
         // Check for errors and display them in the results area
         if let Some(error) = &self.error_message {
-            ui.heading("Error");
-            ui.separator();
-            ui.colored_label(Color32::RED, error);
+            let error_color = Color32::from_rgb(255, 100, 100);
+            let error = error.clone();
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.error_message = None;
+                        }
+                    });
+                });
             return;
         }
 
@@ -310,6 +320,9 @@ impl ScreenLike for PlatformInfoScreen {
                     self.current_result_title = Some(title);
                     self.active_tasks.clear(); // Clear any remaining active tasks
                     self.error_message = None;
+                }
+                PlatformInfoTaskResult::AddressBalance { .. } => {
+                    // This result is handled by AddressBalanceScreen, not here
                 }
             }
         }

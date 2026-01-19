@@ -45,8 +45,8 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
+use crate::ui::theme::DashColors;
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
@@ -61,11 +61,12 @@ use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -195,18 +196,13 @@ pub enum ContractSearchStatus {
     ErrorMessage(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
+    #[default]
     NotStarted,
     WaitingForResult(u64),
     Complete,
     ErrorMessage(String),
-}
-
-impl Default for TokenCreatorStatus {
-    fn default() -> Self {
-        Self::NotStarted
-    }
 }
 
 /// Sorting columns
@@ -1063,13 +1059,14 @@ pub struct TokensScreen {
     // ====================================
     //           Token Creator
     // ====================================
+    show_advanced_token_creator: bool,
     selected_token_preset: Option<TokenConfigurationPresetFeatures>,
     show_pop_up_info: Option<String>,
+    identity_id_string: String,
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     token_names_input: Vec<(String, String, TokenNameLanguage, TokenSearchable)>,
     contract_keywords_input: String,
     token_description_input: String,
@@ -1415,13 +1412,14 @@ impl TokensScreen {
             show_token_info_popup: None,
 
             // Token Creator
+            show_advanced_token_creator: false,
             selected_token_preset: None,
             show_pop_up_info: None,
+            identity_id_string: String::new(),
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_token_creator_confirmation_popup: false,
             token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
@@ -2196,6 +2194,7 @@ impl TokensScreen {
     }
 
     fn reset_token_creator(&mut self) {
+        self.identity_id_string = String::new();
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
@@ -2754,10 +2753,7 @@ impl ScreenLike for TokensScreen {
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
                             ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                            ui.add(
-                                egui::widgets::Spinner::default()
-                                    .color(Color32::from_rgb(0, 128, 255)),
-                            );
+                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                         });
                         ui.add_space(2.0); // Space below
                     } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
@@ -2789,19 +2785,10 @@ impl ScreenLike for TokensScreen {
 
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
-                        egui::Window::new("Distribution Type Info")
-                            .collapsible(false)
-                            .resizable(true)
-                            .show(ui.ctx(), |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    let mut cache = CommonMarkCache::default();
-                                    CommonMarkViewer::new().show(ui, &mut cache, &info_text);
-                                });
-
-                                if ui.button("Close").clicked() {
-                                    self.show_pop_up_info = None;
-                                }
-                            });
+                        let mut popup = InfoPopup::new("Information", &info_text);
+                        if popup.show(ui).inner {
+                            self.show_pop_up_info = None;
+                        }
                     }
 
                     inner_action
@@ -2850,6 +2837,19 @@ impl ScreenLike for TokensScreen {
         {
             action = AppAction::BackendTask(bt);
         }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
     }
 
@@ -2966,38 +2966,18 @@ impl ScreenLike for TokensScreen {
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::FetchedTokenBalances => {
+                // Refresh my_tokens to show updated balances
+                self.my_tokens = my_tokens(
+                    &self.app_context,
+                    &self.identities,
+                    &self.all_known_tokens,
+                    &self.token_pricing_data,
+                );
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
             _ => {}
         }
-    }
-}
-
-impl ScreenWithWalletUnlock for TokensScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.token_creator_error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.token_creator_error_message.as_ref()
     }
 }
 
@@ -3040,7 +3020,8 @@ mod tests {
 
     #[test]
     fn test_token_creator_ui_builds_correct_contract() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_token_creator";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
@@ -3345,7 +3326,8 @@ mod tests {
 
     #[test]
     fn test_distribution_function_random() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_distribution_random";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
@@ -3464,7 +3446,8 @@ mod tests {
 
     #[test]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_empty_token_name";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 

@@ -9,7 +9,7 @@ use crate::ui::identities::add_new_identity_screen::{
 use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
-use egui::{Color32, Ui};
+use egui::Ui;
 use std::sync::Arc;
 
 impl AddNewIdentityScreen {
@@ -150,9 +150,12 @@ impl AddNewIdentityScreen {
                 .request_repaint_after(std::time::Duration::from_secs(1));
         }
 
-        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
+        // Get the amount in DASH from the Amount struct
+        let Some(amount) = &self.funding_amount else {
             return AppAction::None;
         };
+
+        let amount_dash = amount.value() as f64 / 100_000_000_000.0; // credits to DASH
 
         if amount_dash <= 0.0 {
             return AppAction::None;
@@ -167,55 +170,53 @@ impl AddNewIdentityScreen {
 
                 ui.add_space(20.0);
 
-                if let Some(error_message) = self.error_message.as_ref() {
-                    ui.colored_label(Color32::DARK_RED, error_message);
-                    ui.add_space(20.0);
+                // Handle FundsReceived action regardless of error state
+                if step == WalletFundedScreenStep::FundsReceived {
+                    let Some(selected_wallet) = &self.selected_wallet else {
+                        return AppAction::None;
+                    };
+                    if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
+                        let identity_input = IdentityRegistrationInfo {
+                            alias_input: self.alias_input.clone(),
+                            keys: self.identity_keys.clone(),
+                            wallet: Arc::clone(selected_wallet), // Clone the Arc reference
+                            wallet_identity_index: self.identity_id_number,
+                            identity_funding_method: RegisterIdentityFundingMethod::FundWithUtxo(
+                                utxo,
+                                tx_out,
+                                address,
+                                self.identity_id_number,
+                            ),
+                        };
+
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::WaitingForAssetLock;
+
+                        // Create the backend task to register the identity
+                        return AppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::RegisterIdentity(identity_input),
+                        ));
+                    }
                 }
 
-                match step {
-                    WalletFundedScreenStep::ChooseFundingMethod => {}
-                    WalletFundedScreenStep::WaitingOnFunds => {
-                        ui.heading("=> Waiting for funds. <=");
-                    }
-                    WalletFundedScreenStep::FundsReceived => {
-                        let Some(selected_wallet) = &self.selected_wallet else {
-                            return AppAction::None;
-                        };
-                        if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
-                            let identity_input = IdentityRegistrationInfo {
-                                alias_input: self.alias_input.clone(),
-                                keys: self.identity_keys.clone(),
-                                wallet: Arc::clone(selected_wallet), // Clone the Arc reference
-                                wallet_identity_index: self.identity_id_number,
-                                identity_funding_method:
-                                    RegisterIdentityFundingMethod::FundWithUtxo(
-                                        utxo,
-                                        tx_out,
-                                        address,
-                                        self.identity_id_number,
-                                    ),
-                            };
-
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::WaitingForAssetLock;
-
-                            // Create the backend task to register the identity
-                            return AppAction::BackendTask(BackendTask::IdentityTask(
-                                IdentityTask::RegisterIdentity(identity_input),
-                            ));
+                // Only show status messages if there's no error
+                if self.error_message.is_none() {
+                    match step {
+                        WalletFundedScreenStep::WaitingOnFunds => {
+                            ui.heading("=> Waiting for funds. <=");
                         }
-                    }
-                    WalletFundedScreenStep::ReadyToCreate => {}
-                    WalletFundedScreenStep::WaitingForAssetLock => {
-                        ui.heading(
-                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                        );
-                    }
-                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                        ui.heading("=> Waiting for Platform acknowledgement. <=");
-                    }
-                    WalletFundedScreenStep::Success => {
-                        ui.heading("...Success...");
+                        WalletFundedScreenStep::WaitingForAssetLock => {
+                            ui.heading(
+                                "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                            );
+                        }
+                        WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                            ui.heading("=> Waiting for Platform acknowledgement. <=");
+                        }
+                        WalletFundedScreenStep::Success => {
+                            ui.heading("...Success...");
+                        }
+                        _ => {}
                     }
                 }
                 AppAction::None

@@ -292,19 +292,51 @@ impl Decode for QualifiedIdentity {
     }
 }
 
-impl Signer for QualifiedIdentity {
+impl Display for QualifiedIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(alias) = &self.alias {
+            write!(f, "{}", alias)
+        } else if !self.dpns_names.is_empty() {
+            write!(f, "{}", self.dpns_names[0].name)
+        } else {
+            write!(f, "{}", self.identity.id())
+        }
+    }
+}
+
+impl Signer<IdentityPublicKey> for QualifiedIdentity {
     fn sign(
         &self,
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
     ) -> Result<BinaryData, ProtocolError> {
+        let target: PrivateKeyTarget = identity_public_key.purpose().into();
+        let key_id = identity_public_key.id();
+
+        tracing::debug!(
+            identity_id = %self.identity.id().to_string(Encoding::Base58),
+            key_id = key_id,
+            key_purpose = ?identity_public_key.purpose(),
+            key_type = ?identity_public_key.key_type(),
+            target = ?target,
+            "Attempting to sign with key"
+        );
+
+        // Log available keys
+        for ((t, id), (pub_key, _)) in self.private_keys.private_keys.iter() {
+            tracing::debug!(
+                target = ?t,
+                key_id = id,
+                purpose = ?pub_key.identity_public_key.purpose(),
+                key_type = ?pub_key.identity_public_key.key_type(),
+                "Available key in identity"
+            );
+        }
+
         let (_, private_key) = self
             .private_keys
             .get_resolve(
-                &(
-                    identity_public_key.purpose().into(),
-                    identity_public_key.id(),
-                ),
+                &(target.clone(), key_id),
                 self.associated_wallets
                     .values()
                     .cloned()
@@ -312,15 +344,100 @@ impl Signer for QualifiedIdentity {
                     .as_slice(),
                 self.network,
             )
-            .map_err(ProtocolError::Generic)?
-            .ok_or(ProtocolError::Generic(format!(
-                "Key {} ({}) not found in identity {:?}",
-                identity_public_key.id(),
-                identity_public_key.purpose(),
-                self.identity.id().to_string(Encoding::Base58)
-            )))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to resolve private key");
+                ProtocolError::Generic(e)
+            })?
+            .ok_or_else(|| {
+                tracing::error!(
+                    key_id = key_id,
+                    purpose = ?identity_public_key.purpose(),
+                    target = ?target,
+                    "Key not found in identity"
+                );
+                ProtocolError::Generic(format!(
+                    "Key {} ({}) not found in identity {:?}",
+                    identity_public_key.id(),
+                    identity_public_key.purpose(),
+                    self.identity.id().to_string(Encoding::Base58)
+                ))
+            })?;
+
+        tracing::debug!("Successfully resolved private key, proceeding to sign");
         match identity_public_key.key_type() {
             KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
+                // For ECDSA_HASH160, verify that the private key matches the public key hash on Platform
+                // If there's a mismatch (due to incorrect stored derivation path), regenerate the correct path
+                if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
+                    use dash_sdk::dpp::dashcore::PublicKey;
+                    use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+                    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+
+                    let platform_key_data = identity_public_key.data().as_slice();
+
+                    if let Ok(secret_key) = SecretKey::from_slice(&private_key) {
+                        let secp = Secp256k1::new();
+                        let derived_pubkey = PublicKey::new(secret_key.public_key(&secp));
+                        let pubkey_bytes = derived_pubkey.to_bytes();
+                        let sha256_hash = sha256::Hash::hash(&pubkey_bytes);
+                        let hash160 = ripemd160::Hash::hash(sha256_hash.as_byte_array());
+
+                        if hash160.as_byte_array() != platform_key_data {
+                            // Mismatch detected - scan identity indices to find the correct derivation path
+                            use dash_sdk::dpp::key_wallet::bip32::{
+                                DerivationPath as DP, KeyDerivationType,
+                            };
+
+                            if let Some(wallet) = self.associated_wallets.values().next()
+                                && let Ok(wallet_ref) = wallet.read()
+                                && let Ok(seed) = wallet_ref.seed_bytes()
+                            {
+                                // Scan identity indices 0-9 to find matching key
+                                for identity_index in 0..10u32 {
+                                    let correct_path = DP::identity_authentication_path(
+                                        self.network,
+                                        KeyDerivationType::ECDSA,
+                                        identity_index,
+                                        key_id,
+                                    );
+
+                                    if let Ok(extended_key) = correct_path
+                                        .derive_priv_ecdsa_for_master_seed(seed, self.network)
+                                    {
+                                        let correct_pubkey = PublicKey::new(
+                                            extended_key.private_key.public_key(&secp),
+                                        );
+                                        let correct_hash = ripemd160::Hash::hash(
+                                            sha256::Hash::hash(&correct_pubkey.to_bytes())
+                                                .as_byte_array(),
+                                        );
+
+                                        if correct_hash.as_byte_array() == platform_key_data {
+                                            tracing::info!(
+                                                identity_index = identity_index,
+                                                key_id = key_id,
+                                                path = %correct_path,
+                                                "Using corrected derivation path for signing (found via scan)"
+                                            );
+                                            let signature = signer::sign(
+                                                data,
+                                                &extended_key.private_key.secret_bytes(),
+                                            )?;
+                                            return Ok(signature.to_vec().into());
+                                        }
+                                    }
+                                }
+                            }
+
+                            tracing::error!(
+                                derived = %hex::encode(hash160.as_byte_array()),
+                                platform = %hex::encode(platform_key_data),
+                                "Key mismatch and could not find correct derivation path after scanning"
+                            );
+                        }
+                    }
+                }
+
                 let signature = signer::sign(data, &private_key)?;
                 Ok(signature.to_vec().into())
             }
@@ -362,6 +479,44 @@ impl Signer for QualifiedIdentity {
             identity_public_key.purpose().into(),
             identity_public_key.id(),
         ))
+    }
+
+    fn sign_create_witness(
+        &self,
+        identity_public_key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<dash_sdk::dpp::address_funds::AddressWitness, ProtocolError> {
+        use dash_sdk::dpp::address_funds::AddressWitness;
+
+        // First, sign the data to get the signature (compact recoverable signature)
+        // The public key will be recovered from the signature during verification
+        let signature = self.sign(identity_public_key, data)?;
+
+        // Create the appropriate AddressWitness based on the key type
+        match identity_public_key.key_type() {
+            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
+                // P2PKH witness only needs the recoverable signature
+                Ok(AddressWitness::P2pkh { signature })
+            }
+            KeyType::EDDSA_25519_HASH160 => {
+                // Ed25519 keys are not supported for address witnesses (P2PKH requires ECDSA)
+                Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
+                    InvalidIdentityPublicKeyTypeError::new(identity_public_key.key_type()),
+                ))
+            }
+            KeyType::BIP13_SCRIPT_HASH => {
+                // For script hash, we would need the redeem script which isn't available from just the key
+                Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
+                    InvalidIdentityPublicKeyTypeError::new(identity_public_key.key_type()),
+                ))
+            }
+            KeyType::BLS12_381 => {
+                // BLS keys are not supported for address witnesses
+                Err(ProtocolError::InvalidIdentityPublicKeyTypeError(
+                    InvalidIdentityPublicKeyTypeError::new(identity_public_key.key_type()),
+                ))
+            }
+        }
     }
 }
 

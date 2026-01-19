@@ -4,12 +4,29 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 11;
+pub const DEFAULT_DB_VERSION: u16 = 25;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+        // First, ensure all required columns exist in tables that may have been
+        // created with an older schema. This must happen before any queries that
+        // depend on these columns (like db_schema_version which needs database_version).
+        {
+            let conn = self.conn.lock().unwrap();
+            // Check if settings table exists before trying to ensure columns
+            let settings_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )?;
+            if settings_exists {
+                self.ensure_settings_columns_exist(&conn)?;
+            }
+            self.ensure_wallet_columns_exist(&conn)?;
+        }
+
         // Check if this is the first time setup by looking for entries in the settings table.
         if self.is_first_time_setup()? {
             self.create_tables()?;
@@ -34,6 +51,48 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            25 => {
+                self.add_avatar_bytes_column(tx)?;
+            }
+            24 => {
+                self.add_selected_wallet_columns(tx)?;
+            }
+            23 => {
+                self.add_last_terminal_block_column(tx)?;
+            }
+            22 => {
+                self.add_network_column_to_dashpay_contact_requests(tx)?;
+                self.add_network_column_to_dashpay_contacts(tx)?;
+            }
+            21 => {
+                self.add_network_column_to_dashpay_profiles(tx)?;
+            }
+            20 => {
+                self.add_platform_sync_columns(tx)?;
+            }
+            19 => {
+                self.initialize_platform_address_balances_table(tx)?;
+            }
+            18 => {
+                self.initialize_single_key_wallet_table(tx)?;
+            }
+            17 => {
+                self.add_address_total_received_column(tx)?;
+            }
+            16 => {
+                self.add_wallet_balance_columns(tx)?;
+            }
+            15 => {
+                self.add_core_backend_mode_column(tx)?;
+            }
+            14 => {
+                self.initialize_wallet_transactions_table(tx)?;
+            }
+            13 => {
+                // Add DashPay tables in version 12
+                self.init_dashpay_tables_in_tx(tx)?;
+            }
+            12 => self.add_disable_zmq_column(tx)?,
             11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
             10 => {
                 self.add_theme_preference_column(tx)?;
@@ -215,8 +274,16 @@ impl Database {
             start_root_screen INTEGER NOT NULL,
             custom_dash_qt_path TEXT,
             overwrite_dash_conf INTEGER,
+            disable_zmq INTEGER DEFAULT 0,
             theme_preference TEXT DEFAULT 'System',
-            database_version INTEGER NOT NULL
+            core_backend_mode INTEGER DEFAULT 1,
+            database_version INTEGER NOT NULL,
+            onboarding_completed INTEGER DEFAULT 0,
+            show_evonode_tools INTEGER DEFAULT 0,
+            user_mode TEXT DEFAULT 'Advanced',
+            use_local_spv_node INTEGER DEFAULT 0,
+            auto_start_spv INTEGER DEFAULT 1,
+            close_dash_qt_on_exit INTEGER DEFAULT 1
         )",
             [],
         )?;
@@ -233,7 +300,12 @@ impl Database {
                 is_main INTEGER,
                 uses_password INTEGER NOT NULL,
                 password_hint TEXT,
-                network TEXT NOT NULL
+                network TEXT NOT NULL,
+                confirmed_balance INTEGER DEFAULT 0,
+                unconfirmed_balance INTEGER DEFAULT 0,
+                total_balance INTEGER DEFAULT 0,
+                last_platform_full_sync INTEGER DEFAULT 0,
+                last_platform_sync_checkpoint INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -247,6 +319,7 @@ impl Database {
                 balance INTEGER,
                 path_reference INTEGER NOT NULL,
                 path_type INTEGER NOT NULL,
+                total_received INTEGER DEFAULT 0,
                 PRIMARY KEY (seed_hash, address),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
@@ -256,6 +329,21 @@ impl Database {
         // Create indexes for wallet addresses table
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+
+        // Create Platform address balances table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS platform_address_balances (
+                seed_hash BLOB NOT NULL,
+                address TEXT NOT NULL,
+                balance INTEGER NOT NULL DEFAULT 0,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                network TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (seed_hash, address, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
 
         // Create the utxos table
         conn.execute(
@@ -280,6 +368,9 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
             [],
         )?;
+
+        // Create wallet transactions table for SPV history
+        self.initialize_wallet_transactions_table(&conn)?;
 
         // Create asset lock transaction table
         conn.execute(
@@ -386,6 +477,13 @@ impl Database {
         self.initialize_token_order_table(&conn)?;
         self.initialize_identity_token_balances_table(&conn)?;
 
+        // Initialize contacts and DashPay tables while holding the same connection lock
+        self.init_contacts_tables(&conn)?;
+        self.init_dashpay_tables_in_tx(&conn)?;
+
+        // Initialize single key wallet table
+        self.initialize_single_key_wallet_table(&conn)?;
+
         Ok(())
     }
 
@@ -399,12 +497,288 @@ impl Database {
         self.set_db_version(DEFAULT_DB_VERSION)
     }
     fn set_db_version(&self, version: u16) -> rusqlite::Result<()> {
+        // Default start_root_screen to 20 (RootScreenDashPayProfile)
         self.execute(
             "INSERT INTO settings (id, network, start_root_screen, database_version)
-             VALUES (1, ?, 0, ?)
+             VALUES (1, ?, 20, ?)
              ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
             params![DEFAULT_NETWORK, version],
         )?;
+        Ok(())
+    }
+
+    /// Migration: Create platform_address_balances table (version 19).
+    fn initialize_platform_address_balances_table(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS platform_address_balances (
+                seed_hash BLOB NOT NULL,
+                address TEXT NOT NULL,
+                balance INTEGER NOT NULL DEFAULT 0,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                network TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (seed_hash, address, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Add platform sync columns to wallet table (version 20).
+    /// - last_platform_full_sync: Unix timestamp of last full platform address sync
+    /// - last_platform_sync_checkpoint: Block height checkpoint from last full sync
+    fn add_platform_sync_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN last_platform_full_sync INTEGER DEFAULT 0",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN last_platform_sync_checkpoint INTEGER DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Add last_terminal_block column to wallet table (version 23).
+    /// Tracks the highest block height processed by terminal balance updates to avoid
+    /// re-applying the same balance changes on subsequent terminal-only syncs.
+    fn add_last_terminal_block_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN last_terminal_block INTEGER DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration: Add selected wallet hash columns to settings table (version 24).
+    /// Persists the user's selected wallet across app restarts.
+    fn add_selected_wallet_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if selected_wallet_hash column exists
+        let wallet_hash_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_wallet_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !wallet_hash_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN selected_wallet_hash BLOB DEFAULT NULL",
+                [],
+            )?;
+        }
+
+        // Check if selected_single_key_hash column exists
+        let single_key_hash_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_single_key_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if !single_key_hash_exists {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN selected_single_key_hash BLOB DEFAULT NULL",
+                [],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn add_network_column_to_dashpay_profiles(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if dashpay_profiles table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_profiles'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if network column already exists
+            let has_network_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_profiles') WHERE name='network'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_network_column {
+                // Add network column with default value
+                conn.execute(
+                    "ALTER TABLE dashpay_profiles ADD COLUMN network TEXT NOT NULL DEFAULT 'dash'",
+                    [],
+                )?;
+
+                // Drop the old primary key and recreate with composite key
+                // SQLite doesn't support dropping primary key, so we need to recreate the table
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS dashpay_profiles_new (
+                        identity_id BLOB NOT NULL,
+                        network TEXT NOT NULL,
+                        display_name TEXT,
+                        bio TEXT,
+                        avatar_url TEXT,
+                        avatar_hash BLOB,
+                        avatar_fingerprint BLOB,
+                        public_message TEXT,
+                        created_at INTEGER DEFAULT (unixepoch()),
+                        updated_at INTEGER DEFAULT (unixepoch()),
+                        PRIMARY KEY (identity_id, network)
+                    )",
+                    [],
+                )?;
+
+                // Copy data from old table
+                conn.execute(
+                    "INSERT OR REPLACE INTO dashpay_profiles_new
+                     SELECT identity_id, network, display_name, bio, avatar_url,
+                            avatar_hash, avatar_fingerprint, public_message, created_at, updated_at
+                     FROM dashpay_profiles",
+                    [],
+                )?;
+
+                // Drop old table and rename new one
+                conn.execute("DROP TABLE dashpay_profiles", [])?;
+                conn.execute(
+                    "ALTER TABLE dashpay_profiles_new RENAME TO dashpay_profiles",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_network_column_to_dashpay_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        // Check if dashpay_contact_requests table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_contact_requests'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if network column already exists
+            let has_network_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests') WHERE name='network'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_network_column {
+                // Add network column with default value
+                conn.execute(
+                    "ALTER TABLE dashpay_contact_requests ADD COLUMN network TEXT NOT NULL DEFAULT 'dash'",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_network_column_to_dashpay_contacts(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if dashpay_contacts table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_contacts'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if network column already exists
+            let has_network_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contacts') WHERE name='network'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_network_column {
+                // Add network column with default value
+                conn.execute(
+                    "ALTER TABLE dashpay_contacts ADD COLUMN network TEXT NOT NULL DEFAULT 'dash'",
+                    [],
+                )?;
+
+                // Recreate the table with composite primary key
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS dashpay_contacts_new (
+                        owner_identity_id BLOB NOT NULL,
+                        contact_identity_id BLOB NOT NULL,
+                        network TEXT NOT NULL,
+                        username TEXT,
+                        display_name TEXT,
+                        avatar_url TEXT,
+                        public_message TEXT,
+                        contact_status TEXT DEFAULT 'pending',
+                        created_at INTEGER DEFAULT (unixepoch()),
+                        updated_at INTEGER DEFAULT (unixepoch()),
+                        last_seen INTEGER,
+                        PRIMARY KEY (owner_identity_id, contact_identity_id, network)
+                    )",
+                    [],
+                )?;
+
+                // Copy data from old table
+                conn.execute(
+                    "INSERT OR REPLACE INTO dashpay_contacts_new
+                     SELECT owner_identity_id, contact_identity_id, network, username, display_name,
+                            avatar_url, public_message, contact_status, created_at, updated_at, last_seen
+                     FROM dashpay_contacts",
+                    [],
+                )?;
+
+                // Drop old table and rename new one
+                conn.execute("DROP TABLE dashpay_contacts", [])?;
+                conn.execute(
+                    "ALTER TABLE dashpay_contacts_new RENAME TO dashpay_contacts",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Migration: Add avatar_bytes column to dashpay_profiles table (version 25).
+    /// Stores the actual avatar image bytes to avoid re-fetching from network on every app start.
+    fn add_avatar_bytes_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if dashpay_profiles table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_profiles'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if avatar_bytes column already exists
+            let has_avatar_bytes_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_profiles') WHERE name='avatar_bytes'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_avatar_bytes_column {
+                conn.execute(
+                    "ALTER TABLE dashpay_profiles ADD COLUMN avatar_bytes BLOB DEFAULT NULL",
+                    [],
+                )?;
+            }
+        }
+
         Ok(())
     }
 }

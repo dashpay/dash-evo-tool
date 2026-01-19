@@ -1,3 +1,4 @@
+mod by_platform_address;
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod by_wallet_qr_code;
@@ -6,20 +7,27 @@ mod success_screen;
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::{Credits, Duffs};
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -41,13 +49,19 @@ pub struct TopUpIdentityScreen {
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
+    funding_amount_input: Option<AmountInput>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     copied_to_clipboard: Option<Option<String>>,
     error_message: Option<String>,
-    show_password: bool,
-    wallet_password: String,
+    wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
+    // Platform address fields
+    selected_platform_address: Option<(Address, PlatformAddress, Credits)>,
+    platform_top_up_amount: Option<Amount>,
+    platform_top_up_amount_input: Option<AmountInput>,
+    /// Fee result from completed top-up
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl TopUpIdentityScreen {
@@ -61,13 +75,17 @@ impl TopUpIdentityScreen {
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "".to_string(),
             funding_amount_exact: None,
+            funding_amount_input: None,
             funding_utxo: None,
             copied_to_clipboard: None,
             error_message: None,
-            show_password: false,
-            wallet_password: "".to_string(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             app_context: app_context.clone(),
+            selected_platform_address: None,
+            platform_top_up_amount: None,
+            platform_top_up_amount_input: None,
+            completed_fee_result: None,
         }
     }
 
@@ -163,6 +181,7 @@ impl TopUpIdentityScreen {
             self.funding_address = None;
             self.funding_asset_lock = None;
             self.funding_utxo = None;
+            self.funding_amount_input = None;
             self.copied_to_clipboard = None;
 
             if let Some(method) = step_update_method {
@@ -181,9 +200,9 @@ impl TopUpIdentityScreen {
         let mut step = self.step.write().unwrap();
         *step = match funding_method {
             FundingMethod::AddressWithQRCode => WalletFundedScreenStep::WaitingOnFunds,
-            FundingMethod::UseUnusedAssetLock | FundingMethod::UseWalletBalance => {
-                WalletFundedScreenStep::ReadyToCreate
-            }
+            FundingMethod::UseUnusedAssetLock
+            | FundingMethod::UseWalletBalance
+            | FundingMethod::UsePlatformAddress => WalletFundedScreenStep::ReadyToCreate,
             FundingMethod::NoSelection => WalletFundedScreenStep::ChooseFundingMethod,
         };
     }
@@ -192,11 +211,12 @@ impl TopUpIdentityScreen {
         let funding_method_arc = self.funding_method.clone();
         let mut funding_method = funding_method_arc.write().unwrap();
 
-        // Check if any wallet has unused asset locks or balance
-        let (has_any_unused_asset_lock, has_any_balance) = {
+        // Check if any wallet has unused asset locks, balance, or Platform address balance
+        let (has_any_unused_asset_lock, has_any_balance, has_any_platform_balance) = {
             let wallets = self.app_context.wallets.read().unwrap();
             let mut has_unused_asset_lock = false;
             let mut has_balance = false;
+            let mut has_platform_balance = false;
 
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
@@ -206,12 +226,15 @@ impl TopUpIdentityScreen {
                 if wallet.has_balance() {
                     has_balance = true;
                 }
-                if has_unused_asset_lock && has_balance {
+                if wallet.total_platform_balance() > 0 {
+                    has_platform_balance = true;
+                }
+                if has_unused_asset_lock && has_balance && has_platform_balance {
                     break; // No need to check further
                 }
             }
 
-            (has_unused_asset_lock, has_balance)
+            (has_unused_asset_lock, has_balance, has_platform_balance)
         };
 
         ComboBox::from_id_salt("funding_method")
@@ -228,7 +251,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Use Unused Asset Locks",
+                            "Unused Asset Locks",
                         )
                         .changed()
                     {
@@ -242,7 +265,21 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Use Wallet Balance",
+                            "Wallet Balance",
+                        )
+                        .changed()
+                    {
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
+                });
+
+                ui.add_enabled_ui(has_any_platform_balance, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut *funding_method,
+                            FundingMethod::UsePlatformAddress,
+                            "Platform Address",
                         )
                         .changed()
                     {
@@ -330,59 +367,39 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Amount (DASH):");
+        // Get max amount from the selected wallet's balance (in Duffs, convert to Credits)
+        let max_amount_duffs = self
+            .wallet
+            .as_ref()
+            .map(|w| w.read().unwrap().total_balance_duffs())
+            .unwrap_or(0);
+        // Convert Duffs to Credits (1 Duff = 1000 Credits)
+        let max_amount_credits = max_amount_duffs * 1000;
 
-            // Render the text input field for the funding amount
-            let amount_input = ui
-                .add(egui::TextEdit::singleline(&mut self.funding_amount).desired_width(100.0))
-                .lost_focus();
-
-            self.funding_amount_exact = self.funding_amount.parse::<f64>().ok().map(|f| {
-                (f * 1e8) as u64 // Convert the amount to Duffs
-            });
-
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if amount_input && enter_pressed {
-                // Optional: Validate the input when Enter is pressed
-                if self.funding_amount.parse::<f64>().is_err() {
-                    ui.label("Invalid amount. Please enter a valid number.");
-                }
-            }
+        // Lazy initialization of the AmountInput component
+        let amount_input = self.funding_amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::new_dash(0.0))
+                .with_label("Amount:")
+                .with_max_button(true)
+                .with_max_amount(Some(max_amount_credits))
         });
 
+        // Update max amount in case wallet balance changed
+        amount_input.set_max_amount(Some(max_amount_credits));
+
+        let response = amount_input.show(ui);
+
+        // Update the funding_amount_exact from the parsed amount
+        if let Some(amount) = response.inner.parsed_amount {
+            // Amount.value() returns credits, convert to duffs (divide by 1000)
+            self.funding_amount_exact = Some(amount.value() / 1000);
+            // Keep the string in sync for backward compatibility
+            self.funding_amount = format!("{}", amount.value() as f64 / 100_000_000_000.0);
+        } else {
+            self.funding_amount_exact = None;
+        }
+
         ui.add_space(10.0);
-    }
-}
-
-impl ScreenWithWalletUnlock for TopUpIdentityScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }
 
@@ -390,19 +407,28 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error topping up identity: {}", message));
+            // Reset step so UI is not stuck on waiting messages
+            let mut step = self.step.write().unwrap();
+            if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance
+                || *step == WalletFundedScreenStep::WaitingForAssetLock
+            {
+                *step = WalletFundedScreenStep::ReadyToCreate;
+            }
         } else {
             self.error_message = Some(message.to_string());
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity) =
-            &backend_task_success_result
+        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
+            backend_task_success_result
         {
-            self.identity = qualified_identity.clone();
+            self.identity = qualified_identity;
+            self.completed_fee_result = Some(fee_result);
             self.funding_address = None;
             self.funding_utxo = None;
             self.funding_amount.clear();
             self.funding_amount_exact = None;
+            self.funding_amount_input = None;
             self.copied_to_clipboard = None;
             self.error_message = None;
 
@@ -477,6 +503,30 @@ impl ScreenLike for TopUpIdentityScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
+            let _dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            // Display error message at the top, outside of scroll area
+            if let Some(error_message) = self.error_message.clone() {
+                let message_color = egui::Color32::from_rgb(255, 100, 100);
+
+                ui.horizontal(|ui| {
+                    egui::Frame::new()
+                        .fill(message_color.gamma_multiply(0.1))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, message_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&error_message).color(message_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.error_message = None;
+                                }
+                            });
+                        });
+                });
+                ui.add_space(10.0);
+            }
 
             ScrollArea::vertical().show(ui, |ui| {
                 let step = { *self.step.read().unwrap() };
@@ -533,20 +583,30 @@ impl ScreenLike for TopUpIdentityScreen {
                 if funding_method == FundingMethod::UseWalletBalance
                     || funding_method == FundingMethod::UseUnusedAssetLock
                     || funding_method == FundingMethod::AddressWithQRCode
+                    || funding_method == FundingMethod::UsePlatformAddress
                 {
-                    ui.horizontal(|ui| {
-                        ui.heading(format!(
-                            "{}. Choose the wallet to use to top up this identity.",
-                            step_number
-                        ));
+                    // Check if there's more than one wallet to show selection UI
+                    let wallet_count = self.app_context.wallets.read().unwrap().len();
+
+                    if wallet_count > 1 {
+                        ui.horizontal(|ui| {
+                            ui.heading(format!(
+                                "{}. Choose the wallet to use to top up this identity.",
+                                step_number
+                            ));
+                            ui.add_space(10.0);
+
+                            // Add info icon with hover tooltip and click popup
+                            if crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP)
+                                .clicked()
+                            {
+                                self.show_pop_up_info = Some(WALLET_SELECTION_TOOLTIP.to_string());
+                            }
+                        });
+                        step_number += 1;
+
                         ui.add_space(10.0);
-
-                        // Add info icon with hover tooltip
-                        crate::ui::helpers::info_icon_button(ui, WALLET_SELECTION_TOOLTIP);
-                    });
-                    step_number += 1;
-
-                    ui.add_space(10.0);
+                    }
 
                     self.render_wallet_selection(ui);
 
@@ -554,15 +614,29 @@ impl ScreenLike for TopUpIdentityScreen {
                         return;
                     };
 
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        return;
+                    if let Some(wallet) = &self.wallet {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                            return;
+                        }
                     }
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
+                    if wallet_count > 1 {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                    }
                 }
 
                 match funding_method {
@@ -576,23 +650,35 @@ impl ScreenLike for TopUpIdentityScreen {
                     FundingMethod::AddressWithQRCode => {
                         inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
                     }
+                    FundingMethod::UsePlatformAddress => {
+                        inner_action |= self.render_ui_by_platform_address(ui, step_number);
+                    }
                 }
             });
 
             inner_action
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-            egui::Window::new("Identity Index Information")
-                .collapsible(false) // Prevent collapsing
-                .resizable(false) // Prevent resizing
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    ui.label(show_pop_up_info_text);
-
-                    // Add a close button to dismiss the popup
-                    if ui.button("Close").clicked() {
-                        self.show_pop_up_info = None
+                    let mut popup = InfoPopup::new("Wallet Selection Info", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
                     }
                 });
         }

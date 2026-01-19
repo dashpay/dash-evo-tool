@@ -10,7 +10,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use eframe::egui::{self, Color32, Context, RichText, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -142,37 +142,37 @@ impl AddContractsScreen {
             // Clone the options to avoid borrowing self.add_contracts_status during the UI closure
             let options = self.maybe_found_contracts.clone();
 
-            use egui::{Grid, vec2};
+            use egui::vec2;
 
-            let mut clicked_idx: Option<usize> = None; // remember which row’s button was hit
+            let mut clicked_idx: Option<usize> = None; // remember which row's button was hit
 
-            Grid::new("found_contracts_grid")
-                .striped(false)
-                .num_columns(3)
-                .min_col_width(150.0)
-                .spacing(vec2(12.0, 6.0)) // [horiz, vert] spacing between cells
-                .show(ui, |ui| {
-                    for (idx, id_string) in self.contract_ids_input.iter().enumerate() {
-                        let trimmed = id_string.trim().to_string();
+            for (idx, id_string) in self.contract_ids_input.iter().enumerate() {
+                let trimmed = id_string.trim().to_string();
 
-                        if options.contains(&trimmed) {
-                            // ─ column 1: contract ID label ───────────────────────────────
-                            ui.colored_label(Color32::DARK_GREEN, &trimmed);
+                if options.contains(&trimmed) {
+                    ui.horizontal(|ui| {
+                        // ─ column 1: contract ID label ───────────────────────────────
+                        ui.colored_label(Color32::DARK_GREEN, &trimmed);
 
-                            // ─ column 2: editable alias field ───────────────────────────
-                            ui.text_edit_singleline(&mut alias_inputs[idx]);
+                        ui.add_space(12.0);
 
-                            // ─ column 3: action button ──────────────────────────────────
-                            if ui.button("Set Alias").clicked() {
-                                clicked_idx = Some(idx);
-                            }
+                        // ─ column 2: editable alias field ───────────────────────────
+                        ui.add_sized(
+                            vec2(150.0, 20.0),
+                            egui::TextEdit::singleline(&mut alias_inputs[idx]),
+                        );
 
-                            ui.end_row(); // ← tells the grid we’ve finished this row
-                        } else {
-                            not_found.push(trimmed);
+                        ui.add_space(12.0);
+
+                        // ─ column 3: action button ──────────────────────────────────
+                        if ui.button("Set Alias").clicked() {
+                            clicked_idx = Some(idx);
                         }
-                    }
-                });
+                    });
+                } else {
+                    not_found.push(trimmed);
+                }
+            }
 
             // ─ handle the button click AFTER the grid so we can borrow &mut self safely ──
             if let Some(idx) = clicked_idx {
@@ -323,12 +323,6 @@ impl ScreenLike for AddContractsScreen {
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Contracts sub-left panel
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-        );
-
         action |= island_central_panel(ctx, |ui| {
             ui.heading("Add Contracts");
             ui.add_space(10.0);
@@ -336,7 +330,24 @@ impl ScreenLike for AddContractsScreen {
             match &self.add_contracts_status {
                 AddContractsStatus::NotStarted | AddContractsStatus::ErrorMessage(_) => {
                     if let AddContractsStatus::ErrorMessage(msg) = &self.add_contracts_status {
-                        ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.add_contracts_status = AddContractsStatus::NotStarted;
+                                    }
+                                });
+                            });
                         ui.add_space(10.0);
                     }
 

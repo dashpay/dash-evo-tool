@@ -47,12 +47,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                 .show(ui, |ui| {
                     ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("DPNS Subscreens")
-                                .font(Typography::heading_small())
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(Spacing::MD);
+                        ui.add_space(Spacing::SM);
 
                         for subscreen in subscreens {
                             let is_active = active_screen == subscreen;

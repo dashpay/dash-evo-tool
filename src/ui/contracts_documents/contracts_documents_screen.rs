@@ -354,10 +354,7 @@ impl DocumentQueryScreen {
                                 "Fetching documents... Time taken so far: {} seconds",
                                 time_elapsed
                             ));
-                            ui.add(
-                                egui::widgets::Spinner::default()
-                                    .color(Color32::from_rgb(0, 128, 255)),
-                            );
+                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                         });
                     }
                     DocumentQueryStatus::Complete => match self.document_display_mode {
@@ -683,12 +680,6 @@ impl ScreenLike for DocumentQueryScreen {
             ctx,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
-        );
-
-        // Contracts sub-left panel: DPNS / Dashpay / Contracts (default)
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
         );
 
         action |= add_contract_chooser_panel(

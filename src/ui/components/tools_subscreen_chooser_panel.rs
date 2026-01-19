@@ -2,11 +2,12 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, ScrollArea, SidePanel};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {
     PlatformInfo,
+    AddressBalance,
     ProofLog,
     TransactionViewer,
     DocumentViewer,
@@ -14,12 +15,14 @@ pub enum ToolsSubscreen {
     ContractViewer,
     GroveSTARK,
     MasternodeListDiff,
+    DPNS,
 }
 
 impl ToolsSubscreen {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::PlatformInfo => "Platform info",
+            Self::AddressBalance => "Address balance",
             Self::ProofLog => "Proof logs",
             Self::TransactionViewer => "Transaction deserializer",
             Self::ProofViewer => "Proof deserializer",
@@ -27,6 +30,7 @@ impl ToolsSubscreen {
             Self::ContractViewer => "Contract deserializer",
             Self::GroveSTARK => "ZK Proofs",
             Self::MasternodeListDiff => "Masternode list diff inspector",
+            Self::DPNS => "DPNS",
         }
     }
 }
@@ -37,6 +41,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
 
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,
+        ToolsSubscreen::AddressBalance,
         ToolsSubscreen::ProofLog,
         ToolsSubscreen::ProofViewer,
         ToolsSubscreen::TransactionViewer,
@@ -44,11 +49,15 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::ContractViewer,
         ToolsSubscreen::GroveSTARK,
         ToolsSubscreen::MasternodeListDiff,
+        ToolsSubscreen::DPNS,
     ];
 
     let active_screen = match app_context.get_settings() {
         Ok(Some(settings)) => match settings.root_screen_type {
             ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
+            ui::RootScreenType::RootScreenToolsAddressBalanceScreen => {
+                ToolsSubscreen::AddressBalance
+            }
             ui::RootScreenType::RootScreenToolsProofLogScreen => ToolsSubscreen::ProofLog,
             ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
                 ToolsSubscreen::TransactionViewer
@@ -64,6 +73,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 ToolsSubscreen::MasternodeListDiff
             }
             ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
+            ui::RootScreenType::RootScreenDPNSActiveContests
+            | ui::RootScreenType::RootScreenDPNSPastContests
+            | ui::RootScreenType::RootScreenDPNSOwnedNames
+            | ui::RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
             _ => ToolsSubscreen::PlatformInfo,
         },
         _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
@@ -87,13 +100,8 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Tools")
-                                .font(Typography::heading_small())
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(Spacing::MD);
+                    ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(Spacing::SM);
 
                         for subscreen in subscreens {
                             let is_active = active_screen == subscreen;
@@ -129,6 +137,11 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                             RootScreenType::RootScreenToolsPlatformInfoScreen,
                                         )
                                     }
+                                    ToolsSubscreen::AddressBalance => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenToolsAddressBalanceScreen,
+                                        )
+                                    }
                                     ToolsSubscreen::ProofLog => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsProofLogScreen,
@@ -161,6 +174,10 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                     ToolsSubscreen::GroveSTARK => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsGroveSTARKScreen)
+                                    }
+                                    ToolsSubscreen::DPNS => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDPNSActiveContests)
                                     }
                                 }
                             }

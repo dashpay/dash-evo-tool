@@ -28,7 +28,7 @@ impl AppContext {
         sdk: &Sdk,
         wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
@@ -52,15 +52,8 @@ impl AppContext {
                 after: None,
             };
 
-            sender
-                .send(TaskResult::Success(Box::new(
-                    BackendTaskSuccessResult::Message(format!(
-                        "Searching for identity at index {} using key at index {}...",
-                        identity_index, key_index
-                    )),
-                )))
-                .await
-                .map_err(|e| e.to_string())?;
+            // Only send detailed key index messages for single identity searches (not batch)
+            // The batch search (load_user_identities_up_to_index) sends its own simpler messages
             match Identity::fetch(sdk, query).await {
                 Ok(Some(identity)) => {
                     fetched_identity = Some(identity);
@@ -287,9 +280,19 @@ impl AppContext {
         let wallet_ref = wallet_arc_ref;
 
         let mut loaded_indices = Vec::new();
-        let mut missing_indices = Vec::new();
 
         for identity_index in 0..=max_identity_index {
+            // Send progress update before starting search for this index
+            sender
+                .send(TaskResult::Success(Box::new(
+                    BackendTaskSuccessResult::Message(format!(
+                        "Searching index {} of {}...",
+                        identity_index, max_identity_index
+                    )),
+                )))
+                .await
+                .map_err(|e| e.to_string())?;
+
             match self
                 .load_user_identity_from_wallet(
                     sdk,
@@ -301,29 +304,10 @@ impl AppContext {
             {
                 Ok(_) => {
                     loaded_indices.push(identity_index);
-                    sender
-                        .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::Message(format!(
-                                "Loaded identity at index {}.",
-                                identity_index
-                            )),
-                        )))
-                        .await
-                        .map_err(|e| e.to_string())?;
                 }
                 Err(error) => {
-                    if error.starts_with("No identity found for wallet identity index") {
-                        missing_indices.push(identity_index);
-                        sender
-                            .send(TaskResult::Success(Box::new(
-                                BackendTaskSuccessResult::Message(format!(
-                                    "No identity found at index {}.",
-                                    identity_index
-                                )),
-                            )))
-                            .await
-                            .map_err(|e| e.to_string())?;
-                    } else {
+                    // Ignore "not found" errors - just means no identity at this index
+                    if !error.starts_with("No identity found for wallet identity index") {
                         return Err(error);
                     }
                 }
@@ -337,33 +321,21 @@ impl AppContext {
             ));
         }
 
-        let summary = if missing_indices.is_empty() {
+        let summary = if loaded_indices.len() == 1 {
             format!(
-                "Successfully loaded {} identit{} up to index {}.",
-                loaded_indices.len(),
-                if loaded_indices.len() == 1 {
-                    "y"
-                } else {
-                    "ies"
-                },
-                max_identity_index
+                "Successfully loaded 1 identity at index {}.",
+                loaded_indices[0]
             )
         } else {
-            let missing_display = missing_indices
+            let loaded_display = loaded_indices
                 .iter()
                 .map(|idx| idx.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "Finished loading identities up to index {}. Loaded {} identit{}; no identity found at index(es): {}.",
-                max_identity_index,
+                "Successfully loaded {} identities at indexes {}.",
                 loaded_indices.len(),
-                if loaded_indices.len() == 1 {
-                    "y"
-                } else {
-                    "ies"
-                },
-                missing_display
+                loaded_display
             )
         };
 

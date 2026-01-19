@@ -6,9 +6,7 @@ use crate::context::AppContext;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use egui::{
-    Align, Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
-};
+use egui::{Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 
@@ -231,14 +229,8 @@ pub fn add_top_panel(
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
-                .inner_margin(Margin {
-                    left: 10,
-                    right: 10,
-                    top: 10,
-                    bottom: 10,
-                }),
+                .inner_margin(Margin::same(10)), // 10px margin on all sides
         )
-        .exact_height(76.0)
         .show(ctx, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
@@ -253,33 +245,20 @@ pub fn add_top_panel(
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
-                    // Load Dash logo
-                    // let dash_logo_texture: Option<TextureHandle> = load_icon(ctx, "dash.png");
-
-                    ui.columns(3, |columns| {
+                    // Use columns for better control over layout
+                    ui.columns(2, |columns| {
                         // Left column: connection indicator and location
                         columns[0].with_layout(
-                            egui::Layout::left_to_right(egui::Align::Center)
-                                .with_cross_align(Align::Center),
+                            egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 action |= add_connection_indicator(ui, app_context);
                                 action |= add_location_view(ui, location, dark_mode);
                             },
                         );
 
-                        // Center column: Placeholder for future logo placement
+                        // Right column: buttons (right-aligned)
                         columns[1].with_layout(
-                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                            |ui| {
-                                // Placeholder - logo moved back to left panel for now
-                                ui.label("");
-                            },
-                        );
-
-                        // Right column: action buttons (right-aligned)
-                        columns[2].with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center)
-                                .with_cross_align(Align::Center),
+                            egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
                                 // Separate contract and document-related actions
                                 let mut contract_actions = Vec::new();
@@ -331,6 +310,7 @@ pub fn add_top_panel(
                                     let resp = ui.add(docs_btn);
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -341,12 +321,23 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode {
+                                        Color32::from_rgb(40, 40, 40)
+                                    } else {
+                                        Color32::WHITE
+                                    }))
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, da) in doc_actions {
-                                            if ui.button(text).clicked() {
+                                            if ui
+                                                .add_sized(
+                                                    [ui.available_width(), 0.0],
+                                                    egui::Button::new(text),
+                                                )
+                                                .clicked()
+                                            {
                                                 action = da.create_action(app_context);
-                                                // ui.close();
+                                                ui.close();
                                             }
                                         }
                                     });
@@ -368,6 +359,7 @@ pub fn add_top_panel(
                                     let popup_id = ui.auto_id_with("contracts_popup");
                                     let resp = ui.add(contracts_btn);
 
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -378,10 +370,21 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode {
+                                        Color32::from_rgb(40, 40, 40)
+                                    } else {
+                                        Color32::WHITE
+                                    }))
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, ca) in contract_actions {
-                                            if ui.button(text).clicked() {
+                                            if ui
+                                                .add_sized(
+                                                    [ui.available_width(), 0.0],
+                                                    egui::Button::new(text),
+                                                )
+                                                .clicked()
+                                            {
                                                 action = ca.create_action(app_context);
                                                 ui.close();
                                             }

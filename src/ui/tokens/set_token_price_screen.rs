@@ -1,9 +1,10 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
@@ -13,13 +14,15 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -35,7 +38,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
@@ -81,6 +84,7 @@ pub enum SetTokenPriceStatus {
 pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     pub public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
@@ -108,8 +112,9 @@ pub struct SetTokenPriceScreen {
 
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 /// 1 Dash = 100,000,000,000 credits
@@ -144,7 +149,7 @@ impl SetTokenPriceScreen {
             ));
         }
 
-        if credits_price_per_token % decimal_divisor != 0 {
+        if !credits_price_per_token.is_multiple_of(decimal_divisor) {
             return Err(format!(
                 "Price must be in multiples of {} to match the token decimals.",
                 self.minimum_price_amount()
@@ -261,6 +266,7 @@ impl SetTokenPriceScreen {
         Self {
             identity_token_info: identity_token_info.clone(),
             selected_key: possible_key.cloned(),
+            show_advanced_options: false,
             public_note: None,
             group,
             is_unilateral_group_member,
@@ -276,8 +282,8 @@ impl SetTokenPriceScreen {
             show_confirmation_popup: false,
             confirmation_dialog: None,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
         }
     }
 
@@ -797,67 +803,30 @@ impl SetTokenPriceScreen {
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            if self.group_action_id.is_some() {
-                // This is already initiated by the group, we are just signing it
-                ui.heading("Group Action to Set Price Signed Successfully.");
-            } else if !self.is_unilateral_group_member && self.group.is_some() {
-                ui.heading("Group Action to Set Price Initiated.");
-            } else {
-                ui.heading("Set Price of Token Successfully.");
-            }
-
-            ui.add_space(20.0);
-
-            if self.group_action_id.is_some() {
-                if ui.button("Back to Group Actions").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-                if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenMyTokenBalances,
-                    );
-                }
-            } else {
-                if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-
-                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
-                    action = AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                        Screen::GroupActionsScreen(GroupActionsScreen::new(
-                            &self.app_context.clone(),
-                        )),
-                    );
-                }
-            }
-        });
-        action
+        crate::ui::helpers::show_group_token_success_screen_with_fee(
+            ui,
+            "Set Price",
+            self.group_action_id.is_some(),
+            self.is_unilateral_group_member,
+            self.group.is_some(),
+            &self.app_context,
+            None,
+        )
     }
 }
 
 impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Successfully set token pricing schedule")
-                    || message == "SetDirectPurchasePrice"
-                {
-                    self.status = SetTokenPriceStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
+            self.status = SetTokenPriceStatus::Complete;
         }
     }
 
@@ -979,35 +948,52 @@ impl ScreenLike for SetTokenPriceScreen {
                 }
             } else {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        // Must unlock before we can proceed
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
                         return;
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the SetPrice transaction");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Set Token Price");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity_token_info.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity_token_info.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenAction,
-                );
-
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the SetPrice transaction");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity_token_info.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
 
-                // 2) Pricing schedule
-                ui.heading("2. Pricing Configuration");
+                // Pricing schedule
+                let step_num = if self.show_advanced_options { 2 } else { 1 };
+                ui.heading(format!("{}. Pricing Configuration", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -1024,7 +1010,8 @@ impl ScreenLike for SetTokenPriceScreen {
                 ui.add_space(10.0);
 
                 // Render text input for the public note
-                ui.heading("3. Public note (optional)");
+                let step_num = if self.show_advanced_options { 3 } else { 2 };
+                ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -1092,6 +1079,32 @@ impl ScreenLike for SetTokenPriceScreen {
                     "Set Price"
                 };
 
+                // Fee estimation display
+                let fee_estimator = PlatformFeeEstimator::new();
+                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
+
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
                 let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
@@ -1134,7 +1147,22 @@ impl ScreenLike for SetTokenPriceScreen {
                         ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
                     SetTokenPriceStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.status = SetTokenPriceStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     SetTokenPriceStatus::Complete => {
                         // handled above
@@ -1144,36 +1172,18 @@ impl ScreenLike for SetTokenPriceScreen {
             }); // end of ScrollArea
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for SetTokenPriceScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

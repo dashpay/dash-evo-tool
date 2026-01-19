@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::backend_task::FeeResult;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
@@ -14,6 +16,7 @@ use dash_sdk::{
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
     drive::query::{WhereClause, WhereOperator},
+    platform::Fetch,
     platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
 
@@ -127,6 +130,13 @@ impl AppContext {
                     .to_string(),
             )?;
 
+        // Estimate fees for DPNS registration (2 document batch transitions)
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_document_batch(2);
+
+        // Track balance before registration
+        let balance_before = qualified_identity.identity.balance();
+
         let _ = preorder_document
             .put_to_platform_and_wait_for_response(
                 sdk,
@@ -204,12 +214,46 @@ impl AppContext {
 
         qualified_identity.dpns_names = owned_dpns_names;
 
+        // If alias is not set, set it to the newly registered DPNS name
+        if qualified_identity.alias.is_none() {
+            qualified_identity.alias = Some(format!("{}.dash", input.name_input));
+        }
+
+        // Calculate actual fee paid
+        // Note: We need to re-fetch the identity to get the updated balance
+        let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
+            &sdk_guard,
+            qualified_identity.identity.id(),
+        )
+        .await
+        .map_err(|e| format!("Failed to fetch identity balance: {}", e))?
+        .ok_or_else(|| "Identity not found".to_string())?;
+
+        let balance_after = refreshed_identity.balance();
+        let actual_fee = balance_before.saturating_sub(balance_after);
+
+        tracing::info!(
+            "DPNS registration complete: estimated fee {} credits, actual fee {} credits",
+            estimated_fee,
+            actual_fee
+        );
+        if actual_fee != estimated_fee {
+            tracing::warn!(
+                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                estimated_fee,
+                actual_fee,
+                actual_fee as i64 - estimated_fee as i64
+            );
+        }
+
+        // Update qualified identity with new balance
+        qualified_identity.identity = refreshed_identity;
+
         // Update local qualified identity in the database
         self.update_local_qualified_identity(&qualified_identity)
             .map_err(|e| format!("Database error: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully registered dpns name".to_string(),
-        ))
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+        Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))
     }
 }

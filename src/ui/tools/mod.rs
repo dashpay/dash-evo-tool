@@ -1,3 +1,4 @@
+pub mod address_balance_screen;
 pub mod contract_visualizer_screen;
 pub mod document_visualizer_screen;
 pub mod grovestark_screen;

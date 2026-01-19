@@ -48,7 +48,7 @@ use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, RichText};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText};
 use egui::{ScrollArea, TextStyle};
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
@@ -491,12 +491,6 @@ impl ScreenLike for GroupActionsScreen {
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        // Contracts sub-left panel
-        action |= crate::ui::components::contracts_subscreen_chooser_panel::add_contracts_subscreen_chooser_panel(
-            ctx,
-            &self.app_context,
-        );
-
         let central_panel_action = island_central_panel(ctx, |ui| {
             ui.heading("Active Group Actions");
 
@@ -579,7 +573,25 @@ impl ScreenLike for GroupActionsScreen {
             match &self.fetch_group_actions_status {
                 FetchGroupActionsStatus::ErrorMessage(msg) => {
                     ui.add_space(10.0);
-                    ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Error: {}", msg)).color(error_color),
+                                );
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.fetch_group_actions_status =
+                                        FetchGroupActionsStatus::NotStarted;
+                                }
+                            });
+                        });
                 }
 
                 FetchGroupActionsStatus::WaitingForResult(start_time) => {

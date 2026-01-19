@@ -244,10 +244,10 @@ pub fn add_key_chooser_with_doc_type(
             .iter()
             .any(|key_ref| {
                 let key = &key_ref.1.identity_public_key;
-                let basic_ok = allowed_purposes.contains(&key.purpose())
-                    && allowed_security_levels.contains(&key.security_level());
+                
 
-                basic_ok
+                allowed_purposes.contains(&key.purpose())
+                    && allowed_security_levels.contains(&key.security_level())
             });
 
     // Check if there are eligible public keys without private keys
@@ -319,10 +319,10 @@ pub fn add_key_chooser_with_doc_type(
                         let is_allowed = if is_dev_mode {
                             true
                         } else {
-                            let basic_requirements = allowed_purposes.contains(&key.purpose())
-                                && allowed_security_levels.contains(&key.security_level());
+                            
 
-                            basic_requirements
+                            allowed_purposes.contains(&key.purpose())
+                                && allowed_security_levels.contains(&key.security_level())
                         };
 
                         if is_allowed {
@@ -465,10 +465,10 @@ where
                         .iter()
                         .any(|key_ref| {
                             let key = &key_ref.1.identity_public_key;
-                            let basic_ok = allowed_purposes.contains(&key.purpose())
-                                && allowed_security_levels.contains(&key.security_level());
+                            
 
-                            basic_ok
+                            allowed_purposes.contains(&key.purpose())
+                                && allowed_security_levels.contains(&key.security_level())
                         });
 
                     // Check if there are eligible public keys without private keys
@@ -576,11 +576,11 @@ where
                                 let is_allowed = if is_dev_mode {
                                     true
                                 } else {
-                                    let basic_requirements = allowed_purposes
-                                        .contains(&key.purpose())
-                                        && allowed_security_levels.contains(&key.security_level());
+                                    
 
-                                    basic_requirements
+                                    allowed_purposes
+                                        .contains(&key.purpose())
+                                        && allowed_security_levels.contains(&key.security_level())
                                 };
 
                                 if is_allowed {

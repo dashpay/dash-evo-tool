@@ -411,8 +411,8 @@ impl ContactRequests {
                     // Show action button for missing encryption key
                     if matches!(err, DashPayError::MissingEncryptionKey) {
                         ui.add_space(5.0);
-                        if let Some(identity) = &self.selected_identity {
-                            if ui.button("Add Encryption Key").clicked() {
+                        if let Some(identity) = &self.selected_identity
+                            && ui.button("Add Encryption Key").clicked() {
                                 action = AppAction::AddScreen(Screen::AddKeyScreen(
                                     AddKeyScreen::new_for_dashpay_encryption(
                                         identity.clone(),
@@ -421,7 +421,6 @@ impl ContactRequests {
                                 ));
                                 self.error = None;
                             }
-                        }
                     }
                 });
             });

@@ -409,8 +409,8 @@ impl ContactsList {
             action |= self.contact_requests.render_embedded(ui);
 
             // Show wallet unlock popup if open (needed because we're embedding contact_requests)
-            if self.contact_requests.wallet_unlock_popup.is_open() {
-                if let Some(wallet) = &self.contact_requests.selected_wallet {
+            if self.contact_requests.wallet_unlock_popup.is_open()
+                && let Some(wallet) = &self.contact_requests.selected_wallet {
                     let result = self.contact_requests.wallet_unlock_popup.show(
                         ui.ctx(),
                         wallet,
@@ -420,7 +420,6 @@ impl ContactsList {
                         // Wallet unlocked successfully, UI will update on next frame
                     }
                 }
-            }
 
             return action;
         }
@@ -939,8 +938,8 @@ impl ContactsList {
                                         }
 
                                         // Pay button - requires SPV which is dev mode only
-                                        if self.app_context.is_developer_mode() {
-                                            if ui.button("Pay").clicked() {
+                                        if self.app_context.is_developer_mode()
+                                            && ui.button("Pay").clicked() {
                                                 action = AppAction::AddScreen(
                                                     ScreenType::DashPaySendPayment(
                                                         self.selected_identity.clone().unwrap(),
@@ -949,7 +948,6 @@ impl ContactsList {
                                                     .create_screen(&self.app_context),
                                                 );
                                             }
-                                        }
 
                                         if ui.button("View Profile").clicked() {
                                             action = AppAction::AddScreen(

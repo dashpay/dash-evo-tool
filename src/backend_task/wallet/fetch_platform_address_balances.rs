@@ -233,14 +233,13 @@ impl AppContext {
         );
 
         // Save the highest block we've processed to avoid re-applying the same changes
-        if highest_block_processed > last_terminal_block {
-            if let Err(e) = self
+        if highest_block_processed > last_terminal_block
+            && let Err(e) = self
                 .db
                 .set_last_terminal_block(&seed_hash, highest_block_processed)
             {
                 tracing::warn!("Failed to save last terminal block: {}", e);
             }
-        }
 
         // Apply results to wallet and persist
         let balances = {

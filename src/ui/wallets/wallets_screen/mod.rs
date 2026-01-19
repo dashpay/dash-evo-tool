@@ -3691,8 +3691,8 @@ impl ScreenLike for WalletsBalancesScreen {
                         CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
                     ));
                 }
-            } else if cmd == "SearchAssetLocks" {
-                if let Some(wallet_arc) = self.selected_wallet.clone() {
+            } else if cmd == "SearchAssetLocks"
+                && let Some(wallet_arc) = self.selected_wallet.clone() {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
                         // Wallet is locked - open unlock popup
@@ -3710,7 +3710,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         ));
                     }
                 }
-            }
         }
 
         // Combine with pending refresh action

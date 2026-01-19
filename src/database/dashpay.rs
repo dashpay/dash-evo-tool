@@ -229,10 +229,17 @@ impl crate::database::Database {
         avatar_url: Option<&str>,
         public_message: Option<&str>,
     ) -> rusqlite::Result<()> {
+        // Use INSERT ... ON CONFLICT to preserve avatar_bytes when updating
         let sql = "
-            INSERT OR REPLACE INTO dashpay_profiles
+            INSERT INTO dashpay_profiles
             (identity_id, network, display_name, bio, avatar_url, public_message, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())
+            ON CONFLICT(identity_id, network) DO UPDATE SET
+                display_name = excluded.display_name,
+                bio = excluded.bio,
+                avatar_url = excluded.avatar_url,
+                public_message = excluded.public_message,
+                updated_at = unixepoch()
         ";
 
         let result = self.execute(

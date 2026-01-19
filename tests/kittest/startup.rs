@@ -16,6 +16,8 @@ fn test_app_startup() {
     // Set the window size
     harness.set_size(egui::vec2(800.0, 600.0));
 
-    // Run one frame to ensure the app initializes
-    harness.run();
+    // Run a few frames to ensure the app initializes
+    // Using run_steps instead of run() because the app may show spinners
+    // which cause continuous repainting
+    harness.run_steps(10);
 }

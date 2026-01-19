@@ -8,6 +8,9 @@ use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Result, params};
 use std::{path::PathBuf, str::FromStr};
 
+/// Selected wallet hash and single key hash tuple for database storage.
+pub type SelectedWalletHashes = (Option<[u8; 32]>, Option<[u8; 32]>);
+
 impl Database {
     /// Inserts or updates the settings in the database. This method ensures that only one row exists.
     ///
@@ -465,7 +468,7 @@ impl Database {
 
     /// Gets the selected wallet hashes from the settings table.
     /// Returns (selected_wallet_hash, selected_single_key_hash).
-    pub fn get_selected_wallet_hashes(&self) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>)> {
+    pub fn get_selected_wallet_hashes(&self) -> Result<SelectedWalletHashes> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT selected_wallet_hash, selected_single_key_hash FROM settings WHERE id = 1",

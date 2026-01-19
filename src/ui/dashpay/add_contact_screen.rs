@@ -386,8 +386,8 @@ impl ScreenLike for AddContactScreen {
                                 }
                                 DashPayError::MissingEncryptionKey => {
                                     ui.add_space(5.0);
-                                    if let Some(identity) = &self.selected_identity {
-                                        if ui.button("Add Encryption Key").clicked() {
+                                    if let Some(identity) = &self.selected_identity
+                                        && ui.button("Add Encryption Key").clicked() {
                                             inner_action = AppAction::AddScreen(Screen::AddKeyScreen(
                                                 AddKeyScreen::new_for_dashpay_encryption(
                                                     identity.clone(),
@@ -395,12 +395,11 @@ impl ScreenLike for AddContactScreen {
                                                 ),
                                             ));
                                         }
-                                    }
                                 }
                                 DashPayError::MissingDecryptionKey => {
                                     ui.add_space(5.0);
-                                    if let Some(identity) = &self.selected_identity {
-                                        if ui.button("Add Decryption Key").clicked() {
+                                    if let Some(identity) = &self.selected_identity
+                                        && ui.button("Add Decryption Key").clicked() {
                                             inner_action = AppAction::AddScreen(Screen::AddKeyScreen(
                                                 AddKeyScreen::new_for_dashpay_decryption(
                                                     identity.clone(),
@@ -408,7 +407,6 @@ impl ScreenLike for AddContactScreen {
                                                 ),
                                             ));
                                         }
-                                    }
                                 }
                                 _ => {}
                             }

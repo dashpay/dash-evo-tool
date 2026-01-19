@@ -162,13 +162,12 @@ impl AppContext {
             }
 
             // Also store the chain locked height if available
-            if let Some(height) = chain_locked_height {
-                if let Err(e) = self
+            if let Some(height) = chain_locked_height
+                && let Err(e) = self
                     .db
                     .update_asset_lock_chain_locked_height(txid.as_byte_array(), Some(height))
-                {
-                    tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
-                }
+            {
+                tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
             }
 
             // Add to wallet's in-memory unused_asset_locks
@@ -294,13 +293,12 @@ impl AppContext {
                 }
 
                 // Also store the chain locked height if available
-                if let Some(height) = chain_locked_height {
-                    if let Err(e) = self
+                if let Some(height) = chain_locked_height
+                    && let Err(e) = self
                         .db
                         .update_asset_lock_chain_locked_height(txid.as_byte_array(), Some(height))
-                    {
-                        tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
-                    }
+                {
+                    tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
                 }
 
                 // Add to wallet
@@ -335,9 +333,8 @@ impl AppContext {
 
         // Clean up: Remove asset locks from wallet that don't belong to it
         // (credit address not in known_addresses)
-        let mut removed_count = 0;
         let mut txids_to_remove = Vec::new();
-        {
+        let removed_count = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
             let before_count = wallet_guard.unused_asset_locks.len();
 
@@ -345,16 +342,12 @@ impl AppContext {
                 // Get the credit output address from the transaction
                 if let Some(TransactionPayload::AssetLockPayloadType(payload)) =
                     &tx.special_transaction_payload
+                    && let Some(credit_output) = payload.credit_outputs.first()
+                    && let Ok(addr) =
+                        Address::from_script(&credit_output.script_pubkey, self.network)
+                    && known_addresses.contains(&addr)
                 {
-                    if let Some(credit_output) = payload.credit_outputs.first() {
-                        if let Ok(addr) =
-                            Address::from_script(&credit_output.script_pubkey, self.network)
-                        {
-                            if known_addresses.contains(&addr) {
-                                return true; // Keep this asset lock
-                            }
-                        }
-                    }
+                    return true; // Keep this asset lock
                 }
                 tracing::info!(
                     "Removing asset lock {} - credit address not in wallet",
@@ -364,8 +357,8 @@ impl AppContext {
                 false // Remove this asset lock
             });
 
-            removed_count = before_count - wallet_guard.unused_asset_locks.len();
-        }
+            before_count - wallet_guard.unused_asset_locks.len()
+        };
 
         // Also delete from database
         for txid in &txids_to_remove {

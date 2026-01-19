@@ -519,13 +519,13 @@ impl ProfileScreen {
         );
 
         // Handle the custom action
-        if let AppAction::Custom(ref s) = action {
-            if s == "view_profile" {
-                self.show_success = false;
-                self.profile_load_attempted = true; // We already have the profile in memory
-                // Profile is already in self.profile from display_task_result, no need to reload
-                return AppAction::None;
-            }
+        if let AppAction::Custom(ref s) = action
+            && s == "view_profile"
+        {
+            self.show_success = false;
+            self.profile_load_attempted = true; // We already have the profile in memory
+            // Profile is already in self.profile from display_task_result, no need to reload
+            return AppAction::None;
         }
 
         action

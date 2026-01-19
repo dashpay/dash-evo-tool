@@ -160,7 +160,7 @@ pub async fn update_profile(
         // Try to fetch and process the avatar image
         // Note: This requires an HTTP client which may not be available
         // In production, this should be done asynchronously
-        match super::avatar_processing::fetch_image_bytes(&url).await {
+        match super::avatar_processing::fetch_image_bytes(url).await {
             Ok(image_bytes) => {
                 // Calculate SHA-256 hash of the image
                 let avatar_hash = calculate_avatar_hash(&image_bytes);
@@ -201,7 +201,7 @@ pub async fn update_profile(
         }
 
         // Handle avatar removal: if avatar_url is None or empty, remove avatar-related fields
-        if avatar_url.as_ref().map_or(true, |url| url.is_empty()) {
+        if avatar_url.as_ref().is_none_or(|url| url.is_empty()) {
             // Remove avatar-related fields from the document
             let Document::V0(ref mut doc_v0) = updated_document;
             doc_v0.properties_mut().remove("avatarUrl");

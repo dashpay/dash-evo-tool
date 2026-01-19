@@ -483,6 +483,8 @@ impl WalletSendScreen {
                 seed_hash,
                 amount: amount_duffs,
                 destination,
+                // In simple mode, default to deducting fees from output (current behavior)
+                fee_deduct_from_output: true,
             },
         )))
     }
@@ -1763,7 +1765,7 @@ impl WalletSendScreen {
     /// Advanced Core to Platform send
     fn send_advanced_core_to_platform(
         &mut self,
-        _seed_hash: WalletSeedHash,
+        seed_hash: WalletSeedHash,
     ) -> Result<AppAction, String> {
         // For now, only support single output for Core to Platform
         // The SDK's FundPlatformAddressFromWalletUtxos only supports a single destination
@@ -1794,17 +1796,34 @@ impl WalletSendScreen {
             ));
         }
 
-        // Use the simple mode logic by temporarily setting the values
-        self.destination_address = output.address.clone();
-        // Parse the string amount from advanced output to Amount
-        self.amount = Amount::parse(&output.amount, DASH_DECIMAL_PLACES)
-            .ok()
-            .map(|a| a.with_unit_name("DASH"));
-        self.selected_source = Some(SourceSelection::CoreWallet);
+        // Parse platform address
+        let address_str = output.address.trim();
+        let destination = PlatformAddress::from_bech32m_string(address_str)
+            .map(|(addr, _)| addr)
+            .map_err(|e| format!("Invalid platform address: {}", e))?;
 
-        let wallet = self.selected_wallet.as_ref().ok_or("No wallet")?;
-        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
-        self.send_core_to_platform(seed_hash)
+        // Determine fee strategy based on user selection
+        // DeductFromInput variants mean fees are paid from wallet (recipient gets exact amount)
+        // ReduceOutput variants mean fees are deducted from output (recipient gets less)
+        let fee_deduct_from_output = matches!(
+            self.fee_strategy,
+            PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.send_status = SendStatus::WaitingForResult(now);
+
+        Ok(AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::FundPlatformAddressFromWalletUtxos {
+                seed_hash,
+                amount: amount_duffs,
+                destination,
+                fee_deduct_from_output,
+            },
+        )))
     }
 
     /// Advanced Platform to Platform send

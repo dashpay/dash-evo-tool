@@ -211,13 +211,12 @@ impl AppContext {
                 }
 
                 // Also refresh Platform address balances if a sync mode is specified
-                if let Some(sync_mode) = platform_sync_mode {
-                    if let Err(e) = self
+                if let Some(sync_mode) = platform_sync_mode
+                    && let Err(e) = self
                         .fetch_platform_address_balances(seed_hash, sync_mode)
                         .await
-                    {
-                        tracing::warn!("Failed to fetch Platform address balances: {}", e);
-                    }
+                {
+                    tracing::warn!("Failed to fetch Platform address balances: {}", e);
                 }
 
                 Ok(BackendTaskSuccessResult::RefreshedWallet)

@@ -363,7 +363,10 @@ impl AppContext {
             WalletTask::FetchPlatformAddressBalances {
                 seed_hash,
                 sync_mode,
-            } => self.fetch_platform_address_balances(seed_hash, sync_mode).await,
+            } => {
+                self.fetch_platform_address_balances(seed_hash, sync_mode)
+                    .await
+            }
             WalletTask::TransferPlatformCredits {
                 seed_hash,
                 inputs,
@@ -404,17 +407,15 @@ impl AppContext {
                 seed_hash,
                 amount,
                 destination,
+                fee_deduct_from_output,
             } => {
-                self.fund_platform_address_from_wallet_utxos(seed_hash, amount, destination)
-                    .await
-            }
-            WalletTask::FundMultiplePlatformAddresses {
-                seed_hash,
-                count,
-                amount_per_address,
-            } => {
-                self.fund_multiple_platform_addresses(seed_hash, count, amount_per_address)
-                    .await
+                self.fund_platform_address_from_wallet_utxos(
+                    seed_hash,
+                    amount,
+                    destination,
+                    fee_deduct_from_output,
+                )
+                .await
             }
         }
     }

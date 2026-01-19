@@ -1998,7 +1998,7 @@ impl ScreenLike for DPNSScreen {
                 (
                     "Register Name",
                     DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName(
-                        RegisterDpnsNameSource::DPNS,
+                        RegisterDpnsNameSource::Dpns,
                     ))),
                 ),
             );

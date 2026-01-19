@@ -213,6 +213,20 @@ impl PlatformFeeEstimator {
         self.min_fees.address_credit_withdrawal
     }
 
+    /// Estimate fee for funding a platform address from an asset lock.
+    /// This includes the asset lock processing cost and transfer costs.
+    /// Returns fee in duffs (not credits).
+    pub fn estimate_address_funding_from_asset_lock_duffs(&self, output_count: usize) -> u64 {
+        // The fee includes:
+        // - Base transfer cost to addresses
+        // - Per-output costs
+        // We add a 50% buffer to account for any additional costs
+        let base_fee_credits = self.estimate_credit_transfer_to_addresses(output_count);
+        let fee_duffs = base_fee_credits / 1000; // Convert credits to duffs
+        // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
+        fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
+    }
+
     /// Estimate fee for identity update (adding/disabling keys)
     pub fn estimate_identity_update(&self) -> u64 {
         self.min_fees.identity_update

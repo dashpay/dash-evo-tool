@@ -32,7 +32,7 @@ use super::get_selected_wallet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RegisterDpnsNameSource {
     #[default]
-    DPNS,
+    Dpns,
     Identities,
 }
 
@@ -292,7 +292,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         // Build breadcrumbs based on where we came from
         let breadcrumbs = match self.source {
-            RegisterDpnsNameSource::DPNS => vec![
+            RegisterDpnsNameSource::Dpns => vec![
                 (
                     "DPNS",
                     AppAction::SetMainScreen(
@@ -314,7 +314,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
         // Use the appropriate left panel highlight based on source
         let root_screen = match self.source {
-            RegisterDpnsNameSource::DPNS => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
+            RegisterDpnsNameSource::Dpns => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
             RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentities,
         };
         action |= add_left_panel(ctx, &self.app_context, root_screen);

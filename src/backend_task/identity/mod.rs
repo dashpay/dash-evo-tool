@@ -50,17 +50,21 @@ pub struct IdentityInputToLoad {
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
 
+/// A key input tuple containing the private key with derivation path, key type, purpose,
+/// security level, and optional contract bounds.
+pub type KeyInput = (
+    (PrivateKey, DerivationPath),
+    KeyType,
+    Purpose,
+    SecurityLevel,
+    Option<ContractBounds>,
+);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityKeys {
     pub(crate) master_private_key: Option<(PrivateKey, DerivationPath)>,
     pub(crate) master_private_key_type: KeyType,
-    pub(crate) keys_input: Vec<(
-        (PrivateKey, DerivationPath),
-        KeyType,
-        Purpose,
-        SecurityLevel,
-        Option<ContractBounds>,
-    )>,
+    pub(crate) keys_input: Vec<KeyInput>,
 }
 
 impl IdentityKeys {

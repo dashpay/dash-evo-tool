@@ -333,9 +333,8 @@ impl AppContext {
 
         // Clean up: Remove asset locks from wallet that don't belong to it
         // (credit address not in known_addresses)
-        let mut removed_count = 0;
         let mut txids_to_remove = Vec::new();
-        {
+        let removed_count = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
             let before_count = wallet_guard.unused_asset_locks.len();
 
@@ -357,8 +356,8 @@ impl AppContext {
                 false // Remove this asset lock
             });
 
-            removed_count = before_count - wallet_guard.unused_asset_locks.len();
-        }
+            before_count - wallet_guard.unused_asset_locks.len()
+        };
 
         // Also delete from database
         for txid in &txids_to_remove {

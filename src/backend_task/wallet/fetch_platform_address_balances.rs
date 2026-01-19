@@ -237,9 +237,9 @@ impl AppContext {
             && let Err(e) = self
                 .db
                 .set_last_terminal_block(&seed_hash, highest_block_processed)
-            {
-                tracing::warn!("Failed to save last terminal block: {}", e);
-            }
+        {
+            tracing::warn!("Failed to save last terminal block: {}", e);
+        }
 
         // Apply results to wallet and persist
         let balances = {

@@ -429,34 +429,35 @@ pub async fn load_contacts(
             profile_query.limit = 1;
 
             if let Ok(results) = Document::fetch_many(sdk, profile_query).await
-                && let Some((_, Some(doc))) = results.into_iter().next() {
-                    let props = doc.properties();
+                && let Some((_, Some(doc))) = results.into_iter().next()
+            {
+                let props = doc.properties();
 
-                    let display_name = props
-                        .get("displayName")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let display_name = props
+                    .get("displayName")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    let avatar_url = props
-                        .get("avatarUrl")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let avatar_url = props
+                    .get("avatarUrl")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    let bio = props
-                        .get("bio")
-                        .and_then(|v| v.as_text())
-                        .map(|s| s.to_string());
+                let bio = props
+                    .get("bio")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
 
-                    // Update the contact in the list
-                    if let Some(contact) = contact_list
-                        .iter_mut()
-                        .find(|c| c.identity_id == *contact_id)
-                    {
-                        contact.display_name = display_name;
-                        contact.avatar_url = avatar_url;
-                        contact.bio = bio;
-                    }
+                // Update the contact in the list
+                if let Some(contact) = contact_list
+                    .iter_mut()
+                    .find(|c| c.identity_id == *contact_id)
+                {
+                    contact.display_name = display_name;
+                    contact.avatar_url = avatar_url;
+                    contact.bio = bio;
                 }
+            }
 
             // Fetch DPNS username
             let dpns_contract = app_context.dpns_contract.clone();
@@ -471,18 +472,19 @@ pub async fn load_contacts(
             dpns_query.limit = 1;
 
             if let Ok(results) = Document::fetch_many(sdk, dpns_query).await
-                && let Some((_, Some(doc))) = results.into_iter().next() {
-                    let props = doc.properties();
-                    if let Some(label) = props.get("label").and_then(|v| v.as_text()) {
-                        // Update the contact in the list
-                        if let Some(contact) = contact_list
-                            .iter_mut()
-                            .find(|c| c.identity_id == *contact_id)
-                        {
-                            contact.username = Some(label.to_string());
-                        }
+                && let Some((_, Some(doc))) = results.into_iter().next()
+            {
+                let props = doc.properties();
+                if let Some(label) = props.get("label").and_then(|v| v.as_text()) {
+                    // Update the contact in the list
+                    if let Some(contact) = contact_list
+                        .iter_mut()
+                        .find(|c| c.identity_id == *contact_id)
+                    {
+                        contact.username = Some(label.to_string());
                     }
                 }
+            }
         }
     }
 

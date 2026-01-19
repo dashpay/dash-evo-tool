@@ -244,7 +244,6 @@ pub fn add_key_chooser_with_doc_type(
             .iter()
             .any(|key_ref| {
                 let key = &key_ref.1.identity_public_key;
-                
 
                 allowed_purposes.contains(&key.purpose())
                     && allowed_security_levels.contains(&key.security_level())
@@ -319,8 +318,6 @@ pub fn add_key_chooser_with_doc_type(
                         let is_allowed = if is_dev_mode {
                             true
                         } else {
-                            
-
                             allowed_purposes.contains(&key.purpose())
                                 && allowed_security_levels.contains(&key.security_level())
                         };
@@ -465,7 +462,6 @@ where
                         .iter()
                         .any(|key_ref| {
                             let key = &key_ref.1.identity_public_key;
-                            
 
                             allowed_purposes.contains(&key.purpose())
                                 && allowed_security_levels.contains(&key.security_level())
@@ -576,8 +572,6 @@ where
                                 let is_allowed = if is_dev_mode {
                                     true
                                 } else {
-                                    
-
                                     allowed_purposes
                                         .contains(&key.purpose())
                                         && allowed_security_levels.contains(&key.security_level())

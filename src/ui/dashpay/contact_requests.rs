@@ -412,15 +412,16 @@ impl ContactRequests {
                     if matches!(err, DashPayError::MissingEncryptionKey) {
                         ui.add_space(5.0);
                         if let Some(identity) = &self.selected_identity
-                            && ui.button("Add Encryption Key").clicked() {
-                                action = AppAction::AddScreen(Screen::AddKeyScreen(
-                                    AddKeyScreen::new_for_dashpay_encryption(
-                                        identity.clone(),
-                                        &self.app_context,
-                                    ),
-                                ));
-                                self.error = None;
-                            }
+                            && ui.button("Add Encryption Key").clicked()
+                        {
+                            action = AppAction::AddScreen(Screen::AddKeyScreen(
+                                AddKeyScreen::new_for_dashpay_encryption(
+                                    identity.clone(),
+                                    &self.app_context,
+                                ),
+                            ));
+                            self.error = None;
+                        }
                     }
                 });
             });

@@ -583,23 +583,27 @@ impl WalletsBalancesScreen {
                         format!(" Balance: {}", Self::format_dash(current_balance)),
                     );
 
+                    ui.separator();
+
                     // Dev mode: Refresh mode selector
                     if self.app_context.is_developer_mode() {
-                        ui.colored_label(
+                        ui.label(egui::RichText::new("Refresh Mode:").color(
                             DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
-                            " Refresh:",
-                        );
-                        ComboBox::from_id_salt("refresh_mode_selector")
-                            .selected_text(self.refresh_mode.label())
-                            .show_ui(ui, |ui| {
-                                for mode in RefreshMode::all_modes() {
-                                    ui.selectable_value(
-                                        &mut self.refresh_mode,
-                                        *mode,
-                                        mode.label(),
-                                    );
-                                }
-                            });
+                        ));
+
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ComboBox::from_id_salt("refresh_mode_selector")
+                                .selected_text(self.refresh_mode.label())
+                                .show_ui(ui, |ui| {
+                                    for mode in RefreshMode::all_modes() {
+                                        ui.selectable_value(
+                                            &mut self.refresh_mode,
+                                            *mode,
+                                            mode.label(),
+                                        );
+                                    }
+                                });
+                        });
                     }
                 });
 
@@ -3692,24 +3696,22 @@ impl ScreenLike for WalletsBalancesScreen {
                     ));
                 }
             } else if cmd == "SearchAssetLocks"
-                && let Some(wallet_arc) = self.selected_wallet.clone() {
-                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
-                    if is_locked {
-                        // Wallet is locked - open unlock popup
-                        self.pending_asset_lock_search_after_unlock = true;
-                        self.wallet_unlock_popup.open();
-                        action = AppAction::None;
-                    } else {
-                        // Wallet is unlocked - proceed with search
-                        self.display_message(
-                            "Searching for unused asset locks...",
-                            MessageType::Info,
-                        );
-                        action = AppAction::BackendTask(BackendTask::CoreTask(
-                            CoreTask::RecoverAssetLocks(wallet_arc),
-                        ));
-                    }
+                && let Some(wallet_arc) = self.selected_wallet.clone()
+            {
+                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                if is_locked {
+                    // Wallet is locked - open unlock popup
+                    self.pending_asset_lock_search_after_unlock = true;
+                    self.wallet_unlock_popup.open();
+                    action = AppAction::None;
+                } else {
+                    // Wallet is unlocked - proceed with search
+                    self.display_message("Searching for unused asset locks...", MessageType::Info);
+                    action = AppAction::BackendTask(BackendTask::CoreTask(
+                        CoreTask::RecoverAssetLocks(wallet_arc),
+                    ));
                 }
+            }
         }
 
         // Combine with pending refresh action

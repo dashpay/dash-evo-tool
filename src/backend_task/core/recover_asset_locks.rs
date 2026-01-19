@@ -166,9 +166,9 @@ impl AppContext {
                 && let Err(e) = self
                     .db
                     .update_asset_lock_chain_locked_height(txid.as_byte_array(), Some(height))
-                {
-                    tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
-                }
+            {
+                tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
+            }
 
             // Add to wallet's in-memory unused_asset_locks
             {
@@ -297,9 +297,9 @@ impl AppContext {
                     && let Err(e) = self
                         .db
                         .update_asset_lock_chain_locked_height(txid.as_byte_array(), Some(height))
-                    {
-                        tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
-                    }
+                {
+                    tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
+                }
 
                 // Add to wallet
                 {
@@ -343,11 +343,12 @@ impl AppContext {
                 if let Some(TransactionPayload::AssetLockPayloadType(payload)) =
                     &tx.special_transaction_payload
                     && let Some(credit_output) = payload.credit_outputs.first()
-                        && let Ok(addr) =
-                            Address::from_script(&credit_output.script_pubkey, self.network)
-                            && known_addresses.contains(&addr) {
-                                return true; // Keep this asset lock
-                            }
+                    && let Ok(addr) =
+                        Address::from_script(&credit_output.script_pubkey, self.network)
+                    && known_addresses.contains(&addr)
+                {
+                    return true; // Keep this asset lock
+                }
                 tracing::info!(
                     "Removing asset lock {} - credit address not in wallet",
                     tx.txid()

@@ -137,7 +137,7 @@ impl AppContext {
                 &mut provider,
                 terminal_start_height,
             )
-            .await;
+            .await?;
 
             tracing::info!(
                 "Full sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
@@ -223,7 +223,7 @@ impl AppContext {
         let terminal_sync_start = std::time::Instant::now();
         let highest_block_processed = self
             .apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, terminal_start_height)
-            .await;
+            .await?;
         let terminal_sync_duration = terminal_sync_start.elapsed();
         tracing::info!(
             "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
@@ -325,14 +325,14 @@ impl AppContext {
     /// 1. RecentCompactedAddressBalanceChanges - merged changes for ranges of blocks
     /// 2. RecentAddressBalanceChanges - individual per-block changes for most recent blocks
     ///
-    /// Returns the highest block height processed, or the start_height if no changes were found.
+    /// Returns the highest block height processed, or an error if network requests failed.
     async fn apply_recent_balance_changes(
         &self,
         sdk: &Sdk,
         wallet_arc: &Arc<RwLock<Wallet>>,
         provider: &mut WalletAddressProvider,
         start_height: u64,
-    ) -> u64 {
+    ) -> Result<u64, String> {
         use dash_sdk::dpp::address_funds::PlatformAddress;
         use dash_sdk::dpp::balances::credits::{BlockAwareCreditOperation, CreditOperation};
         use dash_sdk::platform::{
@@ -355,7 +355,7 @@ impl AppContext {
         let wallet_platform_addresses: std::collections::HashSet<PlatformAddress> = {
             let wallet = match wallet_arc.read() {
                 Ok(w) => w,
-                Err(_) => return start_height,
+                Err(e) => return Err(format!("Failed to read wallet: {}", e)),
             };
             wallet
                 .platform_addresses(self.network)
@@ -385,11 +385,17 @@ impl AppContext {
         let compacted_result = match compacted_result {
             Ok(result) => result,
             Err(_) => {
-                tracing::warn!("Compacted balance changes fetch timed out after 30s");
-                return highest_block_seen;
+                return Err("Compacted balance changes fetch timed out after 30s".to_string());
             }
         };
-        if let Ok(Some(compacted_changes)) = compacted_result {
+        let compacted_changes = match compacted_result {
+            Ok(Some(changes)) => Some(changes),
+            Ok(None) => None,
+            Err(e) => {
+                return Err(format!("Failed to fetch compacted balance changes: {}", e));
+            }
+        };
+        if let Some(compacted_changes) = compacted_changes {
             for block_changes in compacted_changes.into_inner() {
                 // Track the highest block height we've processed
                 if block_changes.end_block_height > highest_block_seen {
@@ -466,11 +472,17 @@ impl AppContext {
         let recent_result = match recent_result {
             Ok(result) => result,
             Err(_) => {
-                tracing::warn!("Recent balance changes fetch timed out after 30s");
-                return highest_block_seen;
+                return Err("Recent balance changes fetch timed out after 30s".to_string());
             }
         };
-        if let Ok(Some(recent_changes)) = recent_result {
+        let recent_changes = match recent_result {
+            Ok(Some(changes)) => Some(changes),
+            Ok(None) => None,
+            Err(e) => {
+                return Err(format!("Failed to fetch recent balance changes: {}", e));
+            }
+        };
+        if let Some(recent_changes) = recent_changes {
             for block_changes in recent_changes.into_inner() {
                 // Track the block height from non-compacted changes
                 if block_changes.block_height > highest_block_seen {
@@ -531,6 +543,6 @@ impl AppContext {
             );
         }
 
-        highest_block_seen
+        Ok(highest_block_seen)
     }
 }

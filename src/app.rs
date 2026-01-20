@@ -1097,9 +1097,13 @@ impl App for AppState {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Signal all background tasks to cancel - don't wait for graceful shutdown
-        // to ensure immediate app exit
-        tracing::debug!("App received on_exit event, signalling cancellation");
-        self.subtasks.cancellation_token.cancel();
+        // Gracefully shutdown all background tasks, waiting for them to complete
+        // This ensures tasks like the dash-qt handler have time to check their settings
+        // and decide whether to terminate the process or leave it running
+        tracing::debug!("App received on_exit event, initiating graceful shutdown");
+        if let Err(e) = self.subtasks.shutdown() {
+            tracing::error!("Error during task shutdown: {}", e);
+        }
+        tracing::debug!("App shutdown complete");
     }
 }

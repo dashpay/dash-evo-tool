@@ -2,19 +2,24 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
+use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use eframe::epaint::TextureHandle;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
     QR codes allow instant mutual contact establishment.\n\n\
@@ -40,12 +45,14 @@ pub struct QRCodeGeneratorScreen {
     message: Option<(String, MessageType)>,
     show_info_popup: bool,
     show_advanced_options: bool,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
 }
 
 impl QRCodeGeneratorScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
-        Self {
-            app_context,
+        let mut new_self = Self {
+            app_context: app_context.clone(),
             selected_identity: None,
             selected_identity_string: String::new(),
             account_index: "0".to_string(),
@@ -54,7 +61,28 @@ impl QRCodeGeneratorScreen {
             message: None,
             show_info_popup: false,
             show_advanced_options: false,
+            selected_wallet: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+        };
+
+        // Auto-select first identity on creation if available
+        if let Ok(identities) = app_context.load_local_qualified_identities()
+            && !identities.is_empty()
+        {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+            new_self.selected_identity = Some(identities[0].clone());
+            new_self.selected_identity_string =
+                identities[0].identity.id().to_string(Encoding::Base58);
+
+            // Get wallet for the selected identity
+            let mut error_message = None;
+            new_self.selected_wallet =
+                get_selected_wallet(&identities[0], Some(&app_context), None, &mut error_message);
         }
+
+        new_self
     }
 
     fn generate_qr_code(&mut self) {
@@ -156,17 +184,37 @@ impl QRCodeGeneratorScreen {
                         ui.label(
                             RichText::new("Identity:").color(DashColors::text_primary(dark_mode)),
                         );
-                        ui.add(
-                            IdentitySelector::new(
-                                "qr_identity_selector",
-                                &mut self.selected_identity_string,
-                                &identities,
-                            )
-                            .selected_identity(&mut self.selected_identity)
-                            .unwrap()
-                            .width(300.0)
-                            .other_option(false),
-                        );
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            let response = ui.add(
+                                IdentitySelector::new(
+                                    "qr_identity_selector",
+                                    &mut self.selected_identity_string,
+                                    &identities,
+                                )
+                                    .selected_identity(&mut self.selected_identity)
+                                    .unwrap()
+                                    .width(300.0)
+                                    .other_option(false),
+                            );
+
+                            if response.changed() {
+                                // Update wallet for the newly selected identity
+                                if let Some(identity) = &self.selected_identity {
+                                    let mut error_message = None;
+                                    self.selected_wallet = get_selected_wallet(
+                                        identity,
+                                        Some(&self.app_context),
+                                        None,
+                                        &mut error_message,
+                                    );
+                                } else {
+                                    self.selected_wallet = None;
+                                }
+                                // Clear generated QR code when identity changes
+                                self.generated_qr_data = None;
+                                self.message = None;
+                            }
+                        });
                         ui.end_row();
                     });
 
@@ -213,17 +261,41 @@ impl QRCodeGeneratorScreen {
 
                 ui.add_space(10.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("Generate QR Code").clicked() {
-                        self.generate_qr_code();
+                // Check wallet lock status before showing generate button
+                let wallet_locked = if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.message = Some((e, MessageType::Error));
                     }
+                    wallet_needs_unlock(wallet)
+                } else {
+                    false
+                };
 
-                    if self.generated_qr_data.is_some()
-                        && ui.button("Clear").clicked() {
-                            self.generated_qr_data = None;
-                            self.message = None;
+                if wallet_locked {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        DashColors::warning_color(dark_mode),
+                        "Wallet is locked. Please unlock to generate QR code.",
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
                         }
-                });
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        if ui.button("Generate QR Code").clicked() {
+                            self.generate_qr_code();
+                        }
+
+                        if self.generated_qr_data.is_some()
+                            && ui.button("Clear").clicked() {
+                                self.generated_qr_data = None;
+                                self.message = None;
+                            }
+                    });
+                }
             });
 
             ui.add_space(20.0);
@@ -298,6 +370,18 @@ impl QRCodeGeneratorScreen {
                 self.display_message("Copied to clipboard", MessageType::Success);
             }
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ui.ctx(), wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully, UI will update on next frame
+            }
+        }
 
         action
     }

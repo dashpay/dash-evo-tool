@@ -627,3 +627,219 @@ impl Database {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_helpers::create_test_database;
+
+    #[test]
+    fn test_get_settings_empty_database() {
+        // A freshly initialized database should have default settings
+        let db = create_test_database().expect("Failed to create test database");
+
+        let settings = db.get_settings().expect("Failed to get settings");
+        assert!(
+            settings.is_some(),
+            "Database should have default settings after initialization"
+        );
+
+        let (network, root_screen, password_info, _, _, _, theme, core_mode, _, _, _, _) =
+            settings.unwrap();
+        // Default network is "dash" (mainnet)
+        assert_eq!(network, Network::Dash);
+        // Default start screen is RootScreenDashPayProfile (20)
+        assert_eq!(root_screen, RootScreenType::RootScreenDashPayProfile);
+        // No password set initially
+        assert!(password_info.is_none());
+        // Default theme is System
+        assert_eq!(theme, ThemeMode::System);
+        // Default core mode is SPV (1)
+        assert_eq!(core_mode, 1);
+    }
+
+    #[test]
+    fn test_insert_or_update_settings() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Update to testnet and a different start screen
+        db.insert_or_update_settings(Network::Testnet, RootScreenType::RootScreenIdentities)
+            .expect("Failed to update settings");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.0, Network::Testnet);
+        assert_eq!(settings.1, RootScreenType::RootScreenIdentities);
+    }
+
+    #[test]
+    fn test_update_theme_preference() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Test Dark theme
+        db.update_theme_preference(ThemeMode::Dark)
+            .expect("Failed to update theme");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.6, ThemeMode::Dark);
+
+        // Test Light theme
+        db.update_theme_preference(ThemeMode::Light)
+            .expect("Failed to update theme");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.6, ThemeMode::Light);
+
+        // Test System theme
+        db.update_theme_preference(ThemeMode::System)
+            .expect("Failed to update theme");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.6, ThemeMode::System);
+    }
+
+    #[test]
+    fn test_core_backend_mode_persistence() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Default should be SPV (1)
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.7, 1);
+
+        // Update to RPC mode (0)
+        db.update_core_backend_mode(0)
+            .expect("Failed to update core backend mode");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.7, 0);
+
+        // Update back to SPV mode (1)
+        db.update_core_backend_mode(1)
+            .expect("Failed to update core backend mode");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.7, 1);
+    }
+
+    #[test]
+    fn test_selected_wallet_hash_operations() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Initially no wallet selected
+        let (wallet_hash, single_key_hash) = db
+            .get_selected_wallet_hashes()
+            .expect("Failed to get wallet hashes");
+        assert!(wallet_hash.is_none());
+        assert!(single_key_hash.is_none());
+
+        // Set a wallet hash
+        let test_hash: [u8; 32] = [0x42; 32];
+        db.update_selected_wallet_hash(Some(&test_hash))
+            .expect("Failed to update wallet hash");
+
+        let (wallet_hash, _) = db
+            .get_selected_wallet_hashes()
+            .expect("Failed to get wallet hashes");
+        assert_eq!(wallet_hash, Some(test_hash));
+
+        // Set a single key hash
+        let single_key_test_hash: [u8; 32] = [0x24; 32];
+        db.update_selected_single_key_hash(Some(&single_key_test_hash))
+            .expect("Failed to update single key hash");
+
+        let (_, single_key_hash) = db
+            .get_selected_wallet_hashes()
+            .expect("Failed to get wallet hashes");
+        assert_eq!(single_key_hash, Some(single_key_test_hash));
+
+        // Clear wallet hash
+        db.update_selected_wallet_hash(None)
+            .expect("Failed to clear wallet hash");
+
+        let (wallet_hash, _) = db
+            .get_selected_wallet_hashes()
+            .expect("Failed to get wallet hashes");
+        assert!(wallet_hash.is_none());
+    }
+
+    #[test]
+    fn test_onboarding_and_user_mode_settings() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Default onboarding is not completed
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert!(!settings.8); // onboarding_completed
+        assert!(!settings.9); // show_evonode_tools
+
+        // Complete onboarding
+        db.update_onboarding_completed(true)
+            .expect("Failed to update onboarding");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert!(settings.8);
+
+        // Enable evonode tools
+        db.update_show_evonode_tools(true)
+            .expect("Failed to update evonode tools");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert!(settings.9);
+
+        // Update user mode to Beginner
+        db.update_user_mode("Beginner")
+            .expect("Failed to update user mode");
+
+        let settings = db.get_settings().expect("Failed to get settings").unwrap();
+        assert_eq!(settings.10, UserMode::Beginner);
+    }
+
+    #[test]
+    fn test_spv_settings() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Test auto_start_spv (default true)
+        let auto_start = db
+            .get_auto_start_spv()
+            .expect("Failed to get auto_start_spv");
+        assert!(auto_start);
+
+        db.update_auto_start_spv(false)
+            .expect("Failed to update auto_start_spv");
+        let auto_start = db
+            .get_auto_start_spv()
+            .expect("Failed to get auto_start_spv");
+        assert!(!auto_start);
+
+        // Test use_local_spv_node (default false)
+        let use_local = db
+            .get_use_local_spv_node()
+            .expect("Failed to get use_local_spv_node");
+        assert!(!use_local);
+
+        db.update_use_local_spv_node(true)
+            .expect("Failed to update use_local_spv_node");
+        let use_local = db
+            .get_use_local_spv_node()
+            .expect("Failed to get use_local_spv_node");
+        assert!(use_local);
+    }
+
+    #[test]
+    fn test_close_dash_qt_on_exit() {
+        let db = create_test_database().expect("Failed to create test database");
+
+        // Default should be true
+        let close_on_exit = db
+            .get_close_dash_qt_on_exit()
+            .expect("Failed to get close_dash_qt_on_exit");
+        assert!(close_on_exit);
+
+        // Update to false
+        db.update_close_dash_qt_on_exit(false)
+            .expect("Failed to update close_dash_qt_on_exit");
+
+        let close_on_exit = db
+            .get_close_dash_qt_on_exit()
+            .expect("Failed to get close_dash_qt_on_exit");
+        assert!(!close_on_exit);
+    }
+}

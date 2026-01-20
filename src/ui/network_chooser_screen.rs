@@ -318,61 +318,63 @@ impl NetworkChooserScreen {
                         _ => "Unknown",
                     };
 
-                    let network_combo = egui::ComboBox::from_id_salt("network_selector")
-                        .selected_text(network_text)
-                        .width(200.0);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        let network_combo = egui::ComboBox::from_id_salt("network_selector")
+                            .selected_text(network_text)
+                            .width(200.0);
 
-                    let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
-                        network_combo.show_ui(ui, |ui| {
-                            if ui
-                                .selectable_value(
-                                    &mut self.current_network,
-                                    Network::Dash,
-                                    "Mainnet",
-                                )
-                                .clicked()
-                            {
-                                app_action = AppAction::SwitchNetwork(Network::Dash);
-                            }
-                            if self.testnet_app_context.is_some()
-                                && ui
+                        let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
+                            network_combo.show_ui(ui, |ui| {
+                                if ui
                                     .selectable_value(
                                         &mut self.current_network,
-                                        Network::Testnet,
-                                        "Testnet",
+                                        Network::Dash,
+                                        "Mainnet",
                                     )
                                     .clicked()
-                            {
-                                app_action = AppAction::SwitchNetwork(Network::Testnet);
-                            }
-                            if self.devnet_app_context.is_some()
-                                && ui
-                                    .selectable_value(
-                                        &mut self.current_network,
-                                        Network::Devnet,
-                                        "Devnet",
-                                    )
-                                    .clicked()
-                            {
-                                app_action = AppAction::SwitchNetwork(Network::Devnet);
-                            }
-                            if self.local_app_context.is_some()
-                                && ui
-                                    .selectable_value(
-                                        &mut self.current_network,
-                                        Network::Regtest,
-                                        "Local",
-                                    )
-                                    .clicked()
-                            {
-                                app_action = AppAction::SwitchNetwork(Network::Regtest);
-                            }
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Dash);
+                                }
+                                if self.testnet_app_context.is_some()
+                                    && ui
+                                        .selectable_value(
+                                            &mut self.current_network,
+                                            Network::Testnet,
+                                            "Testnet",
+                                        )
+                                        .clicked()
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Testnet);
+                                }
+                                if self.devnet_app_context.is_some()
+                                    && ui
+                                        .selectable_value(
+                                            &mut self.current_network,
+                                            Network::Devnet,
+                                            "Devnet",
+                                        )
+                                        .clicked()
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Devnet);
+                                }
+                                if self.local_app_context.is_some()
+                                    && ui
+                                        .selectable_value(
+                                            &mut self.current_network,
+                                            Network::Regtest,
+                                            "Local",
+                                        )
+                                        .clicked()
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                }
+                            });
                         });
-                    });
 
-                    if is_spv_connected {
-                        response.response.on_hover_text("Disconnect from SPV first");
-                    }
+                        if is_spv_connected {
+                            response.response.on_hover_text("Disconnect from SPV first");
+                        }
+                    });
 
                     ui.end_row();
                 });
@@ -656,51 +658,54 @@ impl NetworkChooserScreen {
                     ui.label(egui::RichText::new("🎨").size(16.0));
                     ui.label("Theme:");
 
-                    egui::ComboBox::from_id_salt("theme_selection")
-                        .selected_text(match self.theme_preference {
-                            ThemeMode::Light => "☀ Light",
-                            ThemeMode::Dark => "🌙 Dark",
-                            ThemeMode::System => "🖥 System",
-                        })
-                        .width(100.0)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_value(
-                                    &mut self.theme_preference,
-                                    ThemeMode::System,
-                                    "🖥 System",
-                                )
-                                .clicked()
-                            {
-                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                    SystemTask::UpdateThemePreference(ThemeMode::System),
-                                ));
-                            }
-                            if ui
-                                .selectable_value(
-                                    &mut self.theme_preference,
-                                    ThemeMode::Light,
-                                    "☀ Light",
-                                )
-                                .clicked()
-                            {
-                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                    SystemTask::UpdateThemePreference(ThemeMode::Light),
-                                ));
-                            }
-                            if ui
-                                .selectable_value(
-                                    &mut self.theme_preference,
-                                    ThemeMode::Dark,
-                                    "🌙 Dark",
-                                )
-                                .clicked()
-                            {
-                                app_action |= AppAction::BackendTask(BackendTask::SystemTask(
-                                    SystemTask::UpdateThemePreference(ThemeMode::Dark),
-                                ));
-                            }
-                        });
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.add_space(-6.0);
+                        egui::ComboBox::from_id_salt("theme_selection")
+                            .selected_text(match self.theme_preference {
+                                ThemeMode::Light => "☀ Light",
+                                ThemeMode::Dark => "🌙 Dark",
+                                ThemeMode::System => "🖥 System",
+                            })
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.theme_preference,
+                                        ThemeMode::System,
+                                        "🖥 System",
+                                    )
+                                    .clicked()
+                                {
+                                    app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                        SystemTask::UpdateThemePreference(ThemeMode::System),
+                                    ));
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.theme_preference,
+                                        ThemeMode::Light,
+                                        "☀ Light",
+                                    )
+                                    .clicked()
+                                {
+                                    app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                        SystemTask::UpdateThemePreference(ThemeMode::Light),
+                                    ));
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.theme_preference,
+                                        ThemeMode::Dark,
+                                        "🌙 Dark",
+                                    )
+                                    .clicked()
+                                {
+                                    app_action |= AppAction::BackendTask(BackendTask::SystemTask(
+                                        SystemTask::UpdateThemePreference(ThemeMode::Dark),
+                                    ));
+                                }
+                            });
+                    });
                 });
 
                 // Dash-QT Path
@@ -988,10 +993,24 @@ impl NetworkChooserScreen {
                     .clicked()
                     {
                         // Save to database
-                        let _ = self
+                        match self
                             .mainnet_app_context
                             .db
-                            .update_close_dash_qt_on_exit(self.close_dash_qt_on_exit);
+                            .update_close_dash_qt_on_exit(self.close_dash_qt_on_exit)
+                        {
+                            Ok(_) => {
+                                tracing::debug!(
+                                    "close_dash_qt_on_exit setting saved: {}",
+                                    self.close_dash_qt_on_exit
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to save close_dash_qt_on_exit setting: {:?}",
+                                    e
+                                );
+                            }
+                        }
                     }
                     ui.label(
                         egui::RichText::new(if self.close_dash_qt_on_exit {

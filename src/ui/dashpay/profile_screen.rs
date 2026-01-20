@@ -38,6 +38,7 @@ pub struct DashPayProfile {
     pub display_name: String,
     pub bio: String,
     pub avatar_url: String,
+    pub avatar_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,6 +296,7 @@ impl ProfileScreen {
                             display_name: stored_profile.display_name.unwrap_or_default(),
                             bio: stored_profile.bio.unwrap_or_default(),
                             avatar_url: stored_profile.avatar_url.unwrap_or_default(),
+                            avatar_bytes: stored_profile.avatar_bytes,
                         });
 
                         // Update edit fields with loaded profile
@@ -446,6 +448,7 @@ impl ProfileScreen {
         self.message = None;
     }
 
+    /// Load avatar texture from network (fetches bytes and processes them)
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
         let ctx_clone = ctx.clone();
         let url_clone = url.to_string();
@@ -456,50 +459,93 @@ impl ProfileScreen {
                 .await
             {
                 Ok(image_bytes) => {
-                    // Try to load the image
-                    if let Ok(image) = image::load_from_memory(&image_bytes) {
-                        // Convert to RGBA
-                        let rgba_image = image.to_rgba8();
-                        let width = rgba_image.width();
-                        let height = rgba_image.height();
-
-                        // Center-crop to square if not already square
-                        let cropped_image = if width != height {
-                            let size = width.min(height);
-                            let x_offset = (width - size) / 2;
-                            let y_offset = (height - size) / 2;
-                            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size)
-                                .to_image()
-                        } else {
-                            rgba_image
-                        };
-
-                        let size = [
-                            cropped_image.width() as usize,
-                            cropped_image.height() as usize,
-                        ];
-                        let pixels = cropped_image.into_raw();
-
-                        // Create ColorImage
-                        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-
-                        // Request repaint to load texture in UI thread
-                        ctx_clone.request_repaint();
-
-                        // Store the image data temporarily for the UI thread to pick up
-                        ctx_clone.data_mut(|data| {
-                            data.insert_temp(
-                                egui::Id::new(format!("avatar_data_{}", url_clone)),
-                                color_image,
-                            );
-                        });
-                    }
+                    Self::process_avatar_bytes_async(ctx_clone, url_clone, image_bytes, true);
                 }
                 Err(e) => {
                     eprintln!("Failed to fetch avatar image: {}", e);
                 }
             }
         });
+    }
+
+    /// Load avatar texture from cached bytes synchronously
+    /// Returns the ColorImage if successful, or None if processing failed
+    fn process_avatar_bytes_sync(image_bytes: &[u8]) -> Option<ColorImage> {
+        // Try to load the image
+        if let Ok(image) = image::load_from_memory(image_bytes) {
+            // Convert to RGBA
+            let rgba_image = image.to_rgba8();
+            let width = rgba_image.width();
+            let height = rgba_image.height();
+
+            // Center-crop to square if not already square
+            let cropped_image = if width != height {
+                let size = width.min(height);
+                let x_offset = (width - size) / 2;
+                let y_offset = (height - size) / 2;
+                image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size).to_image()
+            } else {
+                rgba_image
+            };
+
+            let size = [
+                cropped_image.width() as usize,
+                cropped_image.height() as usize,
+            ];
+            let pixels = cropped_image.into_raw();
+
+            Some(ColorImage::from_rgba_unmultiplied(size, &pixels))
+        } else {
+            None
+        }
+    }
+
+    /// Process avatar bytes asynchronously and store result for UI thread
+    /// If `from_network` is true, also stores the raw bytes for database caching
+    fn process_avatar_bytes_async(
+        ctx: egui::Context,
+        url: String,
+        image_bytes: Vec<u8>,
+        from_network: bool,
+    ) {
+        // Try to load the image
+        if let Ok(image) = image::load_from_memory(&image_bytes) {
+            // Convert to RGBA
+            let rgba_image = image.to_rgba8();
+            let width = rgba_image.width();
+            let height = rgba_image.height();
+
+            // Center-crop to square if not already square
+            let cropped_image = if width != height {
+                let size = width.min(height);
+                let x_offset = (width - size) / 2;
+                let y_offset = (height - size) / 2;
+                image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size).to_image()
+            } else {
+                rgba_image
+            };
+
+            let size = [
+                cropped_image.width() as usize,
+                cropped_image.height() as usize,
+            ];
+            let pixels = cropped_image.into_raw();
+
+            // Create ColorImage
+            let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+
+            // Request repaint to load texture in UI thread
+            ctx.request_repaint();
+
+            // Store the image data temporarily for the UI thread to pick up
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(format!("avatar_data_{}", url)), color_image);
+                // Only store raw bytes if fetched from network (for database caching)
+                if from_network {
+                    data.insert_temp(egui::Id::new(format!("avatar_bytes_{}", url)), image_bytes);
+                }
+            });
+        }
     }
 
     fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
@@ -578,7 +624,7 @@ impl ProfileScreen {
                         self.has_unsaved_changes = false;
                         self.message = None;
                         self.avatar_loading = false;
-                        self.avatar_textures.clear();
+                        // Don't clear avatar_textures - they're keyed by URL so can be reused
 
                         // Update wallet for the newly selected identity
                         if let Some(identity) = &self.selected_identity {
@@ -958,7 +1004,7 @@ impl ProfileScreen {
                                             let texture_id =
                                                 format!("avatar_{}", profile.avatar_url);
 
-                                            // Check if texture is already cached
+                                            // Check if texture is already cached in memory
                                             if let Some(texture) =
                                                 self.avatar_textures.get(&texture_id)
                                             {
@@ -973,12 +1019,19 @@ impl ProfileScreen {
                                                     self.show_avatar_url_popup = true;
                                                 }
                                             } else {
-                                                // Check if image data was loaded by async task
+                                                // Check if image data was loaded by async task from network
                                                 let data_id =
                                                     format!("avatar_data_{}", profile.avatar_url);
+                                                let bytes_id =
+                                                    format!("avatar_bytes_{}", profile.avatar_url);
                                                 let color_image = ui.ctx().data_mut(|data| {
                                                     data.get_temp::<ColorImage>(egui::Id::new(
                                                         &data_id,
+                                                    ))
+                                                });
+                                                let fetched_bytes: Option<Vec<u8>> = ui.ctx().data_mut(|data| {
+                                                    data.get_temp::<Vec<u8>>(egui::Id::new(
+                                                        &bytes_id,
                                                     ))
                                                 });
 
@@ -1001,29 +1054,86 @@ impl ProfileScreen {
                                                         self.show_avatar_url_popup = true;
                                                     }
 
-                                                    // Cache the texture
+                                                    // Cache the texture in memory
                                                     self.avatar_textures
                                                         .insert(texture_id, texture);
                                                     self.avatar_loading = false;
+
+                                                    // Save avatar bytes to database for caching
+                                                    if let Some(bytes) = fetched_bytes
+                                                        && let Some(ref identity) = self.selected_identity
+                                                    {
+                                                        let identity_id = identity.identity.id();
+                                                        let network_str = self.app_context.network.to_string();
+                                                        if let Err(e) = self.app_context.db.save_dashpay_profile_avatar_bytes(
+                                                            &identity_id,
+                                                            &network_str,
+                                                            Some(&bytes),
+                                                        ) {
+                                                            tracing::error!("Failed to save avatar bytes to database: {}", e);
+                                                        } else {
+                                                            tracing::debug!("Saved avatar bytes to database ({} bytes)", bytes.len());
+                                                        }
+                                                        // Update the profile's avatar_bytes in memory
+                                                        if let Some(ref mut p) = self.profile {
+                                                            p.avatar_bytes = Some(bytes);
+                                                        }
+                                                    }
 
                                                     // Clear the temporary data
                                                     ui.ctx().data_mut(|data| {
                                                         data.remove::<ColorImage>(egui::Id::new(
                                                             &data_id,
                                                         ));
+                                                        data.remove::<Vec<u8>>(egui::Id::new(
+                                                            &bytes_id,
+                                                        ));
                                                     });
                                                 } else if !self.avatar_loading {
-                                                    // Start loading the avatar
-                                                    self.avatar_loading = true;
-                                                    self.load_avatar_texture(
-                                                        ui.ctx(),
-                                                        &profile.avatar_url,
-                                                    );
-                                                    // Show spinner while loading
-                                                    ui.add(
-                                                        egui::Spinner::new()
-                                                            .color(DashColors::DASH_BLUE),
-                                                    );
+                                                    // Check if we have cached bytes from database
+                                                    if let Some(ref avatar_bytes) = profile.avatar_bytes {
+                                                        // Process cached bytes synchronously to avoid spinner
+                                                        if let Some(color_image) = Self::process_avatar_bytes_sync(avatar_bytes) {
+                                                            let texture = ui.ctx().load_texture(
+                                                                &texture_id,
+                                                                color_image,
+                                                                egui::TextureOptions::LINEAR,
+                                                            );
+                                                            let image_response = ui.add(
+                                                                egui::Image::new(&texture)
+                                                                    .fit_to_exact_size(egui::vec2(80.0, 80.0))
+                                                                    .corner_radius(8.0)
+                                                                    .sense(egui::Sense::click()),
+                                                            ).on_hover_text("Click to view avatar URL");
+                                                            if image_response.clicked() {
+                                                                self.show_avatar_url_popup = true;
+                                                            }
+                                                            self.avatar_textures.insert(texture_id, texture);
+                                                        } else {
+                                                            // Failed to process cached bytes, fetch from network
+                                                            self.avatar_loading = true;
+                                                            self.load_avatar_texture(
+                                                                ui.ctx(),
+                                                                &profile.avatar_url,
+                                                            );
+                                                            ui.add(
+                                                                egui::Spinner::new()
+                                                                    .color(DashColors::DASH_BLUE),
+                                                            );
+                                                        }
+                                                    } else {
+                                                        // No cached bytes, fetch from network
+                                                        self.avatar_loading = true;
+                                                        self.load_avatar_texture(
+                                                            ui.ctx(),
+                                                            &profile.avatar_url,
+                                                        );
+                                                        // Show spinner while loading
+                                                        ui.add(
+                                                            egui::Spinner::new()
+                                                                .color(DashColors::DASH_BLUE),
+                                                        );
+                                                    }
                                                 } else {
                                                     // Show loading indicator
                                                     ui.add(
@@ -1265,10 +1375,39 @@ impl ProfileScreen {
         match result {
             BackendTaskSuccessResult::DashPayProfile(profile_data) => {
                 if let Some((display_name, bio, avatar_url)) = profile_data {
+                    // Check if avatar URL changed - if so, we need to re-fetch the avatar
+                    let old_avatar_url = self.profile.as_ref().map(|p| p.avatar_url.clone());
+                    let avatar_url_changed = old_avatar_url.as_ref() != Some(&avatar_url);
+
+                    // Preserve cached avatar bytes if URL hasn't changed
+                    let avatar_bytes = if avatar_url_changed {
+                        // URL changed, clear cached bytes and texture so new avatar is fetched
+                        self.avatar_textures
+                            .remove(&format!("avatar_{}", old_avatar_url.unwrap_or_default()));
+                        self.avatar_loading = false;
+
+                        // Clear old avatar bytes from database since URL changed
+                        if let Some(ref identity) = self.selected_identity {
+                            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                            let identity_id = identity.identity.id();
+                            let network_str = self.app_context.network.to_string();
+                            let _ = self.app_context.db.save_dashpay_profile_avatar_bytes(
+                                &identity_id,
+                                &network_str,
+                                None,
+                            );
+                        }
+                        None
+                    } else {
+                        // URL same, keep existing cached bytes
+                        self.profile.as_ref().and_then(|p| p.avatar_bytes.clone())
+                    };
+
                     self.profile = Some(DashPayProfile {
                         display_name: display_name.clone(),
                         bio: bio.clone(),
                         avatar_url: avatar_url.clone(),
+                        avatar_bytes,
                     });
 
                     // Save profile to database for caching
@@ -1357,11 +1496,19 @@ impl ProfileScreen {
                         Err(e) => tracing::error!("Failed to save profile to database: {}", e),
                     }
 
-                    // Update in-memory profile
+                    // Update in-memory profile (preserve existing avatar_bytes if URL didn't change)
+                    let existing_avatar_bytes = self.profile.as_ref().and_then(|p| {
+                        if p.avatar_url == avatar_url {
+                            p.avatar_bytes.clone()
+                        } else {
+                            None // URL changed, need to re-fetch
+                        }
+                    });
                     self.profile = Some(DashPayProfile {
                         display_name: display_name.to_string(),
                         bio: bio.to_string(),
                         avatar_url: avatar_url.to_string(),
+                        avatar_bytes: existing_avatar_bytes,
                     });
                 }
 

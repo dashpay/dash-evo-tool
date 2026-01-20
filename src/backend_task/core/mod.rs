@@ -211,15 +211,22 @@ impl AppContext {
                 }
 
                 // Also refresh Platform address balances if a sync mode is specified
-                if let Some(sync_mode) = platform_sync_mode
-                    && let Err(e) = self
+                let warning = if let Some(sync_mode) = platform_sync_mode {
+                    match self
                         .fetch_platform_address_balances(seed_hash, sync_mode)
                         .await
-                {
-                    tracing::warn!("Failed to fetch Platform address balances: {}", e);
-                }
+                    {
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch Platform address balances: {}", e);
+                            Some(format!("Platform sync failed: {}", e))
+                        }
+                    }
+                } else {
+                    None
+                };
 
-                Ok(BackendTaskSuccessResult::RefreshedWallet)
+                Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
             }
             CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
                 // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
@@ -228,7 +235,7 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Task join error: {}", e))?
                     .map_err(|e| format!("Error refreshing wallet: {}", e))?;
-                Ok(BackendTaskSuccessResult::RefreshedWallet)
+                Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)

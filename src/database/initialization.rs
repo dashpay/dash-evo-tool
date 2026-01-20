@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 24;
+pub const DEFAULT_DB_VERSION: u16 = 25;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            25 => {
+                self.add_avatar_bytes_column(tx)?;
+            }
             24 => {
                 self.add_selected_wallet_columns(tx)?;
             }
@@ -280,7 +283,9 @@ impl Database {
             user_mode TEXT DEFAULT 'Advanced',
             use_local_spv_node INTEGER DEFAULT 0,
             auto_start_spv INTEGER DEFAULT 1,
-            close_dash_qt_on_exit INTEGER DEFAULT 1
+            close_dash_qt_on_exit INTEGER DEFAULT 1,
+            selected_wallet_hash BLOB,
+            selected_single_key_hash BLOB
         )",
             [],
         )?;
@@ -302,7 +307,8 @@ impl Database {
                 unconfirmed_balance INTEGER DEFAULT 0,
                 total_balance INTEGER DEFAULT 0,
                 last_platform_full_sync INTEGER DEFAULT 0,
-                last_platform_sync_checkpoint INTEGER DEFAULT 0
+                last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                last_terminal_block INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -740,6 +746,37 @@ impl Database {
                 conn.execute("DROP TABLE dashpay_contacts", [])?;
                 conn.execute(
                     "ALTER TABLE dashpay_contacts_new RENAME TO dashpay_contacts",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Migration: Add avatar_bytes column to dashpay_profiles table (version 25).
+    /// Stores the actual avatar image bytes to avoid re-fetching from network on every app start.
+    fn add_avatar_bytes_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if dashpay_profiles table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_profiles'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if avatar_bytes column already exists
+            let has_avatar_bytes_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_profiles') WHERE name='avatar_bytes'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_avatar_bytes_column {
+                conn.execute(
+                    "ALTER TABLE dashpay_profiles ADD COLUMN avatar_bytes BLOB DEFAULT NULL",
                     [],
                 )?;
             }

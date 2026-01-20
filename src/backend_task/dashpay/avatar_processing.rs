@@ -291,6 +291,28 @@ mod tests {
     }
 
     #[test]
+    fn test_avatar_hash_deterministic() {
+        // Same data should produce same hash
+        let test_data = b"deterministic test data";
+        let hash1 = calculate_avatar_hash(test_data);
+        let hash2 = calculate_avatar_hash(test_data);
+        assert_eq!(hash1, hash2, "Hash should be deterministic");
+    }
+
+    #[test]
+    fn test_avatar_hash_different_data() {
+        // Different data should produce different hashes
+        let data1 = b"first image data";
+        let data2 = b"second image data";
+        let hash1 = calculate_avatar_hash(data1);
+        let hash2 = calculate_avatar_hash(data2);
+        assert_ne!(
+            hash1, hash2,
+            "Different data should produce different hashes"
+        );
+    }
+
+    #[test]
     fn test_hamming_distance() {
         let hash1 = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
         let hash2 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -301,12 +323,53 @@ mod tests {
     }
 
     #[test]
+    fn test_hamming_distance_single_bit() {
+        let hash1 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let hash2 = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(
+            hamming_distance(&hash1, &hash2),
+            1,
+            "Single bit difference should be 1"
+        );
+    }
+
+    #[test]
+    fn test_hamming_distance_symmetric() {
+        let hash1 = [0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x9A];
+        let hash2 = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        assert_eq!(
+            hamming_distance(&hash1, &hash2),
+            hamming_distance(&hash2, &hash1),
+            "Hamming distance should be symmetric"
+        );
+    }
+
+    #[test]
     fn test_image_similarity() {
         let hash1 = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
         let hash2 = [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]; // 1 bit different
 
         assert!(are_images_similar(&hash1, &hash2, 10));
         assert!(!are_images_similar(&hash1, &hash2, 0));
+    }
+
+    #[test]
+    fn test_image_similarity_threshold() {
+        let hash1 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let hash2 = [0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 8 bits different
+
+        assert!(
+            are_images_similar(&hash1, &hash2, 10),
+            "Should be similar with threshold 10"
+        );
+        assert!(
+            are_images_similar(&hash1, &hash2, 8),
+            "Should be similar with threshold 8"
+        );
+        assert!(
+            !are_images_similar(&hash1, &hash2, 7),
+            "Should not be similar with threshold 7"
+        );
     }
 
     #[test]
@@ -330,6 +393,93 @@ mod tests {
         assert_eq!(hash.len(), 8);
     }
 
+    #[test]
+    fn test_dhash_calculator_default() {
+        let calculator = DHashCalculator::default();
+        assert_eq!(calculator.width, 9);
+        assert_eq!(calculator.height, 8);
+    }
+
+    #[test]
+    fn test_dhash_calculator_new() {
+        let calculator = DHashCalculator::new();
+        assert_eq!(calculator.width, 9);
+        assert_eq!(calculator.height, 8);
+    }
+
+    #[test]
+    fn test_dhash_with_uniform_image() {
+        // Create a uniform image (all same color)
+        let pixels = vec![128u8; 64]; // 8x8 uniform gray
+        let img = image::GrayImage::from_raw(8, 8, pixels).unwrap();
+        let dynamic_img = DynamicImage::ImageLuma8(img);
+
+        let calculator = DHashCalculator::new();
+        let hash = calculator.calculate_from_image(&dynamic_img);
+
+        // A uniform image should have all 0s or very few 1s in the hash
+        // because no pixel is "brighter" than its neighbor
+        let bit_count: u32 = hash.iter().map(|b| b.count_ones()).sum();
+        // Allow some variance due to resizing artifacts
+        assert!(
+            bit_count < 10,
+            "Uniform image should have low bit count, got {}",
+            bit_count
+        );
+    }
+
+    #[test]
+    fn test_dhash_from_grayscale_bytes() {
+        let calculator = DHashCalculator::new();
+
+        // Test with a simple 9x8 grayscale image where left > right
+        let mut pixels = vec![0u8; 72]; // 9x8
+        for y in 0..8 {
+            for x in 0..9 {
+                // Create pattern where each pixel is dimmer than the one to its left
+                pixels[y * 9 + x] = (255 - x * 28) as u8;
+            }
+        }
+
+        let hash = calculator.calculate(&pixels, 9, 8);
+        assert_eq!(hash.len(), 8);
+
+        // With left > right pattern, most bits should be 1
+        let bit_count: u32 = hash.iter().map(|b| b.count_ones()).sum();
+        assert!(
+            bit_count > 50,
+            "Left > right pattern should have high bit count"
+        );
+    }
+
+    #[test]
+    fn test_calculate_dhash_fingerprint_with_valid_png() {
+        // Create a simple valid PNG image in memory
+        use image::{ImageBuffer, Rgb};
+
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(100, 100, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+
+        let mut png_bytes = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut png_bytes);
+        img.write_to(&mut cursor, image::ImageFormat::Png).unwrap();
+
+        let result = calculate_dhash_fingerprint(&png_bytes);
+        assert!(
+            result.is_ok(),
+            "Should successfully calculate fingerprint for valid PNG"
+        );
+        assert_eq!(result.unwrap().len(), 8);
+    }
+
+    #[test]
+    fn test_calculate_dhash_fingerprint_with_invalid_data() {
+        let invalid_data = b"not an image";
+        let result = calculate_dhash_fingerprint(invalid_data);
+        assert!(result.is_err(), "Should fail for invalid image data");
+    }
+
     #[tokio::test]
     async fn test_url_validation() {
         // Test non-HTTPS URL
@@ -342,5 +492,113 @@ mod tests {
         let result = fetch_image_bytes(&long_url).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds maximum length"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_image_bytes_http_rejected() {
+        // HTTP URLs should be rejected immediately
+        let result = fetch_image_bytes("http://example.com/avatar.png").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("HTTPS"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_image_bytes_url_length_check() {
+        // Test URL exactly at limit
+        let url_2048 = format!("https://example.com/{}", "x".repeat(2048 - 24)); // minus https://example.com/ length
+        // This might be at limit, just verify it doesn't panic
+        let _ = fetch_image_bytes(&url_2048).await;
+
+        // Test URL over limit
+        let url_over_limit = format!("https://example.com/{}", "x".repeat(2100));
+        let result = fetch_image_bytes(&url_over_limit).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("maximum length"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_avatar_url_handling() {
+        // Test with a URL that will fail to resolve (invalid domain)
+        let result =
+            fetch_image_bytes("https://invalid.domain.that.does.not.exist.test/avatar.png").await;
+        assert!(result.is_err(), "Invalid domain should return error");
+    }
+
+    #[test]
+    fn test_similar_images_have_similar_hashes() {
+        // Create two slightly different images
+        use image::{ImageBuffer, Rgb};
+
+        let img1: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(100, 100, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+
+        let img2: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(100, 100, |x, y| {
+            // Slightly different - add 1 to red channel
+            Rgb([((x + 1) % 256) as u8, (y % 256) as u8, 128])
+        });
+
+        let mut png1 = Vec::new();
+        let mut png2 = Vec::new();
+        img1.write_to(
+            &mut std::io::Cursor::new(&mut png1),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        img2.write_to(
+            &mut std::io::Cursor::new(&mut png2),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+        let hash1 = calculate_dhash_fingerprint(&png1).unwrap();
+        let hash2 = calculate_dhash_fingerprint(&png2).unwrap();
+
+        // Similar images should have similar hashes (low hamming distance)
+        let distance = hamming_distance(&hash1, &hash2);
+        assert!(
+            distance < 20,
+            "Similar images should have hamming distance < 20, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_different_images_have_different_hashes() {
+        // Create two completely different images with distinct patterns
+        use image::{ImageBuffer, Luma};
+
+        // Image 1: Horizontal gradient (left bright, right dark)
+        let img1: ImageBuffer<Luma<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(100, 100, |x, _y| Luma([(255 - x * 2).min(255) as u8]));
+
+        // Image 2: Horizontal gradient (left dark, right bright) - opposite direction
+        let img2: ImageBuffer<Luma<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(100, 100, |x, _y| Luma([(x * 2).min(255) as u8]));
+
+        let mut png1 = Vec::new();
+        let mut png2 = Vec::new();
+        img1.write_to(
+            &mut std::io::Cursor::new(&mut png1),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        img2.write_to(
+            &mut std::io::Cursor::new(&mut png2),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+        let hash1 = calculate_dhash_fingerprint(&png1).unwrap();
+        let hash2 = calculate_dhash_fingerprint(&png2).unwrap();
+
+        // Opposite gradient images should have nearly opposite hashes
+        // (high hamming distance, ideally close to 64)
+        let distance = hamming_distance(&hash1, &hash2);
+        assert!(
+            distance > 30,
+            "Opposite gradient images should have hamming distance > 30, got {}",
+            distance
+        );
     }
 }

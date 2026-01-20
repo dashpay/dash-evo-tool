@@ -3340,7 +3340,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     .corner_radius(5.0)
                     .stroke(egui::Stroke::new(1.0, message_color))
                     .show(ui, |ui| {
-                        ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(&message).color(message_color),
@@ -3741,13 +3741,21 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
-            crate::ui::BackendTaskSuccessResult::RefreshedWallet => {
+            crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
-                self.message = Some((
-                    "Successfully refreshed wallet".to_string(),
-                    MessageType::Success,
-                    Utc::now(),
-                ));
+                if let Some(warn_msg) = warning {
+                    self.message = Some((
+                        format!("Wallet refreshed with warning: {}", warn_msg),
+                        MessageType::Info,
+                        Utc::now(),
+                    ));
+                } else {
+                    self.message = Some((
+                        "Successfully refreshed wallet".to_string(),
+                        MessageType::Success,
+                        Utc::now(),
+                    ));
+                }
             }
             crate::ui::BackendTaskSuccessResult::RecoveredAssetLocks {
                 recovered_count,
@@ -3838,17 +3846,8 @@ impl ScreenLike for WalletsBalancesScreen {
                     && wallet.seed_hash() == seed_hash
                 {
                     // Update balances in the wallet
-                    for (balance_address, (balance, nonce)) in balances {
-                        // Find the address that matches the string
-                        let canonical_address =
-                            Wallet::canonical_address(&balance_address, self.app_context.network);
-                        if let Some((addr, _info)) = wallet
-                            .platform_address_info
-                            .get_key_value(&canonical_address)
-                        {
-                            let addr = addr.clone();
-                            wallet.set_platform_address_info(addr, balance, nonce);
-                        }
+                    for (addr, (balance, nonce)) in balances {
+                        wallet.set_platform_address_info(addr, balance, nonce);
                     }
                 }
                 self.message = Some((

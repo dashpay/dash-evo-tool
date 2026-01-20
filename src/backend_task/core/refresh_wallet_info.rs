@@ -260,6 +260,6 @@ impl AppContext {
             .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
             .map_err(|e| format!("Failed to persist wallet balances: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::RefreshedWallet)
+        Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
     }
 }

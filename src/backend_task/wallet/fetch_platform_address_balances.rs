@@ -286,9 +286,7 @@ impl AppContext {
             provider
                 .found_balances()
                 .iter()
-                .map(|(addr, funds)| {
-                    (addr.clone(), (funds.balance, funds.nonce))
-                })
+                .map(|(addr, funds)| (addr.clone(), (funds.balance, funds.nonce)))
                 .collect()
         };
 

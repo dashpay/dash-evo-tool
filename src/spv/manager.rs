@@ -262,7 +262,9 @@ impl SpvManager {
             data_dir,
             config,
             subtasks,
-            wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new(network.into()))),
+            wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new(
+                network.into(),
+            ))),
             storage: Arc::new(Mutex::new(None)),
             client_interface: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
@@ -650,10 +652,7 @@ impl SpvManager {
 
         let account_options = Self::default_account_creation_options();
 
-        let wallet_id = match wm.import_wallet_from_extended_priv_key(
-            &xprv_str,
-            account_options,
-        ) {
+        let wallet_id = match wm.import_wallet_from_extended_priv_key(&xprv_str, account_options) {
             Ok(id) => id,
             Err(WalletError::WalletExists(id)) => id,
             Err(err) => {

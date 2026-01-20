@@ -326,8 +326,14 @@ mod tests {
         let contact_id = create_test_identifier();
 
         // Both owners have the same contact but with different info
-        db.save_contact_private_info(&owner1, &contact_id, "Alice (Owner1)", "Notes from 1", false)
-            .expect("Failed to save contact info");
+        db.save_contact_private_info(
+            &owner1,
+            &contact_id,
+            "Alice (Owner1)",
+            "Notes from 1",
+            false,
+        )
+        .expect("Failed to save contact info");
         db.save_contact_private_info(&owner2, &contact_id, "Alice (Owner2)", "Notes from 2", true)
             .expect("Failed to save contact info");
 

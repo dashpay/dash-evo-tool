@@ -5,14 +5,14 @@
 //! - Common test fixtures
 
 /// Create a minimal test harness for E2E tests
+#[allow(dead_code)]
 pub struct TestHarness {
     pub runtime: tokio::runtime::Runtime,
 }
 
 impl TestHarness {
     pub fn new() -> Self {
-        let runtime = tokio::runtime::Runtime::new()
-            .expect("Failed to create tokio runtime");
+        let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         Self { runtime }
     }
 }

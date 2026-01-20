@@ -336,10 +336,7 @@ mod tests {
             parent_fingerprint.to_vec(),
             "Parent fingerprint should match"
         );
-        assert_eq!(
-            decrypted_chain_code, chain_code,
-            "Chain code should match"
-        );
+        assert_eq!(decrypted_chain_code, chain_code, "Chain code should match");
         assert_eq!(
             decrypted_public_key, public_key_bytes,
             "Public key should match"
@@ -359,8 +356,8 @@ mod tests {
         ];
 
         for label in test_labels {
-            let encrypted = encrypt_account_label(label, &shared_key)
-                .expect("Encryption should succeed");
+            let encrypted =
+                encrypt_account_label(label, &shared_key).expect("Encryption should succeed");
 
             // Verify encrypted length is in expected range (48-80 bytes)
             assert!(
@@ -369,8 +366,8 @@ mod tests {
                 encrypted.len()
             );
 
-            let decrypted = decrypt_account_label(&encrypted, &shared_key)
-                .expect("Decryption should succeed");
+            let decrypted =
+                decrypt_account_label(&encrypted, &shared_key).expect("Decryption should succeed");
 
             assert_eq!(decrypted, label, "Decrypted label should match original");
         }
@@ -383,11 +380,11 @@ mod tests {
         // Test with unicode characters
         let label = "你好世界"; // "Hello World" in Chinese
 
-        let encrypted = encrypt_account_label(label, &shared_key)
-            .expect("Encryption should succeed");
+        let encrypted =
+            encrypt_account_label(label, &shared_key).expect("Encryption should succeed");
 
-        let decrypted = decrypt_account_label(&encrypted, &shared_key)
-            .expect("Decryption should succeed");
+        let decrypted =
+            decrypt_account_label(&encrypted, &shared_key).expect("Decryption should succeed");
 
         assert_eq!(decrypted, label, "Unicode label should roundtrip correctly");
     }
@@ -448,10 +445,7 @@ mod tests {
 
         // Try to decrypt with wrong key - should fail
         let result = decrypt_extended_public_key(&encrypted, &wrong_key);
-        assert!(
-            result.is_err(),
-            "Decryption with wrong key should fail"
-        );
+        assert!(result.is_err(), "Decryption with wrong key should fail");
     }
 
     #[test]
@@ -459,14 +453,11 @@ mod tests {
         let shared_key = generate_test_shared_key();
         let wrong_key = generate_test_shared_key();
 
-        let encrypted = encrypt_account_label("Test Label", &shared_key)
-            .expect("Encryption should succeed");
+        let encrypted =
+            encrypt_account_label("Test Label", &shared_key).expect("Encryption should succeed");
 
         let result = decrypt_account_label(&encrypted, &wrong_key);
-        assert!(
-            result.is_err(),
-            "Decryption with wrong key should fail"
-        );
+        assert!(result.is_err(), "Decryption with wrong key should fail");
     }
 
     #[test]
@@ -525,10 +516,8 @@ mod tests {
         );
 
         // But both should decrypt to the same value
-        let (fp1, cc1, pk1) =
-            decrypt_extended_public_key(&encrypted1, &shared_key).unwrap();
-        let (fp2, cc2, pk2) =
-            decrypt_extended_public_key(&encrypted2, &shared_key).unwrap();
+        let (fp1, cc1, pk1) = decrypt_extended_public_key(&encrypted1, &shared_key).unwrap();
+        let (fp2, cc2, pk2) = decrypt_extended_public_key(&encrypted2, &shared_key).unwrap();
 
         assert_eq!(fp1, fp2);
         assert_eq!(cc1, cc2);

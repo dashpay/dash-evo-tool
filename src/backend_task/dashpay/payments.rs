@@ -494,19 +494,15 @@ mod tests {
     fn test_payment_record_amount_in_duffs() {
         // Test that we can properly handle various Dash amounts in duffs
         let test_amounts: Vec<(f64, u64)> = vec![
-            (0.1, 10_000_000),          // 0.1 DASH
-            (1.0, 100_000_000),         // 1 DASH
-            (10.5, 1_050_000_000),      // 10.5 DASH
+            (0.1, 10_000_000),              // 0.1 DASH
+            (1.0, 100_000_000),             // 1 DASH
+            (10.5, 1_050_000_000),          // 10.5 DASH
             (100.12345678, 10_012_345_678), // Full precision
         ];
 
         for (dash, expected_duffs) in test_amounts {
             let duffs = (dash * 100_000_000.0).round() as u64;
-            assert_eq!(
-                duffs, expected_duffs,
-                "Conversion failed for {} DASH",
-                dash
-            );
+            assert_eq!(duffs, expected_duffs, "Conversion failed for {} DASH", dash);
 
             // Test reverse conversion
             let back_to_dash = duffs as f64 / 100_000_000.0;

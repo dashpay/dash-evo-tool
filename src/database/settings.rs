@@ -639,7 +639,10 @@ mod tests {
         let db = create_test_database().expect("Failed to create test database");
 
         let settings = db.get_settings().expect("Failed to get settings");
-        assert!(settings.is_some(), "Database should have default settings after initialization");
+        assert!(
+            settings.is_some(),
+            "Database should have default settings after initialization"
+        );
 
         let (network, root_screen, password_info, _, _, _, theme, core_mode, _, _, _, _) =
             settings.unwrap();
@@ -794,12 +797,16 @@ mod tests {
         let db = create_test_database().expect("Failed to create test database");
 
         // Test auto_start_spv (default true)
-        let auto_start = db.get_auto_start_spv().expect("Failed to get auto_start_spv");
+        let auto_start = db
+            .get_auto_start_spv()
+            .expect("Failed to get auto_start_spv");
         assert!(auto_start);
 
         db.update_auto_start_spv(false)
             .expect("Failed to update auto_start_spv");
-        let auto_start = db.get_auto_start_spv().expect("Failed to get auto_start_spv");
+        let auto_start = db
+            .get_auto_start_spv()
+            .expect("Failed to get auto_start_spv");
         assert!(!auto_start);
 
         // Test use_local_spv_node (default false)

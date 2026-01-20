@@ -78,7 +78,10 @@ mod tests {
     #[test]
     fn test_create_temp_database() {
         let result = create_temp_database();
-        assert!(result.is_ok(), "Should create temporary database successfully");
+        assert!(
+            result.is_ok(),
+            "Should create temporary database successfully"
+        );
 
         let (db, temp_dir) = result.unwrap();
         let db_path = temp_dir.path().join("test_data.db");

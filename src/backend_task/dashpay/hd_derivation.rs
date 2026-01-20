@@ -199,17 +199,22 @@ mod tests {
         let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
 
         // Derive xpub twice
-        let xpub1 = derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
-            .expect("Should derive xpub");
-        let xpub2 = derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
-            .expect("Should derive xpub");
+        let xpub1 =
+            derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+                .expect("Should derive xpub");
+        let xpub2 =
+            derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+                .expect("Should derive xpub");
 
         // Derive addresses from both xpubs
         let addr1 = derive_payment_address(&xpub1, 0).expect("Should derive address");
         let addr2 = derive_payment_address(&xpub2, 0).expect("Should derive address");
 
         // Same seed + identities + index should give same address
-        assert_eq!(addr1, addr2, "Deterministic derivation should produce same address");
+        assert_eq!(
+            addr1, addr2,
+            "Deterministic derivation should produce same address"
+        );
     }
 
     #[test]
@@ -223,17 +228,27 @@ mod tests {
         let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
         let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
 
-        let xpub = derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
-            .expect("Should derive xpub");
+        let xpub =
+            derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+                .expect("Should derive xpub");
 
         let addr0 = derive_payment_address(&xpub, 0).expect("Should derive address at index 0");
         let addr1 = derive_payment_address(&xpub, 1).expect("Should derive address at index 1");
         let addr2 = derive_payment_address(&xpub, 2).expect("Should derive address at index 2");
 
         // Different indices should produce different addresses
-        assert_ne!(addr0, addr1, "Different indices should produce different addresses");
-        assert_ne!(addr1, addr2, "Different indices should produce different addresses");
-        assert_ne!(addr0, addr2, "Different indices should produce different addresses");
+        assert_ne!(
+            addr0, addr1,
+            "Different indices should produce different addresses"
+        );
+        assert_ne!(
+            addr1, addr2,
+            "Different indices should produce different addresses"
+        );
+        assert_ne!(
+            addr0, addr2,
+            "Different indices should produce different addresses"
+        );
     }
 
     #[test]
@@ -257,10 +272,10 @@ mod tests {
         let network = Network::Testnet;
         let master_seed = [0x42u8; 64];
 
-        let key1 = derive_auto_accept_key(&master_seed, network, 1700000000)
-            .expect("Should derive key 1");
-        let key2 = derive_auto_accept_key(&master_seed, network, 1700000001)
-            .expect("Should derive key 2");
+        let key1 =
+            derive_auto_accept_key(&master_seed, network, 1700000000).expect("Should derive key 1");
+        let key2 =
+            derive_auto_accept_key(&master_seed, network, 1700000001).expect("Should derive key 2");
 
         // Different timestamps should produce different keys
         assert_ne!(
@@ -288,7 +303,11 @@ mod tests {
         // Verify the data has the expected sizes
         assert_eq!(fingerprint.len(), 4, "Fingerprint should be 4 bytes");
         assert_eq!(chain_code.len(), 32, "Chain code should be 32 bytes");
-        assert_eq!(pubkey.len(), 33, "Public key should be 33 bytes (compressed)");
+        assert_eq!(
+            pubkey.len(),
+            33,
+            "Public key should be 33 bytes (compressed)"
+        );
 
         // Verify public key is valid compressed format (starts with 0x02 or 0x03)
         assert!(
@@ -356,9 +375,14 @@ mod tests {
         let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
         let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
 
-        let xpub_testnet =
-            derive_dashpay_incoming_xpub(&master_seed, Network::Testnet, 0, &sender_id, &recipient_id)
-                .expect("Should derive xpub for testnet");
+        let xpub_testnet = derive_dashpay_incoming_xpub(
+            &master_seed,
+            Network::Testnet,
+            0,
+            &sender_id,
+            &recipient_id,
+        )
+        .expect("Should derive xpub for testnet");
         let xpub_mainnet =
             derive_dashpay_incoming_xpub(&master_seed, Network::Dash, 0, &sender_id, &recipient_id)
                 .expect("Should derive xpub for mainnet");

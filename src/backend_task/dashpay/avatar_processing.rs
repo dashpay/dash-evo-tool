@@ -306,7 +306,10 @@ mod tests {
         let data2 = b"second image data";
         let hash1 = calculate_avatar_hash(data1);
         let hash2 = calculate_avatar_hash(data2);
-        assert_ne!(hash1, hash2, "Different data should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different data should produce different hashes"
+        );
     }
 
     #[test]
@@ -323,7 +326,11 @@ mod tests {
     fn test_hamming_distance_single_bit() {
         let hash1 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let hash2 = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(hamming_distance(&hash1, &hash2), 1, "Single bit difference should be 1");
+        assert_eq!(
+            hamming_distance(&hash1, &hash2),
+            1,
+            "Single bit difference should be 1"
+        );
     }
 
     #[test]
@@ -351,9 +358,18 @@ mod tests {
         let hash1 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let hash2 = [0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 8 bits different
 
-        assert!(are_images_similar(&hash1, &hash2, 10), "Should be similar with threshold 10");
-        assert!(are_images_similar(&hash1, &hash2, 8), "Should be similar with threshold 8");
-        assert!(!are_images_similar(&hash1, &hash2, 7), "Should not be similar with threshold 7");
+        assert!(
+            are_images_similar(&hash1, &hash2, 10),
+            "Should be similar with threshold 10"
+        );
+        assert!(
+            are_images_similar(&hash1, &hash2, 8),
+            "Should be similar with threshold 8"
+        );
+        assert!(
+            !are_images_similar(&hash1, &hash2, 7),
+            "Should not be similar with threshold 7"
+        );
     }
 
     #[test]
@@ -405,7 +421,11 @@ mod tests {
         // because no pixel is "brighter" than its neighbor
         let bit_count: u32 = hash.iter().map(|b| b.count_ones()).sum();
         // Allow some variance due to resizing artifacts
-        assert!(bit_count < 10, "Uniform image should have low bit count, got {}", bit_count);
+        assert!(
+            bit_count < 10,
+            "Uniform image should have low bit count, got {}",
+            bit_count
+        );
     }
 
     #[test]
@@ -426,7 +446,10 @@ mod tests {
 
         // With left > right pattern, most bits should be 1
         let bit_count: u32 = hash.iter().map(|b| b.count_ones()).sum();
-        assert!(bit_count > 50, "Left > right pattern should have high bit count");
+        assert!(
+            bit_count > 50,
+            "Left > right pattern should have high bit count"
+        );
     }
 
     #[test]
@@ -443,7 +466,10 @@ mod tests {
         img.write_to(&mut cursor, image::ImageFormat::Png).unwrap();
 
         let result = calculate_dhash_fingerprint(&png_bytes);
-        assert!(result.is_ok(), "Should successfully calculate fingerprint for valid PNG");
+        assert!(
+            result.is_ok(),
+            "Should successfully calculate fingerprint for valid PNG"
+        );
         assert_eq!(result.unwrap().len(), 8);
     }
 
@@ -493,7 +519,8 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_avatar_url_handling() {
         // Test with a URL that will fail to resolve (invalid domain)
-        let result = fetch_image_bytes("https://invalid.domain.that.does.not.exist.test/avatar.png").await;
+        let result =
+            fetch_image_bytes("https://invalid.domain.that.does.not.exist.test/avatar.png").await;
         assert!(result.is_err(), "Invalid domain should return error");
     }
 
@@ -513,15 +540,27 @@ mod tests {
 
         let mut png1 = Vec::new();
         let mut png2 = Vec::new();
-        img1.write_to(&mut std::io::Cursor::new(&mut png1), image::ImageFormat::Png).unwrap();
-        img2.write_to(&mut std::io::Cursor::new(&mut png2), image::ImageFormat::Png).unwrap();
+        img1.write_to(
+            &mut std::io::Cursor::new(&mut png1),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        img2.write_to(
+            &mut std::io::Cursor::new(&mut png2),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
 
         let hash1 = calculate_dhash_fingerprint(&png1).unwrap();
         let hash2 = calculate_dhash_fingerprint(&png2).unwrap();
 
         // Similar images should have similar hashes (low hamming distance)
         let distance = hamming_distance(&hash1, &hash2);
-        assert!(distance < 20, "Similar images should have hamming distance < 20, got {}", distance);
+        assert!(
+            distance < 20,
+            "Similar images should have hamming distance < 20, got {}",
+            distance
+        );
     }
 
     #[test]
@@ -530,19 +569,25 @@ mod tests {
         use image::{ImageBuffer, Luma};
 
         // Image 1: Horizontal gradient (left bright, right dark)
-        let img1: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(100, 100, |x, _y| {
-            Luma([(255 - x * 2).min(255) as u8])
-        });
+        let img1: ImageBuffer<Luma<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(100, 100, |x, _y| Luma([(255 - x * 2).min(255) as u8]));
 
         // Image 2: Horizontal gradient (left dark, right bright) - opposite direction
-        let img2: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(100, 100, |x, _y| {
-            Luma([(x * 2).min(255) as u8])
-        });
+        let img2: ImageBuffer<Luma<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(100, 100, |x, _y| Luma([(x * 2).min(255) as u8]));
 
         let mut png1 = Vec::new();
         let mut png2 = Vec::new();
-        img1.write_to(&mut std::io::Cursor::new(&mut png1), image::ImageFormat::Png).unwrap();
-        img2.write_to(&mut std::io::Cursor::new(&mut png2), image::ImageFormat::Png).unwrap();
+        img1.write_to(
+            &mut std::io::Cursor::new(&mut png1),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        img2.write_to(
+            &mut std::io::Cursor::new(&mut png2),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
 
         let hash1 = calculate_dhash_fingerprint(&png1).unwrap();
         let hash2 = calculate_dhash_fingerprint(&png2).unwrap();
@@ -550,6 +595,10 @@ mod tests {
         // Opposite gradient images should have nearly opposite hashes
         // (high hamming distance, ideally close to 64)
         let distance = hamming_distance(&hash1, &hash2);
-        assert!(distance > 30, "Opposite gradient images should have hamming distance > 30, got {}", distance);
+        assert!(
+            distance > 30,
+            "Opposite gradient images should have hamming distance > 30, got {}",
+            distance
+        );
     }
 }

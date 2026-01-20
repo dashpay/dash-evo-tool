@@ -583,9 +583,20 @@ impl Database {
                 total_received,
             ) = row?;
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
+                // Canonicalize Platform addresses to avoid duplicate representations
+                let canonical_address = Wallet::canonical_address(&address, *network);
+
                 // Update the address balance if available.
                 if let Some(balance) = balance {
-                    wallet.address_balances.insert(address.clone(), balance);
+                    wallet
+                        .address_balances
+                        .insert(canonical_address.clone(), balance);
+                }
+                // Update total received if available.
+                if let Some(total_received) = total_received {
+                    wallet
+                        .address_total_received
+                        .insert(canonical_address.clone(), total_received);
                 }
                 // Update total received if available.
                 if let Some(total_received) = total_received {
@@ -597,16 +608,16 @@ impl Database {
                 // Add the address to the `known_addresses` map.
                 wallet
                     .known_addresses
-                    .insert(address.clone(), derivation_path.clone());
+                    .insert(canonical_address.clone(), derivation_path.clone());
                 tracing::trace!(
-                    address = ?address,
+                    address = ?canonical_address,
                     network = address.network().to_string(),
                     expected_network = network.to_string(),
                     "loaded address from database");
 
                 // Add the address to the `watched_addresses` map with AddressInfo.
                 let address_info = AddressInfo {
-                    address: address.clone(),
+                    address: canonical_address.clone(),
                     path_reference,
                     path_type,
                 };
@@ -843,9 +854,18 @@ impl Database {
                 && let Some(wallet) = wallets_map.get_mut(&seed_hash)
                 && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str)
             {
-                let address = address.assume_checked();
+                let address_checked = address.require_network(*network).map_err(|e| {
+                    tracing::error!(address = %address_str, error = ?e, "Failed to validate Platform address for network");
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::fmt::Error),
+                    )
+                })?;
+                let canonical_address = Wallet::canonical_address(&address_checked, *network);
+
                 wallet.platform_address_info.insert(
-                    address,
+                    canonical_address,
                     crate::model::wallet::PlatformAddressInfo {
                         balance,
                         nonce,
@@ -870,7 +890,8 @@ impl Database {
         network: &Network,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
-        let address_str = address.to_string();
+        let canonical_address = Wallet::canonical_address(address, *network);
+        let address_str = canonical_address.to_string();
         let updated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -901,7 +922,8 @@ impl Database {
     ) -> rusqlite::Result<Option<(u64, u32)>> {
         let conn = self.conn.lock().unwrap();
         let network_str = network.to_string();
-        let address_str = address.to_string();
+        let canonical_address = Wallet::canonical_address(address, *network);
+        let address_str = canonical_address.to_string();
 
         let mut stmt = conn.prepare(
             "SELECT balance, nonce FROM platform_address_balances
@@ -946,8 +968,15 @@ impl Database {
         for row in rows {
             let (address_str, balance, nonce) = row?;
             if let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str) {
-                let address = address.assume_checked();
-                results.push((address, balance, nonce));
+                let address_checked = address.require_network(*network).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                let canonical_address = Wallet::canonical_address(&address_checked, *network);
+                results.push((canonical_address, balance, nonce));
             }
         }
 

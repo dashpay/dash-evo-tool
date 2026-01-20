@@ -4,18 +4,22 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_sdk::dash_spv::Network;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::native_bls::NativeBlsModule;
-use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, Identity};
+use dash_sdk::query_types::AddressInfo;
 use dash_sdk::{Error, Sdk};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -223,14 +227,25 @@ impl AppContext {
                 inputs,
                 wallet_seed_hash,
             } => {
-                // This is a separate flow - we call a dedicated function for Platform address funding
+                // inputs with nonces, incremented by 1 from current nonce
+                let inputs_with_nonces = inputs
+                    .into_iter()
+                    .map(|(addr, credits)| {
+                        self.get_platform_address_best_info(&addr, self.network)
+                            .map(|info| (addr, (info.nonce.saturating_add(1), credits)))
+                    })
+                    .collect::<Option<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>>()
+                    .ok_or(String::from(
+                        "Each input platform address must be present in at least one wallet",
+                    ))?;
+
                 return self
                     .register_identity_from_platform_addresses(
                         alias_input,
                         keys,
                         wallet,
                         wallet_identity_index,
-                        inputs,
+                        inputs_with_nonces,
                         wallet_seed_hash,
                     )
                     .await;
@@ -674,7 +689,10 @@ impl AppContext {
         }
     }
 
-    /// Register a new identity funded by Platform addresses
+    /// Register a new identity funded by Platform addresses.
+    ///
+    /// `inputs` is a map of Platform addresses to (nonce, credits) tuples. Nonces must be incremented by 1
+    /// from the current nonce of the address.
     async fn register_identity_from_platform_addresses(
         &self,
         alias_input: String,
@@ -683,7 +701,7 @@ impl AppContext {
         wallet_identity_index: u32,
         inputs: BTreeMap<
             dash_sdk::dpp::address_funds::PlatformAddress,
-            dash_sdk::dpp::fee::Credits,
+            (AddressNonce, dash_sdk::dpp::fee::Credits),
         >,
         wallet_seed_hash: super::WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
@@ -708,17 +726,12 @@ impl AppContext {
         // Clone the wallet for use as the address signer (needed across async boundary)
         let wallet_clone = { wallet.read().map_err(|e| e.to_string())?.clone() };
 
-        // For Platform address funding, we need to compute the identity ID from the inputs
-        // The SDK will handle this internally when creating the identity
-        // We create a temporary identity with a placeholder ID, which will be computed correctly
-        // during the state transition creation
-
-        // Create a temporary identity ID - will be replaced by the actual one from Platform
-        let temp_identity_id = dash_sdk::platform::Identifier::random();
-
-        let identity =
-            Identity::new_with_id_and_keys(temp_identity_id, public_keys.clone(), sdk.version())
-                .map_err(|e| format!("Failed to create identity: {}", e))?;
+        let identity = Identity::new_with_input_addresses_and_keys(
+            &inputs,
+            public_keys.clone(),
+            sdk.version(),
+        )
+        .map_err(|e| format!("Failed to create identity: {}", e))?;
 
         let wallet_seed_hash_actual = { wallet.read().unwrap().seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
@@ -824,5 +837,40 @@ impl AppContext {
                 ))
             }
         }
+    }
+
+    /// Get the best (most recent nonce) AddressInfo from all wallets for the given [PlatformAddress] in current [Self::network].
+    ///
+    /// Returns `None`` if no info is found.
+    fn get_platform_address_best_info(
+        &self,
+        platform_address: &PlatformAddress,
+        network: Network,
+    ) -> Option<AddressInfo> {
+        let generic_address = platform_address.to_address_with_network(network);
+        let wallets = self
+            .wallets
+            .read()
+            .inspect_err(|e| tracing::error!(err=%e, "wallet lock poisoned"))
+            .ok()?;
+
+        let mut recent_info: Option<AddressInfo> = None;
+        for wallet in wallets.values() {
+            let wallet_guard = wallet.read().ok()?;
+
+            if let Some(new_info) = wallet_guard.get_platform_address_info(&generic_address)
+                && recent_info
+                    .as_ref()
+                    .is_none_or(|recent| new_info.nonce > recent.nonce)
+            {
+                recent_info = Some(AddressInfo {
+                    address: *platform_address,
+                    balance: new_info.balance,
+                    nonce: new_info.nonce,
+                });
+            }
+        }
+
+        recent_info
     }
 }

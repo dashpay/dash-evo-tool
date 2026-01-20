@@ -291,11 +291,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| {
-                    BackendTaskSuccessResult::Message(
-                        "Successfully registered token contract".to_string(),
-                    )
-                })
+                .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
                 .map_err(|e| format!("Failed to register token contract: {e}"))
             }
             TokenTask::QueryMyTokenBalances => self
@@ -524,9 +520,7 @@ impl AppContext {
                     Ok(Some(data_contract)) => {
                         Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
                     }
-                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
-                        "Contract not found".to_string(),
-                    )),
+                    Ok(None) => Ok(BackendTaskSuccessResult::ContractNotFound),
                     Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
             }
@@ -552,15 +546,11 @@ impl AppContext {
                                     token_position,
                                 ))
                             }
-                            Ok(None) => Ok(BackendTaskSuccessResult::Message(
-                                "Contract not found for token".to_string(),
-                            )),
+                            Ok(None) => Ok(BackendTaskSuccessResult::ContractNotFound),
                             Err(e) => Err(format!("Error fetching contract for token: {}", e)),
                         }
                     }
-                    Ok(None) => Ok(BackendTaskSuccessResult::Message(
-                        "Token not found".to_string(),
-                    )),
+                    Ok(None) => Ok(BackendTaskSuccessResult::TokenNotFound),
                     Err(e) => Err(format!("Error fetching token info: {}", e)),
                 }
             }
@@ -582,9 +572,7 @@ impl AppContext {
                     )
                     .map_err(|e| format!("error saving token: {}", e))?;
 
-                Ok(BackendTaskSuccessResult::Message(
-                    "Saved token to db".to_string(),
-                ))
+                Ok(BackendTaskSuccessResult::SavedToken)
             }
             TokenTask::UpdateTokenConfig {
                 identity_token_info,
@@ -720,6 +708,8 @@ impl AppContext {
                 let mut validation_operations = Vec::new();
                 match dash_sdk::dpp::data_contract::document_type::DocumentType::try_from_schema(
                     contract_id,
+                    0,
+                    0,
                     &name,
                     platform_value,
                     None, // schema_defs

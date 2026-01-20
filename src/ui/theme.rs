@@ -453,6 +453,10 @@ impl ComponentStyles {
         DashColors::WHITE
     }
 
+    pub fn primary_button_stroke() -> Stroke {
+        Stroke::new(1.0, DashColors::DASH_BLUE)
+    }
+
     pub fn secondary_button_fill() -> Color32 {
         DashColors::WHITE
     }

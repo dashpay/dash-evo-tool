@@ -1,18 +1,23 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::helpers::{
-    TransactionType, add_contract_doc_type_chooser_with_filtering,
-    add_identity_key_chooser_with_doc_type, show_success_screen,
+    TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
+    show_success_screen_with_info,
 };
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -43,7 +48,7 @@ use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::epaint::Color32;
-use egui::{Context, RichText, Ui};
+use egui::{Context, Frame, Margin, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -87,11 +92,12 @@ pub struct DocumentActionScreen {
     // Common fields
     pub backend_message: Option<String>,
     pub selected_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     pub wallet: Option<Arc<RwLock<Wallet>>>,
-    pub wallet_password: String,
+    pub wallet_unlock_popup: WalletUnlockPopup,
     pub wallet_failure: Option<String>,
-    pub show_password: bool,
     pub broadcast_status: BroadcastStatus,
     pub selected_contract: Option<QualifiedContract>,
     pub selected_document_type: Option<DocumentType>,
@@ -118,6 +124,9 @@ pub struct DocumentActionScreen {
 
     // Delete-specific
     pub fetched_documents: IndexMap<Identifier, Option<Document>>,
+
+    // Fee tracking
+    pub completed_fee_result: Option<FeeResult>,
 }
 
 impl DocumentActionScreen {
@@ -142,16 +151,22 @@ impl DocumentActionScreen {
 
         let selected_contract = known_contracts.into_iter().next();
 
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58))
+            .unwrap_or_default();
+
         Self {
             app_context,
             action_type,
             backend_message: None,
             selected_identity,
+            selected_identity_string,
             selected_key: None,
+            show_advanced_options: false,
             wallet: None,
-            wallet_password: String::new(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_failure: None,
-            show_password: false,
             broadcast_status: BroadcastStatus::NotBroadcasted,
             selected_contract,
             selected_document_type: None,
@@ -164,17 +179,19 @@ impl DocumentActionScreen {
             identities_map,
             recipient_id_input: String::new(),
             fetched_documents: IndexMap::new(),
+            completed_fee_result: None,
         }
     }
 
     fn reset_screen(&mut self) {
         self.backend_message = None;
         self.selected_identity = None;
+        self.selected_identity_string = String::new();
         self.selected_key = None;
+        self.show_advanced_options = false;
         self.wallet = None;
-        self.wallet_password.clear();
+        self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
-        self.show_password = false;
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
         self.selected_contract = None;
         self.selected_document_type = None;
@@ -203,19 +220,73 @@ impl DocumentActionScreen {
     }
 
     fn render_identity_and_key_selection(&mut self, ui: &mut Ui) {
-        ui.heading("2. Select an identity and key:");
+        ui.horizontal(|ui| {
+            ui.heading("2. Select an identity:");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+            });
+        });
         ui.add_space(10.0);
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
-        add_identity_key_chooser_with_doc_type(
-            ui,
-            &self.app_context,
-            identities_vec.iter(),
-            &mut self.selected_identity,
-            &mut self.selected_key,
-            TransactionType::DocumentAction,
-            self.selected_document_type.as_ref(),
+
+        // Identity selector
+        let response = ui.add(
+            IdentitySelector::new(
+                "document_action_identity_selector",
+                &mut self.selected_identity_string,
+                &identities_vec,
+            )
+            .selected_identity(&mut self.selected_identity)
+            .unwrap()
+            .width(300.0)
+            .label("Identity:")
+            .other_option(false),
         );
+
+        // Handle identity change - auto-select key and update wallet
+        if response.changed() {
+            if let Some(identity) = &self.selected_identity {
+                // Auto-select a suitable key for document actions
+                use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+                self.selected_key = identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        SecurityLevel::full_range().into(),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                    .cloned();
+
+                // Update wallet
+                self.wallet = get_selected_wallet(
+                    identity,
+                    Some(&self.app_context),
+                    None,
+                    &mut self.backend_message,
+                );
+            } else {
+                self.selected_key = None;
+                self.wallet = None;
+            }
+        }
+
+        // Key selector (only shown in advanced mode)
+        if self.show_advanced_options {
+            ui.add_space(10.0);
+            if let Some(identity) = &self.selected_identity {
+                add_key_chooser_with_doc_type(
+                    ui,
+                    &self.app_context,
+                    identity,
+                    &mut self.selected_key,
+                    TransactionType::DocumentAction,
+                    self.selected_document_type.as_ref(),
+                );
+            }
+        }
+
         ui.add_space(10.0);
     }
 
@@ -241,18 +312,14 @@ impl DocumentActionScreen {
             let contract_id = contract.contract.id();
             let doc_type = doc_type.clone();
 
-            egui::ScrollArea::vertical()
-                .max_height(ui.available_height() - 100.0)
-                .show(ui, |ui| {
-                    self.ui_field_inputs(ui, &doc_type, contract_id);
+            self.ui_field_inputs(ui, &doc_type, contract_id);
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
 
-                    self.render_token_cost_info(ui, &doc_type);
-                    action |= self.render_broadcast_button(ui);
-                });
+            self.render_token_cost_info(ui, &doc_type);
+            action |= self.render_broadcast_button(ui);
         }
         action
     }
@@ -379,11 +446,11 @@ impl DocumentActionScreen {
             }
         }
 
-        if let Some(backend_message) = &self.backend_message {
-            if backend_message.contains("No owned documents found") {
-                ui.add_space(10.0);
-                ui.label("No owned documents found.");
-            }
+        if let Some(backend_message) = &self.backend_message
+            && backend_message.contains("No owned documents found")
+        {
+            ui.add_space(10.0);
+            ui.label("No owned documents found.");
         }
 
         // Show fetching status
@@ -534,21 +601,27 @@ impl DocumentActionScreen {
                 let contract_id = contract.contract.id();
                 let doc_type = doc_type.clone();
 
-                egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 100.0)
-                    .show(ui, |ui| {
-                        self.ui_field_inputs(ui, &doc_type, contract_id);
+                self.ui_field_inputs(ui, &doc_type, contract_id);
 
-                        ui.add_space(10.0);
-                        if let Some(doc_type) = &self.selected_document_type {
-                            self.render_token_cost_info(ui, &doc_type.clone());
-                        }
-                        action |= self.render_broadcast_button(ui);
-                    });
+                ui.add_space(10.0);
+                if let Some(doc_type) = &self.selected_document_type {
+                    self.render_token_cost_info(ui, &doc_type.clone());
+                }
+                action |= self.render_broadcast_button(ui);
             }
         } else if self.broadcast_status == BroadcastStatus::Fetched {
             ui.add_space(10.0);
-            ui.colored_label(Color32::DARK_RED, "No document found with the provided ID");
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("No document found with the provided ID").color(error_color),
+                    );
+                });
         }
         action
     }
@@ -789,6 +862,38 @@ impl DocumentActionScreen {
 
     fn render_broadcast_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        // Fee estimation display
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = match self.action_type {
+            DocumentActionType::Create => fee_estimator.estimate_document_create(),
+            DocumentActionType::Delete => fee_estimator.estimate_document_delete(),
+            DocumentActionType::Replace => fee_estimator.estimate_document_replace(),
+            DocumentActionType::Transfer => fee_estimator.estimate_document_transfer(),
+            DocumentActionType::Purchase => fee_estimator.estimate_document_purchase(),
+            DocumentActionType::SetPrice => fee_estimator.estimate_document_set_price(),
+        };
+
+        ui.add_space(10.0);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated fee:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+            });
 
         ui.add_space(10.0);
         let button_text = match self.action_type {
@@ -1244,6 +1349,7 @@ impl DocumentActionScreen {
             id,
             properties,
             owner_id,
+            creator_id: None,
             revision,
             created_at: None,
             updated_at: None,
@@ -1412,6 +1518,7 @@ impl DocumentActionScreen {
             id: original_doc.id(),
             properties,
             owner_id: original_doc.owner_id(),
+            creator_id: original_doc.creator_id(),
             revision: new_revision,
             created_at: None,
             updated_at: None,
@@ -1479,17 +1586,34 @@ impl ScreenLike for DocumentActionScreen {
                     AppAction::Custom("Reset".to_string()),
                 );
 
-                let inner_action =
-                    show_success_screen(ui, success_message, vec![back_button, reset_button]);
+                let inner_action = show_success_screen_with_info(
+                    ui,
+                    success_message,
+                    vec![back_button, reset_button],
+                    None,
+                );
 
                 if inner_action == AppAction::Custom("Reset".to_string()) {
                     self.reset_screen();
+                    self.completed_fee_result = None;
                 }
 
                 inner_action
             }
             _ => self.render_main_content(ui),
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
 
         action
     }
@@ -1499,22 +1623,21 @@ impl ScreenLike for DocumentActionScreen {
     }
 
     fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
-        if message.contains("Document deleted successfully")
-            || message.contains("Document replaced successfully")
-            || message.contains("Document transferred successfully")
-            || message.contains("Document purchased successfully")
-            || message.contains("Document price set successfully")
-        {
-            self.broadcast_status = BroadcastStatus::Broadcasted;
-        } else {
-            self.backend_message = Some(message.to_string());
-            self.broadcast_status = BroadcastStatus::NotBroadcasted;
-        }
+        self.backend_message = Some(message.to_string());
+        self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         match result {
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
+                self.broadcast_status = BroadcastStatus::Broadcasted;
+            }
+            BackendTaskSuccessResult::DeletedDocument(_, fee_result)
+            | BackendTaskSuccessResult::ReplacedDocument(_, fee_result)
+            | BackendTaskSuccessResult::TransferredDocument(_, fee_result)
+            | BackendTaskSuccessResult::PurchasedDocument(_, fee_result)
+            | BackendTaskSuccessResult::SetDocumentPrice(_, fee_result) => {
+                self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Broadcasted;
             }
             BackendTaskSuccessResult::Documents(documents) => {
@@ -1609,85 +1732,85 @@ impl ScreenLike for DocumentActionScreen {
 
 impl DocumentActionScreen {
     fn render_main_content(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                let mut action = AppAction::None;
 
-        // Step 1: Contract and Document Type Selection
-        self.render_contract_and_type_selection(ui);
+                // Step 1: Contract and Document Type Selection
+                self.render_contract_and_type_selection(ui);
 
-        if self.selected_contract.is_none() || self.selected_document_type.is_none() {
-            return action;
-        }
+                if self.selected_contract.is_none() || self.selected_document_type.is_none() {
+                    return action;
+                }
 
-        ui.separator();
-        ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-        // Step 2: Identity and Key Selection
-        self.render_identity_and_key_selection(ui);
+                // Step 2: Identity and Key Selection
+                self.render_identity_and_key_selection(ui);
 
-        if self.selected_identity.is_none() || self.selected_key.is_none() {
-            return action;
-        }
+                if self.selected_identity.is_none() || self.selected_key.is_none() {
+                    return action;
+                }
 
-        ui.separator();
-        ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
 
-        // Wallet unlock
-        if let Some(selected_identity) = &self.selected_identity {
-            self.wallet = get_selected_wallet(
-                selected_identity,
-                Some(&self.app_context),
-                None,
-                &mut self.backend_message,
-            );
-        }
-        if self.wallet.is_some() {
-            let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-            if needed_unlock && !just_unlocked {
-                return action;
-            }
-        }
+                // Wallet unlock
+                if let Some(selected_identity) = &self.selected_identity {
+                    self.wallet = get_selected_wallet(
+                        selected_identity,
+                        Some(&self.app_context),
+                        None,
+                        &mut self.backend_message,
+                    );
+                }
+                if let Some(wallet) = &self.wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.backend_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                        return action;
+                    }
+                }
 
-        // Step 3: Action-specific inputs and broadcast
-        action |= match self.action_type {
-            DocumentActionType::Create => self.render_create_inputs(ui),
-            _ => self.render_action_specific_inputs(ui),
-        };
+                // Step 3: Action-specific inputs and broadcast
+                action |= match self.action_type {
+                    DocumentActionType::Create => self.render_create_inputs(ui),
+                    _ => self.render_action_specific_inputs(ui),
+                };
 
-        if let Some(ref msg) = self.backend_message {
-            ui.add_space(10.0);
-            ui.colored_label(Color32::DARK_RED, msg);
-        }
+                if let Some(ref msg) = self.backend_message {
+                    ui.add_space(10.0);
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&msg).color(error_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.backend_message = None;
+                                }
+                            });
+                        });
+                }
 
-        action
-    }
-}
-
-impl ScreenWithWalletUnlock for DocumentActionScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.wallet_failure = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.wallet_failure.as_ref()
+                action
+            })
+            .inner
     }
 }

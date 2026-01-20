@@ -12,6 +12,7 @@ use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -47,7 +48,7 @@ use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, RichText};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText};
 use egui::{ScrollArea, TextStyle};
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
@@ -355,14 +356,22 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, _identifier, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.group_action_id = Some(action_id);
-                mint_screen.amount_to_mint = amount.to_string();
+                // Convert amount to Amount struct using the token configuration
+                mint_screen.amount = Some(Amount::from_token(
+                    &mint_screen.identity_token_info,
+                    *amount,
+                ));
                 mint_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::MintTokensScreen(mint_screen));
             }
             TokenEvent::Burn(amount, _burn_from, note_opt) => {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
                 burn_screen.group_action_id = Some(action_id);
-                burn_screen.amount_to_burn = amount.to_string();
+                // Convert amount to Amount struct using the token configuration
+                burn_screen.amount = Some(Amount::from_token(
+                    &burn_screen.identity_token_info,
+                    *amount,
+                ));
                 burn_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::BurnTokensScreen(burn_screen));
             }
@@ -420,7 +429,9 @@ impl GroupActionsScreen {
             }
             TokenEvent::ChangePriceForDirectPurchase(schedule, note_opt) => {
                 let mut change_price_screen =
-                    SetTokenPriceScreen::new(identity_token_info, &self.app_context);
+                    SetTokenPriceScreen::new(identity_token_info, &self.app_context)
+                        .with_schedule(schedule.clone());
+
                 change_price_screen.group_action_id = Some(action_id);
                 change_price_screen.token_pricing_schedule = format!("{:?}", schedule);
                 change_price_screen.public_note = note_opt.clone();
@@ -562,7 +573,25 @@ impl ScreenLike for GroupActionsScreen {
             match &self.fetch_group_actions_status {
                 FetchGroupActionsStatus::ErrorMessage(msg) => {
                     ui.add_space(10.0);
-                    ui.colored_label(Color32::RED, format!("Error: {}", msg));
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Error: {}", msg)).color(error_color),
+                                );
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.fetch_group_actions_status =
+                                        FetchGroupActionsStatus::NotStarted;
+                                }
+                            });
+                        });
                 }
 
                 FetchGroupActionsStatus::WaitingForResult(start_time) => {
@@ -592,15 +621,15 @@ impl ScreenLike for GroupActionsScreen {
                 _ => {}
             }
 
-            if fetch_clicked {
-                if let (Some(contract), Some(identity)) = (
+            if fetch_clicked
+                && let (Some(contract), Some(identity)) = (
                     self.selected_contract.clone(),
                     self.selected_identity.clone(),
-                ) {
-                    action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::FetchActiveGroupActions(contract, identity),
-                    )));
-                }
+                )
+            {
+                action |= AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                    ContractTask::FetchActiveGroupActions(contract, identity),
+                )));
             }
 
             if let FetchGroupActionsStatus::Complete(group_actions) =

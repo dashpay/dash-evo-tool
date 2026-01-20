@@ -78,9 +78,9 @@ impl Database {
             // If wallet information is not provided, insert without wallet and wallet_index
             self.execute(
                 "INSERT OR REPLACE INTO identity
-             (id, data, is_local, alias, identity_type, network)
-             VALUES (?, ?, 1, ?, ?, ?)",
-                params![id, data, alias, identity_type, network],
+             (id, data, is_local, alias, identity_type, network, status)
+             VALUES (?, ?, 1, ?, ?, ?, ?)",
+                params![id, data, alias, identity_type, network, status],
             )?;
         }
 
@@ -170,13 +170,15 @@ impl Database {
             let data: Vec<u8> = row.get(0)?;
             let alias: Option<String> = row.get(1)?;
             let wallet_index: Option<u32> = row.get(2)?;
-            let status: u8 = row.get(3)?;
+            // Handle NULL status values from older database entries by defaulting to Active (2)
+            let status: Option<u8> = row.get(3)?;
 
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
 
-            identity.status = IdentityStatus::from_u8(status);
+            identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
+            identity.network = app_context.network;
 
             // Associate wallets
             identity.associated_wallets = wallets.clone(); //todo: use less wallets
@@ -232,6 +234,7 @@ impl Database {
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
+            identity.network = app_context.network;
 
             // Associate wallets
             identity.associated_wallets = wallets.clone(); //todo: use less wallets
@@ -287,6 +290,7 @@ impl Database {
             let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
             identity.alias = alias;
             identity.wallet_index = wallet_index;
+            identity.network = app_context.network;
 
             // Associate wallets
             identity.associated_wallets = wallets.clone(); //todo: use less wallets
@@ -326,7 +330,8 @@ impl Database {
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
-            let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            identity.network = app_context.network;
 
             Ok(identity)
         })?;
@@ -353,7 +358,8 @@ impl Database {
             stmt.query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 let wallet_id: Option<WalletSeedHash> = row.get(1)?;
-                let identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+                let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+                identity.network = app_context.network;
 
                 Ok((identity, wallet_id))
             })?

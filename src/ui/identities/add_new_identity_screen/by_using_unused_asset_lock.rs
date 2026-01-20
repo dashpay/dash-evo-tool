@@ -1,8 +1,9 @@
 use crate::app::AppAction;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use egui::{Color32, Ui};
+use egui::{Color32, RichText, Ui};
 
 impl AddNewIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
@@ -21,6 +22,7 @@ impl AddNewIdentityScreen {
         }
 
         ui.heading("Select an unused asset lock:");
+        ui.add_space(8.0);
 
         // Track the index of the currently selected asset lock (if any)
         let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
@@ -31,45 +33,53 @@ impl AddNewIdentityScreen {
         });
 
         // Display the asset locks in a scrollable area
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (index, (tx, address, amount, islock, proof)) in
-                wallet.unused_asset_locks.iter().enumerate()
-            {
-                ui.horizontal(|ui| {
-                    let tx_id = tx.txid().to_string();
-                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
-                    let is_locked = if islock.is_some() { "Yes" } else { "No" };
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .min_scrolled_height(180.0)
+            .show(ui, |ui| {
+                for (index, (tx, address, amount, islock, proof)) in
+                    wallet.unused_asset_locks.iter().enumerate()
+                {
+                    ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            let tx_id = tx.txid().to_string();
+                            let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
+                            let is_locked = if islock.is_some() { "Yes" } else { "No" };
 
-                    // Display asset lock information with "Selected" if this one is selected
-                    let selected_text = if Some(index) == selected_index {
-                        " (Selected)"
-                    } else {
-                        ""
-                    };
+                            // Display asset lock information with "Selected" if this one is selected
+                            if Some(index) == selected_index {
+                                ui.colored_label(
+                                    Color32::from_rgb(0, 130, 90),
+                                    "Selected asset lock",
+                                );
+                            }
 
-                    ui.label(format!(
-                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
-                        tx_id, address, lock_amount, is_locked, selected_text
-                    ));
+                            ui.label(format!("TxID: {}", tx_id));
+                            ui.label(format!("Address: {}", address));
+                            ui.label(format!("Amount: {:.8} DASH", lock_amount));
+                            ui.label(format!("InstantLock: {}", is_locked));
 
-                    // Button to select this asset lock
-                    if ui.button("Select").clicked() {
-                        // Update the selected asset lock
-                        self.funding_asset_lock = Some((
-                            tx.clone(),
-                            proof.clone().expect("Asset lock proof is required"),
-                            address.clone(),
-                        ));
+                            ui.add_space(6.0);
 
-                        // Update the step to ready to create identity
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
-                    }
-                });
+                            // Button to select this asset lock stays visible regardless of wrapping
+                            if ui.button("Select").clicked() {
+                                // Update the selected asset lock
+                                self.funding_asset_lock = Some((
+                                    tx.clone(),
+                                    proof.clone().expect("Asset lock proof is required"),
+                                    address.clone(),
+                                ));
 
-                ui.add_space(5.0); // Add space between each entry
-            }
-        });
+                                // Update the step to ready to create identity
+                                let mut step = self.step.write().unwrap();
+                                *step = WalletFundedScreenStep::ReadyToCreate;
+                            }
+                        });
+                    });
+
+                    ui.add_space(6.0); // Add space between each entry
+                }
+            });
     }
 
     pub fn render_ui_by_using_unused_asset_lock(
@@ -92,29 +102,49 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);
 
+        // Display estimated fee before action button
+        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create(key_count);
+        ui.add_space(10.0);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        egui::Frame::new()
+            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated Fee:")
+                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .strong(),
+                    );
+                });
+            });
+        ui.add_space(10.0);
+
         if ui.button("Create Identity").clicked() {
             self.error_message = None;
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
 
-        if let Some(error_message) = self.error_message.as_ref() {
-            ui.colored_label(Color32::DARK_RED, error_message);
-            ui.add_space(20.0);
-        }
+        ui.add_space(20.0);
 
-        ui.vertical_centered(|ui| {
-            match step {
+        // Only show status messages if there's no error
+        if self.error_message.is_none() {
+            ui.vertical_centered(|ui| match step {
                 WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                     ui.heading("=> Waiting for Platform acknowledgement <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
                 }
                 WalletFundedScreenStep::Success => {
                     ui.heading("...Success...");
                 }
                 _ => {}
-            }
-        });
+            });
+        }
 
         ui.add_space(40.0);
         action

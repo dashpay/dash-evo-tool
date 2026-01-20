@@ -1,17 +1,22 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -20,7 +25,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use eframe::egui::{self, Context};
+use eframe::egui::{self, Context, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -43,12 +48,13 @@ pub struct AddKeyScreen {
     security_level: SecurityLevel,
     add_key_status: AddKeyStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
     contract_id_input: String,
     document_type_input: String,
     enable_contract_bounds: bool,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl AddKeyScreen {
@@ -73,12 +79,92 @@ impl AddKeyScreen {
             security_level: SecurityLevel::HIGH,
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message,
             contract_id_input: String::new(),
             document_type_input: String::new(),
             enable_contract_bounds: false,
+            completed_fee_result: None,
+        }
+    }
+
+    /// Create a new AddKeyScreen pre-configured for adding a DashPay ENCRYPTION key.
+    /// This is required for sending contact requests.
+    pub fn new_for_dashpay_encryption(
+        identity: QualifiedIdentity,
+        app_context: &Arc<AppContext>,
+    ) -> Self {
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::MASTER]),
+            KeyType::all_key_types().into(),
+            false,
+        );
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+
+        let dashpay_contract_id = app_context
+            .dashpay_contract
+            .id()
+            .to_string(Encoding::Base58);
+
+        Self {
+            identity,
+            app_context: app_context.clone(),
+            private_key_input: String::new(),
+            key_type: KeyType::ECDSA_SECP256K1,
+            purpose: Purpose::ENCRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            add_key_status: AddKeyStatus::NotStarted,
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            error_message,
+            contract_id_input: dashpay_contract_id,
+            document_type_input: String::new(),
+            enable_contract_bounds: true,
+            completed_fee_result: None,
+        }
+    }
+
+    /// Create a new AddKeyScreen pre-configured for adding a DashPay DECRYPTION key.
+    /// This is required for receiving contact requests.
+    pub fn new_for_dashpay_decryption(
+        identity: QualifiedIdentity,
+        app_context: &Arc<AppContext>,
+    ) -> Self {
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.identity.get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::MASTER]),
+            KeyType::all_key_types().into(),
+            false,
+        );
+        let mut error_message = None;
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+
+        let dashpay_contract_id = app_context
+            .dashpay_contract
+            .id()
+            .to_string(Encoding::Base58);
+
+        Self {
+            identity,
+            app_context: app_context.clone(),
+            private_key_input: String::new(),
+            key_type: KeyType::ECDSA_SECP256K1,
+            purpose: Purpose::DECRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            add_key_status: AddKeyStatus::NotStarted,
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            error_message,
+            contract_id_input: dashpay_contract_id,
+            document_type_input: String::new(),
+            enable_contract_bounds: true,
+            completed_fee_result: None,
         }
     }
 
@@ -190,33 +276,36 @@ impl AddKeyScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = crate::ui::helpers::show_success_screen_with_info(
+            ui,
+            "Key Added Successfully!".to_string(),
+            vec![
+                (
+                    "Back to Identities Screen".to_string(),
+                    AppAction::PopScreenAndRefresh,
+                ),
+                (
+                    "Add another key".to_string(),
+                    AppAction::Custom("add_another".to_string()),
+                ),
+            ],
+            None,
+        );
 
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            ui.heading("Successfully added key.");
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Identities Screen").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-            ui.add_space(5.0);
-
-            if ui.button("Add another key").clicked() {
-                action = AppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::RefreshIdentity(self.identity.clone()),
-                ));
-                self.private_key_input = String::new();
-                self.contract_id_input = String::new();
-                self.document_type_input = String::new();
-                self.enable_contract_bounds = false;
-                self.add_key_status = AddKeyStatus::NotStarted;
-            }
-        });
+        // Handle the custom action to reset the form and refresh identity
+        if let AppAction::Custom(ref s) = action
+            && s == "add_another"
+        {
+            self.private_key_input = String::new();
+            self.contract_id_input = String::new();
+            self.document_type_input = String::new();
+            self.enable_contract_bounds = false;
+            self.add_key_status = AddKeyStatus::NotStarted;
+            self.completed_fee_result = None;
+            return AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RefreshIdentity(self.identity.clone()),
+            ));
+        }
 
         action
     }
@@ -236,20 +325,21 @@ impl ScreenLike for AddKeyScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message == "Successfully added key to identity" {
-                    self.add_key_status = AddKeyStatus::Complete;
-                }
-                if message == "Successfully refreshed identity" {
-                    self.refresh();
-                }
+        if let MessageType::Error = message_type {
+            self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
+                self.add_key_status = AddKeyStatus::Complete;
             }
-            MessageType::Info => {}
-            MessageType::Error => {
-                // It's not great because the error message can be coming from somewhere else if there are other processes happening
-                self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+            BackendTaskSuccessResult::RefreshedIdentity(_) => {
+                self.refresh();
             }
+            _ => {}
         }
     }
 
@@ -287,10 +377,22 @@ impl ScreenLike for AddKeyScreen {
                 return inner_action;
             }
 
-            if self.selected_wallet.is_some() {
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                if needed_unlock && !just_unlocked {
+            if self.selected_wallet.is_some()
+                && let Some(wallet) = &self.selected_wallet
+            {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    self.error_message = Some(e);
+                }
+                if wallet_needs_unlock(wallet) {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to continue.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Unlock Wallet").clicked() {
+                        self.wallet_unlock_popup.open();
+                    }
                     return inner_action;
                 }
             }
@@ -454,6 +556,32 @@ impl ScreenLike for AddKeyScreen {
                 });
             ui.add_space(20.0);
 
+            // Fee estimation display
+            let fee_estimator = PlatformFeeEstimator::new();
+            let estimated_fee = fee_estimator.estimate_identity_update();
+
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Estimated fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(format_credits_as_dash(estimated_fee))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+                });
+
+            ui.add_space(10.0);
+
             // Add Key button
             let mut new_style = (**ui.style()).clone();
             new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -505,7 +633,24 @@ impl ScreenLike for AddKeyScreen {
                     ui.label(format!("Adding key... Time taken so far: {}", display_time));
                 }
                 AddKeyStatus::ErrorMessage(msg) => {
-                    ui.colored_label(egui::Color32::DARK_RED, format!("Error: {}", msg));
+                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let msg = msg.clone();
+                    Frame::new()
+                        .fill(error_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, error_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Error: {}", msg)).color(error_color),
+                                );
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.add_key_status = AddKeyStatus::NotStarted;
+                                }
+                            });
+                        });
                 }
                 AddKeyStatus::Complete => {
                     // handled above
@@ -515,36 +660,18 @@ impl ScreenLike for AddKeyScreen {
             inner_action
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for AddKeyScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

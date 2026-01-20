@@ -128,71 +128,64 @@ impl AddTokenByIdScreen {
     }
 
     fn render_add_button(&mut self, ui: &mut Ui) -> AppAction {
-        if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token) {
-            if ui
+        if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token)
+            && ui
                 .add(
                     egui::Button::new(RichText::new("Add Token").color(Color32::WHITE))
                         .fill(Color32::from_rgb(0, 120, 0)),
                 )
                 .clicked()
-            {
-                let insert_mode =
-                    InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
+        {
+            let insert_mode = InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
 
-                // Set status to show we're processing
-                self.status = AddTokenStatus::Searching(chrono::Utc::now().timestamp() as u32);
+            // Set status to show we're processing
+            self.status = AddTokenStatus::Searching(chrono::Utc::now().timestamp() as u32);
 
-                // None for alias; change if you allow user alias input
-                return AppAction::BackendTasks(
-                    vec![
-                        BackendTask::ContractTask(Box::new(ContractTask::SaveDataContract(
-                            contract.clone(),
-                            None,
-                            insert_mode,
-                        ))),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                    ],
-                    crate::app::BackendTasksExecutionMode::Sequential,
-                );
-            }
+            // None for alias; change if you allow user alias input
+            return AppAction::BackendTasks(
+                vec![
+                    BackendTask::ContractTask(Box::new(ContractTask::SaveDataContract(
+                        contract.clone(),
+                        None,
+                        insert_mode,
+                    ))),
+                    BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                ],
+                crate::app::BackendTasksExecutionMode::Sequential,
+            );
         }
         AppAction::None
     }
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
+        let action = crate::ui::helpers::show_success_screen(
+            ui,
+            "Token Added Successfully".to_string(),
+            vec![
+                (
+                    "Add another token".to_string(),
+                    AppAction::Custom("add_another".to_string()),
+                ),
+                (
+                    "Back to Tokens screen".to_string(),
+                    AppAction::PopScreenAndRefresh,
+                ),
+            ],
+        );
 
-            ui.heading("🎉");
-            ui.heading(
-                RichText::new("Token Added Successfully")
-                    .color(Color32::from_rgb(0, 150, 0))
-                    .size(24.0),
-            );
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action
+            && s == "add_another"
+        {
+            self.status = AddTokenStatus::Idle;
+            self.contract_or_token_id_input.clear();
+            self.fetched_contract = None;
+            self.selected_token = None;
+            self.try_token_id_next = false;
+            return AppAction::None;
+        }
 
-            ui.add_space(10.0);
-            if let Some(token) = &self.selected_token {
-                ui.label(format!(
-                    "'{}' has been added to your tokens.",
-                    token.token_name
-                ));
-            }
-
-            ui.add_space(20.0);
-            if ui.button("Add another token").clicked() {
-                self.status = AddTokenStatus::Idle;
-                self.contract_or_token_id_input.clear();
-                self.fetched_contract = None;
-                self.selected_token = None;
-                self.try_token_id_next = false;
-            }
-
-            if ui.button("Back to Tokens screen").clicked() {
-                action = AppAction::PopScreenAndRefresh;
-            }
-        });
         action
     }
 

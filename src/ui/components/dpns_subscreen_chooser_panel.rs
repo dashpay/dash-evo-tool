@@ -24,38 +24,30 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
             ui::RootScreenType::RootScreenDPNSScheduledVotes => DPNSSubscreen::ScheduledVotes,
             _ => DPNSSubscreen::Active,
         },
-        _ => DPNSSubscreen::Active, // Fallback to Active screen if settings unavailable
+        _ => DPNSSubscreen::Active,
     };
 
     SidePanel::left("dpns_subscreen_chooser_panel")
-        .default_width(270.0) // Increased to account for margins
+        .resizable(true)
+        .default_width(270.0)
         .frame(
             Frame::new()
-                .fill(DashColors::background(dark_mode)) // Light background instead of transparent
-                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
+                .fill(DashColors::background(dark_mode))
+                .inner_margin(Margin::symmetric(10, 10)),
         )
         .show(ctx, |ui| {
-            // Fill the entire available height
             let available_height = ui.available_height();
 
-            // Create an island panel with rounded edges that fills the height
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
                 .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .inner_margin(Margin::same(Spacing::MD_I8))
+                .inner_margin(Margin::same(Spacing::XL as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
                 .show(ui, |ui| {
-                    // Account for both outer margin (10px * 2) and inner margin
-                    ui.set_min_height(available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0));
-                    // Display subscreen names
+                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
                     ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("DPNS Subscreens")
-                                .font(Typography::heading_small())
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(Spacing::MD);
+                        ui.add_space(Spacing::SM);
 
                         for subscreen in subscreens {
                             let is_active = active_screen == subscreen;

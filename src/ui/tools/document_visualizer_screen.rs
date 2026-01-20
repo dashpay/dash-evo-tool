@@ -11,7 +11,7 @@ use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
 use dash_sdk::dpp::{data_contract::document_type::DocumentType, document::Document};
-use eframe::egui::{self, Color32, Context, TextEdit, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -166,7 +166,22 @@ impl DocumentVisualizerScreen {
                 ui.colored_label(Color32::GRAY, "Select a contract and document type.");
             }
             DocumentParseStatus::Error(msg) => {
-                ui.colored_label(Color32::RED, format!("Error: {msg}"));
+                let error_color = Color32::from_rgb(255, 100, 100);
+                let msg = msg.clone();
+                Frame::new()
+                    .fill(error_color.gamma_multiply(0.1))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .stroke(egui::Stroke::new(1.0, error_color))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Error: {msg}")).color(error_color));
+                            ui.add_space(10.0);
+                            if ui.small_button("Dismiss").clicked() {
+                                self.parse_status = DocumentParseStatus::NotStarted;
+                            }
+                        });
+                    });
             }
             DocumentParseStatus::NotStarted => {
                 ui.colored_label(Color32::GRAY, "Awaiting input …");

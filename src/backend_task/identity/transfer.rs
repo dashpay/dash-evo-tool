@@ -1,4 +1,6 @@
+use crate::backend_task::FeeResult;
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
@@ -21,6 +23,10 @@ impl AppContext {
             guard.clone()
         };
 
+        // Track balance before transfer for fee calculation
+        let balance_before = qualified_identity.identity.balance();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_credit_transfer();
+
         let (sender_balance, receiver_balance) = qualified_identity
             .identity
             .clone()
@@ -34,6 +40,26 @@ impl AppContext {
             )
             .await
             .map_err(|e| format!("Transfer error: {}", e))?;
+
+        // Calculate and log actual fee paid
+        let actual_fee = balance_before
+            .saturating_sub(sender_balance)
+            .saturating_sub(credits);
+        tracing::info!(
+            "Credit transfer complete: sent {} credits, estimated fee {} credits, actual fee {} credits",
+            credits,
+            estimated_fee,
+            actual_fee
+        );
+        if actual_fee != estimated_fee {
+            tracing::warn!(
+                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                estimated_fee,
+                actual_fee,
+                actual_fee as i64 - estimated_fee as i64
+            );
+        }
+
         qualified_identity.identity.set_balance(sender_balance);
 
         // If the receiver is a local qualified identity, update its balance too
@@ -48,10 +74,10 @@ impl AppContext {
                 .map_err(|e| format!("Transfer error: {}", e))?;
         }
 
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| {
-                BackendTaskSuccessResult::Message("Successfully transferred credits".to_string())
-            })
+            .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
             .map_err(|e| e.to_string())
     }
 }

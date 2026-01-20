@@ -99,43 +99,39 @@ impl AppContext {
                         document.get("senderAmount"),
                         document.get("recipientId"),
                         document.get("recipientAmount"),
+                    ) && let (
+                        Value::Identifier(sender_bytes),
+                        Value::U64(sender_amount),
+                        Value::Identifier(recipient_bytes),
+                        Value::U64(recipient_amount),
+                    ) = (
+                        sender_value,
+                        sender_amount_value,
+                        recipient_value,
+                        recipient_amount_value,
+                    ) && let (Ok(sender_id), Ok(recipient_id)) = (
+                        Identifier::from_bytes(sender_bytes),
+                        Identifier::from_bytes(recipient_bytes),
                     ) {
-                        if let (
-                            Value::Identifier(sender_bytes),
-                            Value::U64(sender_amount),
-                            Value::Identifier(recipient_bytes),
-                            Value::U64(recipient_amount),
-                        ) = (
-                            sender_value,
-                            sender_amount_value,
-                            recipient_value,
-                            recipient_amount_value,
+                        if let Err(e) = self.insert_token_identity_balance(
+                            &token_id,
+                            &sender_id,
+                            *sender_amount,
                         ) {
-                            if let (Ok(sender_id), Ok(recipient_id)) = (
-                                Identifier::from_bytes(sender_bytes),
-                                Identifier::from_bytes(recipient_bytes),
-                            ) {
-                                if let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &sender_id,
-                                    *sender_amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update sender token balance from historical document: {}",
-                                        e
-                                    );
-                                }
-                                if let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &recipient_id,
-                                    *recipient_amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update recipient token balance from historical document: {}",
-                                        e
-                                    );
-                                }
-                            }
+                            eprintln!(
+                                "Failed to update sender token balance from historical document: {}",
+                                e
+                            );
+                        }
+                        if let Err(e) = self.insert_token_identity_balance(
+                            &token_id,
+                            &recipient_id,
+                            *recipient_amount,
+                        ) {
+                            eprintln!(
+                                "Failed to update recipient token balance from historical document: {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -152,43 +148,39 @@ impl AppContext {
                         document.get("senderAmount"),
                         document.get("recipientId"),
                         document.get("recipientAmount"),
+                    ) && let (
+                        Value::Identifier(sender_bytes),
+                        Value::U64(sender_amount),
+                        Value::Identifier(recipient_bytes),
+                        Value::U64(recipient_amount),
+                    ) = (
+                        sender_value,
+                        sender_amount_value,
+                        recipient_value,
+                        recipient_amount_value,
+                    ) && let (Ok(sender_id), Ok(recipient_id)) = (
+                        Identifier::from_bytes(sender_bytes),
+                        Identifier::from_bytes(recipient_bytes),
                     ) {
-                        if let (
-                            Value::Identifier(sender_bytes),
-                            Value::U64(sender_amount),
-                            Value::Identifier(recipient_bytes),
-                            Value::U64(recipient_amount),
-                        ) = (
-                            sender_value,
-                            sender_amount_value,
-                            recipient_value,
-                            recipient_amount_value,
+                        if let Err(e) = self.insert_token_identity_balance(
+                            &token_id,
+                            &sender_id,
+                            *sender_amount,
                         ) {
-                            if let (Ok(sender_id), Ok(recipient_id)) = (
-                                Identifier::from_bytes(sender_bytes),
-                                Identifier::from_bytes(recipient_bytes),
-                            ) {
-                                if let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &sender_id,
-                                    *sender_amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update sender token balance from group action document: {}",
-                                        e
-                                    );
-                                }
-                                if let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &recipient_id,
-                                    *recipient_amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update recipient token balance from group action document: {}",
-                                        e
-                                    );
-                                }
-                            }
+                            eprintln!(
+                                "Failed to update sender token balance from group action document: {}",
+                                e
+                            );
+                        }
+                        if let Err(e) = self.insert_token_identity_balance(
+                            &token_id,
+                            &recipient_id,
+                            *recipient_amount,
+                        ) {
+                            eprintln!(
+                                "Failed to update recipient token balance from group action document: {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -198,8 +190,11 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::Message(
-            "TransferTokens".to_string(),
-        ))
+        // Return success with fee result
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::TransferredTokens(fee_result))
     }
 }

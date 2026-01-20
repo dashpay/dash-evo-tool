@@ -155,13 +155,8 @@ impl<'a> IdentitySelector<'a> {
         if let Some(self_identity) = &mut self.identity {
             if let Some(new_identity) = selected_identity {
                 self_identity.replace(new_identity.clone());
-                tracing::trace!(
-                    "updating selected identity: {:?} {:?}",
-                    new_identity,
-                    self.identity,
-                );
             } else {
-                self_identity.take(); // Clear the existing identity reference if it was None
+                self_identity.take();
             };
         }
     }
@@ -187,16 +182,16 @@ impl<'a> Widget for IdentitySelector<'a> {
             }
 
             // If the "Other" option is disabled, we automatically select first identity
-            if !self.other_option && self.identity_str.is_empty() {
-                if let Some(first_identity) = self
+            if !self.other_option
+                && self.identity_str.is_empty()
+                && let Some(first_identity) = self
                     .identities
                     .keys()
                     .find(|id| !self.exclude_identities.contains(id))
-                {
-                    *self.identity_str = first_identity.to_string(Encoding::Base58);
-                    // trigger change handling to update the selected identity
-                    self.on_change();
-                }
+            {
+                *self.identity_str = first_identity.to_string(Encoding::Base58);
+                // trigger change handling to update the selected identity
+                self.on_change();
             }
 
             // Check if current identity_str matches any existing identity; current_identity = None means
@@ -253,10 +248,17 @@ impl<'a> Widget for IdentitySelector<'a> {
                     combo_changed
                 });
 
-            // Text edit field for manual entry
-            let text_response = TextEdit::singleline(self.identity_str)
-                .interactive(self.other_option)
-                .ui(ui);
+            // Text edit field for manual entry (only show if other_option is enabled)
+            let text_response = if self.other_option {
+                ui.vertical(|ui| {
+                    ui.add_space(13.0);
+                    TextEdit::singleline(self.identity_str).ui(ui)
+                })
+                .inner
+            } else {
+                // Create a dummy response that never changes when other_option is disabled
+                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
+            };
 
             // Handle identity selection updates after combo box and text input
             let combo_changed = combo_response.inner.unwrap_or(false);

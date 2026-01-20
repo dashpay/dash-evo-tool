@@ -1,14 +1,16 @@
 use crate::app::AppAction;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
-use egui::{Color32, RichText, Ui};
+use crate::ui::theme::DashColors;
+use egui::{Color32, Frame, Margin, RichText, Ui};
 
 impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.wallet {
             let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
 
-            let total_balance: u64 = wallet.max_balance(); // Sum up all the balances
+            let total_balance: u64 = wallet.total_balance_duffs(); // Use stored balance with UTXO fallback
 
             let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
 
@@ -45,6 +47,32 @@ impl TopUpIdentityScreen {
             return action;
         };
 
+        // Fee estimation display
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_identity_topup();
+
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated fee:")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(14.0),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
+                    );
+                });
+            });
+
+        ui.add_space(10.0);
+
         // Top up button
         let mut new_style = (**ui.style()).clone();
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -60,29 +88,25 @@ impl TopUpIdentityScreen {
 
         ui.add_space(20.0);
 
-        if let Some(error_message) = self.error_message.as_ref() {
-            ui.colored_label(Color32::DARK_RED, error_message);
-            ui.add_space(20.0);
+        // Only show status messages if there's no error
+        if self.error_message.is_none() {
+            ui.vertical_centered(|ui| {
+                match step {
+                    WalletFundedScreenStep::WaitingForAssetLock => {
+                        ui.heading(
+                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                        );
+                    }
+                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                        ui.heading("=> Waiting for Platform acknowledgement <=");
+                    }
+                    WalletFundedScreenStep::Success => {
+                        ui.heading("...Success...");
+                    }
+                    _ => {}
+                };
+            });
         }
-
-        ui.vertical_centered(|ui| {
-            match step {
-                WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
-                }
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("=> Waiting for Platform acknowledgement <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
-                }
-                WalletFundedScreenStep::Success => {
-                    ui.heading("...Success...");
-                }
-                _ => {}
-            };
-        });
 
         ui.add_space(40.0);
         action

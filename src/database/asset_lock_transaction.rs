@@ -184,9 +184,8 @@ impl Database {
         Ok(())
     }
 
-    /// Deletes an asset lock transaction by its transaction ID.
-    #[allow(dead_code)] // May be used for manual cleanup or testing purposes
-    pub fn delete_asset_lock_transaction(&self, txid: &str) -> rusqlite::Result<()> {
+    /// Deletes an asset lock transaction by its transaction ID (as bytes).
+    pub fn delete_asset_lock_transaction(&self, txid: &[u8; 32]) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(

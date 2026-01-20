@@ -109,17 +109,23 @@ pub fn encrypt_extended_public_key(
 /// Encrypt account label according to DashPay DIP-15
 /// Format: IV (16 bytes) + Encrypted Data (32-64 bytes) = 48-80 bytes total
 /// Uses CBC-AES-256 as specified in the DIP
+///
+/// Note: Maximum label length is 62 bytes due to the internal format:
+/// - 1 byte length prefix + label bytes + PKCS7 padding
+/// - For 63 bytes: 1 + 63 = 64, PKCS7 adds 16 = 80 byte ciphertext = 96 total (exceeds limit)
+/// - For 62 bytes: 1 + 62 = 63, PKCS7 adds 1 = 64 byte ciphertext = 80 total (at limit)
 pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u8>, String> {
     use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 
     let label_bytes = label.as_bytes();
 
     // Label length check
+    // Max 62 bytes due to 1-byte length prefix + PKCS7 padding constraints
     if label_bytes.is_empty() {
         return Err("Account label cannot be empty".to_string());
     }
-    if label_bytes.len() > 63 {
-        return Err("Account label too long (max 63 characters)".to_string());
+    if label_bytes.len() > 62 {
+        return Err("Account label too long (max 62 bytes)".to_string());
     }
 
     // To ensure minimum ciphertext size of 32 bytes, pad the label to at least 16 bytes
@@ -269,4 +275,263 @@ pub fn decrypt_account_label(
     // Convert to string
     String::from_utf8(label_bytes.to_vec())
         .map_err(|e| format!("Invalid UTF-8 in decrypted label: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bip39::rand::{self, RngCore};
+    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    fn generate_test_shared_key() -> [u8; 32] {
+        let mut shared_key = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut shared_key);
+        shared_key
+    }
+
+    fn generate_test_key_pair() -> (SecretKey, PublicKey) {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
+            0x1D, 0x1E, 0x1F, 0x20,
+        ])
+        .unwrap();
+        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+        (secret_key, public_key)
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_extended_public_key_roundtrip() {
+        // Generate test data
+        let parent_fingerprint = [0x12, 0x34, 0x56, 0x78];
+        let mut chain_code = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut chain_code);
+
+        let (_, public_key) = generate_test_key_pair();
+        let public_key_bytes = public_key.serialize();
+
+        let shared_key = generate_test_shared_key();
+
+        // Encrypt
+        let encrypted = encrypt_extended_public_key(
+            parent_fingerprint,
+            chain_code,
+            public_key_bytes,
+            &shared_key,
+        )
+        .expect("Encryption should succeed");
+
+        // Verify encrypted data length is 96 bytes (16 IV + 80 encrypted)
+        assert_eq!(encrypted.len(), 96, "Encrypted data should be 96 bytes");
+
+        // Decrypt
+        let (decrypted_fingerprint, decrypted_chain_code, decrypted_public_key) =
+            decrypt_extended_public_key(&encrypted, &shared_key)
+                .expect("Decryption should succeed");
+
+        // Verify decrypted data matches original
+        assert_eq!(
+            decrypted_fingerprint,
+            parent_fingerprint.to_vec(),
+            "Parent fingerprint should match"
+        );
+        assert_eq!(
+            decrypted_chain_code, chain_code,
+            "Chain code should match"
+        );
+        assert_eq!(
+            decrypted_public_key, public_key_bytes,
+            "Public key should match"
+        );
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_account_label_roundtrip() {
+        let shared_key = generate_test_shared_key();
+
+        // Test various label lengths
+        let test_labels = vec![
+            "Personal",
+            "Business Account",
+            "Savings - Long Term Investment Fund 2024",
+            "Short",
+        ];
+
+        for label in test_labels {
+            let encrypted = encrypt_account_label(label, &shared_key)
+                .expect("Encryption should succeed");
+
+            // Verify encrypted length is in expected range (48-80 bytes)
+            assert!(
+                encrypted.len() >= 48 && encrypted.len() <= 80,
+                "Encrypted label length {} should be 48-80",
+                encrypted.len()
+            );
+
+            let decrypted = decrypt_account_label(&encrypted, &shared_key)
+                .expect("Decryption should succeed");
+
+            assert_eq!(decrypted, label, "Decrypted label should match original");
+        }
+    }
+
+    #[test]
+    fn test_account_label_with_unicode() {
+        let shared_key = generate_test_shared_key();
+
+        // Test with unicode characters
+        let label = "你好世界"; // "Hello World" in Chinese
+
+        let encrypted = encrypt_account_label(label, &shared_key)
+            .expect("Encryption should succeed");
+
+        let decrypted = decrypt_account_label(&encrypted, &shared_key)
+            .expect("Decryption should succeed");
+
+        assert_eq!(decrypted, label, "Unicode label should roundtrip correctly");
+    }
+
+    #[test]
+    fn test_account_label_length_validation() {
+        let shared_key = generate_test_shared_key();
+
+        // Test empty label - should fail
+        let result = encrypt_account_label("", &shared_key);
+        assert!(result.is_err(), "Empty label should be rejected");
+        assert!(
+            result.unwrap_err().contains("empty"),
+            "Error should mention empty"
+        );
+
+        // Test label that's too long (> 62 bytes) - should fail
+        let long_label = "x".repeat(63);
+        let result = encrypt_account_label(&long_label, &shared_key);
+        assert!(result.is_err(), "Label > 62 bytes should be rejected");
+        assert!(
+            result.unwrap_err().contains("too long"),
+            "Error should mention too long"
+        );
+
+        // Test label at exactly the limit (62 bytes) - should succeed
+        let max_label = "x".repeat(62);
+        let result = encrypt_account_label(&max_label, &shared_key);
+        assert!(result.is_ok(), "Label of 62 bytes should be accepted");
+
+        // Test label just under the limit - should succeed
+        let valid_label = "x".repeat(45);
+        let result = encrypt_account_label(&valid_label, &shared_key);
+        assert!(result.is_ok(), "Label of 45 bytes should be accepted");
+    }
+
+    #[test]
+    fn test_decrypt_with_wrong_key_fails() {
+        let shared_key = generate_test_shared_key();
+        let wrong_key = generate_test_shared_key();
+
+        // Generate test data
+        let parent_fingerprint = [0x12, 0x34, 0x56, 0x78];
+        let mut chain_code = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut chain_code);
+
+        let (_, public_key) = generate_test_key_pair();
+        let public_key_bytes = public_key.serialize();
+
+        // Encrypt with correct key
+        let encrypted = encrypt_extended_public_key(
+            parent_fingerprint,
+            chain_code,
+            public_key_bytes,
+            &shared_key,
+        )
+        .expect("Encryption should succeed");
+
+        // Try to decrypt with wrong key - should fail
+        let result = decrypt_extended_public_key(&encrypted, &wrong_key);
+        assert!(
+            result.is_err(),
+            "Decryption with wrong key should fail"
+        );
+    }
+
+    #[test]
+    fn test_decrypt_account_label_with_wrong_key_fails() {
+        let shared_key = generate_test_shared_key();
+        let wrong_key = generate_test_shared_key();
+
+        let encrypted = encrypt_account_label("Test Label", &shared_key)
+            .expect("Encryption should succeed");
+
+        let result = decrypt_account_label(&encrypted, &wrong_key);
+        assert!(
+            result.is_err(),
+            "Decryption with wrong key should fail"
+        );
+    }
+
+    #[test]
+    fn test_invalid_encrypted_data_length() {
+        let shared_key = generate_test_shared_key();
+
+        // Test extended public key with wrong length
+        let too_short = vec![0u8; 50];
+        let result = decrypt_extended_public_key(&too_short, &shared_key);
+        assert!(result.is_err(), "Too short data should be rejected");
+
+        let too_long = vec![0u8; 100];
+        let result = decrypt_extended_public_key(&too_long, &shared_key);
+        assert!(result.is_err(), "Too long data should be rejected");
+
+        // Test account label with wrong length
+        let too_short_label = vec![0u8; 30];
+        let result = decrypt_account_label(&too_short_label, &shared_key);
+        assert!(result.is_err(), "Too short label data should be rejected");
+
+        let too_long_label = vec![0u8; 100];
+        let result = decrypt_account_label(&too_long_label, &shared_key);
+        assert!(result.is_err(), "Too long label data should be rejected");
+    }
+
+    #[test]
+    fn test_encryption_produces_different_ciphertext() {
+        let shared_key = generate_test_shared_key();
+
+        // Encrypt the same data twice
+        let parent_fingerprint = [0x12, 0x34, 0x56, 0x78];
+        let chain_code = [0xAB; 32];
+        let (_, public_key) = generate_test_key_pair();
+        let public_key_bytes = public_key.serialize();
+
+        let encrypted1 = encrypt_extended_public_key(
+            parent_fingerprint,
+            chain_code,
+            public_key_bytes,
+            &shared_key,
+        )
+        .expect("Encryption should succeed");
+
+        let encrypted2 = encrypt_extended_public_key(
+            parent_fingerprint,
+            chain_code,
+            public_key_bytes,
+            &shared_key,
+        )
+        .expect("Encryption should succeed");
+
+        // Due to random IV, the ciphertexts should be different
+        assert_ne!(
+            encrypted1, encrypted2,
+            "Random IVs should produce different ciphertexts"
+        );
+
+        // But both should decrypt to the same value
+        let (fp1, cc1, pk1) =
+            decrypt_extended_public_key(&encrypted1, &shared_key).unwrap();
+        let (fp2, cc2, pk2) =
+            decrypt_extended_public_key(&encrypted2, &shared_key).unwrap();
+
+        assert_eq!(fp1, fp2);
+        assert_eq!(cc1, cc2);
+        assert_eq!(pk1, pk2);
+    }
 }

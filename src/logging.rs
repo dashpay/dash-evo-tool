@@ -1,9 +1,18 @@
 use crate::{VERSION, app_dir::app_user_data_file_path};
 use std::panic;
+use std::sync::Once;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+static INIT_LOGGER: Once = Once::new();
+
 pub fn initialize_logger() {
+    INIT_LOGGER.call_once(|| {
+        initialize_logger_internal();
+    });
+}
+
+fn initialize_logger_internal() {
     // Initialize log file, with improved error handling
     let log_file_path = app_user_data_file_path("det.log").expect("should create log file path");
     let log_file = match std::fs::File::create(&log_file_path) {
@@ -23,9 +32,10 @@ pub fn initialize_logger() {
         .with_ansi(false)
         .finish();
 
-    // Set global subscriber with proper error handling
-    if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
-        panic!("Unable to set global default subscriber: {:?}", e);
+    // Set global subscriber - ignore error if already set (can happen in tests)
+    if let Err(_e) = tracing::subscriber::set_global_default(subscriber) {
+        // Logger already initialized, this is fine
+        return;
     }
 
     // Log panic events

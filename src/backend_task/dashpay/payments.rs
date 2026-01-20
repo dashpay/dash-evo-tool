@@ -394,6 +394,12 @@ pub async fn check_address_usage(
 mod tests {
     use super::*;
 
+    fn create_test_address() -> Address {
+        let pubkey_bytes = [0x02; 33];
+        let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        Address::p2pkh(&pubkey, dash_sdk::dpp::dashcore::Network::Testnet)
+    }
+
     #[test]
     fn test_payment_record_creation() {
         let from_id = Identifier::random();
@@ -404,10 +410,7 @@ mod tests {
             from_identity: from_id,
             to_identity: to_id,
             from_address: None,
-            to_address: Address::p2pkh(
-                &dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33]).unwrap(),
-                dash_sdk::dpp::dashcore::Network::Testnet,
-            ),
+            to_address: create_test_address(),
             amount: 100_000_000, // 1 Dash
             tx_id: None,
             memo: Some("Test payment".to_string()),
@@ -418,5 +421,144 @@ mod tests {
 
         assert_eq!(payment.amount, 100_000_000);
         assert_eq!(payment.status, PaymentStatus::Pending);
+    }
+
+    #[test]
+    fn test_payment_status_pending() {
+        let status = PaymentStatus::Pending;
+        assert_eq!(status, PaymentStatus::Pending);
+    }
+
+    #[test]
+    fn test_payment_status_broadcast() {
+        let status = PaymentStatus::Broadcast;
+        assert_eq!(status, PaymentStatus::Broadcast);
+    }
+
+    #[test]
+    fn test_payment_status_confirmed() {
+        let status = PaymentStatus::Confirmed(6);
+        if let PaymentStatus::Confirmed(confirmations) = status {
+            assert_eq!(confirmations, 6);
+        } else {
+            panic!("Expected Confirmed status");
+        }
+    }
+
+    #[test]
+    fn test_payment_status_failed() {
+        let status = PaymentStatus::Failed("Insufficient funds".to_string());
+        if let PaymentStatus::Failed(msg) = status {
+            assert_eq!(msg, "Insufficient funds");
+        } else {
+            panic!("Expected Failed status");
+        }
+    }
+
+    #[test]
+    fn test_payment_status_equality() {
+        assert_eq!(PaymentStatus::Pending, PaymentStatus::Pending);
+        assert_eq!(PaymentStatus::Broadcast, PaymentStatus::Broadcast);
+        assert_eq!(PaymentStatus::Confirmed(6), PaymentStatus::Confirmed(6));
+        assert_ne!(PaymentStatus::Confirmed(6), PaymentStatus::Confirmed(7));
+        assert_eq!(
+            PaymentStatus::Failed("error".to_string()),
+            PaymentStatus::Failed("error".to_string())
+        );
+    }
+
+    #[test]
+    fn test_payment_record_with_tx_id() {
+        let payment = PaymentRecord {
+            id: "test_payment".to_string(),
+            from_identity: Identifier::random(),
+            to_identity: Identifier::random(),
+            from_address: Some(create_test_address()),
+            to_address: create_test_address(),
+            amount: 50_000_000, // 0.5 Dash
+            tx_id: Some("abc123def456".to_string()),
+            memo: None,
+            timestamp: 1700000000,
+            status: PaymentStatus::Broadcast,
+            address_index: 5,
+        };
+
+        assert_eq!(payment.tx_id, Some("abc123def456".to_string()));
+        assert_eq!(payment.status, PaymentStatus::Broadcast);
+        assert_eq!(payment.address_index, 5);
+        assert!(payment.from_address.is_some());
+        assert!(payment.memo.is_none());
+    }
+
+    #[test]
+    fn test_payment_record_amount_in_duffs() {
+        // Test that we can properly handle various Dash amounts in duffs
+        let test_amounts: Vec<(f64, u64)> = vec![
+            (0.1, 10_000_000),          // 0.1 DASH
+            (1.0, 100_000_000),         // 1 DASH
+            (10.5, 1_050_000_000),      // 10.5 DASH
+            (100.12345678, 10_012_345_678), // Full precision
+        ];
+
+        for (dash, expected_duffs) in test_amounts {
+            let duffs = (dash * 100_000_000.0).round() as u64;
+            assert_eq!(
+                duffs, expected_duffs,
+                "Conversion failed for {} DASH",
+                dash
+            );
+
+            // Test reverse conversion
+            let back_to_dash = duffs as f64 / 100_000_000.0;
+            // Use approximate equality due to floating point
+            assert!(
+                (back_to_dash - dash).abs() < 0.00000001,
+                "Reverse conversion failed for {} duffs",
+                duffs
+            );
+        }
+    }
+
+    #[test]
+    fn test_payment_record_clone() {
+        let payment = PaymentRecord {
+            id: "original".to_string(),
+            from_identity: Identifier::random(),
+            to_identity: Identifier::random(),
+            from_address: None,
+            to_address: create_test_address(),
+            amount: 100_000_000,
+            tx_id: Some("tx123".to_string()),
+            memo: Some("Original memo".to_string()),
+            timestamp: 1700000000,
+            status: PaymentStatus::Pending,
+            address_index: 0,
+        };
+
+        let cloned = payment.clone();
+
+        assert_eq!(payment.id, cloned.id);
+        assert_eq!(payment.amount, cloned.amount);
+        assert_eq!(payment.status, cloned.status);
+        assert_eq!(payment.memo, cloned.memo);
+        assert_eq!(payment.tx_id, cloned.tx_id);
+    }
+
+    #[test]
+    fn test_payment_status_debug_format() {
+        // Test Debug trait implementation
+        let pending = format!("{:?}", PaymentStatus::Pending);
+        assert!(pending.contains("Pending"));
+
+        let broadcast = format!("{:?}", PaymentStatus::Broadcast);
+        assert!(broadcast.contains("Broadcast"));
+
+        let confirmed = format!("{:?}", PaymentStatus::Confirmed(10));
+        assert!(confirmed.contains("Confirmed"));
+        assert!(confirmed.contains("10"));
+
+        let failed = format!("{:?}", PaymentStatus::Failed("Test error".to_string()));
+        assert!(failed.contains("Failed"));
+        assert!(failed.contains("Test error"));
     }
 }

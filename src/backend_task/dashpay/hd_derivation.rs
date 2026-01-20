@@ -185,4 +185,186 @@ mod tests {
         // Verify version bits are in the right place
         assert_eq!(account_ref >> 28, 0);
     }
+
+    #[test]
+    fn test_derive_payment_address_deterministic() {
+        // Test that deriving the same address index gives the same address
+        let network = Network::Testnet;
+        let master_seed = [0x42u8; 64];
+
+        // Create two test identity IDs
+        let sender_bytes = [0x11u8; 32];
+        let recipient_bytes = [0x22u8; 32];
+        let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
+        let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
+
+        // Derive xpub twice
+        let xpub1 = derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+            .expect("Should derive xpub");
+        let xpub2 = derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+            .expect("Should derive xpub");
+
+        // Derive addresses from both xpubs
+        let addr1 = derive_payment_address(&xpub1, 0).expect("Should derive address");
+        let addr2 = derive_payment_address(&xpub2, 0).expect("Should derive address");
+
+        // Same seed + identities + index should give same address
+        assert_eq!(addr1, addr2, "Deterministic derivation should produce same address");
+    }
+
+    #[test]
+    fn test_derive_payment_address_different_indices() {
+        // Test that different indices produce different addresses
+        let network = Network::Testnet;
+        let master_seed = [0x42u8; 64];
+
+        let sender_bytes = [0x11u8; 32];
+        let recipient_bytes = [0x22u8; 32];
+        let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
+        let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
+
+        let xpub = derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+            .expect("Should derive xpub");
+
+        let addr0 = derive_payment_address(&xpub, 0).expect("Should derive address at index 0");
+        let addr1 = derive_payment_address(&xpub, 1).expect("Should derive address at index 1");
+        let addr2 = derive_payment_address(&xpub, 2).expect("Should derive address at index 2");
+
+        // Different indices should produce different addresses
+        assert_ne!(addr0, addr1, "Different indices should produce different addresses");
+        assert_ne!(addr1, addr2, "Different indices should produce different addresses");
+        assert_ne!(addr0, addr2, "Different indices should produce different addresses");
+    }
+
+    #[test]
+    fn test_auto_accept_key_derivation() {
+        // Test auto-accept key derivation
+        let network = Network::Testnet;
+        let master_seed = [0x42u8; 64];
+        let timestamp = 1700000000u32;
+
+        let key = derive_auto_accept_key(&master_seed, network, timestamp)
+            .expect("Should derive auto-accept key");
+
+        // Verify the key was derived correctly
+        assert_eq!(key.network, network);
+        assert_eq!(key.depth, 4); // m/9'/5'/16'/timestamp' = depth 4
+    }
+
+    #[test]
+    fn test_auto_accept_key_different_timestamps() {
+        // Different timestamps should produce different keys
+        let network = Network::Testnet;
+        let master_seed = [0x42u8; 64];
+
+        let key1 = derive_auto_accept_key(&master_seed, network, 1700000000)
+            .expect("Should derive key 1");
+        let key2 = derive_auto_accept_key(&master_seed, network, 1700000001)
+            .expect("Should derive key 2");
+
+        // Different timestamps should produce different keys
+        assert_ne!(
+            key1.private_key.secret_bytes(),
+            key2.private_key.secret_bytes(),
+            "Different timestamps should produce different keys"
+        );
+    }
+
+    #[test]
+    fn test_generate_contact_xpub_data() {
+        // Test generating contact xpub data
+        let network = Network::Testnet;
+        let master_seed = [0x42u8; 64];
+
+        let sender_bytes = [0x11u8; 32];
+        let recipient_bytes = [0x22u8; 32];
+        let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
+        let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
+
+        let (fingerprint, chain_code, pubkey) =
+            generate_contact_xpub_data(&master_seed, network, 0, &sender_id, &recipient_id)
+                .expect("Should generate xpub data");
+
+        // Verify the data has the expected sizes
+        assert_eq!(fingerprint.len(), 4, "Fingerprint should be 4 bytes");
+        assert_eq!(chain_code.len(), 32, "Chain code should be 32 bytes");
+        assert_eq!(pubkey.len(), 33, "Public key should be 33 bytes (compressed)");
+
+        // Verify public key is valid compressed format (starts with 0x02 or 0x03)
+        assert!(
+            pubkey[0] == 0x02 || pubkey[0] == 0x03,
+            "Public key should start with 0x02 or 0x03"
+        );
+    }
+
+    #[test]
+    fn test_account_reference_version_bits() {
+        // Test that version bits are correctly placed
+        let secret_key = [1u8; 32];
+        let network = Network::Testnet;
+        let master_seed = [2u8; 64];
+
+        let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
+        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+        let xpub = ExtendedPubKey::from_priv(&secp, &master_xprv);
+
+        // Test version 0
+        let ref_v0 = calculate_account_reference(&secret_key, &xpub, 0, 0);
+        assert_eq!(ref_v0 >> 28, 0, "Version 0 should have 0 in top 4 bits");
+
+        // Test version 1
+        let ref_v1 = calculate_account_reference(&secret_key, &xpub, 0, 1);
+        assert_eq!(ref_v1 >> 28, 1, "Version 1 should have 1 in top 4 bits");
+
+        // Test version 15 (max)
+        let ref_v15 = calculate_account_reference(&secret_key, &xpub, 0, 15);
+        assert_eq!(ref_v15 >> 28, 15, "Version 15 should have 15 in top 4 bits");
+    }
+
+    #[test]
+    fn test_dashpay_xpub_different_accounts() {
+        // Different accounts should produce different xpubs
+        let network = Network::Testnet;
+        let master_seed = [0x42u8; 64];
+
+        let sender_bytes = [0x11u8; 32];
+        let recipient_bytes = [0x22u8; 32];
+        let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
+        let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
+
+        let xpub_account0 =
+            derive_dashpay_incoming_xpub(&master_seed, network, 0, &sender_id, &recipient_id)
+                .expect("Should derive xpub for account 0");
+        let xpub_account1 =
+            derive_dashpay_incoming_xpub(&master_seed, network, 1, &sender_id, &recipient_id)
+                .expect("Should derive xpub for account 1");
+
+        assert_ne!(
+            xpub_account0.public_key.serialize(),
+            xpub_account1.public_key.serialize(),
+            "Different accounts should produce different xpubs"
+        );
+    }
+
+    #[test]
+    fn test_dashpay_xpub_different_networks() {
+        // Different networks should produce different xpubs
+        let master_seed = [0x42u8; 64];
+
+        let sender_bytes = [0x11u8; 32];
+        let recipient_bytes = [0x22u8; 32];
+        let sender_id = Identifier::from_bytes(&sender_bytes).unwrap();
+        let recipient_id = Identifier::from_bytes(&recipient_bytes).unwrap();
+
+        let xpub_testnet =
+            derive_dashpay_incoming_xpub(&master_seed, Network::Testnet, 0, &sender_id, &recipient_id)
+                .expect("Should derive xpub for testnet");
+        let xpub_mainnet =
+            derive_dashpay_incoming_xpub(&master_seed, Network::Dash, 0, &sender_id, &recipient_id)
+                .expect("Should derive xpub for mainnet");
+
+        // Keys should be the same but network should differ
+        assert_eq!(xpub_testnet.network, Network::Testnet);
+        assert_eq!(xpub_mainnet.network, Network::Dash);
+    }
 }

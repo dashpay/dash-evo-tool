@@ -283,7 +283,9 @@ impl Database {
             user_mode TEXT DEFAULT 'Advanced',
             use_local_spv_node INTEGER DEFAULT 0,
             auto_start_spv INTEGER DEFAULT 1,
-            close_dash_qt_on_exit INTEGER DEFAULT 1
+            close_dash_qt_on_exit INTEGER DEFAULT 1,
+            selected_wallet_hash BLOB,
+            selected_single_key_hash BLOB
         )",
             [],
         )?;
@@ -305,7 +307,8 @@ impl Database {
                 unconfirmed_balance INTEGER DEFAULT 0,
                 total_balance INTEGER DEFAULT 0,
                 last_platform_full_sync INTEGER DEFAULT 0,
-                last_platform_sync_checkpoint INTEGER DEFAULT 0
+                last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                last_terminal_block INTEGER DEFAULT 0
             )",
             [],
         )?;

@@ -57,7 +57,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: 1.92
-          components: clippy
+          components: clippy, rustfmt
           override: true
 
       - name: Install system dependencies
@@ -73,6 +73,9 @@ jobs:
           rm -f protoc-25.2-linux-x86_64.zip
         env:
           PROTOC: /usr/local/bin/protoc
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
       - name: Run Clippy
         uses: actions-rs/clippy-check@v1

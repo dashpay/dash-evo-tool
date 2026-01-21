@@ -263,7 +263,7 @@ impl SpvManager {
             config,
             subtasks,
             wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new(
-                network.into(),
+                network,
             ))),
             storage: Arc::new(Mutex::new(None)),
             client_interface: Arc::new(RwLock::new(None)),

@@ -11,7 +11,6 @@ use dash_sdk::dash_spv::types::{
 };
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, Network, Transaction};
-use dash_sdk::dpp::key_wallet;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
@@ -26,7 +25,7 @@ use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -263,7 +262,9 @@ impl SpvManager {
             data_dir,
             config,
             subtasks,
-            wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new())),
+            wallet: Arc::new(AsyncRwLock::new(WalletManager::<ManagedWalletInfo>::new(
+                network,
+            ))),
             storage: Arc::new(Mutex::new(None)),
             client_interface: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
@@ -620,8 +621,6 @@ impl SpvManager {
         seed_hash: WalletSeedHash,
         mut seed_bytes: [u8; 64],
     ) -> Result<WalletId, String> {
-        let wallet_network = Self::wallet_network(self.network);
-
         let existing_wallet_id = {
             let map = self.det_wallets.read().map_err(|e| e.to_string())?;
             map.get(&seed_hash).copied()
@@ -653,11 +652,7 @@ impl SpvManager {
 
         let account_options = Self::default_account_creation_options();
 
-        let wallet_id = match wm.import_wallet_from_extended_priv_key(
-            &xprv_str,
-            wallet_network,
-            account_options,
-        ) {
+        let wallet_id = match wm.import_wallet_from_extended_priv_key(&xprv_str, account_options) {
             Ok(id) => id,
             Err(WalletError::WalletExists(id)) => id,
             Err(err) => {
@@ -721,22 +716,6 @@ impl SpvManager {
             address,
             derivation_path,
         })
-    }
-
-    fn wallet_network(network: Network) -> key_wallet::Network {
-        match network {
-            Network::Dash => key_wallet::Network::Dash,
-            Network::Testnet => key_wallet::Network::Testnet,
-            Network::Devnet => key_wallet::Network::Devnet,
-            Network::Regtest => key_wallet::Network::Regtest,
-            other => {
-                tracing::warn!(
-                    ?other,
-                    "Unknown dashcore::Network; defaulting to Dash for wallet mapping"
-                );
-                key_wallet::Network::Dash
-            }
-        }
     }
 
     fn default_account_creation_options() -> WalletAccountCreationOptions {
@@ -828,62 +807,7 @@ impl SpvManager {
         stop_token: CancellationToken,
         global_cancel: CancellationToken,
     ) -> Result<(), String> {
-        // Wait for at least one peer to connect
-        let mut waited_ms: u64 = 0;
-        loop {
-            // Check for cancellation
-            if stop_token.is_cancelled() || global_cancel.is_cancelled() {
-                let _ = client.stop().await;
-                let _ = self.write_status(SpvStatus::Stopped);
-                return Ok(());
-            }
-
-            let peers = client.get_peer_count().await;
-            if peers > 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            waited_ms = waited_ms.saturating_add(200);
-            if waited_ms.is_multiple_of(5000) {
-                tracing::info!("SPV waiting for peers... {}s elapsed", waited_ms / 1000);
-            }
-        }
-
-        // Sync to tip with timeout to prevent indefinite hangs
-        const SYNC_TIMEOUT_SECS: u64 = 300; // 5 minutes
-        match tokio::time::timeout(Duration::from_secs(SYNC_TIMEOUT_SECS), client.sync_to_tip())
-            .await
-        {
-            Ok(Ok(progress)) => {
-                tracing::info!("Initial sync progress snapshot: {:?}", progress);
-                let _ = self.write_sync_progress(Some(progress.clone()));
-                let _ = self.write_progress_updated_at(Some(SystemTime::now()));
-                // Stay in Syncing mode until detailed progress reports completion.
-                let _ = self.write_status(SpvStatus::Syncing);
-            }
-            Ok(Err(err)) => {
-                tracing::error!("Initial sync failed: {}", err);
-                let _ = client.stop().await;
-                let _ = self.write_last_error(Some(format!("Initial sync failed: {err}")));
-                let _ = self.write_status(SpvStatus::Error);
-                return Err(format!("Initial sync failed: {err}"));
-            }
-            Err(_) => {
-                tracing::error!("Initial sync timed out after {} seconds", SYNC_TIMEOUT_SECS);
-                let _ = client.stop().await;
-                let _ = self.write_last_error(Some(format!(
-                    "Initial sync timed out after {} seconds",
-                    SYNC_TIMEOUT_SECS
-                )));
-                let _ = self.write_status(SpvStatus::Error);
-                return Err(format!(
-                    "Initial sync timed out after {} seconds",
-                    SYNC_TIMEOUT_SECS
-                ));
-            }
-        }
-
-        // Monitor network continuously - this is designed to run once and keep running
+        // Monitor network continuously - this handles initial sync and ongoing monitoring
         // Requests are handled through the DashSpvClientInterface command channel
         enum Outcome {
             MonitorCompleted(Result<(), dash_sdk::dash_spv::SpvError>),

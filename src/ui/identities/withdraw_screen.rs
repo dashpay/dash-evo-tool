@@ -135,11 +135,13 @@ impl WithdrawalScreen {
     }
 
     fn render_address_input(&mut self, ui: &mut Ui) {
-        let can_have_withdrawal_address = if let Some(key) = self.selected_key.as_ref() {
-            key.purpose() != Purpose::OWNER
-        } else {
-            true
-        };
+        let is_owner_key = self
+            .selected_key
+            .as_ref()
+            .map(|key| key.purpose() == Purpose::OWNER)
+            .unwrap_or(false);
+        let can_have_withdrawal_address = !is_owner_key;
+
         if can_have_withdrawal_address || self.app_context.is_developer_mode() {
             ui.horizontal(|ui| {
                 ui.label("Address:");
@@ -167,6 +169,23 @@ impl WithdrawalScreen {
                     ui.colored_label(Color32::from_rgb(255, 100, 100), error);
                 }
             });
+
+            // In dev mode with OWNER key, show hint about auto-selected payout address
+            if self.app_context.is_developer_mode() && is_owner_key {
+                if let Some(payout_address) = self
+                    .identity
+                    .masternode_payout_address(self.app_context.network)
+                {
+                    ui.label(
+                        RichText::new(format!(
+                            "Leave empty to use masternode payout address: {}",
+                            payout_address
+                        ))
+                        .italics()
+                        .color(Color32::GRAY),
+                    );
+                }
+            }
         } else {
             ui.label(format!(
                 "Masternode payout address: {}",

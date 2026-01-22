@@ -745,16 +745,17 @@ impl ScreenLike for CreateAssetLockScreen {
                     for utxo in outpoints_with_addresses {
                         let (_, _, address) = &utxo;
                         if let Some(funding_address) = &self.funding_address
-                            && funding_address == address {
-                                let mut step = self.step.write().unwrap();
-                                *step = WalletFundedScreenStep::FundsReceived;
-                                self.funding_utxo = Some(utxo);
-                                drop(step); // Release the lock before creating new action
+                            && funding_address == address
+                        {
+                            let mut step = self.step.write().unwrap();
+                            *step = WalletFundedScreenStep::FundsReceived;
+                            self.funding_utxo = Some(utxo);
+                            drop(step); // Release the lock before creating new action
 
-                                // Refresh wallet to create the asset lock
-                                self.is_creating = true;
-                                return;
-                            }
+                            // Refresh wallet to create the asset lock
+                            self.is_creating = true;
+                            return;
+                        }
                     }
                 }
             }
@@ -907,10 +908,7 @@ mod tests {
         }
 
         // Top Up with advanced options: step 3 (1: identity selection, 2: index selection, 3: amount)
-        assert_eq!(
-            calculate_step_num(Some(AssetLockPurpose::TopUp), true),
-            "3"
-        );
+        assert_eq!(calculate_step_num(Some(AssetLockPurpose::TopUp), true), "3");
 
         // Top Up without advanced options: step 2 (1: identity selection, 2: amount)
         assert_eq!(

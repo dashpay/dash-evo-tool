@@ -1229,7 +1229,7 @@ impl WalletsBalancesScreen {
                     ui.horizontal(|ui| {
                         ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(RichText::new("Create Asset Lock").size(14.0)).clicked() {
+                            if ui.button("Create Asset Lock").clicked() {
                                 app_action = AppAction::AddScreen(
                                     ScreenType::CreateAssetLock(arc_wallet.clone()).create_screen(&self.app_context)
                                 );

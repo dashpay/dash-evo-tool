@@ -183,7 +183,7 @@ impl AssetLockDetailScreen {
 
                         ui.horizontal(|ui| {
                             ui.label("Asset Lock Proof (hex):");
-                            if ui.button("📋").on_hover_text("Copy to clipboard").clicked() {
+                            if ui.small_button("Copy").clicked() {
                                 ui.ctx().copy_text(proof_hex.clone());
                                 self.display_message("Asset lock proof copied to clipboard", MessageType::Success);
                             }
@@ -219,21 +219,21 @@ impl AssetLockDetailScreen {
                             if let Some(derivation_path) = wallet.known_addresses.get(&address).cloned() {
                                 drop(wallet); // Release the read lock before getting write lock
                                 let wallet = wallet_arc.write().unwrap();
-                                match wallet.private_key_at_derivation_path(&derivation_path) {
+                                match wallet.private_key_at_derivation_path(&derivation_path, self.app_context.network) {
                                     Ok(private_key) => {
                                         let wif = private_key.to_wif();
                                         drop(wallet); // Release lock before UI operations
                                         ui.horizontal(|ui| {
                                             ui.label("Private Key (WIF):");
                                             ui.label(RichText::new(&wif).font(egui::FontId::monospace(12.0)).color(DashColors::warning_color(dark_mode)));
-                                            if ui.button("📋").on_hover_text("Copy to clipboard").clicked() {
+                                            if ui.small_button("Copy").clicked() {
                                                 ui.ctx().copy_text(wif);
                                                 self.display_message("Private key copied to clipboard", MessageType::Success);
                                             }
                                         });
 
                                         ui.add_space(5.0);
-                                        ui.label(RichText::new("⚠️ Keep this private key secure! Anyone with access to it can spend these funds.")
+                                        ui.label(RichText::new("Warning: Keep this private key secure! Anyone with access to it can spend these funds.")
                                             .color(DashColors::warning_color(dark_mode))
                                             .italics());
                                     }
@@ -300,6 +300,10 @@ impl ScreenWithWalletUnlock for AssetLockDetailScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
     }
 }
 

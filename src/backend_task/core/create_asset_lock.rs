@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::fee::Credits;
 use std::sync::{Arc, RwLock};
 
@@ -13,13 +14,16 @@ impl AppContext {
         allow_take_fee_from_amount: bool,
         identity_index: u32,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Convert credits to duffs (1 duff = 1000 credits)
+        let amount_duffs = amount / CREDITS_PER_DUFF;
+
         // Create the asset lock transaction
         let (asset_lock_transaction, _private_key, _change_address, used_utxos) = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
 
             wallet_guard.registration_asset_lock_transaction(
                 self.network,
-                amount,
+                amount_duffs,
                 allow_take_fee_from_amount,
                 identity_index,
                 Some(self),
@@ -71,13 +75,16 @@ impl AppContext {
         identity_index: u32,
         top_up_index: u32,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Convert credits to duffs (1 duff = 1000 credits)
+        let amount_duffs = amount / CREDITS_PER_DUFF;
+
         // Create the asset lock transaction
         let (asset_lock_transaction, _private_key, _change_address, used_utxos) = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
 
             wallet_guard.top_up_asset_lock_transaction(
                 self.network,
-                amount,
+                amount_duffs,
                 allow_take_fee_from_amount,
                 identity_index,
                 top_up_index,

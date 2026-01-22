@@ -1332,11 +1332,10 @@ impl WalletsBalancesScreen {
                                                 ).create_screen(&self.app_context)
                                             );
                                         }
-                                        if proof.is_some() {
-                                            if ui.small_button("Fund").on_hover_text("Fund a Platform address with this asset lock").clicked() {
+                                        if proof.is_some()
+                                            && ui.small_button("Fund").on_hover_text("Fund a Platform address with this asset lock").clicked() {
                                                 open_fund_dialog_for_idx = Some((index, platform_addresses.clone()));
                                             }
-                                        }
                                     });
                                 });
                             }

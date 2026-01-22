@@ -432,13 +432,12 @@ impl ScreenLike for CreateAssetLockScreen {
                         });
 
                         // Only show Back button if a purpose has been selected
-                        if self.asset_lock_purpose.is_some() {
-                            if ui.button("Back").clicked() {
+                        if self.asset_lock_purpose.is_some()
+                            && ui.button("Back").clicked() {
                                 self.asset_lock_purpose = None;
                                 self.selected_identity = None;
                                 self.selected_identity_string.clear();
                             }
-                        }
 
                         // For top up, select identity
                         if self.asset_lock_purpose == Some(AssetLockPurpose::TopUp) {
@@ -475,8 +474,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             .width(300.0));
 
                             // Update identity index and top_up_index when identity selection changes
-                            if identity_selector_response.changed() {
-                                if let Some(selected) = &self.selected_identity {
+                            if identity_selector_response.changed()
+                                && let Some(selected) = &self.selected_identity {
                                     if let Some(wallet_idx) = selected.wallet_index {
                                         self.identity_index = wallet_idx;
                                     }
@@ -489,7 +488,6 @@ impl ScreenLike for CreateAssetLockScreen {
                                         .map(|i| i + 1)
                                         .unwrap_or(0);
                                 }
-                            }
 
                             if self.selected_identity.is_none() {
                                 return;
@@ -576,9 +574,9 @@ impl ScreenLike for CreateAssetLockScreen {
                                         ui.end_row();
                                     });
                             }
-                        } else if self.asset_lock_purpose == Some(AssetLockPurpose::Registration) {
+                        } else if self.asset_lock_purpose == Some(AssetLockPurpose::Registration)
 
-                            if self.show_advanced_options {
+                            && self.show_advanced_options {
                                 ui.add_space(10.0);
                                 ui.separator();
                                 ui.add_space(10.0);
@@ -625,7 +623,6 @@ impl ScreenLike for CreateAssetLockScreen {
                                         ui.end_row();
                                     });
                             }
-                        }
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -789,8 +786,8 @@ impl ScreenLike for CreateAssetLockScreen {
                 {
                     for utxo in outpoints_with_addresses {
                         let (_, _, address) = &utxo;
-                        if let Some(funding_address) = &self.funding_address {
-                            if funding_address == address {
+                        if let Some(funding_address) = &self.funding_address
+                            && funding_address == address {
                                 let mut step = self.step.write().unwrap();
                                 *step = WalletFundedScreenStep::FundsReceived;
                                 self.funding_utxo = Some(utxo);
@@ -800,7 +797,6 @@ impl ScreenLike for CreateAssetLockScreen {
                                 self.is_creating = true;
                                 return;
                             }
-                        }
                     }
                 }
             }

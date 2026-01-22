@@ -211,8 +211,8 @@ impl AssetLockDetailScreen {
 
                     let (needs_unlock, unlocked) = self.render_wallet_unlock_if_needed(ui);
 
-                    if !needs_unlock || unlocked {
-                        if let Some(wallet_arc) = self.wallet.clone() {
+                    if (!needs_unlock || unlocked)
+                        && let Some(wallet_arc) = self.wallet.clone() {
                             let wallet = wallet_arc.read().unwrap();
 
                             // Find the private key for this address
@@ -247,7 +247,6 @@ impl AssetLockDetailScreen {
                                     .color(DashColors::error_color(dark_mode)));
                             }
                         }
-                    }
                 });
         } else {
             ui.vertical_centered(|ui| {

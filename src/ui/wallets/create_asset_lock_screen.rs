@@ -473,13 +473,9 @@ impl ScreenLike for CreateAssetLockScreen {
                             .label("Identity to top up:")
                             .width(300.0));
 
-                            // Update identity index and top_up_index when identity selection changes
+                            // Update top_up_index to next unused value when identity selection changes
                             if identity_selector_response.changed()
                                 && let Some(selected) = &self.selected_identity {
-                                    if let Some(wallet_idx) = selected.wallet_index {
-                                        self.identity_index = wallet_idx;
-                                    }
-                                    // Set top_up_index to next unused value
                                     self.top_up_index = selected
                                         .top_ups
                                         .keys()
@@ -498,13 +494,8 @@ impl ScreenLike for CreateAssetLockScreen {
                                 ui.separator();
                                 ui.add_space(10.0);
 
-                                ui.heading(RichText::new("2. Index Selection").color(DashColors::text_primary(dark_mode)));
+                                ui.heading(RichText::new("2. Top Up Index Selection").color(DashColors::text_primary(dark_mode)));
                                 ui.add_space(10.0);
-
-                                // Get used identity indices from wallet
-                                let wallet_guard = self.wallet.read().unwrap();
-                                let used_identity_indices: HashSet<u32> = wallet_guard.identities.keys().cloned().collect();
-                                drop(wallet_guard);
 
                                 // Get used top_up indices from selected identity
                                 let used_top_up_indices: HashSet<u32> = self.selected_identity
@@ -512,67 +503,31 @@ impl ScreenLike for CreateAssetLockScreen {
                                     .map(|id| id.top_ups.keys().cloned().collect())
                                     .unwrap_or_default();
 
-                                egui::Grid::new("top_up_advanced_options_grid")
-                                    .num_columns(2)
-                                    .spacing([10.0, 8.0])
-                                    .show(ui, |ui| {
-                                        // Row 1: Identity Index
-                                        ui.label("Identity Index:");
-                                        let selected_text = if used_identity_indices.contains(&self.identity_index) {
-                                            format!("{} (used)", self.identity_index)
-                                        } else {
-                                            format!("{}", self.identity_index)
-                                        };
-                                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                            egui::ComboBox::from_id_salt("top_up_identity_index")
-                                                .selected_text(selected_text)
-                                                .show_ui(ui, |ui| {
-                                                    for i in 0..MAX_IDENTITY_INDEX {
-                                                        let is_used = used_identity_indices.contains(&i);
-                                                        let label = if is_used {
-                                                            format!("{} (used)", i)
-                                                        } else {
-                                                            format!("{}", i)
-                                                        };
-                                                        let is_selected = self.identity_index == i;
-                                                        let enabled = !is_used || is_selected;
-                                                        let response = ui.add_enabled(enabled, Button::selectable(is_selected, label));
-                                                        if response.clicked() && !is_used {
-                                                            self.identity_index = i;
-                                                        }
-                                                    }
-                                                });
-                                        });
-                                        ui.end_row();
-
-                                        // Row 2: Top Up Index
-                                        ui.label("Top Up Index:");
-                                        let selected_text = if used_top_up_indices.contains(&self.top_up_index) {
-                                            format!("{} (used)", self.top_up_index)
-                                        } else {
-                                            format!("{}", self.top_up_index)
-                                        };
-                                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                            egui::ComboBox::from_id_salt("top_up_index")
-                                            .selected_text(selected_text)
-                                            .show_ui(ui, |ui| {
-                                                for i in 0..MAX_IDENTITY_INDEX {
-                                                    let is_used = used_top_up_indices.contains(&i);
-                                                    let label = if is_used {
-                                                        format!("{} (used)", i)
-                                                    } else {
-                                                        format!("{}", i)
-                                                    };
-                                                    let is_selected = self.top_up_index == i;
-                                                    let enabled = !is_used || is_selected;
-                                                    let response = ui.add_enabled(enabled, Button::selectable(is_selected, label));
-                                                    if response.clicked() && !is_used {
-                                                        self.top_up_index = i;
-                                                    }
+                                ui.horizontal(|ui| {
+                                    ui.label("Top Up Index:");
+                                    let selected_text = if used_top_up_indices.contains(&self.top_up_index) {
+                                        format!("{} (used)", self.top_up_index)
+                                    } else {
+                                        format!("{}", self.top_up_index)
+                                    };
+                                    egui::ComboBox::from_id_salt("top_up_index")
+                                        .selected_text(selected_text)
+                                        .show_ui(ui, |ui| {
+                                            for i in 0..MAX_IDENTITY_INDEX {
+                                                let is_used = used_top_up_indices.contains(&i);
+                                                let label = if is_used {
+                                                    format!("{} (used)", i)
+                                                } else {
+                                                    format!("{}", i)
+                                                };
+                                                let is_selected = self.top_up_index == i;
+                                                let response = ui.add_enabled(!is_used, Button::new(label).selected(is_selected));
+                                                if response.clicked() {
+                                                    self.top_up_index = i;
                                                 }
-                                            });});
-                                        ui.end_row();
-                                    });
+                                            }
+                                        });
+                                });
                             }
                         } else if self.asset_lock_purpose == Some(AssetLockPurpose::Registration)
 
@@ -612,9 +567,8 @@ impl ScreenLike for CreateAssetLockScreen {
                                                             format!("{}", i)
                                                         };
                                                         let is_selected = self.identity_index == i;
-                                                        let enabled = !is_used || is_selected;
-                                                        let response = ui.add_enabled(enabled, Button::selectable(is_selected, label));
-                                                        if response.clicked() && !is_used {
+                                                        let response = ui.add_enabled(!is_used, Button::new(label).selected(is_selected));
+                                                        if response.clicked() {
                                                             self.identity_index = i;
                                                         }
                                                     }
@@ -698,10 +652,14 @@ impl ScreenLike for CreateAssetLockScreen {
                                                     }
                                                     Some(AssetLockPurpose::TopUp) => {
                                                         if let Some(identity) = &self.selected_identity {
-                                                            let identity_index = identity.wallet_index.unwrap_or(self.identity_index);
-                                                            AppAction::BackendTask(BackendTask::CoreTask(
-                                                                CoreTask::CreateTopUpAssetLock(self.wallet.clone(), credits, identity_index, self.top_up_index)
-                                                            ))
+                                                            if let Some(identity_index) = identity.wallet_index {
+                                                                AppAction::BackendTask(BackendTask::CoreTask(
+                                                                    CoreTask::CreateTopUpAssetLock(self.wallet.clone(), credits, identity_index, self.top_up_index)
+                                                                ))
+                                                            } else {
+                                                                self.error_message = Some("Selected identity has no wallet index".to_string());
+                                                                AppAction::None
+                                                            }
                                                         } else {
                                                             self.error_message = Some("No identity selected for top-up".to_string());
                                                             AppAction::None

@@ -471,50 +471,67 @@ impl ScreenLike for AddKeyScreen {
 
                     // Security Level
                     ui.label("Security Level:");
-                    egui::ComboBox::from_id_salt("security_level_selector")
-                        .selected_text(format!("{:?}", self.security_level))
-                        .show_ui(ui, |ui| {
-                            if self.enable_contract_bounds {
-                                // When contract bounds are enabled, only allow MEDIUM
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::MEDIUM,
-                                    "MEDIUM",
-                                );
-                            } else if self.purpose == Purpose::AUTHENTICATION {
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::CRITICAL,
-                                    "CRITICAL",
-                                );
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::HIGH,
-                                    "HIGH",
-                                );
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::MEDIUM,
-                                    "MEDIUM",
-                                );
-                            } else if self.purpose == Purpose::ENCRYPTION
-                                || self.purpose == Purpose::DECRYPTION
-                            {
-                                // ENCRYPTION and DECRYPTION only allow MEDIUM
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::MEDIUM,
-                                    "MEDIUM",
-                                );
-                            } else {
-                                // TRANSFER only allows CRITICAL
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::CRITICAL,
-                                    "CRITICAL",
-                                );
-                            }
-                        });
+                    // Only AUTHENTICATION has multiple security level options
+                    let has_multiple_security_levels =
+                        self.purpose == Purpose::AUTHENTICATION && !self.enable_contract_bounds;
+                    let inner_response = ui.add_enabled_ui(has_multiple_security_levels, |ui| {
+                        egui::ComboBox::from_id_salt("security_level_selector")
+                            .selected_text(format!("{:?}", self.security_level))
+                            .show_ui(ui, |ui| {
+                                if self.enable_contract_bounds {
+                                    // When contract bounds are enabled, only allow MEDIUM
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::MEDIUM,
+                                        "MEDIUM",
+                                    );
+                                } else if self.purpose == Purpose::AUTHENTICATION {
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::CRITICAL,
+                                        "CRITICAL",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::HIGH,
+                                        "HIGH",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::MEDIUM,
+                                        "MEDIUM",
+                                    );
+                                } else if self.purpose == Purpose::ENCRYPTION
+                                    || self.purpose == Purpose::DECRYPTION
+                                {
+                                    // ENCRYPTION and DECRYPTION only allow MEDIUM
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::MEDIUM,
+                                        "MEDIUM",
+                                    );
+                                } else {
+                                    // TRANSFER only allows CRITICAL
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::CRITICAL,
+                                        "CRITICAL",
+                                    );
+                                }
+                            })
+                    });
+                    if !has_multiple_security_levels {
+                        // Use interact with hover sense to detect hover on disabled widget
+                        let hover_response = ui.interact(
+                            inner_response.response.rect,
+                            egui::Id::new("security_level_tooltip"),
+                            egui::Sense::hover(),
+                        );
+                        hover_response.on_hover_text(format!(
+                            "{:?} purpose requires {:?} security level",
+                            self.purpose, self.security_level
+                        ));
+                    }
                     ui.end_row();
 
                     // Key Type

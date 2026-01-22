@@ -77,13 +77,15 @@ impl RegisterDpnsNameScreen {
         };
 
         // Auto-select a suitable key for DPNS registration
+        // Note: MASTER keys cannot be used for document operations,
+        // only MEDIUM, HIGH, or CRITICAL security levels are allowed
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
-            use dash_sdk::dpp::identity::KeyType;
+            use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
             identity
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    dash_sdk::dpp::identity::SecurityLevel::full_range().into(),
+                    [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM].into(),
                     KeyType::all_key_types().into(),
                     false,
                 )
@@ -133,12 +135,14 @@ impl RegisterDpnsNameScreen {
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Auto-select a suitable key for DPNS registration
-            use dash_sdk::dpp::identity::KeyType;
+            // Note: MASTER keys cannot be used for document operations,
+            // only MEDIUM, HIGH, or CRITICAL security levels are allowed
+            use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
             self.selected_key = qi
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    dash_sdk::dpp::identity::SecurityLevel::full_range().into(),
+                    [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM].into(),
                     KeyType::all_key_types().into(),
                     false,
                 )
@@ -178,12 +182,14 @@ impl RegisterDpnsNameScreen {
         if response.changed() {
             if let Some(identity) = &self.selected_qualified_identity {
                 // Auto-select a suitable key for DPNS registration
-                use dash_sdk::dpp::identity::KeyType;
+                // Note: MASTER keys cannot be used for document operations,
+                // only MEDIUM, HIGH, or CRITICAL security levels are allowed
+                use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
                 self.selected_key = identity
                     .identity
                     .get_first_public_key_matching(
                         Purpose::AUTHENTICATION,
-                        dash_sdk::dpp::identity::SecurityLevel::full_range().into(),
+                        [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM].into(),
                         KeyType::all_key_types().into(),
                         false,
                     )

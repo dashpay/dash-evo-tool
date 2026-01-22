@@ -1016,21 +1016,17 @@ mod tests {
         let msg = "Asset lock transaction broadcast successfully. TX ID: abc123def456";
 
         // Extract TX ID from message
-        let tx_id = if let Some(tx_id_start) = msg.find("TX ID: ") {
-            Some(msg[tx_id_start + 7..].trim().to_string())
-        } else {
-            None
-        };
+        let tx_id = msg
+            .find("TX ID: ")
+            .map(|tx_id_start| msg[tx_id_start + 7..].trim().to_string());
 
         assert_eq!(tx_id, Some("abc123def456".to_string()));
 
         // Test message without TX ID
         let msg_without_id = "Some other message";
-        let no_tx_id = if let Some(tx_id_start) = msg_without_id.find("TX ID: ") {
-            Some(msg_without_id[tx_id_start + 7..].trim().to_string())
-        } else {
-            None
-        };
+        let no_tx_id = msg_without_id
+            .find("TX ID: ")
+            .map(|tx_id_start| msg_without_id[tx_id_start + 7..].trim().to_string());
 
         assert_eq!(no_tx_id, None);
     }

@@ -24,6 +24,8 @@ pub struct AssetLockDetailScreen {
     wallet_password: String,
     show_password: bool,
     error_message: Option<String>,
+    show_private_key_popup: bool,
+    private_key_wif: Option<String>,
 }
 
 impl AssetLockDetailScreen {
@@ -50,6 +52,8 @@ impl AssetLockDetailScreen {
             wallet_password: String::new(),
             show_password: false,
             error_message: None,
+            show_private_key_popup: false,
+            private_key_wif: None,
         }
     }
 
@@ -218,30 +222,29 @@ impl AssetLockDetailScreen {
                             // Find the private key for this address
                             if let Some(derivation_path) = wallet.known_addresses.get(&address).cloned() {
                                 drop(wallet); // Release the read lock before getting write lock
-                                let wallet = wallet_arc.write().unwrap();
-                                match wallet.private_key_at_derivation_path(&derivation_path, self.app_context.network) {
-                                    Ok(private_key) => {
-                                        let wif = private_key.to_wif();
-                                        drop(wallet); // Release lock before UI operations
-                                        ui.horizontal(|ui| {
-                                            ui.label("Private Key (WIF):");
-                                            ui.label(RichText::new(&wif).font(egui::FontId::monospace(12.0)).color(DashColors::warning_color(dark_mode)));
-                                            if ui.small_button("Copy").clicked() {
-                                                ui.ctx().copy_text(wif);
-                                                self.display_message("Private key copied to clipboard", MessageType::Success);
-                                            }
-                                        });
 
-                                        ui.add_space(5.0);
-                                        ui.label(RichText::new("Warning: Keep this private key secure! Anyone with access to it can spend these funds.")
-                                            .color(DashColors::warning_color(dark_mode))
-                                            .italics());
+                                ui.horizontal(|ui| {
+                                    ui.label("Private Key (WIF):");
+                                    ui.label(RichText::new("••••••••••••••••••••").font(egui::FontId::monospace(12.0)).color(DashColors::text_secondary(dark_mode)));
+                                    if ui.small_button("View").clicked() {
+                                        // Retrieve the private key when View is clicked
+                                        let wallet = wallet_arc.write().unwrap();
+                                        match wallet.private_key_at_derivation_path(&derivation_path, self.app_context.network) {
+                                            Ok(private_key) => {
+                                                self.private_key_wif = Some(private_key.to_wif());
+                                                self.show_private_key_popup = true;
+                                            }
+                                            Err(e) => {
+                                                self.display_message(&format!("Error retrieving private key: {}", e), MessageType::Error);
+                                            }
+                                        }
                                     }
-                                    Err(e) => {
-                                        ui.label(RichText::new(format!("Error retrieving private key: {}", e))
-                                            .color(DashColors::error_color(dark_mode)));
-                                    }
-                                }
+                                });
+
+                                ui.add_space(5.0);
+                                ui.label(RichText::new("Warning: Keep this private key secure! Anyone with access to it can spend these funds.")
+                                    .color(DashColors::warning_color(dark_mode))
+                                    .italics());
                             } else {
                                 ui.label(RichText::new("Private key not found for this address")
                                     .color(DashColors::error_color(dark_mode)));
@@ -310,12 +313,6 @@ impl ScreenLike for AssetLockDetailScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_message_expiration();
 
-        let wallet_name = self
-            .wallet
-            .as_ref()
-            .and_then(|w| w.read().ok()?.alias.clone())
-            .unwrap_or_else(|| "Unknown Wallet".to_string());
-
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -326,10 +323,7 @@ impl ScreenLike for AssetLockDetailScreen {
                         RootScreenType::RootScreenWalletsBalances,
                     ),
                 ),
-                (
-                    &format!("{} / Asset Lock Details", wallet_name),
-                    AppAction::None,
-                ),
+                ("Asset Lock Details", AppAction::None),
             ],
             vec![],
         );
@@ -341,19 +335,28 @@ impl ScreenLike for AssetLockDetailScreen {
         );
 
         action |= island_central_panel(ctx, |ui| {
-            let inner_action = AppAction::None;
+            let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            // Header with Back button (outside ScrollArea to avoid scrollbar overlap)
+            ui.horizontal(|ui| {
+                ui.heading(
+                    RichText::new("Asset Lock Information")
+                        .color(DashColors::text_primary(dark_mode))
+                        .size(24.0),
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Back").clicked() {
+                        inner_action = AppAction::PopScreenAndRefresh;
+                    }
+                });
+            });
+            ui.add_space(10.0);
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    ui.heading(
-                        RichText::new("Asset Lock Information")
-                            .color(DashColors::text_primary(dark_mode))
-                            .size(24.0),
-                    );
-                    ui.add_space(10.0);
-
                     self.render_asset_lock_info(ui);
                 });
 
@@ -381,6 +384,56 @@ impl ScreenLike for AssetLockDetailScreen {
 
             inner_action
         });
+
+        // Private key popup
+        if self.show_private_key_popup {
+            // Draw dark overlay behind the popup
+            let screen_rect = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("private_key_popup_overlay"),
+            ));
+            painter.rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
+
+            egui::Window::new("Private Key")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(400.0);
+
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("⚠ Warning").color(Color32::from_rgb(255, 152, 0)).strong());
+                    ui.label("Keep this private key secure! Anyone with access to it can spend these funds.");
+                    ui.add_space(15.0);
+
+                    ui.label("Private Key (WIF):");
+                    if let Some(wif) = self.private_key_wif.clone() {
+                        ui.add(egui::TextEdit::multiline(&mut wif.as_str())
+                            .font(egui::FontId::monospace(12.0))
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(1));
+
+                        ui.add_space(10.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Copy").clicked() {
+                                ui.ctx().copy_text(wif.clone());
+                                self.display_message("Private key copied to clipboard", MessageType::Success);
+                            }
+                            if ui.button("Close").clicked() {
+                                self.show_private_key_popup = false;
+                                self.private_key_wif = None;
+                            }
+                        });
+                    }
+                    ui.add_space(10.0);
+                });
+        }
 
         action
     }

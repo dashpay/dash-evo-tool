@@ -333,24 +333,33 @@ impl ScreenLike for CreateAssetLockScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
+            // Header with Back button and Advanced Options checkbox (outside ScrollArea)
+            ui.horizontal(|ui| {
+                ui.heading(
+                    RichText::new("Create Asset Lock")
+                        .color(DashColors::text_primary(dark_mode))
+                        .size(24.0),
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Back").clicked() {
+                        inner_action = AppAction::PopScreenAndRefresh;
+                    }
+                    ui.add_space(10.0);
+                    ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                });
+            });
+
+            // Show wallet name
+            ui.label(
+                RichText::new(format!("Wallet: {}", wallet_name))
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            ui.add_space(10.0);
+
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    // Header with Back button and Advanced Options checkbox
-                    ui.horizontal(|ui| {
-                        ui.heading(
-                            RichText::new("Create Asset Lock")
-                                .color(DashColors::text_primary(dark_mode))
-                                .size(24.0)
-                        );
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-                        });
-                    });
-
-                    // Show wallet name
-                    ui.heading(RichText::new(format!("Wallet: {}", wallet_name)).color(DashColors::text_secondary(dark_mode)));
 
                     // Show success screen
                     if *self.step.read().unwrap() == WalletFundedScreenStep::Success {
@@ -410,7 +419,7 @@ impl ScreenLike for CreateAssetLockScreen {
 
                         // Only show Back button if a purpose has been selected
                         if self.asset_lock_purpose.is_some()
-                            && ui.button("Back").clicked() {
+                            && ui.button("Change Purpose").clicked() {
                                 self.asset_lock_purpose = None;
                                 self.selected_identity = None;
                                 self.selected_identity_string.clear();

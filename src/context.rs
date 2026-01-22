@@ -220,13 +220,20 @@ impl AppContext {
         let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
         spv_manager.set_use_local_node(use_local_spv_node);
 
-        // Load the core backend mode from settings, defaulting to SPV if not set
+        // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db
             .get_settings()
             .ok()
             .flatten()
             .map(|s| s.7) // core_backend_mode is the 8th element (index 7)
-            .unwrap_or(CoreBackendMode::Spv.as_u8());
+            .unwrap_or(CoreBackendMode::Rpc.as_u8());
+
+        // If not in developer mode, force RPC mode (SPV is gated behind dev mode)
+        let saved_core_backend_mode = if developer_mode_enabled {
+            saved_core_backend_mode
+        } else {
+            CoreBackendMode::Rpc.as_u8()
+        };
 
         // Load saved wallet selection, validating that the wallets still exist
         let (saved_wallet_hash, saved_single_key_hash) =

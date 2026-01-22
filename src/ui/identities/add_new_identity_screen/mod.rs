@@ -205,7 +205,7 @@ impl AddNewIdentityScreen {
             let app_context = &self.app_context;
             let identity_id_number = self.identity_id_number;
 
-            // Get default key configuration per DIP-11 and DIP-15
+            // Get default key configuration
             let dashpay_contract_id = app_context.dashpay_contract.id();
             let default_keys = default_identity_key_specs(dashpay_contract_id);
 
@@ -1312,10 +1312,10 @@ impl ScreenLike for AddNewIdentityScreen {
     }
 }
 
-/// Returns the default key specifications for a new identity per DIP-11 and DIP-15.
+/// Returns the default key specifications for a new identity.
 ///
 /// The returned vector contains tuples of (KeyType, Purpose, SecurityLevel, Option<ContractBounds>):
-/// - AUTHENTICATION CRITICAL: General platform operations
+/// - AUTHENTICATION CRITICAL: General platform operations (actions should require PIN)
 /// - AUTHENTICATION HIGH: General platform operations
 /// - TRANSFER CRITICAL: Credit transfers
 /// - ENCRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15

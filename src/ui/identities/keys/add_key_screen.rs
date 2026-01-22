@@ -404,6 +404,7 @@ impl ScreenLike for AddKeyScreen {
                 .show(ui, |ui| {
                     // Purpose
                     ui.label("Purpose:");
+                    let prev_purpose = self.purpose;
                     egui::ComboBox::from_id_salt("purpose_selector")
                         .selected_text(format!("{:?}", self.purpose))
                         .show_ui(ui, |ui| {
@@ -443,6 +444,29 @@ impl ScreenLike for AddKeyScreen {
                                 );
                             }
                         });
+
+                    // Auto-set security level when purpose changes
+                    if self.purpose != prev_purpose {
+                        match self.purpose {
+                            Purpose::ENCRYPTION | Purpose::DECRYPTION => {
+                                self.security_level = SecurityLevel::MEDIUM;
+                            }
+                            Purpose::TRANSFER => {
+                                self.security_level = SecurityLevel::CRITICAL;
+                            }
+                            Purpose::AUTHENTICATION => {
+                                // AUTHENTICATION allows multiple levels, keep current if valid
+                                // otherwise default to CRITICAL
+                                if self.security_level != SecurityLevel::CRITICAL
+                                    && self.security_level != SecurityLevel::HIGH
+                                    && self.security_level != SecurityLevel::MEDIUM
+                                {
+                                    self.security_level = SecurityLevel::CRITICAL;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     ui.end_row();
 
                     // Security Level
@@ -473,7 +497,17 @@ impl ScreenLike for AddKeyScreen {
                                     SecurityLevel::MEDIUM,
                                     "MEDIUM",
                                 );
+                            } else if self.purpose == Purpose::ENCRYPTION
+                                || self.purpose == Purpose::DECRYPTION
+                            {
+                                // ENCRYPTION and DECRYPTION only allow MEDIUM
+                                ui.selectable_value(
+                                    &mut self.security_level,
+                                    SecurityLevel::MEDIUM,
+                                    "MEDIUM",
+                                );
                             } else {
+                                // TRANSFER only allows CRITICAL
                                 ui.selectable_value(
                                     &mut self.security_level,
                                     SecurityLevel::CRITICAL,

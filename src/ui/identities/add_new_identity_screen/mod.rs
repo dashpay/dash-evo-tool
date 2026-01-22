@@ -1389,14 +1389,20 @@ mod tests {
         assert_eq!(*key_type, KeyType::ECDSA_HASH160);
         assert_eq!(*purpose, Purpose::AUTHENTICATION);
         assert_eq!(*security_level, SecurityLevel::CRITICAL);
-        assert!(contract_bounds.is_none(), "AUTHENTICATION keys should have no contract bounds");
+        assert!(
+            contract_bounds.is_none(),
+            "AUTHENTICATION keys should have no contract bounds"
+        );
 
         // Second key: AUTHENTICATION HIGH
         let (key_type, purpose, security_level, contract_bounds) = &keys[1];
         assert_eq!(*key_type, KeyType::ECDSA_HASH160);
         assert_eq!(*purpose, Purpose::AUTHENTICATION);
         assert_eq!(*security_level, SecurityLevel::HIGH);
-        assert!(contract_bounds.is_none(), "AUTHENTICATION keys should have no contract bounds");
+        assert!(
+            contract_bounds.is_none(),
+            "AUTHENTICATION keys should have no contract bounds"
+        );
     }
 
     /// Test that TRANSFER key has correct configuration
@@ -1410,7 +1416,10 @@ mod tests {
         assert_eq!(*key_type, KeyType::ECDSA_HASH160);
         assert_eq!(*purpose, Purpose::TRANSFER);
         assert_eq!(*security_level, SecurityLevel::CRITICAL);
-        assert!(contract_bounds.is_none(), "TRANSFER keys should have no contract bounds");
+        assert!(
+            contract_bounds.is_none(),
+            "TRANSFER keys should have no contract bounds"
+        );
     }
 
     /// Test that ENCRYPTION key uses SingleContractDocumentType with contactRequest
@@ -1426,19 +1435,38 @@ mod tests {
 
         // Fourth key: ENCRYPTION MEDIUM
         let (key_type, purpose, security_level, contract_bounds) = &keys[3];
-        assert_eq!(*key_type, KeyType::ECDSA_SECP256K1, "ENCRYPTION key must use ECDSA_SECP256K1 for ECDH");
+        assert_eq!(
+            *key_type,
+            KeyType::ECDSA_SECP256K1,
+            "ENCRYPTION key must use ECDSA_SECP256K1 for ECDH"
+        );
         assert_eq!(*purpose, Purpose::ENCRYPTION);
-        assert_eq!(*security_level, SecurityLevel::MEDIUM, "Platform enforces MEDIUM for ENCRYPTION");
+        assert_eq!(
+            *security_level,
+            SecurityLevel::MEDIUM,
+            "Platform enforces MEDIUM for ENCRYPTION"
+        );
 
         // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
         match contract_bounds {
-            Some(ContractBounds::SingleContractDocumentType { id, document_type_name }) => {
-                assert_eq!(*id, contract_id, "Contract ID should match DashPay contract");
-                assert_eq!(document_type_name, "contactRequest", "Document type must be 'contactRequest' for DashPay");
+            Some(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            }) => {
+                assert_eq!(
+                    *id, contract_id,
+                    "Contract ID should match DashPay contract"
+                );
+                assert_eq!(
+                    document_type_name, "contactRequest",
+                    "Document type must be 'contactRequest' for DashPay"
+                );
             }
             Some(ContractBounds::SingleContract { .. }) => {
-                panic!("ENCRYPTION key must use SingleContractDocumentType, not SingleContract. \
-                       Using SingleContract causes 'key bounds expected but not present' error.");
+                panic!(
+                    "ENCRYPTION key must use SingleContractDocumentType, not SingleContract. \
+                       Using SingleContract causes 'key bounds expected but not present' error."
+                );
             }
             None => {
                 panic!("ENCRYPTION key must have DashPay contract bounds for contactRequest");
@@ -1457,19 +1485,34 @@ mod tests {
 
         // Fifth key: DECRYPTION MEDIUM
         let (key_type, purpose, security_level, contract_bounds) = &keys[4];
-        assert_eq!(*key_type, KeyType::ECDSA_SECP256K1, "DECRYPTION key must use ECDSA_SECP256K1 for ECDH");
+        assert_eq!(
+            *key_type,
+            KeyType::ECDSA_SECP256K1,
+            "DECRYPTION key must use ECDSA_SECP256K1 for ECDH"
+        );
         assert_eq!(*purpose, Purpose::DECRYPTION);
         assert_eq!(*security_level, SecurityLevel::MEDIUM);
 
         // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
         match contract_bounds {
-            Some(ContractBounds::SingleContractDocumentType { id, document_type_name }) => {
-                assert_eq!(*id, contract_id, "Contract ID should match DashPay contract");
-                assert_eq!(document_type_name, "contactRequest", "Document type must be 'contactRequest' for DashPay");
+            Some(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            }) => {
+                assert_eq!(
+                    *id, contract_id,
+                    "Contract ID should match DashPay contract"
+                );
+                assert_eq!(
+                    document_type_name, "contactRequest",
+                    "Document type must be 'contactRequest' for DashPay"
+                );
             }
             Some(ContractBounds::SingleContract { .. }) => {
-                panic!("DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
-                       Using SingleContract causes 'key bounds expected but not present' error.");
+                panic!(
+                    "DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
+                       Using SingleContract causes 'key bounds expected but not present' error."
+                );
             }
             None => {
                 panic!("DECRYPTION key must have DashPay contract bounds for contactRequest");

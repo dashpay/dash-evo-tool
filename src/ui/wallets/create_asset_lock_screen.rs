@@ -2,8 +2,11 @@ use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -15,7 +18,6 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
-use dash_sdk::dpp::balances::credits::Credits;
 use eframe::egui::{self, Context, Ui};
 use egui::{Button, RichText, Vec2};
 use std::collections::HashSet;
@@ -40,9 +42,8 @@ pub struct CreateAssetLockScreen {
 
     // Asset lock creation fields
     step: Arc<RwLock<WalletFundedScreenStep>>,
-    amount_input: String,
+    amount_input: Option<AmountInput>,
     identity_index: u32,
-    amount_credits: Option<Credits>,
     funding_address: Option<Address>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     core_has_funding_address: Option<bool>,
@@ -82,9 +83,12 @@ impl CreateAssetLockScreen {
             show_password: false,
             error_message: None,
             step: Arc::new(RwLock::new(WalletFundedScreenStep::WaitingOnFunds)),
-            amount_input: "0.5".to_string(), // Default to 0.5 DASH
+            amount_input: Some(
+                AmountInput::new(Amount::new_dash(0.5))
+                    .with_label("Amount (DASH):")
+                    .with_min_amount(Some(1000)), // Minimum 0.00000001 DASH (1000 credits)
+            ),
             identity_index,
-            amount_credits: Some(50_000_000_000), // 0.5 DASH in credits
             funding_address: None,
             funding_utxo: None,
             core_has_funding_address: None,
@@ -95,42 +99,6 @@ impl CreateAssetLockScreen {
             selected_identity_string: String::new(),
             top_up_index: 0,
             show_advanced_options: false,
-        }
-    }
-
-    fn render_amount_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Amount (DASH):").color(DashColors::text_primary(dark_mode)));
-
-            let response = ui.text_edit_singleline(&mut self.amount_input);
-
-            if response.changed() {
-                // Parse the input as DASH and convert to credits
-                if let Ok(dash_amount) = self.amount_input.parse::<f64>() {
-                    if dash_amount >= 0.0 {
-                        let credits = (dash_amount * 100_000_000_000.0) as u64;
-                        self.amount_credits = Some(credits);
-                    } else {
-                        self.amount_credits = None;
-                    }
-                } else {
-                    self.amount_credits = None;
-                }
-            }
-        });
-
-        // Show amount in credits if valid
-        if let Some(credits) = self.amount_credits {
-            ui.label(
-                RichText::new(format!(
-                    "                                   = {} credits",
-                    credits
-                ))
-                .size(12.0)
-                .color(DashColors::text_secondary(dark_mode)),
-            );
         }
     }
 
@@ -190,7 +158,12 @@ impl CreateAssetLockScreen {
         }
 
         let address = self.funding_address.as_ref().unwrap();
-        let amount = self.amount_input.parse::<f64>().unwrap_or(0.5);
+        let amount = self
+            .amount_input
+            .as_ref()
+            .and_then(|ai| ai.current_value())
+            .map(|a| a.to_f64())
+            .unwrap_or(0.5);
         let dash_uri = format!("dash:{}?amount={:.4}", address, amount);
 
         // Generate the QR code image
@@ -268,8 +241,12 @@ impl CreateAssetLockScreen {
                         .unwrap_or(0)
                 };
                 self.top_up_index = 0;
-                self.amount_input = "0.5".to_string();
-                self.amount_credits = Some(50_000_000_000);
+                // Reset amount input to default 0.5 DASH
+                self.amount_input = Some(
+                    AmountInput::new(Amount::new_dash(0.5))
+                        .with_label("Amount (DASH):")
+                        .with_min_amount(Some(1000)),
+                );
                 self.funding_address = None;
                 self.funding_utxo = None;
                 self.core_has_funding_address = None;
@@ -608,11 +585,16 @@ impl ScreenLike for CreateAssetLockScreen {
                         ui.heading(RichText::new(format!("{}. Select how much you would like to transfer?", step_num)).color(DashColors::text_primary(dark_mode)));
                         ui.add_space(10.0);
 
-                        self.render_amount_input(ui);
+                        // Show amount input using the component
+                        let amount_response = self.amount_input.as_mut().map(|ai| ai.show(ui));
                         ui.add_space(20.0);
 
                         // Step 3: QR Code and address
-                        let amount_valid = self.amount_input.parse::<f64>().map(|a| a > 0.0).unwrap_or(false);
+                        let amount_valid = amount_response
+                            .as_ref()
+                            .and_then(|r| r.inner.parsed_amount.as_ref())
+                            .map(|a| a.value() > 0)
+                            .unwrap_or(false);
                         if amount_valid {
                             let layout_action = ui.with_layout(
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
@@ -636,8 +618,12 @@ impl ScreenLike for CreateAssetLockScreen {
                                         WalletFundedScreenStep::FundsReceived => {
                                             ui.heading(RichText::new("Funds received! Creating asset lock...").color(DashColors::text_primary(dark_mode)));
 
-                                            // Trigger asset lock creation
-                                            if let Some(credits) = self.amount_credits {
+                                            // Trigger asset lock creation - get credits from the amount input
+                                            let credits = self.amount_input
+                                                .as_ref()
+                                                .and_then(|ai| ai.current_value())
+                                                .map(|a| a.value());
+                                            if let Some(credits) = credits {
                                                 // Transition to WaitingForAssetLock BEFORE dispatching to prevent duplicate dispatches
                                                 {
                                                     let mut step = self.step.write().unwrap();

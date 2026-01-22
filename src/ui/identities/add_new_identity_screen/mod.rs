@@ -207,8 +207,9 @@ impl AddNewIdentityScreen {
 
             // Create DashPay contract bounds for ENCRYPTION/DECRYPTION keys
             let dashpay_contract_id = app_context.dashpay_contract.id();
-            let dashpay_bounds = Some(ContractBounds::SingleContract {
+            let dashpay_bounds = Some(ContractBounds::SingleContractDocumentType {
                 id: dashpay_contract_id,
+                document_type_name: "contactRequest".to_string(),
             });
 
             // Default keys per DIP-11:

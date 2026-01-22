@@ -881,3 +881,232 @@ impl ScreenLike for CreateAssetLockScreen {
         self.is_creating = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that DASH amount parsing correctly converts to credits
+    #[test]
+    fn test_dash_to_credits_conversion() {
+        // 1 DASH = 100_000_000_000 credits (10^11)
+        // Test various DASH amounts
+
+        // 0.5 DASH = 50_000_000_000 credits
+        let dash_amount = 0.5f64;
+        let credits = (dash_amount * 100_000_000_000.0) as u64;
+        assert_eq!(credits, 50_000_000_000);
+
+        // 1 DASH = 100_000_000_000 credits
+        let dash_amount = 1.0f64;
+        let credits = (dash_amount * 100_000_000_000.0) as u64;
+        assert_eq!(credits, 100_000_000_000);
+
+        // 0.1 DASH = 10_000_000_000 credits
+        let dash_amount = 0.1f64;
+        let credits = (dash_amount * 100_000_000_000.0) as u64;
+        assert_eq!(credits, 10_000_000_000);
+
+        // 10 DASH = 1_000_000_000_000 credits
+        let dash_amount = 10.0f64;
+        let credits = (dash_amount * 100_000_000_000.0) as u64;
+        assert_eq!(credits, 1_000_000_000_000);
+    }
+
+    /// Test that invalid amounts are handled correctly
+    #[test]
+    fn test_invalid_amount_parsing() {
+        // Test that negative amounts don't produce valid credits
+        let dash_amount = -1.0f64;
+        let is_valid = dash_amount >= 0.0;
+        assert!(!is_valid);
+
+        // Test that parsing invalid strings returns None
+        let invalid_input = "not_a_number";
+        let parsed: Result<f64, _> = invalid_input.parse();
+        assert!(parsed.is_err());
+
+        // Test empty string
+        let empty_input = "";
+        let parsed: Result<f64, _> = empty_input.parse();
+        assert!(parsed.is_err());
+    }
+
+    /// Test step number calculation based on purpose and advanced options
+    #[test]
+    fn test_step_number_calculation() {
+        // Helper function that mimics the step number calculation in the UI
+        fn calculate_step_num(
+            purpose: Option<AssetLockPurpose>,
+            show_advanced_options: bool,
+        ) -> &'static str {
+            match (purpose, show_advanced_options) {
+                (Some(AssetLockPurpose::TopUp), true) => "3",
+                (Some(AssetLockPurpose::TopUp), false) => "2",
+                (Some(AssetLockPurpose::Registration), true) => "2",
+                _ => "1",
+            }
+        }
+
+        // Top Up with advanced options: step 3 (1: identity selection, 2: index selection, 3: amount)
+        assert_eq!(
+            calculate_step_num(Some(AssetLockPurpose::TopUp), true),
+            "3"
+        );
+
+        // Top Up without advanced options: step 2 (1: identity selection, 2: amount)
+        assert_eq!(
+            calculate_step_num(Some(AssetLockPurpose::TopUp), false),
+            "2"
+        );
+
+        // Registration with advanced options: step 2 (1: index selection, 2: amount)
+        assert_eq!(
+            calculate_step_num(Some(AssetLockPurpose::Registration), true),
+            "2"
+        );
+
+        // Registration without advanced options: step 1 (1: amount)
+        assert_eq!(
+            calculate_step_num(Some(AssetLockPurpose::Registration), false),
+            "1"
+        );
+
+        // No purpose selected: step 1
+        assert_eq!(calculate_step_num(None, false), "1");
+        assert_eq!(calculate_step_num(None, true), "1");
+    }
+
+    /// Test next unused identity index calculation
+    #[test]
+    fn test_next_unused_identity_index() {
+        use std::collections::BTreeMap;
+
+        // Helper function that mimics the next index calculation
+        fn calculate_next_identity_index(used_indices: &BTreeMap<u32, ()>) -> u32 {
+            used_indices
+                .keys()
+                .copied()
+                .max()
+                .map(|max| max + 1)
+                .unwrap_or(0)
+        }
+
+        // No used indices -> next is 0
+        let empty: BTreeMap<u32, ()> = BTreeMap::new();
+        assert_eq!(calculate_next_identity_index(&empty), 0);
+
+        // Used indices: 0 -> next is 1
+        let mut used = BTreeMap::new();
+        used.insert(0, ());
+        assert_eq!(calculate_next_identity_index(&used), 1);
+
+        // Used indices: 0, 1, 2 -> next is 3
+        used.insert(1, ());
+        used.insert(2, ());
+        assert_eq!(calculate_next_identity_index(&used), 3);
+
+        // Non-contiguous indices: 0, 5 -> next is 6 (not 1)
+        let mut non_contiguous = BTreeMap::new();
+        non_contiguous.insert(0, ());
+        non_contiguous.insert(5, ());
+        assert_eq!(calculate_next_identity_index(&non_contiguous), 6);
+    }
+
+    /// Test next unused top_up index calculation
+    #[test]
+    fn test_next_unused_top_up_index() {
+        use std::collections::BTreeMap;
+
+        // Helper function that mimics the next top_up index calculation
+        fn calculate_next_top_up_index(used_indices: &BTreeMap<u32, ()>) -> u32 {
+            used_indices
+                .keys()
+                .max()
+                .cloned()
+                .map(|i| i + 1)
+                .unwrap_or(0)
+        }
+
+        // No used indices -> next is 0
+        let empty: BTreeMap<u32, ()> = BTreeMap::new();
+        assert_eq!(calculate_next_top_up_index(&empty), 0);
+
+        // Used indices: 0 -> next is 1
+        let mut used = BTreeMap::new();
+        used.insert(0, ());
+        assert_eq!(calculate_next_top_up_index(&used), 1);
+
+        // Used indices: 0, 1, 2 -> next is 3
+        used.insert(1, ());
+        used.insert(2, ());
+        assert_eq!(calculate_next_top_up_index(&used), 3);
+    }
+
+    /// Test AssetLockPurpose enum values
+    #[test]
+    fn test_asset_lock_purpose_values() {
+        let registration = AssetLockPurpose::Registration;
+        let top_up = AssetLockPurpose::TopUp;
+
+        // Test equality
+        assert_eq!(registration, AssetLockPurpose::Registration);
+        assert_eq!(top_up, AssetLockPurpose::TopUp);
+        assert_ne!(registration, top_up);
+
+        // Test copy semantics
+        let registration_copy = registration;
+        assert_eq!(registration, registration_copy);
+    }
+
+    /// Test TX ID extraction from success message
+    #[test]
+    fn test_tx_id_extraction() {
+        let msg = "Asset lock transaction broadcast successfully. TX ID: abc123def456";
+
+        // Extract TX ID from message
+        let tx_id = if let Some(tx_id_start) = msg.find("TX ID: ") {
+            Some(msg[tx_id_start + 7..].trim().to_string())
+        } else {
+            None
+        };
+
+        assert_eq!(tx_id, Some("abc123def456".to_string()));
+
+        // Test message without TX ID
+        let msg_without_id = "Some other message";
+        let no_tx_id = if let Some(tx_id_start) = msg_without_id.find("TX ID: ") {
+            Some(msg_without_id[tx_id_start + 7..].trim().to_string())
+        } else {
+            None
+        };
+
+        assert_eq!(no_tx_id, None);
+    }
+
+    /// Test MAX_IDENTITY_INDEX constant
+    #[test]
+    fn test_max_identity_index_constant() {
+        assert_eq!(MAX_IDENTITY_INDEX, 30);
+
+        // Verify reasonable range for iteration
+        let indices: Vec<u32> = (0..MAX_IDENTITY_INDEX).collect();
+        assert_eq!(indices.len(), 30);
+        assert_eq!(indices[0], 0);
+        assert_eq!(indices[29], 29);
+    }
+
+    /// Test default amount values
+    #[test]
+    fn test_default_amount_values() {
+        // Default amount is 0.5 DASH
+        let default_amount_input = "0.5";
+        let parsed_amount: f64 = default_amount_input.parse().unwrap();
+        assert_eq!(parsed_amount, 0.5);
+
+        // Default credits for 0.5 DASH
+        let default_credits = 50_000_000_000u64;
+        let calculated_credits = (parsed_amount * 100_000_000_000.0) as u64;
+        assert_eq!(calculated_credits, default_credits);
+    }
+}

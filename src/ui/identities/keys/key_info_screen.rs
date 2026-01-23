@@ -305,6 +305,21 @@ impl ScreenLike for KeyInfoScreen {
                                 .num_columns(2)
                                 .spacing([10.0, 10.0])
                                 .show(ui, |ui| {
+                                    if let Ok(secret_key) = SecretKey::from_slice(clear) {
+                                        let private_key =
+                                            PrivateKey::new(secret_key, self.app_context.network);
+                                        ui.label(
+                                            RichText::new("Private Key (WIF):")
+                                                .strong()
+                                                .color(ui.visuals().text_color()),
+                                        );
+                                        ui.label(
+                                            RichText::new(private_key.to_wif())
+                                                .color(ui.visuals().text_color()),
+                                        );
+                                        ui.end_row();
+                                    }
+
                                     ui.label(
                                         RichText::new("Private Key (Hex):")
                                             .strong()

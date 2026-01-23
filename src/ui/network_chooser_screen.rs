@@ -851,14 +851,8 @@ impl NetworkChooserScreen {
                     if StyledCheckbox::new(&mut self.developer_mode, "Developer mode")
                         .show(ui)
                         .clicked()
-                        && let Ok(mut config) = Config::load()
                     {
-                        config.developer_mode = Some(self.developer_mode);
-                        if let Err(e) = config.save() {
-                            eprintln!("Failed to save config: {e}");
-                        }
-
-                        // Update all contexts
+                        // Always update all contexts first to keep UI in sync
                         self.mainnet_app_context
                             .enable_developer_mode(self.developer_mode);
                         if let Some(ref ctx) = self.testnet_app_context {
@@ -869,6 +863,14 @@ impl NetworkChooserScreen {
                         }
                         if let Some(ref ctx) = self.local_app_context {
                             ctx.enable_developer_mode(self.developer_mode);
+                        }
+
+                        // Persist to config file (non-blocking for UI)
+                        if let Ok(mut config) = Config::load() {
+                            config.developer_mode = Some(self.developer_mode);
+                            if let Err(e) = config.save() {
+                                eprintln!("Failed to save config: {e}");
+                            }
                         }
 
                         // TODO: When developer mode is disabled, stop SPV and switch to RPC.

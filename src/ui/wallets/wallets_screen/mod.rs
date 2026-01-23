@@ -1227,9 +1227,14 @@ impl WalletsBalancesScreen {
                 .show(ui, |ui| {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.horizontal(|ui| {
-                        ui.heading(RichText::new("Unused Asset Locks").color(DashColors::text_primary(dark_mode)));
+                        ui.heading(RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Search for Unused Asset Locks").on_hover_text("Scan Core wallet for untracked asset locks").clicked() {
+                            if ui.button("Create Asset Lock").clicked() {
+                                app_action = AppAction::AddScreen(
+                                    ScreenType::CreateAssetLock(arc_wallet.clone()).create_screen(&self.app_context)
+                                );
+                            }
+                            if ui.button("Search for Unused").on_hover_text("Scan Core wallet for untracked asset locks").clicked() {
                                 recover_asset_locks_clicked = true;
                             }
                         });
@@ -1277,7 +1282,7 @@ impl WalletsBalancesScreen {
                         .column(Column::initial(100.0)) // Amount (Duffs)
                         .column(Column::initial(100.0)) // InstantLock status
                         .column(Column::initial(100.0)) // Usable status
-                        .column(Column::initial(150.0)) // Actions
+                        .column(Column::initial(200.0)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
                                 ui.label("Transaction ID");
@@ -1299,7 +1304,7 @@ impl WalletsBalancesScreen {
                             });
                         })
                         .body(|mut body| {
-                            for (idx, (tx, address, amount, islock, proof)) in wallet.unused_asset_locks.iter().enumerate() {
+                            for (index, (tx, address, amount, islock, proof)) in wallet.unused_asset_locks.iter().enumerate() {
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
                                         ui.label(tx.txid().to_string());
@@ -1319,13 +1324,18 @@ impl WalletsBalancesScreen {
                                         ui.label(status);
                                     });
                                     row.col(|ui| {
-                                        if proof.is_some() {
-                                            if ui.small_button("Fund Platform Addr").on_hover_text("Fund a Platform address with this asset lock").clicked() {
-                                                open_fund_dialog_for_idx = Some((idx, platform_addresses.clone()));
-                                            }
-                                        } else {
-                                            ui.label(RichText::new("Not ready").color(Color32::GRAY).size(11.0));
+                                        if ui.small_button("View").on_hover_text("View full asset lock details").clicked() {
+                                            app_action = AppAction::AddScreen(
+                                                ScreenType::AssetLockDetail(
+                                                    wallet.seed_hash(),
+                                                    index
+                                                ).create_screen(&self.app_context)
+                                            );
                                         }
+                                        if proof.is_some()
+                                            && ui.small_button("Fund").on_hover_text("Fund a Platform address with this asset lock").clicked() {
+                                                open_fund_dialog_for_idx = Some((index, platform_addresses.clone()));
+                                            }
                                     });
                                 });
                             }

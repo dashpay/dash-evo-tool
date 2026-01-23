@@ -1,3 +1,4 @@
+mod create_asset_lock;
 mod recover_asset_locks;
 mod refresh_single_key_wallet_info;
 mod refresh_wallet_info;
@@ -18,6 +19,7 @@ use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::{
     Address, Block, ChainLock, InstantLock, Network, OutPoint, PrivateKey, Transaction, TxOut,
 };
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
@@ -57,6 +59,8 @@ pub enum CoreTask {
     RefreshWalletInfo(Arc<RwLock<Wallet>>, Option<PlatformSyncMode>),
     RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
     StartDashQT(Network, PathBuf, bool),
+    CreateRegistrationAssetLock(Arc<RwLock<Wallet>>, Credits, u32), // wallet, amount in credits, identity index
+    CreateTopUpAssetLock(Arc<RwLock<Wallet>>, Credits, u32, u32), // wallet, amount in credits, identity index, top up index
     SendWalletPayment {
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
@@ -84,6 +88,14 @@ impl PartialEq for CoreTask {
                 | (
                     CoreTask::StartDashQT(_, _, _),
                     CoreTask::StartDashQT(_, _, _)
+                )
+                | (
+                    CoreTask::CreateRegistrationAssetLock(_, _, _),
+                    CoreTask::CreateRegistrationAssetLock(_, _, _)
+                )
+                | (
+                    CoreTask::CreateTopUpAssetLock(_, _, _, _),
+                    CoreTask::CreateTopUpAssetLock(_, _, _, _)
                 )
                 | (
                     CoreTask::SendWalletPayment { .. },
@@ -241,6 +253,12 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
+            CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => self
+                .create_registration_asset_lock(wallet, amount, true, identity_index)
+                .map_err(|e| format!("Error creating asset lock: {}", e)),
+            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => self
+                .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
+                .map_err(|e| format!("Error creating top up asset lock: {}", e)),
             CoreTask::SendWalletPayment { wallet, request } => {
                 self.send_wallet_payment(wallet, request).await
             }

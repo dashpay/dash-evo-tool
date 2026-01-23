@@ -9,7 +9,7 @@ use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
     WaitingOnFunds,

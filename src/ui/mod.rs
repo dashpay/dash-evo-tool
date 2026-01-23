@@ -39,6 +39,8 @@ use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
+use crate::ui::wallets::asset_lock_detail_screen::AssetLockDetailScreen;
+use crate::ui::wallets::create_asset_lock_screen::CreateAssetLockScreen;
 use crate::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
 use crate::ui::wallets::send_screen::WalletSendScreen;
 use crate::ui::wallets::single_key_send_screen::SingleKeyWalletSendScreen;
@@ -295,6 +297,10 @@ pub enum ScreenType {
     PurchaseTokenScreen(IdentityTokenInfo),
     SetTokenPriceScreen(IdentityTokenInfo),
 
+    // Wallet screens
+    AssetLockDetail([u8; 32], usize),
+    CreateAssetLock(Arc<RwLock<Wallet>>),
+
     // DashPay Screens
     DashPayContacts,
     DashPayProfile,
@@ -318,6 +324,10 @@ impl PartialEq for ScreenType {
                 ScreenType::SingleKeyWalletSendScreen(_),
                 ScreenType::SingleKeyWalletSendScreen(_),
             ) => true,
+            (ScreenType::CreateAssetLock(_), ScreenType::CreateAssetLock(_)) => true,
+            (ScreenType::AssetLockDetail(a1, a2), ScreenType::AssetLockDetail(b1, b2)) => {
+                a1 == b1 && a2 == b2
+            }
             (ScreenType::Identities, ScreenType::Identities) => true,
             (ScreenType::DPNSActiveContests, ScreenType::DPNSActiveContests) => true,
             (ScreenType::DPNSPastContests, ScreenType::DPNSPastContests) => true,
@@ -604,6 +614,12 @@ impl ScreenType {
             ScreenType::SetTokenPriceScreen(identity_token_info) => Screen::SetTokenPriceScreen(
                 SetTokenPriceScreen::new(identity_token_info.clone(), app_context),
             ),
+            ScreenType::AssetLockDetail(wallet_seed_hash, index) => Screen::AssetLockDetailScreen(
+                AssetLockDetailScreen::new(*wallet_seed_hash, *index, app_context),
+            ),
+            ScreenType::CreateAssetLock(wallet) => Screen::CreateAssetLockScreen(
+                CreateAssetLockScreen::new(wallet.clone(), app_context),
+            ),
 
             // DashPay Screens
             ScreenType::DashPayContacts => {
@@ -710,6 +726,8 @@ pub enum Screen {
     AddTokenById(AddTokenByIdScreen),
     PurchaseTokenScreen(PurchaseTokenScreen),
     SetTokenPriceScreen(SetTokenPriceScreen),
+    AssetLockDetailScreen(AssetLockDetailScreen),
+    CreateAssetLockScreen(CreateAssetLockScreen),
 
     // DashPay Screens
     DashPayScreen(DashPayScreen),
@@ -786,6 +804,8 @@ impl Screen {
             Screen::AddTokenById(screen) => screen.app_context = app_context,
             Screen::PurchaseTokenScreen(screen) => screen.app_context = app_context,
             Screen::SetTokenPriceScreen(screen) => screen.app_context = app_context,
+            Screen::AssetLockDetailScreen(screen) => screen.app_context = app_context,
+            Screen::CreateAssetLockScreen(screen) => screen.app_context = app_context,
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => {
@@ -967,6 +987,12 @@ impl Screen {
             Screen::SetTokenPriceScreen(screen) => {
                 ScreenType::SetTokenPriceScreen(screen.identity_token_info.clone())
             }
+            Screen::AssetLockDetailScreen(screen) => {
+                ScreenType::AssetLockDetail(screen.wallet_seed_hash, screen.asset_lock_index)
+            }
+            Screen::CreateAssetLockScreen(screen) => {
+                ScreenType::CreateAssetLock(screen.wallet.clone())
+            }
             Screen::TokensScreen(_) => {
                 // Default fallback for any unmatched TokensScreen variants
                 ScreenType::TokenBalances
@@ -1050,6 +1076,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.refresh(),
             Screen::PurchaseTokenScreen(screen) => screen.refresh(),
             Screen::SetTokenPriceScreen(screen) => screen.refresh(),
+            Screen::AssetLockDetailScreen(screen) => screen.refresh(),
+            Screen::CreateAssetLockScreen(screen) => screen.refresh(),
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.refresh(),
@@ -1114,6 +1142,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.refresh_on_arrival(),
             Screen::PurchaseTokenScreen(screen) => screen.refresh_on_arrival(),
             Screen::SetTokenPriceScreen(screen) => screen.refresh_on_arrival(),
+            Screen::AssetLockDetailScreen(screen) => screen.refresh_on_arrival(),
+            Screen::CreateAssetLockScreen(screen) => screen.refresh_on_arrival(),
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.refresh_on_arrival(),
@@ -1178,6 +1208,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.ui(ctx),
             Screen::PurchaseTokenScreen(screen) => screen.ui(ctx),
             Screen::SetTokenPriceScreen(screen) => screen.ui(ctx),
+            Screen::AssetLockDetailScreen(screen) => screen.ui(ctx),
+            Screen::CreateAssetLockScreen(screen) => screen.ui(ctx),
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.ui(ctx),
@@ -1262,6 +1294,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.display_message(message, message_type),
             Screen::PurchaseTokenScreen(screen) => screen.display_message(message, message_type),
             Screen::SetTokenPriceScreen(screen) => screen.display_message(message, message_type),
+            Screen::AssetLockDetailScreen(screen) => screen.display_message(message, message_type),
+            Screen::CreateAssetLockScreen(screen) => screen.display_message(message, message_type),
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.display_message(message, message_type),
@@ -1424,6 +1458,12 @@ impl ScreenLike for Screen {
             Screen::SetTokenPriceScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::AssetLockDetailScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::CreateAssetLockScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => {
@@ -1504,6 +1544,8 @@ impl ScreenLike for Screen {
             Screen::AddTokenById(screen) => screen.pop_on_success(),
             Screen::PurchaseTokenScreen(screen) => screen.pop_on_success(),
             Screen::SetTokenPriceScreen(screen) => screen.pop_on_success(),
+            Screen::AssetLockDetailScreen(screen) => screen.pop_on_success(),
+            Screen::CreateAssetLockScreen(screen) => screen.pop_on_success(),
 
             // DashPay Screens
             Screen::DashPayScreen(screen) => screen.pop_on_success(),

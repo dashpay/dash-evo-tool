@@ -205,51 +205,9 @@ impl AddNewIdentityScreen {
             let app_context = &self.app_context;
             let identity_id_number = self.identity_id_number;
 
-            // Create DashPay contract bounds for ENCRYPTION/DECRYPTION keys
+            // Get default key configuration
             let dashpay_contract_id = app_context.dashpay_contract.id();
-            let dashpay_bounds = Some(ContractBounds::SingleContract {
-                id: dashpay_contract_id,
-            });
-
-            // Default keys per DIP-11:
-            // - AUTHENTICATION CRITICAL (general platform operations)
-            // - AUTHENTICATION HIGH (general platform operations)
-            // - TRANSFER CRITICAL (credit transfers)
-            // - ENCRYPTION MEDIUM with DashPay bounds (for contact requests per DIP-15)
-            // - DECRYPTION MEDIUM with DashPay bounds (for contact requests per DIP-15)
-            // Note: Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
-            let default_keys: Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> = vec![
-                (
-                    KeyType::ECDSA_HASH160,
-                    Purpose::AUTHENTICATION,
-                    SecurityLevel::CRITICAL,
-                    None,
-                ),
-                (
-                    KeyType::ECDSA_HASH160,
-                    Purpose::AUTHENTICATION,
-                    SecurityLevel::HIGH,
-                    None,
-                ),
-                (
-                    KeyType::ECDSA_HASH160,
-                    Purpose::TRANSFER,
-                    SecurityLevel::CRITICAL,
-                    None,
-                ),
-                (
-                    KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
-                    Purpose::ENCRYPTION,
-                    SecurityLevel::MEDIUM, // Platform enforces MEDIUM for ENCRYPTION
-                    dashpay_bounds.clone(),
-                ),
-                (
-                    KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
-                    Purpose::DECRYPTION,
-                    SecurityLevel::MEDIUM,
-                    dashpay_bounds,
-                ),
-            ];
+            let default_keys = default_identity_key_specs(dashpay_contract_id);
 
             let mut wallet = wallet_lock.write().expect("wallet lock failed");
             let master_key = wallet.identity_authentication_ecdsa_private_key(
@@ -1351,5 +1309,248 @@ impl ScreenLike for AddNewIdentityScreen {
         }
 
         action
+    }
+}
+
+/// Returns the default key specifications for a new identity.
+///
+/// The returned vector contains tuples of (KeyType, Purpose, SecurityLevel, Option<ContractBounds>):
+/// - AUTHENTICATION CRITICAL: General platform operations (actions should require PIN)
+/// - AUTHENTICATION HIGH: General platform operations
+/// - TRANSFER CRITICAL: Credit transfers
+/// - ENCRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15
+/// - DECRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15
+///
+/// Note: ENCRYPTION and DECRYPTION keys must use `SingleContractDocumentType` with "contactRequest"
+/// document type, not just `SingleContract`. The platform requires encryption key bounds to specify
+/// the exact document type for proper validation.
+pub fn default_identity_key_specs(
+    dashpay_contract_id: Identifier,
+) -> Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> {
+    let dashpay_bounds = Some(ContractBounds::SingleContractDocumentType {
+        id: dashpay_contract_id,
+        document_type_name: "contactRequest".to_string(),
+    });
+
+    vec![
+        (
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::CRITICAL,
+            None,
+        ),
+        (
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            None,
+        ),
+        (
+            KeyType::ECDSA_HASH160,
+            Purpose::TRANSFER,
+            SecurityLevel::CRITICAL,
+            None,
+        ),
+        (
+            KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM, // Platform enforces MEDIUM for ENCRYPTION
+            dashpay_bounds.clone(),
+        ),
+        (
+            KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
+            Purpose::DECRYPTION,
+            SecurityLevel::MEDIUM,
+            dashpay_bounds,
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that the default identity keys include the correct number of keys
+    #[test]
+    fn test_default_identity_keys_count() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+        assert_eq!(keys.len(), 5, "Should have 5 default keys");
+    }
+
+    /// Test that AUTHENTICATION keys have correct configuration
+    #[test]
+    fn test_authentication_keys_configuration() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // First key: AUTHENTICATION CRITICAL
+        let (key_type, purpose, security_level, contract_bounds) = &keys[0];
+        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
+        assert_eq!(*purpose, Purpose::AUTHENTICATION);
+        assert_eq!(*security_level, SecurityLevel::CRITICAL);
+        assert!(
+            contract_bounds.is_none(),
+            "AUTHENTICATION keys should have no contract bounds"
+        );
+
+        // Second key: AUTHENTICATION HIGH
+        let (key_type, purpose, security_level, contract_bounds) = &keys[1];
+        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
+        assert_eq!(*purpose, Purpose::AUTHENTICATION);
+        assert_eq!(*security_level, SecurityLevel::HIGH);
+        assert!(
+            contract_bounds.is_none(),
+            "AUTHENTICATION keys should have no contract bounds"
+        );
+    }
+
+    /// Test that TRANSFER key has correct configuration
+    #[test]
+    fn test_transfer_key_configuration() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // Third key: TRANSFER CRITICAL
+        let (key_type, purpose, security_level, contract_bounds) = &keys[2];
+        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
+        assert_eq!(*purpose, Purpose::TRANSFER);
+        assert_eq!(*security_level, SecurityLevel::CRITICAL);
+        assert!(
+            contract_bounds.is_none(),
+            "TRANSFER keys should have no contract bounds"
+        );
+    }
+
+    /// Test that ENCRYPTION key uses SingleContractDocumentType with contactRequest
+    ///
+    /// This is critical for DashPay compatibility - the platform requires encryption keys
+    /// to specify the exact document type (contactRequest) not just the contract ID.
+    /// Using SingleContract instead of SingleContractDocumentType will cause:
+    /// "key bounds expected but not present error: expected encryption key bounds for encryption"
+    #[test]
+    fn test_encryption_key_uses_single_contract_document_type() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // Fourth key: ENCRYPTION MEDIUM
+        let (key_type, purpose, security_level, contract_bounds) = &keys[3];
+        assert_eq!(
+            *key_type,
+            KeyType::ECDSA_SECP256K1,
+            "ENCRYPTION key must use ECDSA_SECP256K1 for ECDH"
+        );
+        assert_eq!(*purpose, Purpose::ENCRYPTION);
+        assert_eq!(
+            *security_level,
+            SecurityLevel::MEDIUM,
+            "Platform enforces MEDIUM for ENCRYPTION"
+        );
+
+        // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
+        match contract_bounds {
+            Some(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            }) => {
+                assert_eq!(
+                    *id, contract_id,
+                    "Contract ID should match DashPay contract"
+                );
+                assert_eq!(
+                    document_type_name, "contactRequest",
+                    "Document type must be 'contactRequest' for DashPay"
+                );
+            }
+            Some(ContractBounds::SingleContract { .. }) => {
+                panic!(
+                    "ENCRYPTION key must use SingleContractDocumentType, not SingleContract. \
+                       Using SingleContract causes 'key bounds expected but not present' error."
+                );
+            }
+            None => {
+                panic!("ENCRYPTION key must have DashPay contract bounds for contactRequest");
+            }
+        }
+    }
+
+    /// Test that DECRYPTION key uses SingleContractDocumentType with contactRequest
+    ///
+    /// This is critical for DashPay compatibility - the platform requires decryption keys
+    /// to specify the exact document type (contactRequest) not just the contract ID.
+    #[test]
+    fn test_decryption_key_uses_single_contract_document_type() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // Fifth key: DECRYPTION MEDIUM
+        let (key_type, purpose, security_level, contract_bounds) = &keys[4];
+        assert_eq!(
+            *key_type,
+            KeyType::ECDSA_SECP256K1,
+            "DECRYPTION key must use ECDSA_SECP256K1 for ECDH"
+        );
+        assert_eq!(*purpose, Purpose::DECRYPTION);
+        assert_eq!(*security_level, SecurityLevel::MEDIUM);
+
+        // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
+        match contract_bounds {
+            Some(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            }) => {
+                assert_eq!(
+                    *id, contract_id,
+                    "Contract ID should match DashPay contract"
+                );
+                assert_eq!(
+                    document_type_name, "contactRequest",
+                    "Document type must be 'contactRequest' for DashPay"
+                );
+            }
+            Some(ContractBounds::SingleContract { .. }) => {
+                panic!(
+                    "DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
+                       Using SingleContract causes 'key bounds expected but not present' error."
+                );
+            }
+            None => {
+                panic!("DECRYPTION key must have DashPay contract bounds for contactRequest");
+            }
+        }
+    }
+
+    /// Test that encryption and decryption keys have matching contract bounds
+    #[test]
+    fn test_encryption_decryption_keys_have_matching_bounds() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        let encryption_bounds = &keys[3].3;
+        let decryption_bounds = &keys[4].3;
+
+        assert_eq!(
+            encryption_bounds, decryption_bounds,
+            "ENCRYPTION and DECRYPTION keys should have identical contract bounds"
+        );
+    }
+
+    /// Test that the contract ID is correctly propagated to key bounds
+    #[test]
+    fn test_contract_id_propagation() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        for (i, (_, purpose, _, contract_bounds)) in keys.iter().enumerate() {
+            if (*purpose == Purpose::ENCRYPTION || *purpose == Purpose::DECRYPTION)
+                && let Some(ContractBounds::SingleContractDocumentType { id, .. }) = contract_bounds
+            {
+                assert_eq!(
+                    *id, contract_id,
+                    "Key {} contract bounds should use the provided contract ID",
+                    i
+                );
+            }
+        }
     }
 }

@@ -85,7 +85,12 @@ impl RegisterDpnsNameScreen {
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM].into(),
+                    [
+                        SecurityLevel::CRITICAL,
+                        SecurityLevel::HIGH,
+                        SecurityLevel::MEDIUM,
+                    ]
+                    .into(),
                     KeyType::all_key_types().into(),
                     false,
                 )
@@ -142,7 +147,12 @@ impl RegisterDpnsNameScreen {
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
-                    [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM].into(),
+                    [
+                        SecurityLevel::CRITICAL,
+                        SecurityLevel::HIGH,
+                        SecurityLevel::MEDIUM,
+                    ]
+                    .into(),
                     KeyType::all_key_types().into(),
                     false,
                 )
@@ -189,7 +199,12 @@ impl RegisterDpnsNameScreen {
                     .identity
                     .get_first_public_key_matching(
                         Purpose::AUTHENTICATION,
-                        [SecurityLevel::CRITICAL, SecurityLevel::HIGH, SecurityLevel::MEDIUM].into(),
+                        [
+                            SecurityLevel::CRITICAL,
+                            SecurityLevel::HIGH,
+                            SecurityLevel::MEDIUM,
+                        ]
+                        .into(),
                         KeyType::all_key_types().into(),
                         false,
                     )

@@ -171,20 +171,21 @@ impl WithdrawalScreen {
             });
 
             // In dev mode with OWNER key, show hint about auto-selected payout address
-            if self.app_context.is_developer_mode() && is_owner_key
+            if self.app_context.is_developer_mode()
+                && is_owner_key
                 && let Some(payout_address) = self
                     .identity
                     .masternode_payout_address(self.app_context.network)
-                {
-                    ui.label(
-                        RichText::new(format!(
-                            "Leave empty to use masternode payout address: {}",
-                            payout_address
-                        ))
-                        .italics()
-                        .color(Color32::GRAY),
-                    );
-                }
+            {
+                ui.label(
+                    RichText::new(format!(
+                        "Leave empty to use masternode payout address: {}",
+                        payout_address
+                    ))
+                    .italics()
+                    .color(Color32::GRAY),
+                );
+            }
         } else {
             ui.label(format!(
                 "Masternode payout address: {}",

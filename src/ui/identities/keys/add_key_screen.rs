@@ -404,6 +404,7 @@ impl ScreenLike for AddKeyScreen {
                 .show(ui, |ui| {
                     // Purpose
                     ui.label("Purpose:");
+                    let prev_purpose = self.purpose;
                     egui::ComboBox::from_id_salt("purpose_selector")
                         .selected_text(format!("{:?}", self.purpose))
                         .show_ui(ui, |ui| {
@@ -443,44 +444,93 @@ impl ScreenLike for AddKeyScreen {
                                 );
                             }
                         });
+
+                    // Auto-set security level when purpose changes
+                    if self.purpose != prev_purpose {
+                        match self.purpose {
+                            Purpose::ENCRYPTION | Purpose::DECRYPTION => {
+                                self.security_level = SecurityLevel::MEDIUM;
+                            }
+                            Purpose::TRANSFER => {
+                                self.security_level = SecurityLevel::CRITICAL;
+                            }
+                            Purpose::AUTHENTICATION => {
+                                // AUTHENTICATION allows multiple levels, keep current if valid
+                                // otherwise default to CRITICAL
+                                if self.security_level != SecurityLevel::CRITICAL
+                                    && self.security_level != SecurityLevel::HIGH
+                                    && self.security_level != SecurityLevel::MEDIUM
+                                {
+                                    self.security_level = SecurityLevel::CRITICAL;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     ui.end_row();
 
                     // Security Level
                     ui.label("Security Level:");
-                    egui::ComboBox::from_id_salt("security_level_selector")
-                        .selected_text(format!("{:?}", self.security_level))
-                        .show_ui(ui, |ui| {
-                            if self.enable_contract_bounds {
-                                // When contract bounds are enabled, only allow MEDIUM
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::MEDIUM,
-                                    "MEDIUM",
-                                );
-                            } else if self.purpose == Purpose::AUTHENTICATION {
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::CRITICAL,
-                                    "CRITICAL",
-                                );
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::HIGH,
-                                    "HIGH",
-                                );
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::MEDIUM,
-                                    "MEDIUM",
-                                );
-                            } else {
-                                ui.selectable_value(
-                                    &mut self.security_level,
-                                    SecurityLevel::CRITICAL,
-                                    "CRITICAL",
-                                );
-                            }
-                        });
+                    // Only AUTHENTICATION has multiple security level options
+                    let has_multiple_security_levels = self.purpose == Purpose::AUTHENTICATION;
+                    let inner_response = ui.add_enabled_ui(has_multiple_security_levels, |ui| {
+                        egui::ComboBox::from_id_salt("security_level_selector")
+                            .selected_text(format!("{:?}", self.security_level))
+                            .show_ui(ui, |ui| {
+                                if self.enable_contract_bounds {
+                                    // When contract bounds are enabled, only allow MEDIUM
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::MEDIUM,
+                                        "MEDIUM",
+                                    );
+                                } else if self.purpose == Purpose::AUTHENTICATION {
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::CRITICAL,
+                                        "CRITICAL",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::HIGH,
+                                        "HIGH",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::MEDIUM,
+                                        "MEDIUM",
+                                    );
+                                } else if self.purpose == Purpose::ENCRYPTION
+                                    || self.purpose == Purpose::DECRYPTION
+                                {
+                                    // ENCRYPTION and DECRYPTION only allow MEDIUM
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::MEDIUM,
+                                        "MEDIUM",
+                                    );
+                                } else {
+                                    // TRANSFER only allows CRITICAL
+                                    ui.selectable_value(
+                                        &mut self.security_level,
+                                        SecurityLevel::CRITICAL,
+                                        "CRITICAL",
+                                    );
+                                }
+                            })
+                    });
+                    if !has_multiple_security_levels {
+                        // Use interact with hover sense to detect hover on disabled widget
+                        let hover_response = ui.interact(
+                            inner_response.response.rect,
+                            egui::Id::new("security_level_tooltip"),
+                            egui::Sense::hover(),
+                        );
+                        hover_response.on_hover_text(format!(
+                            "{:?} purpose requires {:?} security level",
+                            self.purpose, self.security_level
+                        ));
+                    }
                     ui.end_row();
 
                     // Key Type

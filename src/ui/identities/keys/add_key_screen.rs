@@ -472,8 +472,7 @@ impl ScreenLike for AddKeyScreen {
                     // Security Level
                     ui.label("Security Level:");
                     // Only AUTHENTICATION has multiple security level options
-                    let has_multiple_security_levels =
-                        self.purpose == Purpose::AUTHENTICATION;
+                    let has_multiple_security_levels = self.purpose == Purpose::AUTHENTICATION;
                     let inner_response = ui.add_enabled_ui(has_multiple_security_levels, |ui| {
                         egui::ComboBox::from_id_salt("security_level_selector")
                             .selected_text(format!("{:?}", self.security_level))

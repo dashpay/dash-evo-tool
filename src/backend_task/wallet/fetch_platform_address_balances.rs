@@ -336,8 +336,13 @@ impl AppContext {
         // We query for compacted changes starting from that start height,
         // then query recent non-compacted changes starting from where compacted ends.
 
+        // Query from start_height + 1 because start_height was already processed
+        // in the previous sync (last_terminal_block is the highest block we've seen)
+        let query_from_height = start_height.saturating_add(1);
+
         tracing::debug!(
-            "Fetching terminal balance updates from height {}",
+            "Fetching terminal balance updates from height {} (start_height={})",
+            query_from_height,
             start_height
         );
 
@@ -358,9 +363,9 @@ impl AppContext {
         let mut highest_block_seen = start_height;
 
         // Step 1: Fetch compacted balance changes (merged changes for ranges of blocks)
-        // Start from start_height to get changes since the last sync
+        // Start from query_from_height (start_height + 1) to get changes since the last sync
         let compacted_fetch_start = std::time::Instant::now();
-        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(start_height);
+        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(query_from_height);
         let compacted_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             RecentCompactedAddressBalanceChanges::fetch(sdk, compacted_query),
@@ -370,7 +375,7 @@ impl AppContext {
         tracing::info!(
             "Compacted balance changes fetch: duration={:?}, from_height={}",
             compacted_duration,
-            start_height
+            query_from_height
         );
         let compacted_result = match compacted_result {
             Ok(result) => result,
@@ -411,10 +416,11 @@ impl AppContext {
                                 credits
                             }
                             BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
-                                // Only apply credits from blocks AFTER our start height
+                                // Only apply credits from blocks at or after our query height
+                                // (since we query from start_height + 1, all results should be valid)
                                 let total_to_add: u64 = operations
                                     .iter()
-                                    .filter(|(height, _)| **height > start_height)
+                                    .filter(|(height, _)| **height >= query_from_height)
                                     .map(|(_, credits)| *credits)
                                     .sum();
                                 tracing::debug!(

@@ -30,36 +30,44 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Maximum number of platform address inputs allowed per state transition
 const MAX_PLATFORM_INPUTS: usize = 16;
 
-/// Platform transfer base fee per input (from Platform state_transition_min_fees v1)
-const PLATFORM_FEE_PER_INPUT: u64 = 500_000;
+/// Storage cost per byte (from Platform fee/storage/v1.rs)
+const STORAGE_CREDIT_PER_BYTE: u64 = 27_000;
 
-/// Platform transfer base fee per output (from Platform state_transition_min_fees v1)
-const PLATFORM_FEE_PER_OUTPUT: u64 = 6_000_000;
+/// Estimated serialized bytes per input (address + signature/witness data)
+/// Based on Platform test cases: 1 input = 225 bytes, 2 inputs = 450 bytes
+const ESTIMATED_BYTES_PER_INPUT: u64 = 225;
 
-/// Fee multiplier to account for actual Platform execution costs.
-/// The base formula (input×500K + output×6M) is just a MINIMUM fee.
-/// The actual fee includes all validation operations: signature verification,
-/// cryptographic hashing (SHA256, RIPEMD160), state lookups, and storage operations.
-/// Based on observed fees, the actual fee is approximately 7-8x the minimum.
-/// We use 8x to ensure sufficient funds are reserved.
-const PLATFORM_FEE_MULTIPLIER: u64 = 8;
+/// Processing fee per input (signature verification, hashing, identity lookups)
+/// From Platform test cases: ~500,000 credits per input for ECDSA signatures
+const PROCESSING_FEE_PER_INPUT: u64 = 500_000;
 
 /// Calculate the estimated fee for a platform transfer based on input/output counts.
 ///
-/// The base formula from Platform is: (input_count × 500,000) + (output_count × 6,000,000)
-/// However, this is only the MINIMUM fee. The actual fee charged by Platform includes
-/// all validation operations and is significantly higher (~7-8x).
+/// The fee consists of two main components:
+/// 1. Storage fee: serialized_bytes × 27,000 credits/byte
+/// 2. Processing fee: ~500,000 credits per input (signature verification, hashing, lookups)
 ///
-/// We apply a multiplier to ensure sufficient funds are reserved.
-fn estimate_platform_fee(input_count: usize, output_count: usize) -> u64 {
-    let inputs = input_count as u64;
-    let outputs = output_count.max(1) as u64;
+/// Based on Platform test cases:
+/// - 1 input + 1 output: ~6.5M credits (225 bytes)
+/// - 2 inputs + 1 output: ~12.7M credits (450 bytes)
+/// - Each additional input adds ~6.2M credits
+///
+/// We add a 15% safety buffer to account for variations in actual fee calculation.
+fn estimate_platform_fee(input_count: usize, _output_count: usize) -> u64 {
+    let inputs = input_count.max(1) as u64;
 
-    // Base minimum fee from Platform constants
-    let base_fee = (inputs * PLATFORM_FEE_PER_INPUT) + (outputs * PLATFORM_FEE_PER_OUTPUT);
+    // Storage fee: each input adds ~225 bytes to the serialized transition
+    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
+    let storage_fee = estimated_bytes * STORAGE_CREDIT_PER_BYTE;
 
-    // Apply multiplier to account for actual execution costs
-    base_fee * PLATFORM_FEE_MULTIPLIER
+    // Processing fee: signature verification, hashing, identity lookups per input
+    let processing_fee = inputs * PROCESSING_FEE_PER_INPUT;
+
+    // Base fee calculation
+    let base_fee = storage_fee + processing_fee;
+
+    // Add 15% safety buffer for fee estimation variance
+    base_fee + (base_fee / 7)
 }
 
 /// Detected address type
@@ -563,23 +571,42 @@ impl WalletSendScreen {
             .map(|(addr, _)| addr)
             .map_err(|e| format!("Invalid platform address: {}", e))?;
 
+        // Filter out the destination address from inputs (protocol doesn't allow same address as input and output)
+        let filtered_addresses: Vec<_> = addresses
+            .iter()
+            .filter(|(platform_addr, _, _)| *platform_addr != destination)
+            .cloned()
+            .collect();
+
+        if filtered_addresses.is_empty() {
+            return Err(
+                "Cannot send to your own address. The destination must be different from your source addresses."
+                    .to_string(),
+            );
+        }
+
+        // Recalculate available balance after filtering
+        let available_balance: u64 = filtered_addresses.iter().map(|(_, _, b)| *b).sum();
+        if amount_credits > available_balance {
+            return Err(format!(
+                "Insufficient balance from other addresses. Need {} but have {} (excluding destination address)",
+                Self::format_credits(amount_credits),
+                Self::format_credits(available_balance)
+            ));
+        }
+
         // Sort addresses by balance descending so the largest balance is used first.
         // The first address (highest balance) will pay the fee.
-        let mut sorted_addresses = addresses.clone();
+        let mut sorted_addresses = filtered_addresses;
         sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
 
         // The highest-balance address (first in sorted order) will pay the fee.
         let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
-        // Iterative allocation to handle the chicken-and-egg problem:
-        // - Reserving fee reduces available funds from fee payer
-        // - This may require more inputs
-        // - More inputs increase the fee
-        // We iterate until the input count stabilizes.
-        //
-        // Fee formula: (input_count * 500,000) + (output_count * 6,000,000)
-
-        let mut estimated_fee = estimate_platform_fee(1, 1); // Start with minimum fee
+        // Iterative allocation: inputs must equal outputs (amount_credits).
+        // Fee is deducted separately from fee payer's BALANCE, not from input amounts.
+        // So fee payer must have: balance >= (their input contribution) + fee
+        let mut estimated_fee = estimate_platform_fee(1, 1);
         let mut inputs = BTreeMap::new();
         let mut iterations = 0;
         const MAX_ITERATIONS: usize = 10;
@@ -590,16 +617,15 @@ impl WalletSendScreen {
                 return Err("Failed to converge on fee calculation".to_string());
             }
 
-            // Allocate with current fee estimate reserved from the highest-balance address
             inputs.clear();
             let mut remaining = amount_credits;
 
+            // Fee payer is first address (highest balance after sorting)
             for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
                 if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
                     break;
                 }
-                // Reserve fee from the fee payer address (highest balance)
-                // idx == 0 is the first in sorted order (highest balance)
+                // Fee payer (idx 0) must reserve fee from their balance
                 let is_fee_payer = idx == 0;
                 let available = if is_fee_payer {
                     balance.saturating_sub(estimated_fee)
@@ -613,15 +639,11 @@ impl WalletSendScreen {
                 }
             }
 
-            // Calculate fee based on actual input count
             let new_fee = estimate_platform_fee(inputs.len().max(1), 1);
 
-            // If fee hasn't changed, we've converged
             if new_fee == estimated_fee {
                 break;
             }
-
-            // If fee increased but we couldn't cover the amount, stop
             if remaining > 0 {
                 break;
             }
@@ -758,15 +780,10 @@ impl WalletSendScreen {
         // The highest-balance address (first in sorted order) will pay the fee.
         let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
-        // Iterative allocation to handle the chicken-and-egg problem:
-        // - Reserving fee reduces available funds from fee payer
-        // - This may require more inputs
-        // - More inputs increase the fee
-        // We iterate until the input count stabilizes.
-        //
-        // Fee formula: (input_count * 500,000) + (output_count * 6,000,000)
-
-        let mut estimated_fee = estimate_platform_fee(1, 1); // Start with minimum fee
+        // Iterative allocation: inputs must equal outputs (amount_credits).
+        // Fee is deducted separately from fee payer's BALANCE, not from input amounts.
+        // So fee payer must have: balance >= (their input contribution) + fee
+        let mut estimated_fee = estimate_platform_fee(1, 1);
         let mut inputs = BTreeMap::new();
         let mut iterations = 0;
         const MAX_ITERATIONS: usize = 10;
@@ -777,16 +794,15 @@ impl WalletSendScreen {
                 return Err("Failed to converge on fee calculation".to_string());
             }
 
-            // Allocate with current fee estimate reserved from the highest-balance address
             inputs.clear();
             let mut remaining = amount_credits;
 
+            // Fee payer is first address (highest balance after sorting)
             for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
                 if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
                     break;
                 }
-                // Reserve fee from the fee payer address (highest balance)
-                // idx == 0 is the first in sorted order (highest balance)
+                // Fee payer (idx 0) must reserve fee from their balance
                 let is_fee_payer = idx == 0;
                 let available = if is_fee_payer {
                     balance.saturating_sub(estimated_fee)
@@ -800,15 +816,11 @@ impl WalletSendScreen {
                 }
             }
 
-            // Calculate fee based on actual input count
             let new_fee = estimate_platform_fee(inputs.len().max(1), 1);
 
-            // If fee hasn't changed, we've converged
             if new_fee == estimated_fee {
                 break;
             }
-
-            // If fee increased but we couldn't cover the amount, stop
             if remaining > 0 {
                 break;
             }
@@ -1174,7 +1186,6 @@ impl WalletSendScreen {
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Sort by balance descending to use the largest balances first (same as send logic).
-                // This ensures the max calculation matches what would actually be sent.
                 let mut sorted_addresses = addresses.clone();
                 sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
 

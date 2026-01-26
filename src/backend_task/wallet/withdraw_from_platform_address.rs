@@ -16,6 +16,7 @@ impl AppContext {
         inputs: BTreeMap<PlatformAddress, Credits>,
         output_script: CoreScript,
         core_fee_per_byte: u32,
+        fee_payer_index: u16,
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::dpp::withdrawal::Pooling;
@@ -35,8 +36,10 @@ impl AppContext {
             (wallet, sdk)
         };
 
-        // Simple fee strategy: deduct from first input
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        // Deduct fee from the specified input (should be the one with highest balance)
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(
+            fee_payer_index,
+        )];
 
         // Use the SDK to withdraw
         let _result = sdk

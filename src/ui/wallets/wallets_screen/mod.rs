@@ -1049,19 +1049,28 @@ impl WalletsBalancesScreen {
                                     })
                                     .unwrap_or(false);
 
+                                // Convert platform addresses to Bech32m format for display
+                                let display_address =
+                                    if data.account_category == AccountCategory::PlatformPayment {
+                                        use dash_sdk::dpp::address_funds::PlatformAddress;
+                                        PlatformAddress::try_from(data.address.clone())
+                                            .map(|pa| pa.to_bech32m_string(network))
+                                            .unwrap_or_else(|_| data.address.to_string())
+                                    } else {
+                                        data.address.to_string()
+                                    };
+
                                 if wallet_locked {
                                     // Store pending info and show unlock popup
                                     self.private_key_dialog.pending_derivation_path =
                                         Some(data.derivation_path.clone());
-                                    self.private_key_dialog.pending_address =
-                                        Some(data.address.to_string());
+                                    self.private_key_dialog.pending_address = Some(display_address);
                                     self.wallet_unlock_popup.open();
                                 } else {
                                     match self.derive_private_key_wif(&data.derivation_path) {
                                         Ok(key) => {
                                             self.private_key_dialog.is_open = true;
-                                            self.private_key_dialog.address =
-                                                data.address.to_string();
+                                            self.private_key_dialog.address = display_address;
                                             self.private_key_dialog.private_key_wif = key;
                                             self.private_key_dialog.show_key = false;
                                         }

@@ -248,12 +248,19 @@ impl DocumentActionScreen {
         if response.changed() {
             if let Some(identity) = &self.selected_identity {
                 // Auto-select a suitable key for document actions
+                // Note: MASTER keys cannot be used for document operations,
+                // only MEDIUM, HIGH, or CRITICAL security levels are allowed
                 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
                 self.selected_key = identity
                     .identity
                     .get_first_public_key_matching(
                         Purpose::AUTHENTICATION,
-                        SecurityLevel::full_range().into(),
+                        [
+                            SecurityLevel::CRITICAL,
+                            SecurityLevel::HIGH,
+                            SecurityLevel::MEDIUM,
+                        ]
+                        .into(),
                         KeyType::all_key_types().into(),
                         false,
                     )

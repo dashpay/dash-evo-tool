@@ -367,25 +367,33 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        // Get max amount from the selected wallet's balance (in Duffs, convert to Credits)
-        let max_amount_duffs = self
-            .wallet
-            .as_ref()
-            .map(|w| w.read().unwrap().total_balance_duffs())
-            .unwrap_or(0);
-        // Convert Duffs to Credits (1 Duff = 1000 Credits)
-        let max_amount_credits = max_amount_duffs * 1000;
+        let funding_method = *self.funding_method.read().unwrap();
+
+        // Only apply max amount restriction when using wallet balance
+        // For QR code funding, funds come from external source so no max applies
+        let (max_amount, show_max_button) = if funding_method == FundingMethod::UseWalletBalance {
+            let max_amount_duffs = self
+                .wallet
+                .as_ref()
+                .map(|w| w.read().unwrap().total_balance_duffs())
+                .unwrap_or(0);
+            // Convert Duffs to Credits (1 Duff = 1000 Credits)
+            (Some(max_amount_duffs * 1000), true)
+        } else {
+            (None, false)
+        };
 
         // Lazy initialization of the AmountInput component
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
                 .with_label("Amount:")
-                .with_max_button(true)
-                .with_max_amount(Some(max_amount_credits))
+                .with_max_button(show_max_button)
+                .with_max_amount(max_amount)
         });
 
-        // Update max amount in case wallet balance changed
-        amount_input.set_max_amount(Some(max_amount_credits));
+        // Update max amount and button visibility in case funding method or wallet balance changed
+        amount_input.set_max_amount(max_amount);
+        amount_input.set_show_max_button(show_max_button);
 
         let response = amount_input.show(ui);
 

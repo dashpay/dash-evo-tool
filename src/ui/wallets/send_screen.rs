@@ -40,8 +40,8 @@ pub enum AddressType {
 pub enum SourceSelection {
     /// Use Core wallet UTXOs
     CoreWallet,
-    /// Use a specific Platform address (stores both platform address and original core address for lookup)
-    PlatformAddress(PlatformAddress, Address),
+    /// Use all Platform addresses (stores list of platform address, core address, and balance)
+    PlatformAddresses(Vec<(PlatformAddress, Address, u64)>),
 }
 
 /// Status of the send operation
@@ -332,10 +332,10 @@ impl WalletSendScreen {
         match (&self.selected_source, dest_type) {
             (Some(SourceSelection::CoreWallet), AddressType::Core) => "Core Transaction",
             (Some(SourceSelection::CoreWallet), AddressType::Platform) => "Fund Platform Address",
-            (Some(SourceSelection::PlatformAddress(_, _)), AddressType::Platform) => {
+            (Some(SourceSelection::PlatformAddresses(_)), AddressType::Platform) => {
                 "Platform Transfer"
             }
-            (Some(SourceSelection::PlatformAddress(_, _)), AddressType::Core) => "Withdraw to Core",
+            (Some(SourceSelection::PlatformAddresses(_)), AddressType::Core) => "Withdraw to Core",
             _ => "Send",
         }
     }
@@ -385,11 +385,11 @@ impl WalletSendScreen {
             (SourceSelection::CoreWallet, AddressType::Platform) => {
                 self.send_core_to_platform(seed_hash)
             }
-            (SourceSelection::PlatformAddress(platform_addr, core_addr), AddressType::Platform) => {
-                self.send_platform_to_platform(seed_hash, platform_addr, core_addr)
+            (SourceSelection::PlatformAddresses(addresses), AddressType::Platform) => {
+                self.send_platform_to_platform(seed_hash, addresses)
             }
-            (SourceSelection::PlatformAddress(platform_addr, core_addr), AddressType::Core) => {
-                self.send_platform_to_core(seed_hash, platform_addr, core_addr, network)
+            (SourceSelection::PlatformAddresses(addresses), AddressType::Core) => {
+                self.send_platform_to_core(seed_hash, addresses, network)
             }
             _ => Err("Invalid source/destination combination".to_string()),
         }
@@ -492,8 +492,7 @@ impl WalletSendScreen {
     fn send_platform_to_platform(
         &mut self,
         seed_hash: WalletSeedHash,
-        source_addr: PlatformAddress,
-        source_core_addr: Address,
+        addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         // Amount in credits (Amount stores in credits for DASH with 11 decimal places)
         let amount_credits = self
@@ -505,23 +504,16 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Check balance using the original core address
-        let wallet = self.selected_wallet.as_ref().ok_or("No wallet")?;
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+        // Calculate total balance across all platform addresses
+        let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
 
-        let balance = wallet_guard
-            .get_platform_address_info(&source_core_addr)
-            .map(|info| info.balance)
-            .unwrap_or(0);
-
-        if amount_credits > balance {
+        if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
                 Self::format_credits(amount_credits),
-                Self::format_credits(balance)
+                Self::format_credits(total_balance)
             ));
         }
-        drop(wallet_guard);
 
         // Parse destination platform address
         let address_str = self.destination_address.trim();
@@ -529,8 +521,20 @@ impl WalletSendScreen {
             .map(|(addr, _)| addr)
             .map_err(|e| format!("Invalid platform address: {}", e))?;
 
+        // Distribute the amount across addresses (greedy: use each address until amount is met)
         let mut inputs = BTreeMap::new();
-        inputs.insert(source_addr, amount_credits);
+        let mut remaining = amount_credits;
+
+        for (platform_addr, _, balance) in &addresses {
+            if remaining == 0 {
+                break;
+            }
+            let use_amount = remaining.min(*balance);
+            if use_amount > 0 {
+                inputs.insert(*platform_addr, use_amount);
+                remaining -= use_amount;
+            }
+        }
 
         let mut outputs = BTreeMap::new();
         outputs.insert(destination, amount_credits);
@@ -553,8 +557,7 @@ impl WalletSendScreen {
     fn send_platform_to_core(
         &mut self,
         seed_hash: WalletSeedHash,
-        source_addr: PlatformAddress,
-        source_core_addr: Address,
+        addresses: Vec<(PlatformAddress, Address, u64)>,
         network: dash_sdk::dpp::dashcore::Network,
     ) -> Result<AppAction, String> {
         // Amount in credits
@@ -567,23 +570,16 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Check balance using the original core address
-        let wallet = self.selected_wallet.as_ref().ok_or("No wallet")?;
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+        // Calculate total balance across all platform addresses
+        let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
 
-        let balance = wallet_guard
-            .get_platform_address_info(&source_core_addr)
-            .map(|info| info.balance)
-            .unwrap_or(0);
-
-        if amount_credits > balance {
+        if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
                 Self::format_credits(amount_credits),
-                Self::format_credits(balance)
+                Self::format_credits(total_balance)
             ));
         }
-        drop(wallet_guard);
 
         // Parse destination Core address
         let address_str = self.destination_address.trim();
@@ -596,8 +592,20 @@ impl WalletSendScreen {
 
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
+        // Distribute the amount across addresses (greedy: use each address until amount is met)
         let mut inputs = BTreeMap::new();
-        inputs.insert(source_addr, amount_credits);
+        let mut remaining = amount_credits;
+
+        for (platform_addr, _, balance) in &addresses {
+            if remaining == 0 {
+                break;
+            }
+            let use_amount = remaining.min(*balance);
+            if use_amount > 0 {
+                inputs.insert(*platform_addr, use_amount);
+                remaining -= use_amount;
+            }
+        }
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -664,6 +672,11 @@ impl WalletSendScreen {
 
         // Amount
         self.render_amount_input(ui);
+
+        ui.add_space(10.0);
+
+        // Platform source breakdown (shows which addresses will be used)
+        self.render_platform_source_breakdown(ui);
 
         ui.add_space(10.0);
         ui.separator();
@@ -767,10 +780,10 @@ impl WalletSendScreen {
             // Calculate total platform balance
             let total_platform_balance: u64 = platform_addresses.iter().map(|(_, _, b)| *b).sum();
 
-            // Check if any platform address is selected
+            // Check if platform addresses are selected
             let is_platform_selected = matches!(
                 &self.selected_source,
-                Some(SourceSelection::PlatformAddress(_, _))
+                Some(SourceSelection::PlatformAddresses(_))
             );
 
             Frame::group(ui.style())
@@ -790,14 +803,15 @@ impl WalletSendScreen {
                     ui.horizontal(|ui| {
                         let mut selected = is_platform_selected;
                         if ui.radio_value(&mut selected, true, "").changed() && selected {
-                            // Select the first platform address with balance
-                            if let Some((core_addr, platform_addr, _)) = platform_addresses.first()
-                            {
-                                self.selected_source = Some(SourceSelection::PlatformAddress(
-                                    *platform_addr,
-                                    core_addr.clone(),
-                                ));
-                            }
+                            // Select all platform addresses
+                            let addresses_with_balances: Vec<_> = platform_addresses
+                                .iter()
+                                .map(|(core_addr, platform_addr, balance)| {
+                                    (*platform_addr, core_addr.clone(), *balance)
+                                })
+                                .collect();
+                            self.selected_source =
+                                Some(SourceSelection::PlatformAddresses(addresses_with_balances));
                         }
                         ui.label(
                             RichText::new("Platform Addresses")
@@ -888,14 +902,9 @@ impl WalletSendScreen {
                     .ok()
                     .map(|wallet| wallet.total_balance_duffs() * 1000) // duffs to credits
             }),
-            Some(SourceSelection::PlatformAddress(_, core_addr)) => {
-                self.selected_wallet.as_ref().and_then(|w| {
-                    w.read().ok().and_then(|wallet| {
-                        wallet
-                            .get_platform_address_info(core_addr)
-                            .map(|info| info.balance)
-                    })
-                })
+            Some(SourceSelection::PlatformAddresses(addresses)) => {
+                // Sum balances from all platform addresses
+                Some(addresses.iter().map(|(_, _, balance)| *balance).sum())
             }
             None => None,
         };
@@ -957,6 +966,87 @@ impl WalletSendScreen {
                 }
             });
         }
+    }
+
+    /// Renders a breakdown of which platform addresses will be used and how much from each
+    fn render_platform_source_breakdown(&self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let network = self.app_context.network;
+
+        // Only show for platform address sources with a valid amount
+        let addresses = match &self.selected_source {
+            Some(SourceSelection::PlatformAddresses(addrs)) if !addrs.is_empty() => addrs,
+            _ => return,
+        };
+
+        let amount_credits = match self.amount.as_ref() {
+            Some(a) if a.value() > 0 => a.value(),
+            _ => return,
+        };
+
+        // Calculate which addresses will be used (same greedy algorithm as send)
+        let mut breakdown: Vec<(PlatformAddress, u64)> = Vec::new();
+        let mut remaining = amount_credits;
+
+        for (platform_addr, _, balance) in addresses {
+            if remaining == 0 {
+                break;
+            }
+            let use_amount = remaining.min(*balance);
+            if use_amount > 0 {
+                breakdown.push((*platform_addr, use_amount));
+                remaining -= use_amount;
+            }
+        }
+
+        if breakdown.is_empty() {
+            return;
+        }
+
+        // Only show breakdown if using multiple addresses or if it's helpful context
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode).gamma_multiply(0.5))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(4.0)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Source breakdown:")
+                        .color(DashColors::text_secondary(dark_mode))
+                        .size(12.0),
+                );
+                ui.add_space(4.0);
+
+                for (platform_addr, use_amount) in &breakdown {
+                    let addr_str = platform_addr.to_bech32m_string(network);
+                    let short_addr =
+                        format!("{}...{}", &addr_str[..12], &addr_str[addr_str.len() - 6..]);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&short_addr)
+                                .monospace()
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(11.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(Self::format_credits(*use_amount))
+                                    .color(DashColors::SUCCESS)
+                                    .size(11.0),
+                            );
+                        });
+                    });
+                }
+
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Use Advanced Options to customize which addresses to send from.",
+                    )
+                    .color(DashColors::text_secondary(dark_mode))
+                    .italics()
+                    .size(10.0),
+                );
+            });
     }
 
     fn render_send_button(&mut self, ui: &mut Ui) -> AppAction {

@@ -23,7 +23,7 @@ use crate::ui::wallets::account_summary::{
 };
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
-use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -144,6 +144,21 @@ struct AddressData {
     derivation_path: DerivationPath,
     account_category: AccountCategory,
     account_index: Option<u32>,
+}
+
+impl AddressData {
+    /// Returns the address formatted for display.
+    /// Platform Payment addresses are shown in DIP-18 Bech32m format (e.g., tdashevo...).
+    fn display_address(&self, network: Network) -> String {
+        if self.account_category == AccountCategory::PlatformPayment {
+            use dash_sdk::dpp::address_funds::PlatformAddress;
+            PlatformAddress::try_from(self.address.clone())
+                .map(|pa| pa.to_bech32m_string(network))
+                .unwrap_or_else(|_| self.address.to_string())
+        } else {
+            self.address.to_string()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -939,19 +954,7 @@ impl WalletsBalancesScreen {
                 for data in &address_data {
                     body.row(25.0, |mut row| {
                         row.col(|ui| {
-                            // For Platform Payment addresses, display in DIP-18 Bech32m format
-                            if data.account_category == AccountCategory::PlatformPayment {
-                                use dash_sdk::dpp::address_funds::PlatformAddress;
-                                if let Ok(platform_addr) =
-                                    PlatformAddress::try_from(data.address.clone())
-                                {
-                                    ui.label(platform_addr.to_bech32m_string(network));
-                                } else {
-                                    ui.label(data.address.to_string());
-                                }
-                            } else {
-                                ui.label(data.address.to_string());
-                            }
+                            ui.label(data.display_address(network));
                         });
                         row.col(|ui| {
                             // These address types are used for key derivation/proofs, not holding funds
@@ -1049,16 +1052,7 @@ impl WalletsBalancesScreen {
                                     })
                                     .unwrap_or(false);
 
-                                // Convert platform addresses to Bech32m format for display
-                                let display_address =
-                                    if data.account_category == AccountCategory::PlatformPayment {
-                                        use dash_sdk::dpp::address_funds::PlatformAddress;
-                                        PlatformAddress::try_from(data.address.clone())
-                                            .map(|pa| pa.to_bech32m_string(network))
-                                            .unwrap_or_else(|_| data.address.to_string())
-                                    } else {
-                                        data.address.to_string()
-                                    };
+                                let display_address = data.display_address(network);
 
                                 if wallet_locked {
                                     // Store pending info and show unlock popup

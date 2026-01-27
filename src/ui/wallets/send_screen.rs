@@ -1142,8 +1142,18 @@ impl WalletSendScreen {
                 (max, None)
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
-                // Sort by balance descending to use the largest balances first (same as send logic).
-                let mut sorted_addresses = addresses.clone();
+                // Parse destination to exclude it from max calculation (can't send to yourself)
+                let destination =
+                    PlatformAddress::from_bech32m_string(self.destination_address.trim())
+                        .map(|(addr, _)| addr)
+                        .ok();
+
+                // Filter out destination and sort by balance descending
+                let mut sorted_addresses: Vec<_> = addresses
+                    .iter()
+                    .filter(|(addr, _, _)| destination.as_ref() != Some(addr))
+                    .cloned()
+                    .collect();
                 sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
 
                 // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
@@ -1156,7 +1166,7 @@ impl WalletSendScreen {
                 let max_fee = estimate_platform_fee(usable_count);
 
                 // Build hint explaining the limit
-                let hint = if addresses.len() > MAX_PLATFORM_INPUTS {
+                let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
                     format!(
                         "Limited to {} input addresses per transaction, ~{} reserved for fees",
                         MAX_PLATFORM_INPUTS,
@@ -1299,12 +1309,19 @@ impl WalletSendScreen {
                 ui.add_space(4.0);
 
                 if hit_limit {
-                    ui.label(
-                        RichText::new(format!(
+                    // Determine if the shortfall is due to address limit or insufficient balance
+                    let exceeds_address_limit = allocation.sorted_addresses.len() > MAX_PLATFORM_INPUTS;
+                    let warning_msg = if exceeds_address_limit {
+                        format!(
                             "Warning: Amount requires more than {} addresses. \
                              Reduce amount or use multiple transactions.",
                             MAX_PLATFORM_INPUTS
-                        ))
+                        )
+                    } else {
+                        "Warning: Amount exceeds available balance (including fees).".to_string()
+                    };
+                    ui.label(
+                        RichText::new(warning_msg)
                         .color(DashColors::WARNING)
                         .size(10.0),
                     );

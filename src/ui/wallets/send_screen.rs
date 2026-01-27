@@ -657,7 +657,8 @@ impl WalletSendScreen {
             .map_err(|e| format!("Invalid platform address: {}", e))?;
 
         // Allocate addresses using the helper function
-        let allocation = allocate_platform_addresses(&addresses, amount_credits, Some(&destination));
+        let allocation =
+            allocate_platform_addresses(&addresses, amount_credits, Some(&destination));
 
         if allocation.sorted_addresses.is_empty() {
             return Err(

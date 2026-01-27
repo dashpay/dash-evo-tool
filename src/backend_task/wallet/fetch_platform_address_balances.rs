@@ -81,7 +81,7 @@ impl AppContext {
             guard.clone()
         };
 
-        let checkpoint_height = if needs_full_sync {
+        let (_checkpoint_height, highest_block_processed) = if needs_full_sync {
             tracing::info!(
                 "Performing full platform address sync (last sync: {} seconds ago)",
                 now.saturating_sub(last_full_sync)
@@ -129,15 +129,24 @@ impl AppContext {
                 result.checkpoint_height
             );
 
-            // Apply terminal updates
+            // Apply terminal updates and capture the highest block processed
             let terminal_start_height = result.checkpoint_height.max(last_terminal_block);
-            self.apply_recent_balance_changes(
-                &sdk,
-                &wallet_arc,
-                &mut provider,
+            let terminal_sync_start = std::time::Instant::now();
+            let highest_block_processed = self
+                .apply_recent_balance_changes(
+                    &sdk,
+                    &wallet_arc,
+                    &mut provider,
+                    terminal_start_height,
+                )
+                .await?;
+            let terminal_sync_duration = terminal_sync_start.elapsed();
+            tracing::info!(
+                "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
+                terminal_sync_duration,
                 terminal_start_height,
-            )
-            .await?;
+                highest_block_processed
+            );
 
             tracing::info!(
                 "Full sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
@@ -170,7 +179,7 @@ impl AppContext {
                 tracing::warn!("Failed to save platform sync info: {}", e);
             }
 
-            result.checkpoint_height
+            (result.checkpoint_height, highest_block_processed)
         } else {
             let terminal_only_start = std::time::Instant::now();
             tracing::info!(
@@ -213,25 +222,29 @@ impl AppContext {
                 pre_populated_count
             );
 
-            stored_checkpoint
-        };
+            // For terminal-only sync, fetch recent balance changes
+            // Use the higher of checkpoint_height or last_terminal_block to avoid
+            // re-applying changes we've already processed.
+            let terminal_start_height = stored_checkpoint.max(last_terminal_block);
+            let terminal_sync_start = std::time::Instant::now();
+            let highest_block_processed = self
+                .apply_recent_balance_changes(
+                    &sdk,
+                    &wallet_arc,
+                    &mut provider,
+                    terminal_start_height,
+                )
+                .await?;
+            let terminal_sync_duration = terminal_sync_start.elapsed();
+            tracing::info!(
+                "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
+                terminal_sync_duration,
+                terminal_start_height,
+                highest_block_processed
+            );
 
-        // Fetch recent balance changes (terminal updates after checkpoint)
-        // This catches any balance changes that happened after the checkpoint.
-        // Use the higher of checkpoint_height or last_terminal_block to avoid
-        // re-applying changes we've already processed.
-        let terminal_start_height = checkpoint_height.max(last_terminal_block);
-        let terminal_sync_start = std::time::Instant::now();
-        let highest_block_processed = self
-            .apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, terminal_start_height)
-            .await?;
-        let terminal_sync_duration = terminal_sync_start.elapsed();
-        tracing::info!(
-            "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
-            terminal_sync_duration,
-            terminal_start_height,
-            highest_block_processed
-        );
+            (stored_checkpoint, highest_block_processed)
+        };
 
         // Save the highest block we've processed to avoid re-applying the same changes
         if highest_block_processed > last_terminal_block
@@ -336,8 +349,13 @@ impl AppContext {
         // We query for compacted changes starting from that start height,
         // then query recent non-compacted changes starting from where compacted ends.
 
+        // Query from start_height + 1 because start_height was already processed
+        // in the previous sync (last_terminal_block is the highest block we've seen)
+        let query_from_height = start_height.saturating_add(1);
+
         tracing::debug!(
-            "Fetching terminal balance updates from height {}",
+            "Fetching terminal balance updates from height {} (start_height={})",
+            query_from_height,
             start_height
         );
 
@@ -358,9 +376,9 @@ impl AppContext {
         let mut highest_block_seen = start_height;
 
         // Step 1: Fetch compacted balance changes (merged changes for ranges of blocks)
-        // Start from start_height to get changes since the last sync
+        // Start from query_from_height (start_height + 1) to get changes since the last sync
         let compacted_fetch_start = std::time::Instant::now();
-        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(start_height);
+        let compacted_query = RecentCompactedAddressBalanceChangesQuery::new(query_from_height);
         let compacted_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             RecentCompactedAddressBalanceChanges::fetch(sdk, compacted_query),
@@ -370,7 +388,7 @@ impl AppContext {
         tracing::info!(
             "Compacted balance changes fetch: duration={:?}, from_height={}",
             compacted_duration,
-            start_height
+            query_from_height
         );
         let compacted_result = match compacted_result {
             Ok(result) => result,
@@ -411,10 +429,11 @@ impl AppContext {
                                 credits
                             }
                             BlockAwareCreditOperation::AddToCreditsOperations(operations) => {
-                                // Only apply credits from blocks AFTER our start height
+                                // Only apply credits from blocks at or after our query height
+                                // (since we query from start_height + 1, all results should be valid)
                                 let total_to_add: u64 = operations
                                     .iter()
-                                    .filter(|(height, _)| **height > start_height)
+                                    .filter(|(height, _)| **height >= query_from_height)
                                     .map(|(_, credits)| *credits)
                                     .sum();
                                 tracing::debug!(

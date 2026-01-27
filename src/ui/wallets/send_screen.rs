@@ -1251,8 +1251,14 @@ impl WalletSendScreen {
             _ => return,
         };
 
-        // Use the same allocation algorithm as the send logic (no destination filter for preview)
-        let allocation = allocate_platform_addresses(addresses, amount_credits, None);
+        // Parse destination platform address (if valid) to exclude it from inputs
+        let destination = PlatformAddress::from_bech32m_string(self.destination_address.trim())
+            .map(|(addr, _)| addr)
+            .ok();
+
+        // Use the same allocation algorithm as the send logic, filtering out the destination
+        let allocation =
+            allocate_platform_addresses(addresses, amount_credits, destination.as_ref());
 
         if allocation.inputs.is_empty() {
             return;

@@ -767,11 +767,7 @@ impl AppContext {
             self.sync_spv_account_addresses(wallet_info, &wallet_arc);
 
             if let Ok(mut wallet) = wallet_arc.write() {
-                wallet.update_spv_balances(
-                    balance.spendable(),
-                    balance.unconfirmed,
-                    balance.total,
-                );
+                wallet.update_spv_balances(balance.spendable(), balance.unconfirmed, balance.total);
                 // Persist balances to database
                 if let Err(e) = self.db.update_wallet_balances(
                     seed_hash,

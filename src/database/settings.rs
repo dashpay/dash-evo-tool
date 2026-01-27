@@ -363,7 +363,7 @@ impl Database {
             [],
             |row| row.get(0),
         )?;
-        Ok(result.unwrap_or(true)) // Default to true
+        Ok(result.unwrap_or(false)) // Default to false
     }
 
     /// Adds the close_dash_qt_on_exit column to the settings table.
@@ -612,7 +612,7 @@ impl Database {
                 overwrite_dash_conf.unwrap_or(true),
                 disable_zmq.unwrap_or(false),
                 theme_mode,
-                core_backend_mode.unwrap_or(1), // Default to SPV (1)
+                core_backend_mode.unwrap_or(0), // Default to RPC (0)
                 onboarding_completed.unwrap_or(false),
                 show_evonode_tools.unwrap_or(false),
                 user_mode,
@@ -796,18 +796,18 @@ mod tests {
     fn test_spv_settings() {
         let db = create_test_database().expect("Failed to create test database");
 
-        // Test auto_start_spv (default true)
-        let auto_start = db
-            .get_auto_start_spv()
-            .expect("Failed to get auto_start_spv");
-        assert!(auto_start);
-
-        db.update_auto_start_spv(false)
-            .expect("Failed to update auto_start_spv");
+        // Test auto_start_spv (default false)
         let auto_start = db
             .get_auto_start_spv()
             .expect("Failed to get auto_start_spv");
         assert!(!auto_start);
+
+        db.update_auto_start_spv(true)
+            .expect("Failed to update auto_start_spv");
+        let auto_start = db
+            .get_auto_start_spv()
+            .expect("Failed to get auto_start_spv");
+        assert!(auto_start);
 
         // Test use_local_spv_node (default false)
         let use_local = db

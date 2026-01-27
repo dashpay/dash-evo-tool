@@ -754,7 +754,7 @@ impl AppContext {
             let balance = wm
                 .get_wallet_balance(wallet_id)
                 .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
-            tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
+            tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed, total = balance.total, "SPV balance snapshot");
 
             let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
                 continue;
@@ -769,15 +769,15 @@ impl AppContext {
             if let Ok(mut wallet) = wallet_arc.write() {
                 wallet.update_spv_balances(
                     balance.spendable(),
-                    balance.unconfirmed(),
-                    balance.total(),
+                    balance.unconfirmed,
+                    balance.total,
                 );
                 // Persist balances to database
                 if let Err(e) = self.db.update_wallet_balances(
                     seed_hash,
                     balance.spendable(),
-                    balance.unconfirmed(),
-                    balance.total(),
+                    balance.unconfirmed,
+                    balance.total,
                 ) {
                     tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
                 }

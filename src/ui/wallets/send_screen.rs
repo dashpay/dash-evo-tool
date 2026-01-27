@@ -703,7 +703,7 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(MAX_PLATFORM_INPUTS);
+            let max_fee = estimate_platform_fee(addresses_available);
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -812,7 +812,7 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(MAX_PLATFORM_INPUTS);
+            let max_fee = estimate_platform_fee(addresses_available);
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(

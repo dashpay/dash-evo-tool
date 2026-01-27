@@ -30,44 +30,31 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Maximum number of platform address inputs allowed per state transition
 const MAX_PLATFORM_INPUTS: usize = 16;
 
-/// Storage cost per byte (from Platform fee/storage/v1.rs)
-const STORAGE_CREDIT_PER_BYTE: u64 = 27_000;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 
 /// Estimated serialized bytes per input (address + signature/witness data)
-/// Based on Platform test cases: 1 input = 225 bytes, 2 inputs = 450 bytes
-const ESTIMATED_BYTES_PER_INPUT: u64 = 225;
+const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 
-/// Processing fee per input (signature verification, hashing, identity lookups)
-/// From Platform test cases: ~500,000 credits per input for ECDSA signatures
-const PROCESSING_FEE_PER_INPUT: u64 = 500_000;
-
-/// Calculate the estimated fee for a platform transfer based on input count.
+/// Calculate the estimated fee for a platform address funds transfer.
 ///
-/// The fee consists of two main components:
-/// 1. Storage fee: serialized_bytes × 27,000 credits/byte
-/// 2. Processing fee: ~500,000 credits per input (signature verification, hashing, lookups)
-///
-/// Based on Platform test cases:
-/// - 1 input + 1 output: ~6.5M credits (225 bytes)
-/// - 2 inputs + 1 output: ~12.7M credits (450 bytes)
-/// - Each additional input adds ~6.2M credits
-///
-/// We add a 15% safety buffer to account for variations in actual fee calculation.
+/// Uses PlatformFeeEstimator for base costs (input/output fees) plus storage fees.
 fn estimate_platform_fee(input_count: usize) -> u64 {
-    let inputs = input_count.max(1) as u64;
+    let estimator = PlatformFeeEstimator::new();
+    let inputs = input_count.max(1);
 
-    // Storage fee: each input adds ~225 bytes to the serialized transition
+    // Base fee from Platform's min fee structure
+    // - 500,000 credits per input (address_funds_transfer_input_cost)
+    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
+    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
+
+    // Add storage fees for serialized input bytes only
+    // (outputs don't add significant serialization overhead)
     let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
-    let storage_fee = estimated_bytes * STORAGE_CREDIT_PER_BYTE;
+    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
 
-    // Processing fee: signature verification, hashing, identity lookups per input
-    let processing_fee = inputs * PROCESSING_FEE_PER_INPUT;
-
-    // Base fee calculation
-    let base_fee = storage_fee + processing_fee;
-
-    // Add 15% safety buffer for fee estimation variance
-    base_fee + (base_fee / 7)
+    // Total with 20% safety buffer
+    let total = base_fee.saturating_add(storage_fee);
+    total.saturating_add(total / 5)
 }
 
 /// Result of allocating platform addresses for a transfer.
@@ -115,48 +102,33 @@ fn allocate_platform_addresses(
     // The highest-balance address (first in sorted order) will pay the fee
     let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
-    // Iterative allocation: fee depends on input count, which depends on fee
-    let mut estimated_fee = estimate_platform_fee(1);
+    // Calculate fee based on expected number of inputs (use worst-case for safety)
+    // This matches what the Max button calculation uses
+    let max_inputs = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+    let estimated_fee = estimate_platform_fee(max_inputs.max(1));
+
+    // Allocate inputs = outputs (protocol requires equality).
+    // Fee payer must reserve enough remaining balance to pay the fee separately.
     let mut inputs = BTreeMap::new();
-    let mut iterations = 0;
-    const MAX_ITERATIONS: usize = 10;
+    let mut remaining = amount_credits;
 
-    loop {
-        iterations += 1;
-        if iterations > MAX_ITERATIONS {
+    for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
+        if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
             break;
         }
-
-        inputs.clear();
-        let mut remaining = amount_credits;
-
-        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
-            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
-                break;
-            }
-            // Fee payer (idx 0) must reserve fee from their balance
-            let is_fee_payer = idx == 0;
-            let available = if is_fee_payer {
-                balance.saturating_sub(estimated_fee)
-            } else {
-                *balance
-            };
-            let use_amount = remaining.min(available);
-            // Fee payer must always be in inputs (even with 0 contribution) so the fee
-            // can be deducted from their balance. Other addresses only added if contributing.
-            if use_amount > 0 || is_fee_payer {
-                inputs.insert(*platform_addr, use_amount);
-                remaining -= use_amount;
-            }
+        // Fee payer (idx 0, highest balance) must keep fee in reserve
+        let is_fee_payer = idx == 0;
+        let available = if is_fee_payer {
+            balance.saturating_sub(estimated_fee)
+        } else {
+            *balance
+        };
+        let use_amount = remaining.min(available);
+        // Fee payer must always be in inputs so fee can be deducted from their balance
+        if use_amount > 0 || is_fee_payer {
+            inputs.insert(*platform_addr, use_amount);
+            remaining = remaining.saturating_sub(use_amount);
         }
-
-        let new_fee = estimate_platform_fee(inputs.len().max(1));
-
-        if new_fee == estimated_fee || remaining > 0 {
-            break;
-        }
-
-        estimated_fee = new_fee;
     }
 
     // Calculate shortfall

@@ -2702,7 +2702,18 @@ impl WalletsBalancesScreen {
             let platform_addr =
                 if selected_addr.starts_with("evo1") || selected_addr.starts_with("tevo1") {
                     match PlatformAddress::from_bech32m_string(selected_addr) {
-                        Ok((addr, _network)) => addr,
+                        Ok((addr, network)) => {
+                            // Validate that address network matches app network
+                            if network != self.app_context.network {
+                                self.fund_platform_dialog.status = Some(format!(
+                                    "Address network mismatch: address is for {:?} but app is on {:?}",
+                                    network, self.app_context.network
+                                ));
+                                self.fund_platform_dialog.status_is_error = true;
+                                return AppAction::None;
+                            }
+                            addr
+                        }
                         Err(e) => {
                             self.fund_platform_dialog.status =
                                 Some(format!("Invalid Bech32m address: {}", e));

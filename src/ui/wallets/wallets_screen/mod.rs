@@ -2699,45 +2699,46 @@ impl WalletsBalancesScreen {
 
             // Parse the Platform address (Bech32m format: evo1.../tevo1...)
             use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-            let platform_addr =
-                if selected_addr.starts_with("evo1") || selected_addr.starts_with("tevo1") {
-                    match PlatformAddress::from_bech32m_string(selected_addr) {
-                        Ok((addr, network)) => {
-                            // Validate that address network matches app network
-                            if network != self.app_context.network {
-                                self.fund_platform_dialog.status = Some(format!(
-                                    "Address network mismatch: address is for {:?} but app is on {:?}",
-                                    network, self.app_context.network
-                                ));
-                                self.fund_platform_dialog.status_is_error = true;
-                                return AppAction::None;
-                            }
-                            addr
-                        }
-                        Err(e) => {
-                            self.fund_platform_dialog.status =
-                                Some(format!("Invalid Bech32m address: {}", e));
+            let platform_addr = if selected_addr.starts_with("evo1")
+                || selected_addr.starts_with("tevo1")
+            {
+                match PlatformAddress::from_bech32m_string(selected_addr) {
+                    Ok((addr, network)) => {
+                        // Validate that address network matches app network
+                        if network != self.app_context.network {
+                            self.fund_platform_dialog.status = Some(format!(
+                                "Address network mismatch: address is for {:?} but app is on {:?}",
+                                network, self.app_context.network
+                            ));
                             self.fund_platform_dialog.status_is_error = true;
                             return AppAction::None;
                         }
+                        addr
                     }
-                } else {
-                    // Fall back to base58 parsing for backwards compatibility
-                    match selected_addr
-                        .parse::<Address<NetworkUnchecked>>()
-                        .map_err(|e| e.to_string())
-                        .and_then(|a| {
-                            PlatformAddress::try_from(a.assume_checked())
-                                .map_err(|e| format!("Invalid Platform address: {}", e))
-                        }) {
-                        Ok(addr) => addr,
-                        Err(e) => {
-                            self.fund_platform_dialog.status = Some(e);
-                            self.fund_platform_dialog.status_is_error = true;
-                            return AppAction::None;
-                        }
+                    Err(e) => {
+                        self.fund_platform_dialog.status =
+                            Some(format!("Invalid Bech32m address: {}", e));
+                        self.fund_platform_dialog.status_is_error = true;
+                        return AppAction::None;
                     }
-                };
+                }
+            } else {
+                // Fall back to base58 parsing for backwards compatibility
+                match selected_addr
+                    .parse::<Address<NetworkUnchecked>>()
+                    .map_err(|e| e.to_string())
+                    .and_then(|a| {
+                        PlatformAddress::try_from(a.assume_checked())
+                            .map_err(|e| format!("Invalid Platform address: {}", e))
+                    }) {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        self.fund_platform_dialog.status = Some(e);
+                        self.fund_platform_dialog.status_is_error = true;
+                        return AppAction::None;
+                    }
+                }
+            };
 
             (
                 wallet.seed_hash(),

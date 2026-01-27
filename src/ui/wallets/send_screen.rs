@@ -131,9 +131,26 @@ fn allocate_platform_addresses(
         }
     }
 
-    // Calculate shortfall
+    // Calculate shortfall (amount we couldn't allocate)
     let total_allocated: u64 = inputs.values().sum();
-    let shortfall = amount_credits.saturating_sub(total_allocated);
+    let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
+
+    // Check if fee payer can actually afford the fee from their remaining balance.
+    // Fee payer's remaining balance = their original balance - their contribution.
+    // If remaining < estimated_fee, we have a fee deficit.
+    let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
+        let fee_payer_balance = sorted_addresses
+            .first()
+            .map(|(_, _, b)| *b)
+            .unwrap_or(0);
+        let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
+        let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
+        estimated_fee.saturating_sub(fee_payer_remaining)
+    } else {
+        estimated_fee // No fee payer means we can't pay the fee at all
+    };
+
+    let shortfall = allocation_shortfall.saturating_add(fee_deficit);
 
     // Find the index of the fee payer in BTreeMap order (required by backend)
     let fee_payer_index = fee_payer_addr

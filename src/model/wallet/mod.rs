@@ -1223,7 +1223,7 @@ impl Wallet {
         Ok(())
     }
 
-    /// Bootstrap DIP-17 Platform payment addresses (dashevo/tdashevo Bech32m prefix per DIP-18)
+    /// Bootstrap DIP-17 Platform payment addresses (evo/tevo Bech32m prefix)
     /// These addresses are for receiving Dash Credits on Platform, independent of identities.
     fn bootstrap_platform_payment_addresses(
         &mut self,
@@ -2006,7 +2006,7 @@ impl Signer<PlatformAddress> for Wallet {
         // The Signer trait doesn't pass network info, so we try each network.
         // This is safe because:
         // 1. A wallet instance only stores keys for ONE network (set at creation)
-        // 2. Platform addresses encode their network in the bech32m prefix (dashevo/tdashevo)
+        // 2. Platform addresses encode their network in the bech32m prefix (evo/tevo)
         // 3. get_platform_address_private_key will only succeed for the correct network
         // 4. Only one network's derivation will match the wallet's seed
         let private_key = self

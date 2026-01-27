@@ -139,10 +139,7 @@ fn allocate_platform_addresses(
     // Fee payer's remaining balance = their original balance - their contribution.
     // If remaining < estimated_fee, we have a fee deficit.
     let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
-        let fee_payer_balance = sorted_addresses
-            .first()
-            .map(|(_, _, b)| *b)
-            .unwrap_or(0);
+        let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
         let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
         let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
         estimated_fee.saturating_sub(fee_payer_remaining)

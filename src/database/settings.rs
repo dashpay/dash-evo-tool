@@ -612,7 +612,7 @@ impl Database {
                 overwrite_dash_conf.unwrap_or(true),
                 disable_zmq.unwrap_or(false),
                 theme_mode,
-                core_backend_mode.unwrap_or(0), // Default to RPC (0)
+                core_backend_mode.unwrap_or(1), // Default to SPV (1)
                 onboarding_completed.unwrap_or(false),
                 show_evonode_tools.unwrap_or(false),
                 user_mode,

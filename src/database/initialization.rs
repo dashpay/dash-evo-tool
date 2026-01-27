@@ -276,7 +276,7 @@ impl Database {
             overwrite_dash_conf INTEGER,
             disable_zmq INTEGER DEFAULT 0,
             theme_preference TEXT DEFAULT 'System',
-            core_backend_mode INTEGER DEFAULT 0,
+            core_backend_mode INTEGER DEFAULT 1,
             database_version INTEGER NOT NULL,
             onboarding_completed INTEGER DEFAULT 0,
             show_evonode_tools INTEGER DEFAULT 0,

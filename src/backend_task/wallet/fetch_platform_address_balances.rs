@@ -81,7 +81,7 @@ impl AppContext {
             guard.clone()
         };
 
-        let checkpoint_height = if needs_full_sync {
+        let (_checkpoint_height, highest_block_processed) = if needs_full_sync {
             tracing::info!(
                 "Performing full platform address sync (last sync: {} seconds ago)",
                 now.saturating_sub(last_full_sync)
@@ -129,15 +129,24 @@ impl AppContext {
                 result.checkpoint_height
             );
 
-            // Apply terminal updates
+            // Apply terminal updates and capture the highest block processed
             let terminal_start_height = result.checkpoint_height.max(last_terminal_block);
-            self.apply_recent_balance_changes(
-                &sdk,
-                &wallet_arc,
-                &mut provider,
+            let terminal_sync_start = std::time::Instant::now();
+            let highest_block_processed = self
+                .apply_recent_balance_changes(
+                    &sdk,
+                    &wallet_arc,
+                    &mut provider,
+                    terminal_start_height,
+                )
+                .await?;
+            let terminal_sync_duration = terminal_sync_start.elapsed();
+            tracing::info!(
+                "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
+                terminal_sync_duration,
                 terminal_start_height,
-            )
-            .await?;
+                highest_block_processed
+            );
 
             tracing::info!(
                 "Full sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint_height={}",
@@ -170,7 +179,7 @@ impl AppContext {
                 tracing::warn!("Failed to save platform sync info: {}", e);
             }
 
-            result.checkpoint_height
+            (result.checkpoint_height, highest_block_processed)
         } else {
             let terminal_only_start = std::time::Instant::now();
             tracing::info!(
@@ -213,25 +222,29 @@ impl AppContext {
                 pre_populated_count
             );
 
-            stored_checkpoint
-        };
+            // For terminal-only sync, fetch recent balance changes
+            // Use the higher of checkpoint_height or last_terminal_block to avoid
+            // re-applying changes we've already processed.
+            let terminal_start_height = stored_checkpoint.max(last_terminal_block);
+            let terminal_sync_start = std::time::Instant::now();
+            let highest_block_processed = self
+                .apply_recent_balance_changes(
+                    &sdk,
+                    &wallet_arc,
+                    &mut provider,
+                    terminal_start_height,
+                )
+                .await?;
+            let terminal_sync_duration = terminal_sync_start.elapsed();
+            tracing::info!(
+                "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
+                terminal_sync_duration,
+                terminal_start_height,
+                highest_block_processed
+            );
 
-        // Fetch recent balance changes (terminal updates after checkpoint)
-        // This catches any balance changes that happened after the checkpoint.
-        // Use the higher of checkpoint_height or last_terminal_block to avoid
-        // re-applying changes we've already processed.
-        let terminal_start_height = checkpoint_height.max(last_terminal_block);
-        let terminal_sync_start = std::time::Instant::now();
-        let highest_block_processed = self
-            .apply_recent_balance_changes(&sdk, &wallet_arc, &mut provider, terminal_start_height)
-            .await?;
-        let terminal_sync_duration = terminal_sync_start.elapsed();
-        tracing::info!(
-            "Terminal balance updates complete: duration={:?}, start_height={}, end_height={}",
-            terminal_sync_duration,
-            terminal_start_height,
-            highest_block_processed
-        );
+            (stored_checkpoint, highest_block_processed)
+        };
 
         // Save the highest block we've processed to avoid re-applying the same changes
         if highest_block_processed > last_terminal_block

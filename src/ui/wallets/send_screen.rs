@@ -633,7 +633,9 @@ impl WalletSendScreen {
                     *balance
                 };
                 let use_amount = remaining.min(available);
-                if use_amount > 0 {
+                // Fee payer must always be in inputs (even with 0 contribution) so the fee
+                // can be deducted from their balance. Other addresses only added if contributing.
+                if use_amount > 0 || is_fee_payer {
                     inputs.insert(*platform_addr, use_amount);
                     remaining -= use_amount;
                 }
@@ -686,7 +688,9 @@ impl WalletSendScreen {
             ));
         }
 
-        // Find the index of the fee payer in BTreeMap order
+        // Find the index of the fee payer in BTreeMap order (required by backend).
+        // Since fee_payer is always inserted into inputs (even with 0 contribution),
+        // this lookup should always succeed. Fallback to 0 is defensive only.
         let fee_payer_index = fee_payer_addr
             .and_then(|payer| {
                 inputs
@@ -810,7 +814,9 @@ impl WalletSendScreen {
                     *balance
                 };
                 let use_amount = remaining.min(available);
-                if use_amount > 0 {
+                // Fee payer must always be in inputs (even with 0 contribution) so the fee
+                // can be deducted from their balance. Other addresses only added if contributing.
+                if use_amount > 0 || is_fee_payer {
                     inputs.insert(*platform_addr, use_amount);
                     remaining -= use_amount;
                 }
@@ -863,7 +869,9 @@ impl WalletSendScreen {
             ));
         }
 
-        // Find the index of the fee payer in BTreeMap order
+        // Find the index of the fee payer in BTreeMap order (required by backend).
+        // Since fee_payer is always inserted into inputs (even with 0 contribution),
+        // this lookup should always succeed. Fallback to 0 is defensive only.
         let fee_payer_index = fee_payer_addr
             .and_then(|payer| {
                 inputs

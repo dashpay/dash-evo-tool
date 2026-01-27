@@ -316,9 +316,9 @@ impl Database {
         )?;
 
         if !column_exists {
-            // Default to true - auto-start SPV on startup
+            // Default to false - don't auto-start SPV on startup
             conn.execute(
-                "ALTER TABLE settings ADD COLUMN auto_start_spv INTEGER DEFAULT 1;",
+                "ALTER TABLE settings ADD COLUMN auto_start_spv INTEGER DEFAULT 0;",
                 (),
             )?;
         }
@@ -363,7 +363,7 @@ impl Database {
             [],
             |row| row.get(0),
         )?;
-        Ok(result.unwrap_or(true)) // Default to true
+        Ok(result.unwrap_or(false)) // Default to false
     }
 
     /// Adds the close_dash_qt_on_exit column to the settings table.
@@ -796,18 +796,18 @@ mod tests {
     fn test_spv_settings() {
         let db = create_test_database().expect("Failed to create test database");
 
-        // Test auto_start_spv (default true)
-        let auto_start = db
-            .get_auto_start_spv()
-            .expect("Failed to get auto_start_spv");
-        assert!(auto_start);
-
-        db.update_auto_start_spv(false)
-            .expect("Failed to update auto_start_spv");
+        // Test auto_start_spv (default false)
         let auto_start = db
             .get_auto_start_spv()
             .expect("Failed to get auto_start_spv");
         assert!(!auto_start);
+
+        db.update_auto_start_spv(true)
+            .expect("Failed to update auto_start_spv");
+        let auto_start = db
+            .get_auto_start_spv()
+            .expect("Failed to get auto_start_spv");
+        assert!(auto_start);
 
         // Test use_local_spv_node (default false)
         let use_local = db

@@ -107,7 +107,7 @@ impl NetworkChooserScreen {
             .db
             .get_use_local_spv_node()
             .unwrap_or(false);
-        let auto_start_spv = mainnet_app_context.db.get_auto_start_spv().unwrap_or(true);
+        let auto_start_spv = mainnet_app_context.db.get_auto_start_spv().unwrap_or(false);
         let close_dash_qt_on_exit = mainnet_app_context
             .db
             .get_close_dash_qt_on_exit()

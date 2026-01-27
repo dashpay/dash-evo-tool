@@ -148,7 +148,7 @@ struct AddressData {
 
 impl AddressData {
     /// Returns the address formatted for display.
-    /// Platform Payment addresses are shown in DIP-18 Bech32m format (e.g., tdashevo...).
+    /// Platform Payment addresses are shown in DIP-18 Bech32m format (e.g., tevo1...).
     fn display_address(&self, network: Network) -> String {
         if self.account_category == AccountCategory::PlatformPayment {
             use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -2287,7 +2287,7 @@ impl WalletsBalancesScreen {
     }
 
     /// Generate a new Platform address for the wallet.
-    /// Returns the address in DIP-18 Bech32m format (e.g., tdashevo1... for testnet)
+    /// Returns the address in Bech32m format (e.g., tevo1... for testnet)
     fn generate_platform_address(&self, wallet: &Arc<RwLock<Wallet>>) -> Result<String, String> {
         use dash_sdk::dpp::address_funds::PlatformAddress;
         let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
@@ -2697,37 +2697,36 @@ impl WalletsBalancesScreen {
                 return AppAction::None;
             };
 
-            // Parse the Platform address (Bech32m format: dashevo1.../tdashevo1...)
+            // Parse the Platform address (Bech32m format: evo1.../tevo1...)
             use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-            let platform_addr = if selected_addr.starts_with("dashevo1")
-                || selected_addr.starts_with("tdashevo1")
-            {
-                match PlatformAddress::from_bech32m_string(selected_addr) {
-                    Ok((addr, _network)) => addr,
-                    Err(e) => {
-                        self.fund_platform_dialog.status =
-                            Some(format!("Invalid Bech32m address: {}", e));
-                        self.fund_platform_dialog.status_is_error = true;
-                        return AppAction::None;
+            let platform_addr =
+                if selected_addr.starts_with("evo1") || selected_addr.starts_with("tevo1") {
+                    match PlatformAddress::from_bech32m_string(selected_addr) {
+                        Ok((addr, _network)) => addr,
+                        Err(e) => {
+                            self.fund_platform_dialog.status =
+                                Some(format!("Invalid Bech32m address: {}", e));
+                            self.fund_platform_dialog.status_is_error = true;
+                            return AppAction::None;
+                        }
                     }
-                }
-            } else {
-                // Fall back to base58 parsing for backwards compatibility
-                match selected_addr
-                    .parse::<Address<NetworkUnchecked>>()
-                    .map_err(|e| e.to_string())
-                    .and_then(|a| {
-                        PlatformAddress::try_from(a.assume_checked())
-                            .map_err(|e| format!("Invalid Platform address: {}", e))
-                    }) {
-                    Ok(addr) => addr,
-                    Err(e) => {
-                        self.fund_platform_dialog.status = Some(e);
-                        self.fund_platform_dialog.status_is_error = true;
-                        return AppAction::None;
+                } else {
+                    // Fall back to base58 parsing for backwards compatibility
+                    match selected_addr
+                        .parse::<Address<NetworkUnchecked>>()
+                        .map_err(|e| e.to_string())
+                        .and_then(|a| {
+                            PlatformAddress::try_from(a.assume_checked())
+                                .map_err(|e| format!("Invalid Platform address: {}", e))
+                        }) {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            self.fund_platform_dialog.status = Some(e);
+                            self.fund_platform_dialog.status_is_error = true;
+                            return AppAction::None;
+                        }
                     }
-                }
-            };
+                };
 
             (
                 wallet.seed_hash(),

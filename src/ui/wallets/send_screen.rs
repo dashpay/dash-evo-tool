@@ -231,7 +231,7 @@ impl WalletSendScreen {
         }
 
         // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("dashevo1") || trimmed.starts_with("tdashevo1") {
+        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
             return AddressType::Platform;
         }
 
@@ -363,7 +363,7 @@ impl WalletSendScreen {
         let dest_type = self.detect_address_type(&self.destination_address);
         if dest_type == AddressType::Unknown {
             return Err(
-                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dashevo1.../tdashevo1...)"
+                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (evo1.../tevo1...)"
                     .to_string(),
             );
         }
@@ -853,7 +853,7 @@ impl WalletSendScreen {
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.destination_address)
-                        .hint_text("Enter address (X.../y.../dashevo1.../tdashevo1...)")
+                        .hint_text("Enter address (X.../y.../evo1.../tevo1...)")
                         .desired_width(f32::INFINITY),
                 );
             });
@@ -1479,7 +1479,7 @@ impl WalletSendScreen {
                             ui.label("To:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.advanced_outputs[idx].address)
-                                    .hint_text("Enter address (X.../y.../dashevo1.../tdashevo1...)")
+                                    .hint_text("Enter address (X.../y.../evo1.../tevo1...)")
                                     .desired_width(350.0),
                             );
 
@@ -1550,7 +1550,7 @@ impl WalletSendScreen {
         }
 
         // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("dashevo1") || trimmed.starts_with("tdashevo1") {
+        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
             return AddressType::Platform;
         }
 

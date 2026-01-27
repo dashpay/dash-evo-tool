@@ -527,7 +527,7 @@ impl Database {
                     )
                 })?;
 
-            // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with dashevo/tdashevo prefix
+            // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with evo/tevo prefix
             // and need special handling when stored (we store as Core address format internally)
             let address = if path_reference == DerivationPathReference::PlatformPayment {
                 // Platform addresses are stored as Core P2PKH format for efficient internal lookup.

@@ -58,11 +58,11 @@ impl AddressBalanceScreen {
         ui.heading("Platform Address Balance Lookup");
         ui.add_space(10.0);
 
-        ui.label("Enter a Platform address (dashevo1... or tdashevo1...):");
+        ui.label("Enter a Platform address (evo1... or tevo1...):");
         ui.add_space(5.0);
 
         let text_edit = TextEdit::singleline(&mut self.address_input)
-            .hint_text("dashevo1... or tdashevo1...")
+            .hint_text("evo1... or tevo1...")
             .desired_width(500.0);
 
         let response = ui.add(text_edit);

@@ -1310,7 +1310,8 @@ impl WalletSendScreen {
 
                 if hit_limit {
                     // Determine if the shortfall is due to address limit or insufficient balance
-                    let exceeds_address_limit = allocation.sorted_addresses.len() > MAX_PLATFORM_INPUTS;
+                    let exceeds_address_limit =
+                        allocation.sorted_addresses.len() > MAX_PLATFORM_INPUTS;
                     let warning_msg = if exceeds_address_limit {
                         format!(
                             "Warning: Amount requires more than {} addresses. \
@@ -1322,8 +1323,8 @@ impl WalletSendScreen {
                     };
                     ui.label(
                         RichText::new(warning_msg)
-                        .color(DashColors::WARNING)
-                        .size(10.0),
+                            .color(DashColors::WARNING)
+                            .size(10.0),
                     );
                     ui.add_space(2.0);
                 }

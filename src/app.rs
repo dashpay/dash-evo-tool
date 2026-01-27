@@ -632,7 +632,7 @@ impl AppState {
             // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
             // Remove the is_developer_mode() check once SPV is production-ready.
             let current_context = app_state.current_app_context();
-            let auto_start_spv = db.get_auto_start_spv().unwrap_or(true);
+            let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
             if auto_start_spv
                 && current_context.is_developer_mode()
                 && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
@@ -1081,7 +1081,7 @@ impl App for AppState {
                 // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
                 // Remove the is_developer_mode() check once SPV is production-ready.
                 let current_context = self.current_app_context();
-                let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(true);
+                let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(false);
                 if auto_start_spv
                     && current_context.is_developer_mode()
                     && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv

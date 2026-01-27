@@ -282,7 +282,7 @@ impl Database {
             show_evonode_tools INTEGER DEFAULT 0,
             user_mode TEXT DEFAULT 'Advanced',
             use_local_spv_node INTEGER DEFAULT 0,
-            auto_start_spv INTEGER DEFAULT 1,
+            auto_start_spv INTEGER DEFAULT 0,
             close_dash_qt_on_exit INTEGER DEFAULT 1,
             selected_wallet_hash BLOB,
             selected_single_key_hash BLOB

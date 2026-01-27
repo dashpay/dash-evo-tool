@@ -316,9 +316,9 @@ impl Database {
         )?;
 
         if !column_exists {
-            // Default to true - auto-start SPV on startup
+            // Default to false - don't auto-start SPV on startup
             conn.execute(
-                "ALTER TABLE settings ADD COLUMN auto_start_spv INTEGER DEFAULT 1;",
+                "ALTER TABLE settings ADD COLUMN auto_start_spv INTEGER DEFAULT 0;",
                 (),
             )?;
         }

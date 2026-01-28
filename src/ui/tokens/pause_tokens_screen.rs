@@ -3,7 +3,7 @@ use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::Component;
@@ -459,7 +459,7 @@ impl ScreenLike for PauseTokensScreen {
                 }
 
                 // Fee estimation display
-                let fee_estimator = PlatformFeeEstimator::new();
+                let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
                 let dark_mode = ui.ctx().style().visuals.dark_mode;

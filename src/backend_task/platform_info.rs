@@ -367,7 +367,16 @@ impl AppContext {
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
                 match ExtendedEpochInfo::fetch_current(&sdk).await {
                     Ok(epoch_info) => {
-                        let formatted = format_extended_epoch_info(epoch_info, self.network, true);
+                        // Cache the fee multiplier for UI fee estimation
+                        let fee_multiplier = epoch_info.fee_multiplier_permille();
+                        self.set_fee_multiplier_permille(fee_multiplier);
+
+                        let mut formatted =
+                            format_extended_epoch_info(epoch_info, self.network, true);
+                        formatted.push_str(&format!(
+                            "\n\n(Fee multiplier cache updated: {}x)",
+                            fee_multiplier as f64 / 1000.0
+                        ));
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
                         ))

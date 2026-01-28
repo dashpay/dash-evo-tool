@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
@@ -197,11 +197,10 @@ impl AddNewIdentityScreen {
         } else {
             0
         };
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
-            input_count,
-            false,
-            key_count,
-        );
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_identity_create_from_addresses(input_count, false, key_count);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
             .fill(crate::ui::theme::DashColors::surface(dark_mode))

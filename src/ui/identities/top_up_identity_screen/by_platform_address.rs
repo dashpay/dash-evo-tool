@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -131,7 +131,7 @@ impl TopUpIdentityScreen {
         ui.add_space(10.0);
 
         // Fee estimation display
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.app_context.fee_estimator();
         let estimated_fee = fee_estimator.estimate_identity_topup();
 
         Frame::new()

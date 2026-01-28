@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
@@ -607,7 +607,7 @@ impl ScreenLike for AddKeyScreen {
             ui.add_space(20.0);
 
             // Fee estimation display
-            let fee_estimator = PlatformFeeEstimator::new();
+            let fee_estimator = self.app_context.fee_estimator();
             let estimated_fee = fee_estimator.estimate_identity_update();
 
             let dark_mode = ui.ctx().style().visuals.dark_mode;

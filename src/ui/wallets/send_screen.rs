@@ -99,6 +99,17 @@ fn allocate_platform_addresses(
     let mut sorted_addresses = filtered;
     sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
 
+    // Early return if no addresses available after filtering
+    if sorted_addresses.is_empty() {
+        return AddressAllocationResult {
+            inputs: BTreeMap::new(),
+            fee_payer_index: 0,
+            estimated_fee: estimate_platform_fee(estimator, 1),
+            shortfall: amount_credits,
+            sorted_addresses: vec![],
+        };
+    }
+
     // The highest-balance address (first in sorted order) will pay the fee
     let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
@@ -1252,7 +1263,6 @@ impl WalletSendScreen {
         }
     }
 
-    /// Renders a breakdown of which platform addresses will be used and how much from each
     /// Renders a breakdown of which platform addresses will be used and how much from each.
     /// Uses the same allocation algorithm as the actual send logic.
     fn render_platform_source_breakdown(&self, ui: &mut Ui) {
@@ -1304,8 +1314,11 @@ impl WalletSendScreen {
 
                 for (platform_addr, use_amount) in &allocation.inputs {
                     let addr_str = platform_addr.to_bech32m_string(network);
-                    let short_addr =
-                        format!("{}...{}", &addr_str[..12], &addr_str[addr_str.len() - 6..]);
+                    let short_addr = if addr_str.len() >= 18 {
+                        format!("{}...{}", &addr_str[..12], &addr_str[addr_str.len() - 6..])
+                    } else {
+                        addr_str.clone()
+                    };
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(&short_addr)

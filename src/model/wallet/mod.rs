@@ -288,9 +288,10 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
-    /// Balance as of last full sync (used for terminal-only sync pre-population)
-    /// This prevents double-counting when proof-verified updates happen between syncs
-    pub last_synced_balance: Option<Credits>,
+    /// Balance recorded at the last sync checkpoint. Updated by `set_platform_address_info_from_sync`
+    /// during both full and terminal syncs; preserved by `set_platform_address_info` during internal
+    /// updates (e.g., after transfers) to avoid double-counting AddToCredits on subsequent syncs.
+    pub last_full_sync_balance: Option<Credits>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1890,49 +1891,70 @@ impl Wallet {
         nonce: AddressNonce,
     ) {
         // Convert the incoming address to PlatformAddress for canonical comparison
-        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
-            let canonical_bytes = platform_addr.to_bytes();
+        let (keys_to_remove, last_full_sync_balance) =
+            if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
+                let canonical_bytes = platform_addr.to_bytes();
 
-            // Find and remove any existing entry that represents the same platform address
-            // but might have a different Address representation
-            let keys_to_remove: Vec<Address> = self
-                .platform_address_info
-                .keys()
-                .filter(|existing_addr| {
-                    if let Ok(existing_platform) =
-                        PlatformAddress::try_from((*existing_addr).clone())
-                    {
-                        existing_platform.to_bytes() == canonical_bytes
-                            && *existing_addr != &address
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
-                .collect();
+                // First, find last_full_sync_balance from any canonical-equivalent entry
+                // (must be done BEFORE removing duplicates)
+                let last_full_sync_balance =
+                    self.platform_address_info
+                        .iter()
+                        .find_map(|(existing_addr, info)| {
+                            if let Ok(existing_platform) =
+                                PlatformAddress::try_from(existing_addr.clone())
+                                && existing_platform.to_bytes() == canonical_bytes
+                            {
+                                return info.last_full_sync_balance;
+                            }
+                            None
+                        });
 
-            for key in keys_to_remove {
-                self.platform_address_info.remove(&key);
-            }
+                // Find duplicate entries to remove (same platform address, different key)
+                let keys_to_remove: Vec<Address> = self
+                    .platform_address_info
+                    .keys()
+                    .filter(|existing_addr| {
+                        if let Ok(existing_platform) =
+                            PlatformAddress::try_from((*existing_addr).clone())
+                        {
+                            existing_platform.to_bytes() == canonical_bytes
+                                && *existing_addr != &address
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                (keys_to_remove, last_full_sync_balance)
+            } else {
+                // Fallback: try direct lookup if canonical conversion fails
+                let last_full_sync_balance = self
+                    .platform_address_info
+                    .get(&address)
+                    .and_then(|info| info.last_full_sync_balance);
+                (vec![], last_full_sync_balance)
+            };
+
+        // Remove duplicate entries
+        for key in keys_to_remove {
+            self.platform_address_info.remove(&key);
         }
-
-        // Preserve last_synced_balance if it exists
-        let last_synced_balance = self
-            .platform_address_info
-            .get(&address)
-            .and_then(|info| info.last_synced_balance);
 
         self.platform_address_info.insert(
             address,
             PlatformAddressInfo {
                 balance,
                 nonce,
-                last_synced_balance,
+                last_full_sync_balance,
             },
         );
     }
 
-    /// Set platform address info from a sync operation (updates last_synced_balance)
+    /// Set platform address info from a sync operation.
+    /// Always updates `last_full_sync_balance` to the current balance, as this becomes
+    /// the baseline for pre-population in the next terminal sync.
     pub fn set_platform_address_info_from_sync(
         &mut self,
         address: Address,
@@ -1944,7 +1966,8 @@ impl Wallet {
             PlatformAddressInfo {
                 balance,
                 nonce,
-                last_synced_balance: Some(balance),
+                // Always update to current balance - this is the baseline for next sync
+                last_full_sync_balance: Some(balance),
             },
         );
     }
@@ -2216,7 +2239,7 @@ impl WalletAddressProvider {
         for (address, funds) in &self.found_balances {
             let canonical_address = Wallet::canonical_address(address, self.network);
 
-            // Use sync-specific method that also updates last_synced_balance
+            // Update wallet with synced balance (also updates last_full_sync_balance for next sync)
             wallet.set_platform_address_info_from_sync(
                 canonical_address.clone(),
                 funds.balance,

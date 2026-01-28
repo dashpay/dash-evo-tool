@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 25;
+pub const DEFAULT_DB_VERSION: u16 = 26;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            26 => {
+                self.add_last_full_sync_balance_column(tx)?;
+            }
             25 => {
                 self.add_avatar_bytes_column(tx)?;
             }
@@ -342,6 +345,7 @@ impl Database {
                 nonce INTEGER NOT NULL DEFAULT 0,
                 network TEXT NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT 0,
+                last_full_sync_balance INTEGER DEFAULT NULL,
                 PRIMARY KEY (seed_hash, address, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
@@ -777,6 +781,40 @@ impl Database {
             if !has_avatar_bytes_column {
                 conn.execute(
                     "ALTER TABLE dashpay_profiles ADD COLUMN avatar_bytes BLOB DEFAULT NULL",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Migration: Add last_full_sync_balance column to platform_address_balances table (version 26).
+    /// Stores the balance from the last FULL sync (checkpoint), separate from the current balance
+    /// which includes terminal sync updates. This prevents double-counting AddToCredits during
+    /// terminal-only syncs after app restart.
+    fn add_last_full_sync_balance_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if platform_address_balances table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='platform_address_balances'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            // Check if last_full_sync_balance column already exists
+            let has_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('platform_address_balances') WHERE name='last_full_sync_balance'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_column {
+                // Add column with NULL default - existing rows will need a full sync to populate
+                conn.execute(
+                    "ALTER TABLE platform_address_balances ADD COLUMN last_full_sync_balance INTEGER DEFAULT NULL",
                     [],
                 )?;
             }

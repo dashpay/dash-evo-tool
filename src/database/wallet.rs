@@ -837,20 +837,27 @@ impl Database {
         );
         // Load platform address info for each wallet (using existing connection to avoid deadlock)
         let mut platform_stmt = conn.prepare(
-            "SELECT seed_hash, address, balance, nonce FROM platform_address_balances WHERE network = ?",
+            "SELECT seed_hash, address, balance, nonce, last_full_sync_balance FROM platform_address_balances WHERE network = ?",
         )?;
         let platform_rows = platform_stmt.query_map([network_str.clone()], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let address_str: String = row.get(1)?;
             let balance: i64 = row.get(2)?;
             let nonce: i64 = row.get(3)?;
+            let last_full_sync_balance: Option<i64> = row.get(4)?;
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            Ok((seed_hash_array, address_str, balance as u64, nonce as u32))
+            Ok((
+                seed_hash_array,
+                address_str,
+                balance as u64,
+                nonce as u32,
+                last_full_sync_balance.map(|b| b as u64),
+            ))
         })?;
 
         for row in platform_rows {
-            if let Ok((seed_hash, address_str, balance, nonce)) = row
+            if let Ok((seed_hash, address_str, balance, nonce, last_full_sync_balance)) = row
                 && let Some(wallet) = wallets_map.get_mut(&seed_hash)
                 && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str)
             {
@@ -869,8 +876,9 @@ impl Database {
                     crate::model::wallet::PlatformAddressInfo {
                         balance,
                         nonce,
-                        // Assume database balance is from sync (safe default)
-                        last_synced_balance: Some(balance),
+                        // Use the stored last_full_sync_balance from the database
+                        // This is the balance from the last FULL sync checkpoint, not including terminal updates
+                        last_full_sync_balance,
                     },
                 );
             }
@@ -880,7 +888,12 @@ impl Database {
         Ok(wallets_map.into_values().collect())
     }
 
-    /// Store or update Platform address balance and nonce
+    /// Store or update Platform address balance and nonce.
+    ///
+    /// When `is_sync_operation` is true, also updates `last_full_sync_balance` to the current
+    /// balance. This should be true for sync operations (full or terminal) and false for
+    /// internal updates (e.g., after a transfer completes), so that subsequent terminal syncs
+    /// can correctly apply any pending AddToCredits.
     pub fn set_platform_address_info(
         &self,
         seed_hash: &[u8; 32],
@@ -888,6 +901,7 @@ impl Database {
         balance: u64,
         nonce: u32,
         network: &Network,
+        is_sync_operation: bool,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let canonical_address = Wallet::canonical_address(address, *network);
@@ -897,19 +911,49 @@ impl Database {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        self.execute(
-            "INSERT OR REPLACE INTO platform_address_balances
-             (seed_hash, address, balance, nonce, network, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            params![
-                seed_hash,
-                address_str,
-                balance as i64,
-                nonce as i64,
-                network_str,
-                updated_at
-            ],
-        )?;
+        if is_sync_operation {
+            // Sync operation: update both balance and last_full_sync_balance
+            // last_full_sync_balance becomes the baseline for pre-population in the next sync
+            self.execute(
+                "INSERT INTO platform_address_balances
+                 (seed_hash, address, balance, nonce, network, updated_at, last_full_sync_balance)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(seed_hash, address, network) DO UPDATE SET
+                 balance = excluded.balance,
+                 nonce = excluded.nonce,
+                 updated_at = excluded.updated_at,
+                 last_full_sync_balance = excluded.last_full_sync_balance",
+                params![
+                    seed_hash,
+                    address_str,
+                    balance as i64,
+                    nonce as i64,
+                    network_str,
+                    updated_at,
+                    balance as i64
+                ],
+            )?;
+        } else {
+            // Internal update (e.g., after transfer): update balance but preserve last_full_sync_balance
+            // This ensures the next terminal sync correctly applies any pending AddToCredits
+            self.execute(
+                "INSERT INTO platform_address_balances
+                 (seed_hash, address, balance, nonce, network, updated_at, last_full_sync_balance)
+                 VALUES (?, ?, ?, ?, ?, ?, NULL)
+                 ON CONFLICT(seed_hash, address, network) DO UPDATE SET
+                 balance = excluded.balance,
+                 nonce = excluded.nonce,
+                 updated_at = excluded.updated_at",
+                params![
+                    seed_hash,
+                    address_str,
+                    balance as i64,
+                    nonce as i64,
+                    network_str,
+                    updated_at
+                ],
+            )?;
+        }
         Ok(())
     }
 
@@ -1228,7 +1272,7 @@ mod tests {
         assert!(info.is_none());
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
             .expect("Failed to set platform address info");
 
         // Retrieve it
@@ -1241,7 +1285,7 @@ mod tests {
         assert_eq!(info.1, 5); // nonce
 
         // Update it
-        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network)
+        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network, true)
             .expect("Failed to update platform address info");
 
         let info = db
@@ -1339,7 +1383,7 @@ mod tests {
 
         // Add a single valid platform address using the helper function
         let address = create_test_address(network);
-        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network)
+        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network, true)
             .expect("Failed to set platform address info");
 
         // Get all addresses
@@ -1377,7 +1421,7 @@ mod tests {
         }
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
             .expect("Failed to set platform address info");
 
         // Verify it exists

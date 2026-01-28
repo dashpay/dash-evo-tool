@@ -141,6 +141,9 @@ pub struct PlatformFeeEstimator {
     min_fees: StateTransitionMinFees,
     storage_fees: StorageFeeConstants,
     registration_fees: DataContractRegistrationFees,
+    /// Fee multiplier in permille (1000 = 1x, 2000 = 2x, etc.)
+    /// This comes from the current epoch's fee_multiplier_permille()
+    fee_multiplier_permille: u64,
 }
 
 impl Default for PlatformFeeEstimator {
@@ -150,11 +153,25 @@ impl Default for PlatformFeeEstimator {
 }
 
 impl PlatformFeeEstimator {
+    /// Default fee multiplier (1x = 1000 permille)
+    pub const DEFAULT_FEE_MULTIPLIER_PERMILLE: u64 = 1000;
+
     pub fn new() -> Self {
         Self {
             min_fees: StateTransitionMinFees::default(),
             storage_fees: StorageFeeConstants::default(),
             registration_fees: DataContractRegistrationFees::default(),
+            fee_multiplier_permille: Self::DEFAULT_FEE_MULTIPLIER_PERMILLE,
+        }
+    }
+
+    /// Create an estimator with a specific fee multiplier (from epoch info)
+    pub fn with_fee_multiplier(fee_multiplier_permille: u64) -> Self {
+        Self {
+            min_fees: StateTransitionMinFees::default(),
+            storage_fees: StorageFeeConstants::default(),
+            registration_fees: DataContractRegistrationFees::default(),
+            fee_multiplier_permille,
         }
     }
 
@@ -162,6 +179,19 @@ impl PlatformFeeEstimator {
     pub fn from_platform_version(_platform_version: &PlatformVersion) -> Self {
         // For now, use default fees. In future, could read from platform_version
         Self::new()
+    }
+
+    /// Apply the fee multiplier to a base fee amount.
+    /// Multiplier is in permille: 1000 = 1x, 1500 = 1.5x, 2000 = 2x
+    fn apply_multiplier(&self, base_fee: u64) -> u64 {
+        base_fee
+            .saturating_mul(self.fee_multiplier_permille)
+            .saturating_div(1000)
+    }
+
+    /// Get the current fee multiplier permille
+    pub fn fee_multiplier_permille(&self) -> u64 {
+        self.fee_multiplier_permille
     }
 
     /// Calculate storage fee for a given number of bytes.
@@ -183,10 +213,13 @@ impl PlatformFeeEstimator {
 
     /// Estimate total storage-based fee for storing data.
     /// Includes storage, processing, and estimated seek costs.
+    /// Applies the current fee multiplier.
     pub fn estimate_storage_based_fee(&self, bytes: usize, estimated_seeks: usize) -> u64 {
-        self.calculate_storage_fee(bytes)
+        let base_fee = self
+            .calculate_storage_fee(bytes)
             .saturating_add(self.calculate_processing_fee(bytes))
-            .saturating_add(self.calculate_seek_fee(estimated_seeks))
+            .saturating_add(self.calculate_seek_fee(estimated_seeks));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for credit transfer between identities
@@ -478,16 +511,19 @@ impl PlatformFeeEstimator {
         self.min_fees.masternode_vote
     }
 
-    /// Estimate fee for address funds transfer
+    /// Estimate fee for address funds transfer.
+    /// Applies the current fee multiplier.
     pub fn estimate_address_funds_transfer(&self, input_count: usize, output_count: usize) -> u64 {
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .address_funds_transfer_input_cost
             .saturating_mul(input_count as u64)
             .saturating_add(
                 self.min_fees
                     .address_funds_transfer_output_cost
                     .saturating_mul(output_count.max(1) as u64),
-            )
+            );
+        self.apply_multiplier(base_fee)
     }
 
     /// Get the raw minimum fees structure

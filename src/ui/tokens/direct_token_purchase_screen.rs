@@ -16,7 +16,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -546,7 +546,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Display estimated fee before action button
-                let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
+                let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 egui::Frame::new()
                     .fill(crate::ui::theme::DashColors::surface(dark_mode))

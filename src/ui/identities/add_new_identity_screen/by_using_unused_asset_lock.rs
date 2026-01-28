@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
@@ -104,7 +104,7 @@ impl AddNewIdentityScreen {
 
         // Display estimated fee before action button
         let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create(key_count);
+        let estimated_fee = self.app_context.fee_estimator().estimate_identity_create(key_count);
         ui.add_space(10.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()

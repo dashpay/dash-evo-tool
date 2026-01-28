@@ -3,7 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -667,7 +667,7 @@ impl ScreenLike for TransferScreen {
                 ui.add_space(10.0);
 
                 // Fee estimation
-                let fee_estimator = PlatformFeeEstimator::new();
+                let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = match self.destination_type {
                     TransferDestinationType::Identity => fee_estimator.estimate_credit_transfer(),
                     TransferDestinationType::PlatformAddress => {

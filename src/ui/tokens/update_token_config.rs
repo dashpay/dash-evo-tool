@@ -3,7 +3,7 @@ use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -711,7 +711,7 @@ impl UpdateTokenConfigScreen {
         }
 
         // Display estimated fee before action button
-        let estimated_fee = PlatformFeeEstimator::new().estimate_token_transition();
+        let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
         ui.add_space(10.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()

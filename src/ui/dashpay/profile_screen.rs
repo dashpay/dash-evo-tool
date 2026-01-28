@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
@@ -905,7 +905,7 @@ impl ProfileScreen {
                                     });
                                 } else {
                                     // Fee estimation display
-                                    let fee_estimator = PlatformFeeEstimator::new();
+                                    let fee_estimator = self.app_context.fee_estimator();
                                     // Profile creation/update is a document operation
                                     let estimated_fee = if self.profile.is_some() {
                                         fee_estimator.estimate_document_replace()

@@ -3,7 +3,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -871,7 +871,7 @@ impl DocumentActionScreen {
         let mut action = AppAction::None;
 
         // Fee estimation display
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.app_context.fee_estimator();
         let estimated_fee = match self.action_type {
             DocumentActionType::Create => fee_estimator.estimate_document_create(),
             DocumentActionType::Delete => fee_estimator.estimate_document_delete(),

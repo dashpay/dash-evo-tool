@@ -91,6 +91,8 @@ pub struct AmountInput {
     show_validation_errors: bool,
     // When true, we enforce that the input was changed, even if text edit didn't change.
     changed: bool,
+    /// Optional hint explaining why the maximum is set (e.g., "fees reserved")
+    max_exceeded_hint: Option<String>,
 }
 
 impl AmountInput {
@@ -120,6 +122,7 @@ impl AmountInput {
             desired_width: None,
             show_validation_errors: true, // Default to showing validation errors
             changed: true,                // Start as changed to force initial validation
+            max_exceeded_hint: None,
         }
     }
 
@@ -216,6 +219,20 @@ impl AmountInput {
         self
     }
 
+    /// Sets a hint explaining why the maximum is limited (e.g., "fees reserved").
+    /// This hint is appended to the error message when the max is exceeded.
+    pub fn with_max_exceeded_hint(mut self, hint: impl Into<String>) -> Self {
+        self.max_exceeded_hint = Some(hint.into());
+        self
+    }
+
+    /// Sets a hint explaining why the maximum is limited (mutable reference version).
+    /// Use this for dynamic configuration when the hint changes at runtime.
+    pub fn set_max_exceeded_hint(&mut self, hint: Option<String>) -> &mut Self {
+        self.max_exceeded_hint = hint;
+        self
+    }
+
     /// Sets the minimum amount allowed. Defaults to 1 (must be greater than zero).
     /// Set to Some(0) to allow zero amounts, or None to disable minimum validation.
     pub fn with_min_amount(mut self, min_amount: Option<Credits>) -> Self {
@@ -279,11 +296,15 @@ impl AmountInput {
                 if let Some(max_amount) = self.max_amount
                     && amount.value() > max_amount
                 {
-                    return Err(format!(
-                        "Amount {} exceeds allowed maximum {}",
-                        amount,
-                        Amount::new(max_amount, self.decimal_places)
-                    ));
+                    let max_formatted = Amount::new(max_amount, self.decimal_places);
+                    return Err(if let Some(ref hint) = self.max_exceeded_hint {
+                        format!(
+                            "Amount {} exceeds maximum {}. {}",
+                            amount, max_formatted, hint
+                        )
+                    } else {
+                        format!("Amount {} exceeds maximum {}", amount, max_formatted)
+                    });
                 }
 
                 // Check if amount is below minimum

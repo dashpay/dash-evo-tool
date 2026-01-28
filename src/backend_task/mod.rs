@@ -374,8 +374,9 @@ impl AppContext {
                 seed_hash,
                 inputs,
                 outputs,
+                fee_payer_index,
             } => {
-                self.transfer_platform_credits(seed_hash, inputs, outputs)
+                self.transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
                     .await
             }
             WalletTask::FundPlatformAddressFromAssetLock {
@@ -397,12 +398,14 @@ impl AppContext {
                 inputs,
                 output_script,
                 core_fee_per_byte,
+                fee_payer_index,
             } => {
                 self.withdraw_from_platform_address(
                     seed_hash,
                     inputs,
                     output_script,
                     core_fee_per_byte,
+                    fee_payer_index,
                 )
                 .await
             }

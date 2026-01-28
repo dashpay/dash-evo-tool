@@ -13,6 +13,7 @@ impl AppContext {
         seed_hash: WalletSeedHash,
         inputs: BTreeMap<PlatformAddress, Credits>,
         outputs: BTreeMap<PlatformAddress, Credits>,
+        fee_payer_index: u16,
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::transfer_address_funds::TransferAddressFunds;
@@ -31,8 +32,20 @@ impl AppContext {
             (wallet, sdk)
         };
 
-        // Deduct fee from the first input address (not output, which may be too small)
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        // Deduct fee from the specified input address (should be the one with highest balance).
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(
+            fee_payer_index,
+        )];
+
+        tracing::info!(
+            "transfer_platform_credits: fee_payer_index={}, inputs={}, outputs={}",
+            fee_payer_index,
+            inputs.len(),
+            outputs.len()
+        );
+        for (idx, (addr, amount)) in inputs.iter().enumerate() {
+            tracing::info!("  Input {}: {:?} -> {}", idx, addr, amount);
+        }
 
         // Use the SDK to transfer - returns proof-verified updated address infos
         let address_infos = sdk

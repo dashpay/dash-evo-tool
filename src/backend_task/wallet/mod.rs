@@ -42,6 +42,9 @@ pub enum WalletTask {
         inputs: BTreeMap<PlatformAddress, Credits>,
         /// Destination addresses with amounts
         outputs: BTreeMap<PlatformAddress, Credits>,
+        /// Index of the input to deduct fees from (in BTreeMap order).
+        /// Should be the input with the highest balance to ensure sufficient funds for fees.
+        fee_payer_index: u16,
     },
     /// Fund Platform addresses from an asset lock
     FundPlatformAddressFromAssetLock {
@@ -62,6 +65,8 @@ pub enum WalletTask {
         output_script: CoreScript,
         /// Core fee per byte
         core_fee_per_byte: u32,
+        /// Index of the input to deduct fees from (in BTreeMap order).
+        fee_payer_index: u16,
     },
     /// Fund a platform address directly from wallet UTXOs
     /// Creates asset lock, broadcasts, waits for proof, then funds platform address

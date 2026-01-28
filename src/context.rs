@@ -279,7 +279,9 @@ impl AppContext {
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
-            fee_multiplier_permille: AtomicU64::new(1000), // Default 1x multiplier
+            fee_multiplier_permille: AtomicU64::new(
+                PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
+            ),
         };
 
         let app_context = Arc::new(app_context);

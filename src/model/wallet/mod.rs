@@ -1891,37 +1891,56 @@ impl Wallet {
         nonce: AddressNonce,
     ) {
         // Convert the incoming address to PlatformAddress for canonical comparison
-        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
-            let canonical_bytes = platform_addr.to_bytes();
+        let (keys_to_remove, last_full_sync_balance) =
+            if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
+                let canonical_bytes = platform_addr.to_bytes();
 
-            // Find and remove any existing entry that represents the same platform address
-            // but might have a different Address representation
-            let keys_to_remove: Vec<Address> = self
-                .platform_address_info
-                .keys()
-                .filter(|existing_addr| {
-                    if let Ok(existing_platform) =
-                        PlatformAddress::try_from((*existing_addr).clone())
-                    {
-                        existing_platform.to_bytes() == canonical_bytes
-                            && *existing_addr != &address
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
-                .collect();
+                // First, find last_full_sync_balance from any canonical-equivalent entry
+                // (must be done BEFORE removing duplicates)
+                let last_full_sync_balance =
+                    self.platform_address_info
+                        .iter()
+                        .find_map(|(existing_addr, info)| {
+                            if let Ok(existing_platform) =
+                                PlatformAddress::try_from(existing_addr.clone())
+                                && existing_platform.to_bytes() == canonical_bytes
+                            {
+                                return info.last_full_sync_balance;
+                            }
+                            None
+                        });
 
-            for key in keys_to_remove {
-                self.platform_address_info.remove(&key);
-            }
+                // Find duplicate entries to remove (same platform address, different key)
+                let keys_to_remove: Vec<Address> = self
+                    .platform_address_info
+                    .keys()
+                    .filter(|existing_addr| {
+                        if let Ok(existing_platform) =
+                            PlatformAddress::try_from((*existing_addr).clone())
+                        {
+                            existing_platform.to_bytes() == canonical_bytes
+                                && *existing_addr != &address
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                (keys_to_remove, last_full_sync_balance)
+            } else {
+                // Fallback: try direct lookup if canonical conversion fails
+                let last_full_sync_balance = self
+                    .platform_address_info
+                    .get(&address)
+                    .and_then(|info| info.last_full_sync_balance);
+                (vec![], last_full_sync_balance)
+            };
+
+        // Remove duplicate entries
+        for key in keys_to_remove {
+            self.platform_address_info.remove(&key);
         }
-
-        // Preserve last_full_sync_balance if it exists
-        let last_full_sync_balance = self
-            .platform_address_info
-            .get(&address)
-            .and_then(|info| info.last_full_sync_balance);
 
         self.platform_address_info.insert(
             address,

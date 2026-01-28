@@ -197,11 +197,10 @@ impl AddNewIdentityScreen {
         } else {
             0
         };
-        let estimated_fee = self.app_context.fee_estimator().estimate_identity_create_from_addresses(
-            input_count,
-            false,
-            key_count,
-        );
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_identity_create_from_addresses(input_count, false, key_count);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
             .fill(crate::ui::theme::DashColors::surface(dark_mode))

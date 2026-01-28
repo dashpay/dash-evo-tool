@@ -371,7 +371,8 @@ impl AppContext {
                         let fee_multiplier = epoch_info.fee_multiplier_permille();
                         self.set_fee_multiplier_permille(fee_multiplier);
 
-                        let mut formatted = format_extended_epoch_info(epoch_info, self.network, true);
+                        let mut formatted =
+                            format_extended_epoch_info(epoch_info, self.network, true);
                         formatted.push_str(&format!(
                             "\n\n(Fee multiplier cache updated: {}x)",
                             fee_multiplier as f64 / 1000.0

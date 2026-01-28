@@ -564,7 +564,7 @@ impl ScreenLike for FreezeTokensScreen {
                 );
 
                 // Display estimated fee before action button
-                let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
+                let estimated_fee = fee_estimator.estimate_token_transition();
                 ui.add_space(10.0);
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 egui::Frame::new()

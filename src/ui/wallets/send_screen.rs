@@ -38,8 +38,7 @@ const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 /// Calculate the estimated fee for a platform address funds transfer.
 ///
 /// Uses PlatformFeeEstimator for base costs (input/output fees) plus storage fees.
-fn estimate_platform_fee(input_count: usize) -> u64 {
-    let estimator = PlatformFeeEstimator::new();
+fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
     let inputs = input_count.max(1);
 
     // Base fee from Platform's min fee structure
@@ -84,6 +83,7 @@ struct AddressAllocationResult {
 ///
 /// Returns the allocation result with inputs, fee payer index, and any shortfall.
 fn allocate_platform_addresses(
+    estimator: &PlatformFeeEstimator,
     addresses: &[(PlatformAddress, Address, u64)],
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
@@ -105,7 +105,7 @@ fn allocate_platform_addresses(
     // Calculate fee based on expected number of inputs (use worst-case for safety)
     // This matches what the Max button calculation uses
     let max_inputs = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
-    let estimated_fee = estimate_platform_fee(max_inputs.max(1));
+    let estimated_fee = estimate_platform_fee(estimator, max_inputs.max(1));
 
     // Allocate inputs = outputs (protocol requires equality).
     // Fee payer must reserve enough remaining balance to pay the fee separately.
@@ -646,6 +646,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
+        // Get fee estimator with current network multiplier
+        let fee_estimator = self.app_context.fee_estimator();
+
         // Calculate total balance across all platform addresses
         let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
 
@@ -671,8 +674,12 @@ impl WalletSendScreen {
             .map_err(|e| format!("Invalid platform address: {}", e))?;
 
         // Allocate addresses using the helper function
-        let allocation =
-            allocate_platform_addresses(&addresses, amount_credits, Some(&destination));
+        let allocation = allocate_platform_addresses(
+            &fee_estimator,
+            &addresses,
+            amount_credits,
+            Some(&destination),
+        );
 
         if allocation.sorted_addresses.is_empty() {
             return Err(
@@ -700,7 +707,7 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(addresses_available);
+            let max_fee = estimate_platform_fee(&fee_estimator, addresses_available);
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -768,6 +775,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
+        // Get fee estimator with current network multiplier
+        let fee_estimator = self.app_context.fee_estimator();
+
         // Calculate total balance across all platform addresses
         let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
 
@@ -798,7 +808,8 @@ impl WalletSendScreen {
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
         // Allocate addresses using the helper function (no destination filter for withdrawals)
-        let allocation = allocate_platform_addresses(&addresses, amount_credits, None);
+        let allocation =
+            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
 
         if allocation.shortfall > 0 {
             // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
@@ -809,7 +820,7 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(addresses_available);
+            let max_fee = estimate_platform_fee(&fee_estimator, addresses_available);
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -1121,6 +1132,7 @@ impl WalletSendScreen {
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let fee_estimator = self.app_context.fee_estimator();
 
         ui.label(
             RichText::new("Amount")
@@ -1163,7 +1175,7 @@ impl WalletSendScreen {
                     .take(MAX_PLATFORM_INPUTS)
                     .map(|(_, _, balance)| *balance)
                     .sum();
-                let max_fee = estimate_platform_fee(usable_count);
+                let max_fee = estimate_platform_fee(&fee_estimator, usable_count);
 
                 // Build hint explaining the limit
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
@@ -1246,6 +1258,7 @@ impl WalletSendScreen {
     fn render_platform_source_breakdown(&self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let network = self.app_context.network;
+        let fee_estimator = self.app_context.fee_estimator();
 
         // Only show for platform address sources with a valid amount
         let addresses = match &self.selected_source {
@@ -1264,8 +1277,12 @@ impl WalletSendScreen {
             .ok();
 
         // Use the same allocation algorithm as the send logic, filtering out the destination
-        let allocation =
-            allocate_platform_addresses(addresses, amount_credits, destination.as_ref());
+        let allocation = allocate_platform_addresses(
+            &fee_estimator,
+            addresses,
+            amount_credits,
+            destination.as_ref(),
+        );
 
         if allocation.inputs.is_empty() {
             return;

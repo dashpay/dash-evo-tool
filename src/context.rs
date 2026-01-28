@@ -6,6 +6,7 @@ use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
 use crate::model::contested_name::ContestedName;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
@@ -49,7 +50,7 @@ use dash_sdk::query_types::IndexMap;
 use egui::Context;
 use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
@@ -106,6 +107,9 @@ pub struct AppContext {
     pub(crate) selected_wallet_hash: Mutex<Option<WalletSeedHash>>,
     /// Currently selected single key wallet (persisted across screen navigation)
     pub(crate) selected_single_key_hash: Mutex<Option<SingleKeyHash>>,
+    /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
+    /// Updated when epoch info is fetched from Platform
+    fee_multiplier_permille: AtomicU64,
 }
 
 impl AppContext {
@@ -275,6 +279,9 @@ impl AppContext {
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
+            fee_multiplier_permille: AtomicU64::new(
+                PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
+            ),
         };
 
         let app_context = Arc::new(app_context);
@@ -393,6 +400,24 @@ impl AppContext {
                 }
             }
         }
+    }
+
+    /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
+    pub fn fee_multiplier_permille(&self) -> u64 {
+        self.fee_multiplier_permille.load(Ordering::Relaxed)
+    }
+
+    /// Update the cached fee multiplier from epoch info
+    pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
+        self.fee_multiplier_permille
+            .store(multiplier, Ordering::Relaxed);
+    }
+
+    /// Get a fee estimator configured with the cached fee multiplier.
+    /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
+    /// that reflect the current network fee multiplier.
+    pub fn fee_estimator(&self) -> PlatformFeeEstimator {
+        PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
     }
 
     pub fn spv_manager(&self) -> &Arc<SpvManager> {

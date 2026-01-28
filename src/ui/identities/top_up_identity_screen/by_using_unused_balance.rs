@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
@@ -48,7 +48,7 @@ impl TopUpIdentityScreen {
         };
 
         // Fee estimation display
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.app_context.fee_estimator();
         let estimated_fee = fee_estimator.estimate_identity_topup();
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;

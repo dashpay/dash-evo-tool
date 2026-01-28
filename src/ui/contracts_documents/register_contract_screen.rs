@@ -215,7 +215,9 @@ impl RegisterDataContractScreen {
                 let registration_fee = contract.registration_cost(platform_version).unwrap_or(0);
                 // Add storage and processing fees for the contract data
                 let contract_size = self.contract_json_input.len();
-                let storage_fee = crate::model::fee_estimation::PlatformFeeEstimator::new()
+                let storage_fee = self
+                    .app_context
+                    .fee_estimator()
                     .estimate_storage_based_fee(contract_size, 20); // ~20 seeks for tree operations
                 let estimated_fee = registration_fee.saturating_add(storage_fee);
                 ui.add_space(10.0);

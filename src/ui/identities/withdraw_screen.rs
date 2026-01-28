@@ -3,7 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
@@ -520,7 +520,7 @@ impl ScreenLike for WithdrawalScreen {
                 ui.add_space(10.0);
 
                 // Fee estimation display
-                let fee_estimator = PlatformFeeEstimator::new();
+                let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_credit_withdrawal();
 
                 let dark_mode = ui.ctx().style().visuals.dark_mode;

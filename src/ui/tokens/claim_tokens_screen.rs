@@ -1,5 +1,5 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
-use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -512,7 +512,7 @@ impl ScreenLike for ClaimTokensScreen {
                 }
 
                 // Fee estimation display
-                let fee_estimator = PlatformFeeEstimator::new();
+                let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
                 let dark_mode = ui.ctx().style().visuals.dark_mode;

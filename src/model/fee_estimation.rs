@@ -211,39 +211,45 @@ impl PlatformFeeEstimator {
         (seek_count as u64).saturating_mul(self.storage_fees.storage_seek_cost)
     }
 
+    /// Calculate total storage-based fee for storing data (without fee multiplier).
+    /// Includes storage, processing, and estimated seek costs.
+    /// This is a building block used by other estimation functions.
+    fn calculate_storage_based_fee(&self, bytes: usize, estimated_seeks: usize) -> u64 {
+        self.calculate_storage_fee(bytes)
+            .saturating_add(self.calculate_processing_fee(bytes))
+            .saturating_add(self.calculate_seek_fee(estimated_seeks))
+    }
+
     /// Estimate total storage-based fee for storing data.
     /// Includes storage, processing, and estimated seek costs.
     /// Applies the current fee multiplier.
     pub fn estimate_storage_based_fee(&self, bytes: usize, estimated_seeks: usize) -> u64 {
-        let base_fee = self
-            .calculate_storage_fee(bytes)
-            .saturating_add(self.calculate_processing_fee(bytes))
-            .saturating_add(self.calculate_seek_fee(estimated_seeks));
-        self.apply_multiplier(base_fee)
+        self.apply_multiplier(self.calculate_storage_based_fee(bytes, estimated_seeks))
     }
 
     /// Estimate fee for credit transfer between identities
     pub fn estimate_credit_transfer(&self) -> u64 {
-        self.min_fees.credit_transfer
+        self.apply_multiplier(self.min_fees.credit_transfer)
     }
 
     /// Estimate fee for credit transfer to platform addresses
     pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
-        self.min_fees.credit_transfer_to_addresses.saturating_add(
+        let base_fee = self.min_fees.credit_transfer_to_addresses.saturating_add(
             self.min_fees
                 .address_funds_transfer_output_cost
                 .saturating_mul(output_count as u64),
-        )
+        );
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for credit withdrawal to core chain
     pub fn estimate_credit_withdrawal(&self) -> u64 {
-        self.min_fees.credit_withdrawal
+        self.apply_multiplier(self.min_fees.credit_withdrawal)
     }
 
     /// Estimate fee for address-based credit withdrawal
     pub fn estimate_address_credit_withdrawal(&self) -> u64 {
-        self.min_fees.address_credit_withdrawal
+        self.apply_multiplier(self.min_fees.address_credit_withdrawal)
     }
 
     /// Estimate fee for funding a platform address from an asset lock.
@@ -262,20 +268,22 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for identity update (adding/disabling keys)
     pub fn estimate_identity_update(&self) -> u64 {
-        self.min_fees.identity_update
+        self.apply_multiplier(self.min_fees.identity_update)
     }
 
     /// Estimate fee for identity creation.
     /// This includes base cost, asset lock cost, and per-key costs.
     pub fn estimate_identity_create(&self, key_count: usize) -> u64 {
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .identity_create_base_cost
             .saturating_add(self.min_fees.identity_create_asset_lock_cost)
             .saturating_add(
                 self.min_fees
                     .identity_key_in_creation_cost
                     .saturating_mul(key_count as u64),
-            )
+            );
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for identity creation from addresses (asset lock).
@@ -287,7 +295,8 @@ impl PlatformFeeEstimator {
         key_count: usize,
     ) -> u64 {
         let output_count = if has_output { 1 } else { 0 };
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .identity_create_base_cost
             .saturating_add(self.min_fees.address_funding_asset_lock_cost)
             .saturating_add(
@@ -304,22 +313,27 @@ impl PlatformFeeEstimator {
                 self.min_fees
                     .identity_key_in_creation_cost
                     .saturating_mul(key_count as u64),
-            )
+            );
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for identity top-up.
     /// This includes base cost and asset lock cost.
     pub fn estimate_identity_topup(&self) -> u64 {
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .identity_topup_base_cost
-            .saturating_add(self.min_fees.identity_topup_asset_lock_cost)
+            .saturating_add(self.min_fees.identity_topup_asset_lock_cost);
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document batch transition
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .document_batch_sub_transition
-            .saturating_mul(transition_count.max(1) as u64)
+            .saturating_mul(transition_count.max(1) as u64);
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document creation with known size.
@@ -327,9 +341,11 @@ impl PlatformFeeEstimator {
     /// Estimated seeks: ~10 for tree traversal and insertion.
     pub fn estimate_document_create_with_size(&self, document_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .document_batch_sub_transition
-            .saturating_add(self.estimate_storage_based_fee(document_bytes, ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_storage_based_fee(document_bytes, ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document creation (uses default estimate of ~200 bytes).
@@ -342,17 +358,21 @@ impl PlatformFeeEstimator {
     pub fn estimate_document_delete(&self) -> u64 {
         // Deletion involves seeks but no storage addition
         const ESTIMATED_SEEKS: usize = 8;
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .document_batch_sub_transition
-            .saturating_add(self.calculate_seek_fee(ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_seek_fee(ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document replacement with known size.
     pub fn estimate_document_replace_with_size(&self, document_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .document_batch_sub_transition
-            .saturating_add(self.estimate_storage_based_fee(document_bytes, ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_storage_based_fee(document_bytes, ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document replacement (uses default estimate of ~200 bytes).
@@ -365,27 +385,31 @@ impl PlatformFeeEstimator {
     pub fn estimate_document_transfer(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const OWNERSHIP_UPDATE_BYTES: usize = 64;
-        self.min_fees.document_batch_sub_transition.saturating_add(
-            self.estimate_storage_based_fee(OWNERSHIP_UPDATE_BYTES, ESTIMATED_SEEKS),
-        )
+        let base_fee = self.min_fees.document_batch_sub_transition.saturating_add(
+            self.calculate_storage_based_fee(OWNERSHIP_UPDATE_BYTES, ESTIMATED_SEEKS),
+        );
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document purchase.
     pub fn estimate_document_purchase(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
         const PURCHASE_UPDATE_BYTES: usize = 100;
-        self.min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.estimate_storage_based_fee(PURCHASE_UPDATE_BYTES, ESTIMATED_SEEKS))
+        let base_fee = self.min_fees.document_batch_sub_transition.saturating_add(
+            self.calculate_storage_based_fee(PURCHASE_UPDATE_BYTES, ESTIMATED_SEEKS),
+        );
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for document set price.
     pub fn estimate_document_set_price(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const PRICE_UPDATE_BYTES: usize = 32;
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .document_batch_sub_transition
-            .saturating_add(self.estimate_storage_based_fee(PRICE_UPDATE_BYTES, ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_storage_based_fee(PRICE_UPDATE_BYTES, ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for token transition (mint, burn, transfer, freeze, etc.).
@@ -393,9 +417,11 @@ impl PlatformFeeEstimator {
     pub fn estimate_token_transition(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const TOKEN_OP_BYTES: usize = 100;
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .document_batch_sub_transition
-            .saturating_add(self.estimate_storage_based_fee(TOKEN_OP_BYTES, ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_storage_based_fee(TOKEN_OP_BYTES, ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for data contract creation with known size.
@@ -403,10 +429,12 @@ impl PlatformFeeEstimator {
     /// For contracts with tokens, document types, or indexes, use the detailed method.
     pub fn estimate_contract_create_with_size(&self, contract_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
-        self.registration_fees
+        let base_fee = self
+            .registration_fees
             .base_contract_registration_fee
             .saturating_add(self.min_fees.contract_create)
-            .saturating_add(self.estimate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for data contract creation with detailed component counts.
@@ -426,27 +454,27 @@ impl PlatformFeeEstimator {
     ) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
 
-        let mut fee = self.registration_fees.base_contract_registration_fee;
+        let mut base_fee = self.registration_fees.base_contract_registration_fee;
 
         // Document type fees
-        fee = fee.saturating_add(
+        base_fee = base_fee.saturating_add(
             self.registration_fees
                 .document_type_registration_fee
                 .saturating_mul(document_type_count as u64),
         );
 
         // Index fees
-        fee = fee.saturating_add(
+        base_fee = base_fee.saturating_add(
             self.registration_fees
                 .document_type_base_non_unique_index_registration_fee
                 .saturating_mul(non_unique_index_count as u64),
         );
-        fee = fee.saturating_add(
+        base_fee = base_fee.saturating_add(
             self.registration_fees
                 .document_type_base_unique_index_registration_fee
                 .saturating_mul(unique_index_count as u64),
         );
-        fee = fee.saturating_add(
+        base_fee = base_fee.saturating_add(
             self.registration_fees
                 .document_type_base_contested_index_registration_fee
                 .saturating_mul(contested_index_count as u64),
@@ -454,30 +482,32 @@ impl PlatformFeeEstimator {
 
         // Token fees
         if has_token {
-            fee = fee.saturating_add(self.registration_fees.token_registration_fee);
+            base_fee = base_fee.saturating_add(self.registration_fees.token_registration_fee);
         }
         if has_perpetual_distribution {
-            fee = fee.saturating_add(self.registration_fees.token_uses_perpetual_distribution_fee);
+            base_fee = base_fee
+                .saturating_add(self.registration_fees.token_uses_perpetual_distribution_fee);
         }
         if has_pre_programmed_distribution {
-            fee = fee.saturating_add(
+            base_fee = base_fee.saturating_add(
                 self.registration_fees
                     .token_uses_pre_programmed_distribution_fee,
             );
         }
 
         // Search keyword fees
-        fee = fee.saturating_add(
+        base_fee = base_fee.saturating_add(
             self.registration_fees
                 .search_keyword_fee
                 .saturating_mul(search_keyword_count as u64),
         );
 
         // Add state transition minimum and storage fees
-        fee = fee.saturating_add(self.min_fees.contract_create);
-        fee = fee.saturating_add(self.estimate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS));
+        base_fee = base_fee.saturating_add(self.min_fees.contract_create);
+        base_fee = base_fee
+            .saturating_add(self.calculate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS));
 
-        fee
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for data contract creation (uses base registration fee only).
@@ -491,9 +521,11 @@ impl PlatformFeeEstimator {
     /// Estimate fee for data contract update with known size of changes.
     pub fn estimate_contract_update_with_size(&self, update_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 15;
-        self.min_fees
+        let base_fee = self
+            .min_fees
             .contract_update
-            .saturating_add(self.estimate_storage_based_fee(update_bytes, ESTIMATED_SEEKS))
+            .saturating_add(self.calculate_storage_based_fee(update_bytes, ESTIMATED_SEEKS));
+        self.apply_multiplier(base_fee)
     }
 
     /// Estimate fee for data contract update (uses default estimate).
@@ -508,7 +540,7 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for masternode vote
     pub fn estimate_masternode_vote(&self) -> u64 {
-        self.min_fees.masternode_vote
+        self.apply_multiplier(self.min_fees.masternode_vote)
     }
 
     /// Estimate fee for address funds transfer.

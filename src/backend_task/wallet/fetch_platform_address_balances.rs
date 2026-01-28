@@ -196,20 +196,21 @@ impl AppContext {
                 let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
                 for (core_addr, platform_addr) in wallet.platform_addresses(self.network) {
                     if let Some(info) = wallet.get_platform_address_info(&core_addr) {
-                        // Only pre-populate if we have a last_synced_balance
+                        // Only pre-populate if we have a last_full_sync_balance
                         // (meaning this address was found in a previous full sync)
-                        if let Some(synced_balance) = info.last_synced_balance {
+                        // This prevents double-counting AddToCredits after app restart
+                        if let Some(full_sync_balance) = info.last_full_sync_balance {
                             let lookup_addr = platform_addr.to_address_with_network(self.network);
-                            provider.update_balance(&lookup_addr, synced_balance);
+                            provider.update_balance(&lookup_addr, full_sync_balance);
                             pre_populated_count += 1;
                             tracing::debug!(
-                                "Pre-populated balance for {}: {} (last synced)",
+                                "Pre-populated balance for {}: {} (from last full sync)",
                                 platform_addr.to_bech32m_string(self.network),
-                                synced_balance
+                                full_sync_balance
                             );
                         } else {
                             tracing::debug!(
-                                "Skipping pre-population for {} (no last_synced_balance, likely from proof)",
+                                "Skipping pre-population for {} (no last_full_sync_balance, needs full sync)",
                                 platform_addr.to_bech32m_string(self.network)
                             );
                         }
@@ -259,6 +260,7 @@ impl AppContext {
         let balances = {
             let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
 
+            // Update wallet with synced balances (also updates last_full_sync_balance for next sync)
             provider.apply_results_to_wallet(&mut wallet);
 
             // Persist addresses and balances to database
@@ -284,12 +286,14 @@ impl AppContext {
 
                 // Persist balance to platform_address_balances table
                 // Use the nonce from AddressFunds which comes directly from SDK sync
+                // This is a sync operation, so update last_full_sync_balance
                 if let Err(e) = self.db.set_platform_address_info(
                     &seed_hash,
                     address,
                     funds.balance,
                     funds.nonce,
                     &self.network,
+                    true, // Sync operation - update last_full_sync_balance
                 ) {
                     tracing::warn!("Failed to persist Platform address info: {}", e);
                 }

@@ -288,9 +288,9 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
-    /// Balance as of last FULL sync checkpoint (not including terminal updates).
-    /// Used for terminal-only sync pre-population to prevent double-counting AddToCredits.
-    /// Only set during full syncs, preserved during terminal syncs.
+    /// Balance recorded at the last sync checkpoint. Updated by `set_platform_address_info_from_sync`
+    /// during both full and terminal syncs; preserved by `set_platform_address_info` during internal
+    /// updates (e.g., after transfers) to avoid double-counting AddToCredits on subsequent syncs.
     pub last_full_sync_balance: Option<Credits>,
 }
 

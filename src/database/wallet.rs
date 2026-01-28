@@ -889,14 +889,11 @@ impl Database {
     }
 
     /// Store or update Platform address balance and nonce.
-    /// If `is_full_sync` is true, also updates `last_full_sync_balance` to the current balance.
-    /// This should only be set to true during full syncs (not terminal-only syncs).
-    /// Store or update Platform address balance and nonce.
     ///
-    /// If `is_sync_operation` is true, also updates `last_full_sync_balance` to the current balance.
-    /// This should be true for sync operations (full or terminal) but false for internal updates
-    /// (like after a transfer completes), so that the next terminal sync can correctly apply
-    /// any pending AddToCredits.
+    /// When `is_sync_operation` is true, also updates `last_full_sync_balance` to the current
+    /// balance. This should be true for sync operations (full or terminal) and false for
+    /// internal updates (e.g., after a transfer completes), so that subsequent terminal syncs
+    /// can correctly apply any pending AddToCredits.
     pub fn set_platform_address_info(
         &self,
         seed_hash: &[u8; 32],

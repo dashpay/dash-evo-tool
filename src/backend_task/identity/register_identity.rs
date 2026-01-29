@@ -18,7 +18,7 @@ use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
-use dash_sdk::platform::{Fetch, Identity};
+use dash_sdk::platform::{Fetch, FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
 use dash_sdk::{Error, Sdk};
 use std::collections::BTreeMap;
@@ -227,17 +227,34 @@ impl AppContext {
                 inputs,
                 wallet_seed_hash,
             } => {
-                // inputs with nonces, incremented by 1 from current nonce
+                // Fetch fresh nonces from platform to ensure we have current values
+                let addresses_to_fetch: std::collections::BTreeSet<PlatformAddress> =
+                    inputs.keys().cloned().collect();
+
+                let fetched_address_infos =
+                    AddressInfo::fetch_many(&sdk, addresses_to_fetch.clone())
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to fetch address info from platform: {}", e)
+                        })?;
+
+                // Build inputs with fresh nonces incremented by 1
                 let inputs_with_nonces = inputs
                     .into_iter()
                     .map(|(addr, credits)| {
-                        self.get_platform_address_best_info(&addr, self.network)
-                            .map(|info| (addr, (info.nonce.saturating_add(1), credits)))
+                        // Get the fetched info, falling back to cached info if not found on platform
+                        let nonce = fetched_address_infos
+                            .get(&addr)
+                            .and_then(|opt| opt.as_ref())
+                            .map(|info| info.nonce)
+                            .or_else(|| {
+                                self.get_platform_address_best_info(&addr, self.network)
+                                    .map(|info| info.nonce)
+                            })
+                            .unwrap_or(0);
+                        (addr, (nonce.saturating_add(1), credits))
                     })
-                    .collect::<Option<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>>()
-                    .ok_or(String::from(
-                        "Each input platform address must be present in at least one wallet",
-                    ))?;
+                    .collect::<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>();
 
                 return self
                     .register_identity_from_platform_addresses(

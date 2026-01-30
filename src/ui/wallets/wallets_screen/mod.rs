@@ -984,8 +984,8 @@ impl WalletsBalancesScreen {
                             }
                         });
                         row.col(|ui| {
-                            // Key-only addresses don't hold UTXOs
-                            let is_key_only_address = matches!(
+                            // Key-only addresses and Platform addresses don't hold UTXOs
+                            let no_utxos = matches!(
                                 data.account_category,
                                 AccountCategory::IdentityRegistration
                                     | AccountCategory::IdentityTopup
@@ -995,17 +995,18 @@ impl WalletsBalancesScreen {
                                     | AccountCategory::ProviderOwner
                                     | AccountCategory::ProviderOperator
                                     | AccountCategory::ProviderPlatform
+                                    | AccountCategory::PlatformPayment
                             );
 
-                            if is_key_only_address {
+                            if no_utxos {
                                 ui.label("N/A");
                             } else {
                                 ui.label(format!("{}", data.utxo_count));
                             }
                         });
                         row.col(|ui| {
-                            // These address types are used for key derivation/proofs, not receiving funds
-                            let is_key_only_address = matches!(
+                            // These address types don't track historical received amounts
+                            let no_total_received = matches!(
                                 data.account_category,
                                 AccountCategory::IdentityRegistration
                                     | AccountCategory::IdentityTopup
@@ -1015,16 +1016,11 @@ impl WalletsBalancesScreen {
                                     | AccountCategory::ProviderOwner
                                     | AccountCategory::ProviderOperator
                                     | AccountCategory::ProviderPlatform
+                                    | AccountCategory::PlatformPayment
                             );
 
-                            if is_key_only_address {
+                            if no_total_received {
                                 ui.label("N/A");
-                            } else if data.account_category == AccountCategory::PlatformPayment {
-                                // For Platform addresses, show platform credits balance
-                                // (since we don't track historical Platform received)
-                                let dash_received =
-                                    data.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                                ui.label(format!("{:.8}", dash_received));
                             } else {
                                 let dash_received = data.total_received as f64 * 1e-8;
                                 ui.label(format!("{:.8}", dash_received));

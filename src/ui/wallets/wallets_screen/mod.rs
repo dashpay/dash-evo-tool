@@ -2898,15 +2898,18 @@ impl WalletsBalancesScreen {
         };
 
         // Collect Platform addresses with their balances (using DIP-18 Bech32m format)
+        // Use platform_addresses() which checks watched_addresses, not just platform_address_info
+        // This includes addresses that have been derived but may not have been synced yet
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, u64)> = wallet_guard
-            .platform_address_info
-            .iter()
-            .filter_map(|(addr, info)| {
-                use dash_sdk::dpp::address_funds::PlatformAddress;
-                PlatformAddress::try_from(addr.clone())
-                    .ok()
-                    .map(|pa| (pa.to_bech32m_string(network), info.balance))
+            .platform_addresses(network)
+            .into_iter()
+            .map(|(core_addr, platform_addr)| {
+                let balance = wallet_guard
+                    .get_platform_address_info(&core_addr)
+                    .map(|info| info.balance)
+                    .unwrap_or(0);
+                (platform_addr.to_bech32m_string(network), balance)
             })
             .collect();
 

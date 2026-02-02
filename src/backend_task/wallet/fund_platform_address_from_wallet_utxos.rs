@@ -50,11 +50,16 @@ impl AppContext {
 
             let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
 
+            // Get the next available funding index for deterministic key derivation
+            // Path: m/9'/coin_type'/17'/0'/2'/index (DIP-17 with key_class=2)
+            let funding_index = wallet.next_platform_address_funding_index(self.network);
+
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
                 self.network,
                 asset_lock_amount,
                 allow_take_fee_from_amount,
+                funding_index,
                 Some(self),
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
@@ -76,6 +81,7 @@ impl AppContext {
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
+                            funding_index,
                             Some(self),
                         )?;
                     (tx, private_key, address, utxos)

@@ -58,8 +58,10 @@ pub enum DerivationPathReference {
     BlockchainIdentityCreditInvitationFunding = 13,
     ProviderPlatformNodeKeys = 14,
     CoinJoin = 15,
-    /// DIP-17: Platform Payment Addresses
+    /// DIP-17: Platform Payment Addresses (key_class 0')
     PlatformPayment = 16,
+    /// DIP-17: Platform Address Funding (key_class 2')
+    PlatformAddressFunding = 17,
     Root = 255,
 }
 
@@ -85,6 +87,7 @@ impl TryFrom<u32> for DerivationPathReference {
             14 => Ok(DerivationPathReference::ProviderPlatformNodeKeys),
             15 => Ok(DerivationPathReference::CoinJoin),
             16 => Ok(DerivationPathReference::PlatformPayment),
+            17 => Ok(DerivationPathReference::PlatformAddressFunding),
             255 => Ok(DerivationPathReference::Root),
             value => Err(format!(
                 "value {} not convertable to a DerivationPathReference",
@@ -226,6 +229,17 @@ const BOOTSTRAP_IDENTITY_TOPUP_NOT_BOUND_COUNT: u32 = 8;
 const BOOTSTRAP_PROVIDER_ADDRESS_COUNT: u32 = 4;
 /// DIP-17: Number of Platform payment addresses to bootstrap per key class
 const BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT: u32 = 20;
+
+/// DIP-17 key_class values for path: m/9'/coin_type'/17'/account'/key_class'/index
+/// These constants are defined here for documentation and future use until
+/// dash-sdk adds native support for platform address funding paths.
+#[allow(dead_code)]
+const PLATFORM_KEY_CLASS_PAYMENT: u32 = 0;
+/// Key class reserved for wallet internal and change operations
+#[allow(dead_code)]
+const PLATFORM_KEY_CLASS_INTERNAL: u32 = 1;
+/// Key class for platform address funding (asset lock keys)
+const PLATFORM_KEY_CLASS_FUNDING: u32 = 2;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -1363,6 +1377,83 @@ impl Wallet {
             )?;
         }
         Ok(private_key)
+    }
+
+    /// Generate key for platform address funding (asset locks)
+    /// Path: m/9'/coin_type'/17'/0'/2'/index (DIP-17 with key_class=2)
+    pub fn platform_address_funding_ecdsa_private_key(
+        &mut self,
+        network: Network,
+        index: u32,
+        register_addresses: Option<&AppContext>,
+    ) -> Result<PrivateKey, String> {
+        let account = 0u32;
+        let derivation_path = DerivationPath::platform_payment_path(
+            network,
+            account,
+            PLATFORM_KEY_CLASS_FUNDING,
+            index,
+        );
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
+            .expect("derivation should not be able to fail");
+        let private_key = extended_private_key.to_priv();
+
+        if let Some(app_context) = register_addresses {
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::PlatformAddressFunding,
+                app_context,
+            )?;
+        }
+        Ok(private_key)
+    }
+
+    /// Get the next available index for platform address funding.
+    /// This scans watched addresses for existing funding paths (key_class=2)
+    /// and returns the next unused index.
+    pub fn next_platform_address_funding_index(&self, network: Network) -> u32 {
+        let coin_type = match network {
+            Network::Dash => 5,
+            _ => 1,
+        };
+
+        let max_existing = self
+            .watched_addresses
+            .iter()
+            .filter(|(_, info)| {
+                info.path_reference == DerivationPathReference::PlatformAddressFunding
+            })
+            .filter_map(|(path, _)| {
+                let components = path.as_ref();
+                // Check this is a DIP-17 path with key_class=2
+                // m/9'/coin_type'/17'/account'/key_class'/index
+                if components.len() != 6 {
+                    return None;
+                }
+                let is_valid_path = matches!(
+                    (&components[0], &components[1], &components[2], &components[4]),
+                    (
+                        ChildNumber::Hardened { index: 9 },
+                        ChildNumber::Hardened { index: ct },
+                        ChildNumber::Hardened { index: 17 },
+                        ChildNumber::Hardened { index: kc },
+                    ) if *ct == coin_type && *kc == PLATFORM_KEY_CLASS_FUNDING
+                );
+                if !is_valid_path {
+                    return None;
+                }
+                // Extract index (last component, non-hardened)
+                match components[5] {
+                    ChildNumber::Normal { index } => Some(index),
+                    _ => None,
+                }
+            })
+            .max();
+
+        max_existing.map(|m| m + 1).unwrap_or(0)
     }
 
     pub fn receive_address(

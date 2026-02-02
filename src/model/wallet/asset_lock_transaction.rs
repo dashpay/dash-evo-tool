@@ -76,14 +76,16 @@ impl Wallet {
         )
     }
 
-    /// Create an asset lock transaction with a randomly generated one-time key.
+    /// Create an asset lock transaction with a key derived from the wallet seed.
     /// This is used for generic platform address funding (not identity-specific).
+    /// Path: m/9'/coin_type'/17'/0'/2'/index (DIP-17 with key_class=2 for funding)
     #[allow(clippy::type_complexity)]
     pub fn generic_asset_lock_transaction(
         &mut self,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
+        funding_index: u32,
         register_addresses: Option<&AppContext>,
     ) -> Result<
         (
@@ -95,12 +97,14 @@ impl Wallet {
         ),
         String,
     > {
-        use rand::rngs::OsRng;
+        // Get the private key from the platform address funding derivation path
+        let private_key = self.platform_address_funding_ecdsa_private_key(
+            network,
+            funding_index,
+            register_addresses,
+        )?;
 
-        // Generate a random private key for the asset lock
         let secp = Secp256k1::new();
-        let (secret_key, _) = secp.generate_keypair(&mut OsRng);
-        let private_key = PrivateKey::new(secret_key, network);
         let public_key = private_key.public_key(&secp);
 
         // The asset lock address is where the proof will be tied to

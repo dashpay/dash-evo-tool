@@ -96,6 +96,14 @@ impl TopUpIdentityScreen {
             .as_ref()
             .map(|(_, _, balance)| *balance);
 
+        // Calculate estimated fee for top-up from platform address (needed for max amount calculation)
+        let fee_estimator = self.app_context.fee_estimator();
+        let estimated_fee = fee_estimator.estimate_identity_topup_from_addresses(1);
+
+        // Calculate max amount with fee reserved
+        let max_amount_with_fee_reserved =
+            max_balance_credits.map(|balance| balance.saturating_sub(estimated_fee));
+
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
@@ -111,8 +119,12 @@ impl TopUpIdentityScreen {
                             .with_desired_width(150.0)
                     });
 
-                    // Update max amount dynamically based on selected platform address
-                    amount_input.set_max_amount(max_balance_credits);
+                    // Update max amount dynamically based on selected platform address (with fee reserved)
+                    amount_input.set_max_amount(max_amount_with_fee_reserved);
+                    amount_input.set_max_exceeded_hint(Some(format!(
+                        "~{} reserved for fees",
+                        format_credits_as_dash(estimated_fee)
+                    )));
 
                     let response = amount_input.show(ui);
                     response.inner.update(&mut self.platform_top_up_amount);
@@ -130,10 +142,7 @@ impl TopUpIdentityScreen {
 
         ui.add_space(10.0);
 
-        // Fee estimation display
-        let fee_estimator = self.app_context.fee_estimator();
-        let estimated_fee = fee_estimator.estimate_identity_topup();
-
+        // Fee estimation display (reuse already calculated value)
         Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(10, 8))

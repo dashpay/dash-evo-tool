@@ -150,6 +150,22 @@ impl AddNewIdentityScreen {
                     .map(|(_, _, balance)| *balance)
             });
 
+        // Calculate estimated fee for identity creation (needed for max amount calculation)
+        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let input_count = if self.selected_platform_address_for_funding.is_some() {
+            1
+        } else {
+            0
+        };
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_identity_create_from_addresses(input_count, false, key_count);
+
+        // Calculate max amount with fee reserved
+        let max_amount_with_fee_reserved =
+            max_balance_credits.map(|balance| balance.saturating_sub(estimated_fee));
+
         // Amount input using AmountInput component
         let amount_input = self.platform_funding_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
@@ -159,8 +175,12 @@ impl AddNewIdentityScreen {
                 .with_desired_width(150.0)
         });
 
-        // Update max amount dynamically based on selected platform address
-        amount_input.set_max_amount(max_balance_credits);
+        // Update max amount dynamically based on selected platform address (with fee reserved)
+        amount_input.set_max_amount(max_amount_with_fee_reserved);
+        amount_input.set_max_exceeded_hint(Some(format!(
+            "~{} reserved for fees",
+            format_credits_as_dash(estimated_fee)
+        )));
 
         let response = amount_input.show(ui);
         response.inner.update(&mut self.platform_funding_amount);
@@ -190,17 +210,7 @@ impl AddNewIdentityScreen {
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
 
-        // Display estimated fee before action button
-        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
-        let input_count = if self.selected_platform_address_for_funding.is_some() {
-            1
-        } else {
-            0
-        };
-        let estimated_fee = self
-            .app_context
-            .fee_estimator()
-            .estimate_identity_create_from_addresses(input_count, false, key_count);
+        // Display estimated fee before action button (reuse already calculated value)
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
             .fill(crate::ui::theme::DashColors::surface(dark_mode))

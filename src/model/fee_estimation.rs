@@ -288,7 +288,7 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for identity creation from addresses (asset lock).
     /// This includes base cost, asset lock cost, input/output costs, per-key costs,
-    /// storage-based fees, and a 10% safety buffer to account for fee variability.
+    /// storage-based fees, and a 20% safety buffer to account for fee variability.
     pub fn estimate_identity_create_from_addresses(
         &self,
         input_count: usize,
@@ -355,7 +355,7 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for identity top-up from platform addresses.
     /// This includes base cost, asset lock cost, input costs, storage-based fees,
-    /// and a 10% safety buffer to account for fee variability.
+    /// and a 20% safety buffer to account for fee variability.
     pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
         // Estimated serialized bytes per input (address + signature/witness data)
         const ESTIMATED_BYTES_PER_INPUT: usize = 225;

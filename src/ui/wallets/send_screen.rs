@@ -476,6 +476,50 @@ impl WalletSendScreen {
         }
     }
 
+    fn estimate_max_fee_for_platform_send(
+        &self,
+        fee_estimator: &PlatformFeeEstimator,
+        addresses: &[(PlatformAddress, Address, u64)],
+        destination: Option<&PlatformAddress>,
+    ) -> u64 {
+        let mut sorted_addresses: Vec<_> = addresses
+            .iter()
+            .filter(|(addr, _, _)| destination != Some(addr))
+            .cloned()
+            .collect();
+        sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+
+        let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+        if usable_count == 0 {
+            return estimate_platform_fee(fee_estimator, 1);
+        }
+
+        let dest_type = self.detect_address_type(&self.destination_address);
+        if dest_type == AddressType::Core {
+            let output_script = self
+                .destination_address
+                .trim()
+                .parse::<Address<NetworkUnchecked>>()
+                .ok()
+                .and_then(|addr| addr.require_network(self.app_context.network).ok())
+                .map(|addr| CoreScript::new(addr.script_pubkey()));
+            if let Some(output_script) = output_script {
+                let max_fee_inputs: BTreeMap<PlatformAddress, u64> = sorted_addresses
+                    .iter()
+                    .take(usable_count)
+                    .map(|(addr, _, _)| (*addr, 0))
+                    .collect();
+                return estimate_withdrawal_fee_from_transition(
+                    self.app_context.platform_version(),
+                    &max_fee_inputs,
+                    &output_script,
+                );
+            }
+        }
+
+        estimate_platform_fee(fee_estimator, usable_count)
+    }
+
     fn reset_form(&mut self) {
         self.destination_address.clear();
         self.amount = None;
@@ -854,7 +898,11 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(&fee_estimator, addresses_available);
+            let max_fee = self.estimate_max_fee_for_platform_send(
+                &fee_estimator,
+                &allocation.sorted_addresses,
+                Some(&destination),
+            );
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -1333,7 +1381,11 @@ impl WalletSendScreen {
                     .take(MAX_PLATFORM_INPUTS)
                     .map(|(_, _, balance)| *balance)
                     .sum();
-                let max_fee = estimate_platform_fee(&fee_estimator, usable_count);
+                let max_fee = self.estimate_max_fee_for_platform_send(
+                    &fee_estimator,
+                    &sorted_addresses,
+                    destination.as_ref(),
+                );
 
                 // Build hint explaining the limit
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {

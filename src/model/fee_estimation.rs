@@ -287,22 +287,36 @@ impl PlatformFeeEstimator {
     }
 
     /// Estimate fee for identity creation from addresses (asset lock).
-    /// This includes base cost, asset lock cost, input/output costs, and per-key costs.
+    /// This includes base cost, asset lock cost, input/output costs, per-key costs,
+    /// storage-based fees, and a 10% safety buffer to account for fee variability.
     pub fn estimate_identity_create_from_addresses(
         &self,
         input_count: usize,
         has_output: bool,
         key_count: usize,
     ) -> u64 {
+        // Estimated serialized bytes per input (address + signature/witness data)
+        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
+        // Estimated bytes for identity structure + keys
+        const ESTIMATED_IDENTITY_BASE_BYTES: usize = 100;
+        const ESTIMATED_BYTES_PER_KEY: usize = 50;
+        // Estimated seek operations for tree traversal
+        const ESTIMATED_SEEKS_BASE: usize = 10;
+
         let output_count = if has_output { 1 } else { 0 };
+        let inputs = input_count.max(1);
+
+        // Base fee from min fee structure
+        // Note: identity creation requires the full identity_create_asset_lock_cost,
+        // not the smaller address_funding_asset_lock_cost used for simple transfers
         let base_fee = self
             .min_fees
             .identity_create_base_cost
-            .saturating_add(self.min_fees.address_funding_asset_lock_cost)
+            .saturating_add(self.min_fees.identity_create_asset_lock_cost)
             .saturating_add(
                 self.min_fees
                     .address_funds_transfer_input_cost
-                    .saturating_mul(input_count as u64),
+                    .saturating_mul(inputs as u64),
             )
             .saturating_add(
                 self.min_fees
@@ -314,7 +328,19 @@ impl PlatformFeeEstimator {
                     .identity_key_in_creation_cost
                     .saturating_mul(key_count as u64),
             );
-        self.apply_multiplier(base_fee)
+
+        // Add storage-based fees for serialized transaction data
+        let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT
+            + ESTIMATED_IDENTITY_BASE_BYTES
+            + key_count * ESTIMATED_BYTES_PER_KEY;
+        let estimated_seeks = ESTIMATED_SEEKS_BASE + inputs;
+        let storage_fee = self.calculate_storage_based_fee(estimated_bytes, estimated_seeks);
+
+        // Total with fee multiplier
+        let total = self.apply_multiplier(base_fee.saturating_add(storage_fee));
+
+        // Add 20% safety buffer to account for fee variability
+        total.saturating_add(total / 5)
     }
 
     /// Estimate fee for identity top-up.
@@ -325,6 +351,42 @@ impl PlatformFeeEstimator {
             .identity_topup_base_cost
             .saturating_add(self.min_fees.identity_topup_asset_lock_cost);
         self.apply_multiplier(base_fee)
+    }
+
+    /// Estimate fee for identity top-up from platform addresses.
+    /// This includes base cost, asset lock cost, input costs, storage-based fees,
+    /// and a 10% safety buffer to account for fee variability.
+    pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
+        // Estimated serialized bytes per input (address + signature/witness data)
+        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
+        // Estimated bytes for top-up transaction structure
+        const ESTIMATED_TOPUP_BASE_BYTES: usize = 100;
+        // Estimated seek operations for tree traversal
+        const ESTIMATED_SEEKS_BASE: usize = 8;
+
+        let inputs = input_count.max(1);
+
+        // Base fee from min fee structure
+        let base_fee = self
+            .min_fees
+            .identity_topup_base_cost
+            .saturating_add(self.min_fees.address_funding_asset_lock_cost)
+            .saturating_add(
+                self.min_fees
+                    .address_funds_transfer_input_cost
+                    .saturating_mul(inputs as u64),
+            );
+
+        // Add storage-based fees for serialized transaction data
+        let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT + ESTIMATED_TOPUP_BASE_BYTES;
+        let estimated_seeks = ESTIMATED_SEEKS_BASE + inputs;
+        let storage_fee = self.calculate_storage_based_fee(estimated_bytes, estimated_seeks);
+
+        // Total with fee multiplier
+        let total = self.apply_multiplier(base_fee.saturating_add(storage_fee));
+
+        // Add 20% safety buffer to account for fee variability
+        total.saturating_add(total / 5)
     }
 
     /// Estimate fee for document batch transition

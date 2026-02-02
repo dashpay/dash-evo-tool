@@ -268,38 +268,38 @@ impl AmountInput {
             return Ok(None);
         }
 
-        match Amount::parse(&self.amount_str, self.decimal_places) {
-            Ok(mut amount) => {
-                // Apply the unit name if we have one
-                if let Some(ref unit_name) = self.unit_name {
-                    amount = amount.with_unit_name(unit_name);
-                }
+        let mut amount = Amount::parse(&self.amount_str, self.decimal_places)?;
 
-                // Check if amount exceeds maximum
-                if let Some(max_amount) = self.max_amount
-                    && amount.value() > max_amount
-                {
-                    return Err(format!(
-                        "Amount {} exceeds allowed maximum {}",
-                        amount,
-                        Amount::new(max_amount, self.decimal_places)
-                    ));
-                }
-
-                // Check if amount is below minimum
-                if let Some(min_amount) = self.min_amount
-                    && amount.value() < min_amount
-                {
-                    return Err(format!(
-                        "Amount must be at least {}",
-                        Amount::new(min_amount, self.decimal_places)
-                    ));
-                }
-
-                Ok(Some(amount))
-            }
-            Err(error) => Err(error),
+        // Apply the unit name if we have one
+        if let Some(unit_name) = self.unit_name.as_deref() {
+            amount = amount.with_unit_name(unit_name);
         }
+
+        let value = amount.value();
+        let format_amount = |raw: Credits| Amount::new(raw, self.decimal_places);
+
+        // Check if amount exceeds maximum
+        if let Some(max_amount) = self.max_amount {
+            if value > max_amount {
+                return Err(format!(
+                    "Amount {} exceeds allowed maximum {}",
+                    amount,
+                    format_amount(max_amount)
+                ));
+            }
+        }
+
+        // Check if amount is below minimum
+        if let Some(min_amount) = self.min_amount {
+            if value < min_amount {
+                return Err(format!(
+                    "Amount must be at least {}",
+                    format_amount(min_amount)
+                ));
+            }
+        }
+
+        Ok(Some(amount))
     }
 
     /// Renders the amount input widget and returns an `InnerResponse` for use with `show()`.
@@ -329,18 +329,16 @@ impl AmountInput {
 
             let mut changed = text_response.changed() && ui.is_enabled();
 
-            // Show max button if max amount is available
+            // Show max button if enabled
             let mut max_clicked = false;
             if self.show_max_button {
-                if let Some(max_amount) = self.max_amount {
-                    if ui.button("Max").clicked() {
-                        self.amount_str = Amount::new(max_amount, self.decimal_places).to_string();
-                        max_clicked = true;
+                if ui.button("Max").clicked() {
+                    max_clicked = true;
+                    if let Some(max_amount) = self.max_amount {
+                        self.amount_str =
+                            Amount::new(max_amount, self.decimal_places).to_string();
                         changed = true;
                     }
-                } else if ui.button("Max").clicked() {
-                    // Max button clicked but no max amount set - still report the click
-                    max_clicked = true;
                 }
             }
 
@@ -351,10 +349,10 @@ impl AmountInput {
             };
 
             // Show validation error if enabled and error exists
-            if self.show_validation_errors
-                && let Some(error_msg) = &error_message
-            {
-                ui.colored_label(ui.visuals().error_fg_color, error_msg);
+            if self.show_validation_errors {
+                if let Some(error_msg) = &error_message {
+                    ui.colored_label(ui.visuals().error_fg_color, error_msg);
+                }
             }
 
             if self.changed {
@@ -378,7 +376,7 @@ impl Component for AmountInput {
     type Response = AmountInputResponse;
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
-        AmountInput::show_internal(self, ui)
+        self.show_internal(ui)
     }
 
     fn current_value(&self) -> Option<Self::DomainType> {

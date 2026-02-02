@@ -1227,9 +1227,10 @@ impl ScreenLike for IdentitiesScreen {
                 });
                 ui.add_space(2.0); // Space below
             } else if let Some((message, message_type, timestamp)) = self.backend_message.clone() {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => egui::Color32::BLACK,
+                    MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
 

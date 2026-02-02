@@ -8,6 +8,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
@@ -2464,13 +2465,15 @@ impl MasternodeListDiffScreen {
 
     /// Render the details for the selected quorum
     fn render_quorum_details(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let border = DashColors::border(dark_mode);
         ui.heading("Quorum Details");
         if let Some(dml_key) = self.selected_dml_diff_key {
             if let Some(dml) = self.mnlist_diffs.get(&dml_key) {
                 if let Some(q_index) = self.selected_quorum_in_diff_index {
                     if let Some(quorum) = dml.new_quorums.get(q_index) {
                         Frame::NONE
-                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .stroke(Stroke::new(1.0, border))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 let height = self.get_height(&quorum.quorum_hash).ok();
@@ -2630,7 +2633,7 @@ impl MasternodeListDiffScreen {
                         };
 
                         Frame::NONE
-                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .stroke(Stroke::new(1.0, border))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 ScrollArea::vertical().id_salt("render_quorum_details_2").show(ui, |ui| {
@@ -2663,6 +2666,8 @@ impl MasternodeListDiffScreen {
 
     /// Render the details for the selected Masternode
     fn render_mn_details(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let border = DashColors::border(dark_mode);
         ui.heading("Masternode Details");
 
         if let Some(dml_key) = self.selected_dml_diff_key {
@@ -2670,7 +2675,7 @@ impl MasternodeListDiffScreen {
                 if let Some(mn_index) = self.selected_masternode_in_diff_index {
                     if let Some(masternode) = dml.new_masternodes.get(mn_index) {
                         Frame::NONE
-                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .stroke(Stroke::new(1.0, border))
                             .show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                                 ScrollArea::vertical().id_salt("render_mn_details").show(
@@ -2729,7 +2734,7 @@ impl MasternodeListDiffScreen {
             {
                 let masternode = &qualified_masternode.masternode_list_entry;
                 Frame::NONE
-                    .stroke(Stroke::new(1.0, Color32::BLACK))
+                    .stroke(Stroke::new(1.0, border))
                     .show(ui, |ui| {
                         ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
                         ScrollArea::vertical()
@@ -4384,7 +4389,8 @@ impl ScreenLike for MasternodeListDiffScreen {
                         PendingTask::QrInfoWithDmls => "Fetching QR info + DMLs…",
                         PendingTask::ChainLocks => "Fetching chain locks…",
                     };
-                    ui.colored_label(Color32::BLACK, label);
+                    let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+                    ui.colored_label(text_primary, label);
                 });
                 ui.add_space(6.0);
             }

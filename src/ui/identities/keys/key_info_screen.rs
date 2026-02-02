@@ -10,6 +10,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -88,7 +89,8 @@ impl ScreenLike for KeyInfoScreen {
             let inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                ui.heading(RichText::new("Key Information").color(Color32::BLACK));
+                let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+                ui.heading(RichText::new("Key Information").color(text_primary));
                 ui.add_space(10.0);
 
                 egui::Grid::new("key_info_grid")
@@ -97,15 +99,15 @@ impl ScreenLike for KeyInfoScreen {
                     .striped(false)
                     .show(ui, |ui| {
                         // Key ID
-                        ui.label(RichText::new("Key ID:").strong().color(Color32::BLACK));
-                        ui.label(RichText::new(format!("{}", self.key.id())).color(Color32::BLACK));
+                        ui.label(RichText::new("Key ID:").strong().color(text_primary));
+                        ui.label(RichText::new(format!("{}", self.key.id())).color(text_primary));
                         ui.end_row();
 
                         // Purpose
-                        ui.label(RichText::new("Purpose:").strong().color(Color32::BLACK));
+                        ui.label(RichText::new("Purpose:").strong().color(text_primary));
                         ui.label(
                             RichText::new(format!("{:?}", self.key.purpose()))
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.end_row();
 
@@ -113,27 +115,27 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(
                             RichText::new("Security Level:")
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.label(
                             RichText::new(format!("{:?}", self.key.security_level()))
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.end_row();
 
                         // Type
-                        ui.label(RichText::new("Type:").strong().color(Color32::BLACK));
+                        ui.label(RichText::new("Type:").strong().color(text_primary));
                         ui.label(
                             RichText::new(format!("{:?}", self.key.key_type()))
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.end_row();
 
                         // Read Only
-                        ui.label(RichText::new("Read Only:").strong().color(Color32::BLACK));
+                        ui.label(RichText::new("Read Only:").strong().color(text_primary));
                         ui.label(
                             RichText::new(format!("{}", self.key.read_only()))
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.end_row();
 
@@ -141,12 +143,12 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(
                             RichText::new("Active/Disabled:")
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         if !self.key.is_disabled() {
-                            ui.label(RichText::new("Active").color(Color32::BLACK));
+                            ui.label(RichText::new("Active").color(text_primary));
                         } else {
-                            ui.label(RichText::new("Disabled").color(Color32::BLACK));
+                            ui.label(RichText::new("Disabled").color(text_primary));
                         }
                         ui.end_row();
 
@@ -157,7 +159,7 @@ impl ScreenLike for KeyInfoScreen {
                             ui.label(
                                 RichText::new("In local Wallet")
                                     .strong()
-                                    .color(Color32::BLACK),
+                                    .color(text_primary),
                             );
                             ui.label(
                                 RichText::new(format!(
@@ -165,7 +167,7 @@ impl ScreenLike for KeyInfoScreen {
                                     wallet_derivation_path.derivation_path
                                 ))
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                             );
                             ui.end_row();
                         }
@@ -175,13 +177,13 @@ impl ScreenLike for KeyInfoScreen {
                             ui.label(
                                 RichText::new("Contract Bounds:")
                                     .strong()
-                                    .color(Color32::BLACK),
+                                    .color(text_primary),
                             );
                             match contract_bounds {
                                 ContractBounds::SingleContract { id } => {
                                     ui.label(
                                         RichText::new(format!("Contract ID: {}", id))
-                                            .color(Color32::BLACK),
+                                            .color(text_primary),
                                     );
                                 }
                                 ContractBounds::SingleContractDocumentType {
@@ -193,7 +195,7 @@ impl ScreenLike for KeyInfoScreen {
                                             "Contract ID: {}\nDocument Type: {}",
                                             id, document_type_name
                                         ))
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                     );
                                 }
                             }
@@ -208,7 +210,7 @@ impl ScreenLike for KeyInfoScreen {
                 ui.add_space(10.0);
 
                 // Display the public key information
-                ui.heading(RichText::new("Public Key Information").color(Color32::BLACK));
+                ui.heading(RichText::new("Public Key Information").color(text_primary));
                 ui.add_space(10.0);
 
                 egui::Grid::new("public_key_info_grid")
@@ -222,11 +224,11 @@ impl ScreenLike for KeyInfoScreen {
                                 ui.label(
                                     RichText::new("Public Key (Hex):")
                                         .strong()
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.label(
                                     RichText::new(self.key.data().to_string(Encoding::Hex))
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.end_row();
 
@@ -234,11 +236,11 @@ impl ScreenLike for KeyInfoScreen {
                                 ui.label(
                                     RichText::new("Public Key (Base64):")
                                         .strong()
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.label(
                                     RichText::new(self.key.data().to_string(Encoding::Base64))
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -249,12 +251,12 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(
                             RichText::new("Public Key Hash:")
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         match self.key.public_key_hash() {
                             Ok(hash) => {
                                 let hash_hex = hex::encode(hash);
-                                ui.label(RichText::new(hash_hex).color(Color32::BLACK));
+                                ui.label(RichText::new(hash_hex).color(text_primary));
                             }
                             Err(e) => {
                                 ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
@@ -263,7 +265,7 @@ impl ScreenLike for KeyInfoScreen {
 
                         if self.key.key_type().is_core_address_key_type() {
                             // Public Key Hash
-                            ui.label(RichText::new("Address:").strong().color(Color32::BLACK));
+                            ui.label(RichText::new("Address:").strong().color(text_primary));
                             match self.key.public_key_hash() {
                                 Ok(hash) => {
                                     let address = if self.key.key_type() == BIP13_SCRIPT_HASH {
@@ -278,7 +280,7 @@ impl ScreenLike for KeyInfoScreen {
                                         )
                                     };
                                     ui.label(
-                                        RichText::new(address.to_string()).color(Color32::BLACK),
+                                        RichText::new(address.to_string()).color(text_primary),
                                     );
                                 }
                                 Err(e) => {
@@ -296,7 +298,7 @@ impl ScreenLike for KeyInfoScreen {
 
                 // Display the private key if available
                 if let Some((private_key, _)) = self.private_key_data.as_mut() {
-                    ui.heading(RichText::new("Private Key").color(Color32::BLACK));
+                    ui.heading(RichText::new("Private Key").color(text_primary));
                     ui.add_space(10.0);
 
                     match private_key {
@@ -339,7 +341,7 @@ impl ScreenLike for KeyInfoScreen {
                             self.render_sign_input(ui);
                         }
                         PrivateKeyData::Encrypted(_) => {
-                            ui.label(RichText::new("Key is encrypted").color(Color32::BLACK));
+                            ui.label(RichText::new("Key is encrypted").color(text_primary));
                             ui.add_space(10.0);
 
                             //todo decrypt key
@@ -499,7 +501,7 @@ impl ScreenLike for KeyInfoScreen {
                         }
                     }
                 } else {
-                    ui.label(RichText::new("Enter Private Key:").color(Color32::BLACK));
+                    ui.label(RichText::new("Enter Private Key:").color(text_primary));
                     ui.text_edit_singleline(&mut self.private_key_input);
 
                     if ui.button("Add Private Key").clicked() {
@@ -675,12 +677,13 @@ impl KeyInfoScreen {
     }
 
     fn render_sign_input(&mut self, ui: &mut egui::Ui) {
+        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.heading(RichText::new("Sign").color(Color32::BLACK));
+            ui.heading(RichText::new("Sign").color(text_primary));
 
             // Create an info icon button
             let response = crate::ui::helpers::info_icon_button(ui, "Enter a message and click Sign to encrypt it with your private key. You can send the encrypted message to someone and they can decrypt it using your public key. This is useful for proving you own the private key.");
@@ -692,7 +695,7 @@ impl KeyInfoScreen {
         });
         ui.add_space(5.0);
 
-        ui.label(RichText::new("Enter message to sign:").color(Color32::BLACK));
+        ui.label(RichText::new("Enter message to sign:").color(text_primary));
         ui.add_space(5.0);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_input)
@@ -731,7 +734,7 @@ impl KeyInfoScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Signed Message (Base64):").color(Color32::BLACK));
+            ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
@@ -789,13 +792,14 @@ impl KeyInfoScreen {
     }
 
     fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {
+        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
         egui::Window::new("Remove Private Key")
             .collapsible(false) // Prevent collapsing
             .resizable(false) // Prevent resizing
             .show(ui.ctx(), |ui| {
                 ui.label(
                     RichText::new("Are you sure you want to remove the private key?")
-                        .color(Color32::BLACK),
+                        .color(text_primary),
                 );
                 ui.add_space(10.0);
 

@@ -15,8 +15,10 @@ use crate::ui::dashpay::add_contact_screen::AddContactScreen;
 use crate::ui::dashpay::contact_details::ContactDetailsScreen;
 use crate::ui::dashpay::contact_info_editor::ContactInfoEditorScreen;
 use crate::ui::dashpay::contact_profile_viewer::ContactProfileViewerScreen;
+use crate::ui::dashpay::key_exchange_confirmation::KeyExchangeConfirmationScreen;
 use crate::ui::dashpay::profile_search::ProfileSearchScreen;
 use crate::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
+use crate::ui::dashpay::qr_scanner::QRScannerScreen;
 use crate::ui::dashpay::send_payment::SendPaymentScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen};
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
@@ -39,6 +41,7 @@ use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
+use crate::ui::tools::state_transition_signing_screen::StateTransitionSigningScreen;
 use crate::ui::wallets::asset_lock_detail_screen::AssetLockDetailScreen;
 use crate::ui::wallets::create_asset_lock_screen::CreateAssetLockScreen;
 use crate::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
@@ -312,7 +315,11 @@ pub enum ScreenType {
     DashPaySendPayment(QualifiedIdentity, Identifier),
     DashPayContactInfoEditor(QualifiedIdentity, Identifier),
     DashPayQRGenerator,
+    DashPayQRScanner,
     DashPayProfileSearch,
+
+    // State Transition Signing
+    StateTransitionSigning,
 }
 
 impl PartialEq for ScreenType {
@@ -416,6 +423,7 @@ impl PartialEq for ScreenType {
             ) => a1 == b1 && a2 == b2,
             (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
             (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
+            (ScreenType::StateTransitionSigning, ScreenType::StateTransitionSigning) => true,
             _ => false,
         }
     }
@@ -668,8 +676,14 @@ impl ScreenType {
             ScreenType::DashPayQRGenerator => {
                 Screen::DashPayQRGeneratorScreen(QRCodeGeneratorScreen::new(app_context.clone()))
             }
+            ScreenType::DashPayQRScanner => {
+                Screen::DashPayQRScannerScreen(QRScannerScreen::new(app_context.clone()))
+            }
             ScreenType::DashPayProfileSearch => {
                 Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
+            }
+            ScreenType::StateTransitionSigning => {
+                unreachable!("StateTransitionSigning screen requires request parameters")
             }
         }
     }
@@ -737,7 +751,12 @@ pub enum Screen {
     DashPaySendPaymentScreen(SendPaymentScreen),
     DashPayContactInfoEditorScreen(ContactInfoEditorScreen),
     DashPayQRGeneratorScreen(QRCodeGeneratorScreen),
+    DashPayQRScannerScreen(QRScannerScreen),
     DashPayProfileSearchScreen(ProfileSearchScreen),
+    KeyExchangeConfirmationScreen(KeyExchangeConfirmationScreen),
+
+    // State Transition Signing
+    StateTransitionSigningScreen(StateTransitionSigningScreen),
 }
 
 impl Screen {
@@ -821,7 +840,12 @@ impl Screen {
             Screen::DashPaySendPaymentScreen(screen) => screen.app_context = app_context,
             Screen::DashPayContactInfoEditorScreen(screen) => screen.app_context = app_context,
             Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
+            Screen::DashPayQRScannerScreen(screen) => screen.app_context = app_context,
             Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
+            Screen::KeyExchangeConfirmationScreen(_) => {
+                // KeyExchangeConfirmationScreen holds its own app_context, no update needed
+            }
+            Screen::StateTransitionSigningScreen(screen) => screen.app_context = app_context,
         }
     }
 }
@@ -1019,7 +1043,10 @@ impl Screen {
                 ScreenType::DashPayContactInfoEditor(screen.identity.clone(), screen.contact_id)
             }
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
+            Screen::DashPayQRScannerScreen(_) => ScreenType::DashPayQRScanner,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
+            Screen::KeyExchangeConfirmationScreen(_) => ScreenType::DashPayContacts, // Navigate back to contacts
+            Screen::StateTransitionSigningScreen(_) => ScreenType::StateTransitionSigning,
         }
     }
 }
@@ -1087,7 +1114,10 @@ impl ScreenLike for Screen {
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh(),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh(),
             Screen::DashPayQRGeneratorScreen(_) => {}
+            Screen::DashPayQRScannerScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
+            Screen::KeyExchangeConfirmationScreen(_) => {}
+            Screen::StateTransitionSigningScreen(_) => {}
         }
     }
 
@@ -1153,7 +1183,10 @@ impl ScreenLike for Screen {
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayQRGeneratorScreen(_) => {}
+            Screen::DashPayQRScannerScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
+            Screen::KeyExchangeConfirmationScreen(_) => {}
+            Screen::StateTransitionSigningScreen(_) => {}
         }
     }
 
@@ -1219,7 +1252,10 @@ impl ScreenLike for Screen {
             Screen::DashPaySendPaymentScreen(screen) => screen.ui(ctx),
             Screen::DashPayContactInfoEditorScreen(screen) => screen.ui(ctx),
             Screen::DashPayQRGeneratorScreen(screen) => screen.ui(ctx),
+            Screen::DashPayQRScannerScreen(screen) => screen.ui(ctx),
             Screen::DashPayProfileSearchScreen(screen) => screen.ui(ctx),
+            Screen::KeyExchangeConfirmationScreen(screen) => screen.ui(ctx),
+            Screen::StateTransitionSigningScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -1317,7 +1353,14 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            Screen::DashPayQRScannerScreen(screen) => screen.display_message(message, message_type),
             Screen::DashPayProfileSearchScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::KeyExchangeConfirmationScreen(screen) => {
+                screen.display_message(message, message_type)
+            }
+            Screen::StateTransitionSigningScreen(screen) => {
                 screen.display_message(message, message_type)
             }
         }
@@ -1487,7 +1530,16 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::DashPayQRScannerScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
             Screen::DashPayProfileSearchScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::KeyExchangeConfirmationScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::StateTransitionSigningScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
         }
@@ -1555,7 +1607,10 @@ impl ScreenLike for Screen {
             Screen::DashPaySendPaymentScreen(_) => {}
             Screen::DashPayContactInfoEditorScreen(_) => {}
             Screen::DashPayQRGeneratorScreen(_) => {}
+            Screen::DashPayQRScannerScreen(_) => {}
             Screen::DashPayProfileSearchScreen(_) => {}
+            Screen::KeyExchangeConfirmationScreen(_) => {}
+            Screen::StateTransitionSigningScreen(_) => {}
         }
     }
 }

@@ -5,6 +5,7 @@ pub mod contact_profile_viewer;
 pub mod contact_requests;
 pub mod contacts_list;
 pub mod dashpay_screen;
+pub mod key_exchange_confirmation;
 pub mod profile_screen;
 pub mod profile_search;
 pub mod qr_code_generator;

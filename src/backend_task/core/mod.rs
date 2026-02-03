@@ -483,7 +483,12 @@ impl AppContext {
         const FALLBACK_STEP: u64 = 100;
 
         let network = self.wallet_network_key();
-        let current_height = wm.current_height();
+        let current_height = self
+            .spv_manager()
+            .status()
+            .sync_progress
+            .map(|p| p.header_height)
+            .unwrap_or(0);
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;

@@ -1832,7 +1832,6 @@ dependencies = [
  "futures",
  "grovestark",
  "hex",
- "hkdf",
  "humantime",
  "image",
  "itertools 0.14.0",

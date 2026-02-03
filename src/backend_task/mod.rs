@@ -51,7 +51,6 @@ pub mod identity;
 pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
-pub mod sign_and_broadcast_state_transition;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -87,11 +86,6 @@ pub enum BackendTask {
     CoreTask(CoreTask),
     DashPayTask(Box<DashPayTask>),
     BroadcastStateTransition(StateTransition),
-    SignAndBroadcastStateTransition {
-        identity: QualifiedIdentity,
-        signing_key: dash_sdk::platform::IdentityPublicKey,
-        state_transition: Box<StateTransition>,
-    },
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
     MnListTask(mnlist::MnListTask),
@@ -172,10 +166,6 @@ pub enum BackendTaskSuccessResult {
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
-    KeyExchangeComplete {
-        contract_id: Identifier,
-        app_label: Option<String>,
-    },
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {
@@ -346,19 +336,6 @@ impl AppContext {
             BackendTask::BroadcastStateTransition(state_transition) => {
                 self.broadcast_state_transition(state_transition, &sdk)
                     .await
-            }
-            BackendTask::SignAndBroadcastStateTransition {
-                identity,
-                signing_key,
-                state_transition,
-            } => {
-                self.sign_and_broadcast_state_transition(
-                    &sdk,
-                    &identity,
-                    &signing_key,
-                    *state_transition,
-                )
-                .await
             }
             BackendTask::TokenTask(token_task) => {
                 self.run_token_task(*token_task, &sdk, sender).await

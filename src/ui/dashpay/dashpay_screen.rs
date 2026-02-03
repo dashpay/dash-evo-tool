@@ -89,13 +89,7 @@ impl ScreenLike for DashPayScreen {
                     )),
                 ),
                 (
-                    "Scan QR",
-                    DesiredAppAction::AddScreenType(Box::new(
-                        crate::ui::ScreenType::DashPayQRScanner,
-                    )),
-                ),
-                (
-                    "Generate QR",
+                    "Generate QR Code",
                     DesiredAppAction::AddScreenType(Box::new(
                         crate::ui::ScreenType::DashPayQRGenerator,
                     )),

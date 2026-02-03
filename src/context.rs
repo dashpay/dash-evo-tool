@@ -55,10 +55,6 @@ use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Key Exchange contract ID for YAPPR protocol
-/// This is the contract used for web app key exchange (login key requests)
-pub const KEY_EXCHANGE_CONTRACT_ID: &str = "5SY2s7PSFnAc9ZZqWYbNP5MwYrJhSLV6Hfz4mFcmEBM8";
-
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
@@ -85,9 +81,6 @@ pub struct AppContext {
     pub(crate) dashpay_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
     pub(crate) keyword_search_contract: Arc<DataContract>,
-    /// Key exchange contract for YAPPR protocol (None until deployed)
-    #[allow(dead_code)] // Reserved for future contract caching
-    pub(crate) key_exchange_contract: Option<Arc<DataContract>>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
@@ -271,7 +264,6 @@ impl AppContext {
             dashpay_contract: Arc::new(dashpay_contract),
             token_history_contract: Arc::new(token_history_contract),
             keyword_search_contract: Arc::new(keyword_search_contract),
-            key_exchange_contract: None, // TODO: Load once contract is deployed
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
@@ -1018,12 +1010,6 @@ impl AppContext {
 
     pub fn platform_version(&self) -> &'static PlatformVersion {
         default_platform_version(&self.network)
-    }
-
-    /// Get the key exchange contract ID for YAPPR protocol
-    pub fn key_exchange_contract_id(&self) -> Option<Identifier> {
-        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-        Identifier::from_string(KEY_EXCHANGE_CONTRACT_ID, Encoding::Base58).ok()
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {

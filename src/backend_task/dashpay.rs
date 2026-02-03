@@ -15,14 +15,12 @@ pub mod encryption_tests;
 pub mod errors;
 pub mod hd_derivation;
 pub mod incoming_payments;
-pub mod key_exchange;
 pub mod payments;
 pub mod profile;
 pub mod validation;
 
 pub use contacts::ContactData;
 
-use crate::model::key_exchange_request::KeyExchangeRequest;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
@@ -91,11 +89,6 @@ pub enum DashPayTask {
     /// Register DashPay receiving addresses for incoming payment detection
     RegisterDashPayAddresses {
         identity: QualifiedIdentity,
-    },
-    /// Handle a key exchange request (YAPPR protocol)
-    HandleKeyExchangeRequest {
-        identity: QualifiedIdentity,
-        request: KeyExchangeRequest,
     },
 }
 
@@ -239,9 +232,6 @@ impl AppContext {
                         format!(" ({} errors)", result.errors.len())
                     }
                 )))
-            }
-            DashPayTask::HandleKeyExchangeRequest { identity, request } => {
-                key_exchange::handle_key_exchange_request(self, sdk, &identity, &request).await
             }
         }
     }

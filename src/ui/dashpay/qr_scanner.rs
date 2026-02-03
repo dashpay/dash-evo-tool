@@ -3,9 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::key_exchange_request::KeyExchangeRequest;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::state_transition_request::StateTransitionRequest;
 use crate::model::wallet::Wallet;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -16,10 +14,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::dashpay::key_exchange_confirmation::KeyExchangeConfirmationScreen;
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::tools::state_transition_signing_screen::StateTransitionSigningScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
@@ -53,23 +49,12 @@ impl QRScannerScreen {
         }
     }
 
-    fn parse_qr_code(&mut self) -> Option<AppAction> {
+    fn parse_qr_code(&mut self) {
         if self.qr_data_input.is_empty() {
             self.display_message("Please enter QR code data", MessageType::Error);
-            return None;
+            return;
         }
 
-        // Check for key exchange URI (dash-key:)
-        if self.qr_data_input.starts_with("dash-key:") {
-            return self.handle_key_exchange_uri();
-        }
-
-        // Check for state transition signing URI (dash-st:)
-        if self.qr_data_input.starts_with("dash-st:") {
-            return self.handle_state_transition_uri();
-        }
-
-        // Check for auto-accept contact request URI (dash:?)
         match AutoAcceptProofData::from_qr_string(&self.qr_data_input) {
             Ok(data) => {
                 self.parsed_qr_data = Some(data);
@@ -78,77 +63,6 @@ impl QRScannerScreen {
             Err(e) => {
                 self.parsed_qr_data = None;
                 self.display_message(&format!("Invalid QR code: {}", e), MessageType::Error);
-            }
-        }
-        None
-    }
-
-    fn handle_key_exchange_uri(&mut self) -> Option<AppAction> {
-        match KeyExchangeRequest::from_uri(&self.qr_data_input) {
-            Ok((request, request_network)) => {
-                // Validate network matches
-                if request_network != self.app_context.network {
-                    self.display_message(
-                        &format!(
-                            "Network mismatch: request is for {} but wallet is on {}",
-                            network_display_name(request_network),
-                            network_display_name(self.app_context.network)
-                        ),
-                        MessageType::Error,
-                    );
-                    // Still navigate to confirmation screen to show the mismatch clearly
-                }
-
-                // Navigate to key exchange confirmation screen
-                Some(AppAction::AddScreen(Screen::KeyExchangeConfirmationScreen(
-                    KeyExchangeConfirmationScreen::new(
-                        self.app_context.clone(),
-                        request,
-                        request_network,
-                    ),
-                )))
-            }
-            Err(e) => {
-                self.display_message(
-                    &format!("Invalid key exchange request: {}", e),
-                    MessageType::Error,
-                );
-                None
-            }
-        }
-    }
-
-    fn handle_state_transition_uri(&mut self) -> Option<AppAction> {
-        match StateTransitionRequest::from_uri(&self.qr_data_input) {
-            Ok((request, request_network)) => {
-                // Validate network matches (warning only, screen will block if mismatch)
-                if request_network != self.app_context.network {
-                    self.display_message(
-                        &format!(
-                            "Network mismatch: request is for {} but wallet is on {}",
-                            network_display_name(request_network),
-                            network_display_name(self.app_context.network)
-                        ),
-                        MessageType::Error,
-                    );
-                    // Still navigate to signing screen to show the mismatch clearly
-                }
-
-                // Navigate to state transition signing screen
-                Some(AppAction::AddScreen(Screen::StateTransitionSigningScreen(
-                    StateTransitionSigningScreen::new(
-                        self.app_context.clone(),
-                        request,
-                        request_network,
-                    ),
-                )))
-            }
-            Err(e) => {
-                self.display_message(
-                    &format!("Invalid state transition request: {}", e),
-                    MessageType::Error,
-                );
-                None
             }
         }
     }
@@ -287,10 +201,8 @@ impl QRScannerScreen {
                 );
 
                 ui.horizontal(|ui| {
-                    if ui.button("Parse QR Code").clicked()
-                        && let Some(nav_action) = self.parse_qr_code()
-                    {
-                        action = nav_action;
+                    if ui.button("Parse QR Code").clicked() {
+                        self.parse_qr_code();
                     }
 
                     if ui.button("Clear").clicked() {
@@ -451,17 +363,5 @@ impl ScreenLike for QRScannerScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.display_task_result(result);
-    }
-}
-
-/// Get a user-friendly network name
-fn network_display_name(network: dash_sdk::dpp::dashcore::Network) -> &'static str {
-    use dash_sdk::dpp::dashcore::Network;
-    match network {
-        Network::Dash => "Mainnet",
-        Network::Testnet => "Testnet",
-        Network::Devnet => "Devnet",
-        Network::Regtest => "Regtest",
-        _ => "Unknown",
     }
 }

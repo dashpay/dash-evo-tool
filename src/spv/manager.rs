@@ -796,6 +796,15 @@ impl SpvManager {
             let mut nm_guard = self.network_manager.write().await;
             *nm_guard = None;
         }
+        {
+            // Drop shared storage/request handles so the disk lock is released before restart.
+            if let Ok(mut storage_guard) = self.storage.lock() {
+                *storage_guard = None;
+            }
+            if let Ok(mut guard) = self.request_tx.lock() {
+                *guard = None;
+            }
+        }
 
         result
     }

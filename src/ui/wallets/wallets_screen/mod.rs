@@ -1383,6 +1383,10 @@ impl WalletsBalancesScreen {
         // Messages no longer auto-expire, they must be dismissed manually
     }
 
+    fn set_message(&mut self, message: String, message_type: MessageType) {
+        self.message = Some((message, message_type, Utc::now()));
+    }
+
     fn format_dash(amount_duffs: u64) -> String {
         Amount::dash_from_duffs(amount_duffs).to_string()
     }
@@ -3638,10 +3642,6 @@ impl ScreenLike for WalletsBalancesScreen {
         self.set_message(message.to_string(), message_type);
     }
 
-    fn set_message(&mut self, message: String, message_type: MessageType) {
-        self.message = Some((message, message_type, Utc::now()));
-    }
-
     fn display_task_result(
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
@@ -3769,8 +3769,14 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh_on_arrival(&mut self) {
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
-        if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock()
-            && let Some(seed_hash) = pending.take()
+        let pending_seed_hash = self
+            .app_context
+            .pending_wallet_selection
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+
+        if let Some(seed_hash) = pending_seed_hash
             && let Ok(wallets) = self.app_context.wallets.read()
             && let Some(wallet) = wallets.get(&seed_hash)
         {

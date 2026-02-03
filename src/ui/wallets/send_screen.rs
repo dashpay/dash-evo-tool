@@ -19,7 +19,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
@@ -1155,14 +1155,17 @@ impl WalletSendScreen {
         ui.add_space(8.0);
 
         // Get max amount and hint based on source selection
-        let (max_amount_credits, max_hint) = match &self.selected_source {
+        let (max_amount_credits, max_hint, min_amount) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
                 let max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read()
                         .ok()
-                        .map(|wallet| wallet.total_balance_duffs() * 1000) // duffs to credits
+                        .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
-                (max, None)
+                // We assume that min value is 0.00002 DASH, smaller amounts may be considered dust and rejected by Core.
+                let min_amount = Amount::new_dash(0.00002).value();
+
+                (max, None, Some(min_amount))
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Parse destination to exclude it from max calculation (can't send to yourself)
@@ -1198,9 +1201,13 @@ impl WalletSendScreen {
                 } else {
                     format!("~{} reserved for fees", Self::format_credits(max_fee))
                 };
-                (Some(total.saturating_sub(max_fee)), Some(hint))
+                (
+                    Some(total.saturating_sub(max_fee)),
+                    Some(hint),
+                    Some(max_fee),
+                )
             }
-            None => (None, None),
+            None => (None, None, None),
         };
 
         Frame::group(ui.style())
@@ -1215,9 +1222,10 @@ impl WalletSendScreen {
                         .with_desired_width(150.0)
                 });
 
-                // Update max amount and hint dynamically
+                // Update max/min amount and hint dynamically
                 amount_input.set_max_amount(max_amount_credits);
                 amount_input.set_max_exceeded_hint(max_hint);
+                amount_input.set_min_amount(min_amount);
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.amount);
@@ -2108,7 +2116,7 @@ impl WalletSendScreen {
 
     /// Advanced Core to Core send (multiple outputs)
     fn send_advanced_core_to_core(&mut self) -> Result<AppAction, String> {
-        let wallet = self
+        let wallet: Arc<RwLock<Wallet>> = self
             .selected_wallet
             .as_ref()
             .ok_or("No wallet selected")?

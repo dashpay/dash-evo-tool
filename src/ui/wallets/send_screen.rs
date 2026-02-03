@@ -23,9 +23,12 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::AddressNonce;
+use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
 use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
@@ -83,6 +86,29 @@ fn estimate_withdrawal_fee_from_transition(
         user_fee_increase: 0,
         input_witnesses: Vec::new(),
     });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
+/// Calculate the estimated fee for funding a Platform address from an asset lock.
+fn estimate_address_funding_fee_from_transition(
+    platform_version: &dash_sdk::dpp::version::PlatformVersion,
+    destination: &PlatformAddress,
+) -> u64 {
+    let mut outputs = BTreeMap::new();
+    outputs.insert(*destination, None);
+
+    let transition =
+        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
+            asset_lock_proof: AssetLockProof::default(),
+            inputs: BTreeMap::new(),
+            outputs,
+            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
+            user_fee_increase: 0,
+            ..Default::default()
+        });
 
     transition
         .calculate_min_required_fee(platform_version)
@@ -708,8 +734,14 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Check balance (include fee for asset lock)
-        let required = amount_duffs.saturating_add(3000);
+        // Parse platform address
+        let address_str = self.destination_address.trim();
+        let destination = PlatformAddress::from_bech32m_string(address_str)
+            .map(|(addr, _)| addr)
+            .map_err(|e| format!("Invalid platform address: {}", e))?;
+
+        // Check balance; fees will be subtracted from amount
+        let required = amount_duffs;
         let balance = self.get_core_balance();
         if required > balance {
             return Err(format!(
@@ -718,12 +750,6 @@ impl WalletSendScreen {
                 Self::format_dash(balance)
             ));
         }
-
-        // Parse platform address
-        let address_str = self.destination_address.trim();
-        let destination = PlatformAddress::from_bech32m_string(address_str)
-            .map(|(addr, _)| addr)
-            .map_err(|e| format!("Invalid platform address: {}", e))?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1277,7 +1303,29 @@ impl WalletSendScreen {
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * 1000) // duffs to credits
                 });
-                (max, None)
+                let dest_type = self.detect_address_type(&self.destination_address);
+                let hint = if dest_type == AddressType::Platform {
+                    let destination =
+                        PlatformAddress::from_bech32m_string(self.destination_address.trim())
+                            .map(|(addr, _)| addr)
+                            .ok();
+                    if let Some(destination) = destination {
+                        let estimated_fee = estimate_address_funding_fee_from_transition(
+                            self.app_context.platform_version(),
+                            &destination,
+                        );
+                        // max = max.map(|amount| amount.saturating_sub(estimated_fee));
+                        Some(format!(
+                            "Estimated platform fee ~{} (deducted from amount)",
+                            Self::format_credits(estimated_fee)
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                (max, hint)
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Parse destination to exclude it from max calculation (can't send to yourself)

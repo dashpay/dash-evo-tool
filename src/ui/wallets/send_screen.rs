@@ -396,6 +396,33 @@ impl WalletSendScreen {
         AddressType::Unknown
     }
 
+    fn min_output_amount(
+        &self,
+        input_type: AddressType,
+        output_type: AddressType,
+    ) -> Option<Credits> {
+        let core_min = 5460_u64 * CREDITS_PER_DUFF;
+        let platform_min = self
+            .app_context
+            .platform_version()
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount;
+
+        match (input_type, output_type) {
+            (AddressType::Unknown, AddressType::Unknown) => None,
+            (AddressType::Core, AddressType::Core) => Some(core_min),
+            (AddressType::Platform, AddressType::Platform) => Some(platform_min),
+            (AddressType::Core, AddressType::Platform) => Some(56000000), // needed for asset locks
+            (AddressType::Platform, AddressType::Core) => Some(core_min.max(platform_min)),
+            (AddressType::Unknown, AddressType::Core) => Some(core_min),
+            (AddressType::Unknown, AddressType::Platform) => Some(platform_min),
+            (AddressType::Core, AddressType::Unknown) => Some(core_min),
+            (AddressType::Platform, AddressType::Unknown) => Some(platform_min),
+        }
+    }
+
     /// Get available Platform addresses with balances
     /// Deduplicates addresses based on their canonical Bech32m string representation,
     /// preferring the entry with the highest nonce (most recent update)
@@ -1155,17 +1182,15 @@ impl WalletSendScreen {
         ui.add_space(8.0);
 
         // Get max amount and hint based on source selection
-        let (max_amount_credits, max_hint, min_amount) = match &self.selected_source {
+        let (max_amount_credits, max_hint) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
                 let max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read()
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
-                // We assume that min value is 0.00002 DASH, smaller amounts may be considered dust and rejected by Core.
-                let min_amount = Amount::new_dash(0.00002).value();
 
-                (max, None, Some(min_amount))
+                (max, None)
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Parse destination to exclude it from max calculation (can't send to yourself)
@@ -1201,14 +1226,18 @@ impl WalletSendScreen {
                 } else {
                     format!("~{} reserved for fees", Self::format_credits(max_fee))
                 };
-                (
-                    Some(total.saturating_sub(max_fee)),
-                    Some(hint),
-                    Some(max_fee),
-                )
+                (Some(total.saturating_sub(max_fee)), Some(hint))
             }
-            None => (None, None, None),
+            None => (None, None),
         };
+
+        let input_type = match self.selected_source {
+            Some(SourceSelection::CoreWallet) => AddressType::Core,
+            Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
+            None => AddressType::Unknown,
+        };
+        let output_type = self.detect_address_type(&self.destination_address);
+        let min_amount = self.min_output_amount(input_type, output_type);
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))

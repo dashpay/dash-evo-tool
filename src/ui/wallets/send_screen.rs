@@ -482,6 +482,17 @@ impl WalletSendScreen {
         self.send_status = SendStatus::NotStarted;
     }
 
+    fn now_epoch_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs()
+    }
+
+    fn mark_sending(&mut self) {
+        self.send_status = SendStatus::WaitingForResult(Self::now_epoch_secs());
+    }
+
     fn format_dash(amount_duffs: u64) -> String {
         Amount::dash_from_duffs(amount_duffs).to_string()
     }
@@ -504,22 +515,7 @@ impl WalletSendScreen {
 
     /// Detect address type from the address string
     fn detect_address_type(&self, address: &str) -> AddressType {
-        let trimmed = address.trim();
-        if trimmed.is_empty() {
-            return AddressType::Unknown;
-        }
-
-        // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
-            return AddressType::Platform;
-        }
-
-        // Try to parse as Core address
-        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return AddressType::Core;
-        }
-
-        AddressType::Unknown
+        Self::detect_address_type_static(address)
     }
 
     fn min_output_amount(
@@ -732,11 +728,7 @@ impl WalletSendScreen {
             amount_duffs,
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
             CoreTask::SendWalletPayment {
@@ -778,11 +770,7 @@ impl WalletSendScreen {
             ));
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -911,11 +899,7 @@ impl WalletSendScreen {
             allocation.fee_payer_index
         );
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
@@ -1032,11 +1016,7 @@ impl WalletSendScreen {
             allocation.fee_payer_index
         );
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
@@ -1049,6 +1029,132 @@ impl WalletSendScreen {
         )))
     }
 
+    fn render_unlock_gate(&mut self, ui: &mut Ui) -> bool {
+        let wallet_is_open = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
+
+        if wallet_is_open {
+            return true;
+        }
+
+        let Some(wallet) = &self.selected_wallet else {
+            return true;
+        };
+
+        if let Err(e) = try_open_wallet_no_password(wallet) {
+            self.error_message = Some(e);
+        }
+        if wallet_needs_unlock(wallet) {
+            ui.add_space(10.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 150, 50),
+                "Wallet is locked. Please unlock to continue.",
+            );
+            ui.add_space(8.0);
+            if ui.button("Unlock Wallet").clicked() {
+                self.wallet_unlock_popup.open();
+            }
+            ui.add_space(10.0);
+            return false;
+        }
+
+        true
+    }
+
+    fn format_elapsed_time(start_time: u64) -> String {
+        let elapsed_seconds = Self::now_epoch_secs().saturating_sub(start_time);
+        if elapsed_seconds < 60 {
+            format!(
+                "{} second{}",
+                elapsed_seconds,
+                if elapsed_seconds == 1 { "" } else { "s" }
+            )
+        } else {
+            let minutes = elapsed_seconds / 60;
+            let seconds = elapsed_seconds % 60;
+            format!(
+                "{} minute{} {} second{}",
+                minutes,
+                if minutes == 1 { "" } else { "s" },
+                seconds,
+                if seconds == 1 { "" } else { "s" }
+            )
+        }
+    }
+
+    fn render_send_status(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        match self.send_status.clone() {
+            SendStatus::Complete(message) => {
+                let mut action = AppAction::None;
+                ui.vertical_centered(|ui| {
+                    ui.add_space(100.0);
+                    ui.heading("🎉");
+                    ui.heading(&message);
+                    ui.add_space(20.0);
+
+                    if ui.button("Send Another").clicked() {
+                        self.reset_form();
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("Back to Wallet").clicked() {
+                        action = AppAction::PopScreenAndRefresh;
+                    }
+
+                    ui.add_space(100.0);
+                });
+                Some(action)
+            }
+            SendStatus::WaitingForResult(start_time) => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(100.0);
+                    ui.add(egui::Spinner::new().size(40.0));
+                    ui.add_space(20.0);
+                    ui.heading("Sending...");
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "Time elapsed: {}",
+                            Self::format_elapsed_time(start_time)
+                        ))
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.add_space(100.0);
+                });
+                Some(AppAction::None)
+            }
+            SendStatus::Error(error_msg) => {
+                let mut dismiss = false;
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(Color32::from_rgb(255, 100, 100).gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(255, 100, 100)))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&error_msg)
+                                        .color(Color32::from_rgb(255, 100, 100)),
+                                );
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    dismiss = true;
+                                }
+                            });
+                        });
+                });
+                if dismiss {
+                    self.send_status = SendStatus::NotStarted;
+                }
+                ui.add_space(10.0);
+                None
+            }
+            SendStatus::NotStarted => None,
+        }
+    }
+
     fn render_unified_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -1056,28 +1162,8 @@ impl WalletSendScreen {
         self.render_wallet_info(ui);
 
         // Wallet unlock if needed
-        let wallet_is_open = self
-            .selected_wallet
-            .as_ref()
-            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-
-        if !wallet_is_open && let Some(wallet) = &self.selected_wallet {
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.error_message = Some(e);
-            }
-            if wallet_needs_unlock(wallet) {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "Wallet is locked. Please unlock to continue.",
-                );
-                ui.add_space(8.0);
-                if ui.button("Unlock Wallet").clicked() {
-                    self.wallet_unlock_popup.open();
-                }
-                ui.add_space(10.0);
-                return AppAction::None;
-            }
+        if !self.render_unlock_gate(ui) {
+            return AppAction::None;
         }
 
         ui.add_space(10.0);
@@ -1634,28 +1720,8 @@ impl WalletSendScreen {
         self.render_wallet_info(ui);
 
         // Wallet unlock if needed
-        let wallet_is_open = self
-            .selected_wallet
-            .as_ref()
-            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-
-        if !wallet_is_open && let Some(wallet) = &self.selected_wallet {
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.error_message = Some(e);
-            }
-            if wallet_needs_unlock(wallet) {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "Wallet is locked. Please unlock to continue.",
-                );
-                ui.add_space(8.0);
-                if ui.button("Unlock Wallet").clicked() {
-                    self.wallet_unlock_popup.open();
-                }
-                ui.add_space(10.0);
-                return AppAction::None;
-            }
+        if !self.render_unlock_gate(ui) {
+            return AppAction::None;
         }
 
         ui.add_space(10.0);
@@ -2356,11 +2422,7 @@ impl WalletSendScreen {
             ));
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
             CoreTask::SendWalletPayment {
@@ -2423,11 +2485,7 @@ impl WalletSendScreen {
             PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
         );
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -2483,11 +2541,7 @@ impl WalletSendScreen {
             .map(|(idx, _)| idx as u16)
             .unwrap_or(0);
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
@@ -2545,11 +2599,7 @@ impl WalletSendScreen {
             .map(|(idx, _)| idx as u16)
             .unwrap_or(0);
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
@@ -2582,101 +2632,8 @@ impl ScreenLike for WalletSendScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            // Handle different states - clone to avoid borrow issues
-            let current_status = self.send_status.clone();
-            match current_status {
-                SendStatus::Complete(message) => {
-                    // Show custom success screen
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(100.0);
-                        ui.heading("🎉");
-                        ui.heading(&message);
-                        ui.add_space(20.0);
-
-                        if ui.button("Send Another").clicked() {
-                            self.reset_form();
-                        }
-                        ui.add_space(8.0);
-                        if ui.button("Back to Wallet").clicked() {
-                            inner_action = AppAction::PopScreenAndRefresh;
-                        }
-
-                        ui.add_space(100.0);
-                    });
-
-                    return inner_action;
-                }
-                SendStatus::WaitingForResult(start_time) => {
-                    // Show sending spinner
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(100.0);
-                        ui.add(egui::Spinner::new().size(40.0));
-                        ui.add_space(20.0);
-                        ui.heading("Sending...");
-
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed_seconds = now.saturating_sub(start_time);
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.add_space(10.0);
-                        ui.label(
-                            RichText::new(format!("Time elapsed: {}", display_time))
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                        ui.add_space(100.0);
-                    });
-                    return inner_action;
-                }
-                SendStatus::Error(error_msg) => {
-                    // Show error at the top
-                    let mut dismiss = false;
-                    ui.horizontal(|ui| {
-                        Frame::new()
-                            .fill(Color32::from_rgb(255, 100, 100).gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(255, 100, 100)))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(&error_msg)
-                                            .color(Color32::from_rgb(255, 100, 100)),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        dismiss = true;
-                                    }
-                                });
-                            });
-                    });
-                    if dismiss {
-                        self.send_status = SendStatus::NotStarted;
-                    }
-                    ui.add_space(10.0);
-                }
-                SendStatus::NotStarted => {
-                    // Normal flow - continue to render the form
-                }
+            if let Some(status_action) = self.render_send_status(ui, dark_mode) {
+                return status_action;
             }
 
             egui::ScrollArea::vertical()

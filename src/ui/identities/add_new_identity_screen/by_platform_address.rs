@@ -1,6 +1,8 @@
 use crate::app::AppAction;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
+use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::prelude::AddressNonce;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
@@ -152,15 +154,22 @@ impl AddNewIdentityScreen {
 
         // Calculate estimated fee for identity creation (needed for max amount calculation)
         let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
-        let input_count = if self.selected_platform_address_for_funding.is_some() {
-            1
-        } else {
-            0
-        };
+        let inputs: std::collections::BTreeMap<PlatformAddress, (AddressNonce, Credits)> = self
+            .selected_platform_address_for_funding
+            .as_ref()
+            .map(|(platform_addr, amount)| {
+                std::collections::BTreeMap::from([(*platform_addr, (0, *amount))])
+            })
+            .unwrap_or_default();
         let estimated_fee = self
             .app_context
             .fee_estimator()
-            .estimate_identity_create_from_addresses(input_count, false, key_count);
+            .estimate_identity_create_from_addresses_fee_from_transition(
+                self.app_context.platform_version(),
+                &inputs,
+                None,
+                key_count,
+            );
 
         // Calculate max amount with fee reserved
         let max_amount_with_fee_reserved =

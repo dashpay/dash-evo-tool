@@ -733,12 +733,13 @@ impl AppContext {
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();
-        let input_count = inputs.len();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
-            input_count,
-            false,
-            key_count,
-        );
+        let estimated_fee = PlatformFeeEstimator::new()
+            .estimate_identity_create_from_addresses_fee_from_transition(
+                sdk.version(),
+                &inputs,
+                None,
+                key_count,
+            );
 
         // Clone the wallet for use as the address signer (needed across async boundary)
         let wallet_clone = { wallet.read().map_err(|e| e.to_string())?.clone() };

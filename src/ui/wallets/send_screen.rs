@@ -22,14 +22,10 @@ use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::core_script::CoreScript;
-use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
-use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
@@ -63,33 +59,6 @@ fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -
     // Total with 20% safety buffer
     let total = base_fee.saturating_add(storage_fee);
     total.saturating_add(total / 5)
-}
-
-/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
-fn estimate_withdrawal_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    inputs: &BTreeMap<PlatformAddress, u64>,
-    output_script: &CoreScript,
-) -> u64 {
-    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
-        .iter()
-        .map(|(addr, amount)| (*addr, (0, *amount)))
-        .collect();
-
-    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
-        inputs: inputs_with_nonce,
-        output: None,
-        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
-        core_fee_per_byte: 1,
-        pooling: Pooling::Never,
-        output_script: output_script.clone(),
-        user_fee_increase: 0,
-        input_witnesses: Vec::new(),
-    });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
 }
 
 /// Calculate the estimated fee for funding a Platform address from an asset lock.
@@ -455,7 +424,7 @@ impl WalletSendScreen {
                     .take(usable_count)
                     .map(|(addr, _, _)| (*addr, 0))
                     .collect();
-                return estimate_withdrawal_fee_from_transition(
+                return fee_estimator.estimate_withdrawal_fee_from_transition(
                     self.app_context.platform_version(),
                     &max_fee_inputs,
                     &output_script,
@@ -946,11 +915,15 @@ impl WalletSendScreen {
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
         let platform_version = self.app_context.platform_version();
-
+        let fee_estimator = self.app_context.fee_estimator();
         // Allocate addresses using state-transition-based fee estimation (no destination filter)
         let allocation =
             allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
-                estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
+                fee_estimator.estimate_withdrawal_fee_from_transition(
+                    platform_version,
+                    inputs,
+                    &output_script,
+                )
             });
 
         if allocation.shortfall > 0 {
@@ -968,7 +941,7 @@ impl WalletSendScreen {
                 .take(addresses_available)
                 .map(|(addr, _, _)| (*addr, 0))
                 .collect();
-            let max_fee = estimate_withdrawal_fee_from_transition(
+            let max_fee = fee_estimator.estimate_withdrawal_fee_from_transition(
                 platform_version,
                 &max_fee_inputs,
                 &output_script,

@@ -12,7 +12,21 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
+use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
+use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::{AddressNonce, Identifier};
+use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
+use dash_sdk::dpp::state_transition::identity_create_from_addresses_transition::IdentityCreateFromAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_create_from_addresses_transition::v0::IdentityCreateFromAddressesTransitionV0;
+use dash_sdk::dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_topup_from_addresses_transition::v0::IdentityTopUpFromAddressesTransitionV0;
+use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::withdrawal::Pooling;
+use std::collections::BTreeMap;
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
@@ -628,6 +642,86 @@ impl PlatformFeeEstimator {
     /// Get the storage fee constants
     pub fn storage_fees(&self) -> &StorageFeeConstants {
         &self.storage_fees
+    }
+
+    /// Estimate fee for address credit withdrawal using a constructed state transition.
+    pub fn estimate_withdrawal_fee_from_transition(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, u64>,
+        output_script: &CoreScript,
+    ) -> u64 {
+        let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
+            .iter()
+            .map(|(addr, amount)| (*addr, (0, *amount)))
+            .collect();
+
+        let transition =
+            AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
+                inputs: inputs_with_nonce,
+                output: None,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+                core_fee_per_byte: 1,
+                pooling: Pooling::Never,
+                output_script: output_script.clone(),
+                user_fee_increase: 0,
+                input_witnesses: Vec::new(),
+            });
+
+        transition
+            .calculate_min_required_fee(platform_version)
+            .unwrap_or(0)
+    }
+
+    /// Estimate fee for identity creation from Platform addresses using a constructed state transition.
+    pub fn estimate_identity_create_from_addresses_fee_from_transition(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, (AddressNonce, Credits)>,
+        output: Option<(PlatformAddress, Credits)>,
+        key_count: usize,
+    ) -> u64 {
+        let public_keys = match IdentityPublicKeyInCreation::default_versioned(platform_version) {
+            Ok(key) => std::iter::repeat(key).take(key_count).collect(),
+            Err(_) => Vec::new(),
+        };
+
+        let transition =
+            IdentityCreateFromAddressesTransition::V0(IdentityCreateFromAddressesTransitionV0 {
+                public_keys,
+                inputs: inputs.clone(),
+                output,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+                user_fee_increase: 0,
+                input_witnesses: Vec::new(),
+            });
+
+        transition
+            .calculate_min_required_fee(platform_version)
+            .unwrap_or(0)
+    }
+
+    /// Estimate fee for identity top-up from Platform addresses using a constructed state transition.
+    pub fn estimate_identity_topup_from_addresses_fee_from_transition(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, (AddressNonce, Credits)>,
+        output: Option<(PlatformAddress, Credits)>,
+        identity_id: Identifier,
+    ) -> u64 {
+        let transition =
+            IdentityTopUpFromAddressesTransition::V0(IdentityTopUpFromAddressesTransitionV0 {
+                inputs: inputs.clone(),
+                output,
+                identity_id,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+                user_fee_increase: 0,
+                input_witnesses: Vec::new(),
+            });
+
+        transition
+            .calculate_min_required_fee(platform_version)
+            .unwrap_or(0)
     }
 }
 

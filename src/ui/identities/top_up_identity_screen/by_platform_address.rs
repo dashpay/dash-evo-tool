@@ -11,6 +11,8 @@ use crate::ui::theme::DashColors;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Address;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::prelude::AddressNonce;
 use egui::{Frame, Margin, RichText, Ui};
 use std::collections::BTreeMap;
 
@@ -97,8 +99,20 @@ impl TopUpIdentityScreen {
             .map(|(_, _, balance)| *balance);
 
         // Calculate estimated fee for top-up from platform address (needed for max amount calculation)
-        let fee_estimator = self.app_context.fee_estimator();
-        let estimated_fee = fee_estimator.estimate_identity_topup_from_addresses(1);
+        let inputs: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = self
+            .selected_platform_address
+            .as_ref()
+            .map(|(_, platform_addr, balance)| BTreeMap::from([(*platform_addr, (0, *balance))]))
+            .unwrap_or_default();
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_identity_topup_from_addresses_fee_from_transition(
+                self.app_context.platform_version(),
+                &inputs,
+                None,
+                self.identity.identity.id(),
+            );
 
         // Calculate max amount with fee reserved
         let max_amount_with_fee_reserved =

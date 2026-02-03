@@ -55,6 +55,10 @@ use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Key Exchange contract ID for YAPPR protocol
+/// This is the contract used for web app key exchange (login key requests)
+pub const KEY_EXCHANGE_CONTRACT_ID: &str = "5SY2s7PSFnAc9ZZqWYbNP5MwYrJhSLV6Hfz4mFcmEBM8";
+
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
@@ -81,6 +85,9 @@ pub struct AppContext {
     pub(crate) dashpay_contract: Arc<DataContract>,
     pub(crate) token_history_contract: Arc<DataContract>,
     pub(crate) keyword_search_contract: Arc<DataContract>,
+    /// Key exchange contract for YAPPR protocol (None until deployed)
+    #[allow(dead_code)] // Reserved for future contract caching
+    pub(crate) key_exchange_contract: Option<Arc<DataContract>>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
@@ -264,6 +271,7 @@ impl AppContext {
             dashpay_contract: Arc::new(dashpay_contract),
             token_history_contract: Arc::new(token_history_contract),
             keyword_search_contract: Arc::new(keyword_search_contract),
+            key_exchange_contract: None, // TODO: Load once contract is deployed
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
@@ -447,8 +455,26 @@ impl AppContext {
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
-        self.spv_manager.start()?;
+        // Count wallets that will be loaded into SPV (open wallets with accessible seeds).
+        // This is read synchronously so the SPV thread can wait for exactly this many.
+        let expected_wallets = self
+            .wallets
+            .read()
+            .map(|guard| {
+                guard
+                    .values()
+                    .filter(|w| {
+                        w.read()
+                            .ok()
+                            .is_some_and(|g| g.is_open() && g.seed_bytes().is_ok())
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        // Register reconcile channel BEFORE starting SPV so the event handlers
+        // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();
+        self.spv_manager.start(expected_wallets)?;
         Ok(())
     }
 
@@ -662,9 +688,6 @@ impl AppContext {
         let mut inserted = 0u32;
         for account in collection.all_accounts() {
             let account_type = account.account_type.to_account_type();
-            if matches!(account_type, AccountType::Standard { .. }) {
-                continue;
-            }
             let Some((path_reference, path_type)) = Self::spv_account_metadata(&account_type)
             else {
                 continue;
@@ -781,7 +804,7 @@ impl AppContext {
             let balance = wm
                 .get_wallet_balance(wallet_id)
                 .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
-            tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed, total = balance.total, "SPV balance snapshot");
+            tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
             let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
                 continue;
@@ -794,13 +817,17 @@ impl AppContext {
             self.sync_spv_account_addresses(wallet_info, &wallet_arc);
 
             if let Ok(mut wallet) = wallet_arc.write() {
-                wallet.update_spv_balances(balance.spendable(), balance.unconfirmed, balance.total);
+                wallet.update_spv_balances(
+                    balance.spendable(),
+                    balance.unconfirmed(),
+                    balance.total(),
+                );
                 // Persist balances to database
                 if let Err(e) = self.db.update_wallet_balances(
                     seed_hash,
                     balance.spendable(),
-                    balance.unconfirmed,
-                    balance.total,
+                    balance.unconfirmed(),
+                    balance.total(),
                 ) {
                     tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
                 }
@@ -826,14 +853,19 @@ impl AppContext {
                 .map_err(|e| format!("wallet_utxos failed: {e}"))?;
 
             use dash_sdk::dpp::dashcore::Address as CoreAddress;
-            // no-op
 
             let mut per_address_sum: std::collections::BTreeMap<CoreAddress, u64> =
                 Default::default();
+            // Build in-memory UTXO map to update wallet model
+            let mut new_utxos: std::collections::HashMap<
+                CoreAddress,
+                std::collections::HashMap<
+                    dash_sdk::dpp::dashcore::OutPoint,
+                    dash_sdk::dpp::dashcore::TxOut,
+                >,
+            > = Default::default();
 
             for u in utxos {
-                // Best-effort accessors for outpoint/txout; adjust if API differs
-                // Try field access (common struct layout): `outpoint` + `txout`
                 let outpoint = u.outpoint;
                 let tx_out = u.txout.clone();
 
@@ -842,6 +874,15 @@ impl AppContext {
                     Ok(a) => a,
                     Err(_) => continue,
                 };
+
+                // Always track the UTXO in the in-memory map for correct balance calculation
+                new_utxos
+                    .entry(address.clone())
+                    .or_default()
+                    .insert(outpoint, tx_out.clone());
+
+                // Always count the UTXO value in per-address sum
+                *per_address_sum.entry(address.clone()).or_default() += tx_out.value;
 
                 // If address unknown to DET, try to register using SPV metadata
                 if !known_addresses.contains(&address) {
@@ -872,11 +913,21 @@ impl AppContext {
                         }
                     }
                     if !registered {
-                        continue;
+                        tracing::debug!(
+                            wallet = %hex::encode(seed_hash),
+                            address = %address,
+                            value = tx_out.value,
+                            "SPV UTXO address not registered in DET (counted in balance but not in address table)"
+                        );
+                        // Still persist the UTXO to DB and delete stale entry first
+                        let _ = self.db.execute(
+                            "DELETE FROM utxos WHERE address = ? AND network = ?",
+                            rusqlite::params![address.to_string(), self.network.to_string()],
+                        );
                     }
                 }
 
-                // Insert UTXO row
+                // Insert UTXO row into DB
                 self.db
                     .insert_utxo(
                         outpoint.txid.as_ref(),
@@ -887,15 +938,15 @@ impl AppContext {
                         self.network,
                     )
                     .map_err(|e| e.to_string())?;
-
-                // Sum per address for balance update
-                *per_address_sum.entry(address).or_default() += tx_out.value;
             }
 
-            // Write per-address balances into DB and wallet model
+            // Write per-address balances and UTXOs into wallet model
             if let Some(wref) = wallets_guard.get(seed_hash)
                 && let Ok(mut w) = wref.write()
             {
+                // Update in-memory UTXOs map
+                w.utxos = new_utxos;
+
                 for (addr, sum) in per_address_sum.into_iter() {
                     // Update wallet and DB through model helper
                     let _ = w.update_address_balance(&addr, sum, self);
@@ -920,14 +971,27 @@ impl AppContext {
                 })
                 .collect();
 
-            self.db
-                .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)
-                .map_err(|e| e.to_string())?;
+            tracing::info!(
+                wallet = %hex::encode(seed_hash),
+                spv_transactions = wallet_transactions.len(),
+                spv_spendable = balance.spendable(),
+                spv_total = balance.total(),
+                "SPV reconcile summary"
+            );
+
+            // Only replace transactions if SPV returned some, to avoid wiping
+            // previously persisted history when SPV hasn't populated history yet.
+            if !wallet_transactions.is_empty() {
+                self.db
+                    .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)
+                    .map_err(|e| e.to_string())?;
+            }
 
             if let Some(wref) = wallets_guard.get(seed_hash)
                 && let Ok(mut wallet) = wref.write()
+                && !wallet_transactions.is_empty()
             {
-                wallet.set_transactions(wallet_transactions.clone());
+                wallet.set_transactions(wallet_transactions);
             }
         }
 
@@ -954,6 +1018,12 @@ impl AppContext {
 
     pub fn platform_version(&self) -> &'static PlatformVersion {
         default_platform_version(&self.network)
+    }
+
+    /// Get the key exchange contract ID for YAPPR protocol
+    pub fn key_exchange_contract_id(&self) -> Option<Identifier> {
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        Identifier::from_string(KEY_EXCHANGE_CONTRACT_ID, Encoding::Base58).ok()
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {

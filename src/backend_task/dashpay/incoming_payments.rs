@@ -283,7 +283,7 @@ pub fn match_transaction_to_contact(
 }
 
 /// Process an incoming transaction that was detected by SPV
-/// This should be called when SpvEvent::TransactionDetected is received
+/// This should be called when WalletEvent::TransactionReceived is received
 pub async fn process_incoming_payment(
     app_context: &Arc<AppContext>,
     tx_id: &str,

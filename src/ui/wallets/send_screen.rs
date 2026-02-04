@@ -19,7 +19,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
@@ -394,6 +394,33 @@ impl WalletSendScreen {
         }
 
         AddressType::Unknown
+    }
+
+    fn min_output_amount(
+        &self,
+        input_type: AddressType,
+        output_type: AddressType,
+    ) -> Option<Credits> {
+        let core_min = 5460_u64 * CREDITS_PER_DUFF;
+        let platform_min = self
+            .app_context
+            .platform_version()
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount;
+
+        match (input_type, output_type) {
+            (AddressType::Unknown, AddressType::Unknown) => None,
+            (AddressType::Core, AddressType::Core) => Some(core_min),
+            (AddressType::Platform, AddressType::Platform) => Some(platform_min),
+            (AddressType::Core, AddressType::Platform) => Some(56000000), // needed for asset locks
+            (AddressType::Platform, AddressType::Core) => Some(core_min.max(platform_min)),
+            (AddressType::Unknown, AddressType::Core) => Some(core_min),
+            (AddressType::Unknown, AddressType::Platform) => Some(platform_min),
+            (AddressType::Core, AddressType::Unknown) => Some(core_min),
+            (AddressType::Platform, AddressType::Unknown) => Some(platform_min),
+        }
     }
 
     /// Get available Platform addresses with balances
@@ -1160,8 +1187,9 @@ impl WalletSendScreen {
                 let max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read()
                         .ok()
-                        .map(|wallet| wallet.total_balance_duffs() * 1000) // duffs to credits
+                        .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
+
                 (max, None)
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
@@ -1203,6 +1231,14 @@ impl WalletSendScreen {
             None => (None, None),
         };
 
+        let input_type = match self.selected_source {
+            Some(SourceSelection::CoreWallet) => AddressType::Core,
+            Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
+            None => AddressType::Unknown,
+        };
+        let output_type = self.detect_address_type(&self.destination_address);
+        let min_amount = self.min_output_amount(input_type, output_type);
+
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
@@ -1215,9 +1251,10 @@ impl WalletSendScreen {
                         .with_desired_width(150.0)
                 });
 
-                // Update max amount and hint dynamically
+                // Update max/min amount and hint dynamically
                 amount_input.set_max_amount(max_amount_credits);
                 amount_input.set_max_exceeded_hint(max_hint);
+                amount_input.set_min_amount(min_amount);
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.amount);
@@ -2108,7 +2145,7 @@ impl WalletSendScreen {
 
     /// Advanced Core to Core send (multiple outputs)
     fn send_advanced_core_to_core(&mut self) -> Result<AppAction, String> {
-        let wallet = self
+        let wallet: Arc<RwLock<Wallet>> = self
             .selected_wallet
             .as_ref()
             .ok_or("No wallet selected")?

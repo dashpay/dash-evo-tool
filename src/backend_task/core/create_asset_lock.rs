@@ -67,7 +67,7 @@ impl AppContext {
                     .get(&address)
                     .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
                     .unwrap_or(0);
-                let _ = wallet_guard.update_address_balance(&address, new_balance, self);
+                wallet_guard.update_address_balance(&address, new_balance, self)?;
             }
         }
 
@@ -140,7 +140,7 @@ impl AppContext {
                     .get(&address)
                     .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
                     .unwrap_or(0);
-                let _ = wallet_guard.update_address_balance(&address, new_balance, self);
+                wallet_guard.update_address_balance(&address, new_balance, self)?;
             }
         }
 

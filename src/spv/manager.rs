@@ -1101,15 +1101,19 @@ impl SpvManager {
                                 if let Some(ref ftx) = finality_tx {
                                     match &event {
                                         SyncEvent::InstantLockReceived { instant_lock, .. } => {
-                                            let _ = ftx.try_send(AssetLockFinalityEvent::InstantLock {
+                                            if let Err(e) = ftx.try_send(AssetLockFinalityEvent::InstantLock {
                                                 txid: instant_lock.txid,
                                                 instant_lock: Box::new(instant_lock.clone()),
-                                            });
+                                            }) {
+                                                tracing::warn!("Failed to forward InstantLock finality event for txid {}: {}", instant_lock.txid, e);
+                                            }
                                         }
                                         SyncEvent::ChainLockReceived { chain_lock, .. } => {
-                                            let _ = ftx.try_send(AssetLockFinalityEvent::ChainLock {
+                                            if let Err(e) = ftx.try_send(AssetLockFinalityEvent::ChainLock {
                                                 height: chain_lock.block_height,
-                                            });
+                                            }) {
+                                                tracing::warn!("Failed to forward ChainLock finality event for height {}: {}", chain_lock.block_height, e);
+                                            }
                                         }
                                         _ => {}
                                     }

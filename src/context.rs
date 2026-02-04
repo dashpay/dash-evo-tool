@@ -1577,7 +1577,7 @@ impl AppContext {
             CoreBackendMode::Rpc => self
                 .core_client
                 .read()
-                .expect("Core client lock was poisoned")
+                .map_err(|e| format!("core client lock poisoned: {}", e))?
                 .send_raw_transaction(tx)
                 .map_err(|e| e.to_string()),
             CoreBackendMode::Spv => {

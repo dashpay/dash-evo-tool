@@ -408,6 +408,8 @@ impl SetTokenPriceScreen {
                 }
             }
             PricingType::TieredPricing => {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let text_primary = DashColors::text_primary(dark_mode);
                 ui.label("Add pricing tiers to offer volume discounts");
                 ui.add_space(10.0);
 
@@ -429,7 +431,7 @@ impl SetTokenPriceScreen {
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Minimum Amount")
-                                    .color(Color32::BLACK)
+                                    .color(text_primary)
                                     .strong()
                                     .underline(),
                             );
@@ -437,7 +439,7 @@ impl SetTokenPriceScreen {
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Price per Token")
-                                    .color(Color32::BLACK)
+                                    .color(text_primary)
                                     .strong()
                                     .underline(),
                             );
@@ -445,7 +447,7 @@ impl SetTokenPriceScreen {
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Remove")
-                                    .color(Color32::BLACK)
+                                    .color(text_primary)
                                     .strong()
                                     .underline(),
                             );

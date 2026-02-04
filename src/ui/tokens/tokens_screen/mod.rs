@@ -2758,9 +2758,10 @@ impl ScreenLike for TokensScreen {
                         ui.add_space(2.0); // Space below
                     } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
                         ui.add_space(25.0); // Same space as refreshing indicator
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let color = match msg_type {
                             MessageType::Error => Color32::DARK_RED,
-                            MessageType::Info => Color32::BLACK,
+                            MessageType::Info => DashColors::text_primary(dark_mode),
                             MessageType::Success => Color32::DARK_GREEN,
                         };
                         ui.horizontal(|ui| {

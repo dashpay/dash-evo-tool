@@ -2674,15 +2674,13 @@ impl MasternodeListDiffScreen {
             if let Some(dml) = self.mnlist_diffs.get(&dml_key) {
                 if let Some(mn_index) = self.selected_masternode_in_diff_index {
                     if let Some(masternode) = dml.new_masternodes.get(mn_index) {
-                        Frame::NONE
-                            .stroke(Stroke::new(1.0, border))
-                            .show(ui, |ui| {
-                                ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                                ScrollArea::vertical().id_salt("render_mn_details").show(
-                                    ui,
-                                    |ui| {
-                                        ui.label(format!(
-                                            "Version: {}\n\
+                        Frame::NONE.stroke(Stroke::new(1.0, border)).show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
+                            ScrollArea::vertical()
+                                .id_salt("render_mn_details")
+                                .show(ui, |ui| {
+                                    ui.label(format!(
+                                        "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
                                      Service Address: {}:{}\n\
@@ -2690,35 +2688,33 @@ impl MasternodeListDiffScreen {
                                      Voting Key ID: {}\n\
                                      Is Valid: {}\n\
                                      Masternode Type: {}",
-                                            masternode.version,
-                                            masternode.pro_reg_tx_hash.reverse(),
-                                            match masternode.confirmed_hash {
-                                                None => "No confirmed hash".to_string(),
-                                                Some(confirmed_hash) =>
-                                                    confirmed_hash.reverse().to_string(),
-                                            },
-                                            masternode.service_address.ip(),
-                                            masternode.service_address.port(),
-                                            masternode.operator_public_key,
-                                            masternode.key_id_voting,
-                                            masternode.is_valid,
-                                            match masternode.mn_type {
-                                                EntryMasternodeType::Regular =>
-                                                    "Regular".to_string(),
-                                                EntryMasternodeType::HighPerformance {
-                                                    platform_http_port,
-                                                    platform_node_id,
-                                                } => {
-                                                    format!(
-                                                        "High Performance (Port: {}, Node ID: {})",
-                                                        platform_http_port, platform_node_id
-                                                    )
-                                                }
+                                        masternode.version,
+                                        masternode.pro_reg_tx_hash.reverse(),
+                                        match masternode.confirmed_hash {
+                                            None => "No confirmed hash".to_string(),
+                                            Some(confirmed_hash) =>
+                                                confirmed_hash.reverse().to_string(),
+                                        },
+                                        masternode.service_address.ip(),
+                                        masternode.service_address.port(),
+                                        masternode.operator_public_key,
+                                        masternode.key_id_voting,
+                                        masternode.is_valid,
+                                        match masternode.mn_type {
+                                            EntryMasternodeType::Regular => "Regular".to_string(),
+                                            EntryMasternodeType::HighPerformance {
+                                                platform_http_port,
+                                                platform_node_id,
+                                            } => {
+                                                format!(
+                                                    "High Performance (Port: {}, Node ID: {})",
+                                                    platform_http_port, platform_node_id
+                                                )
                                             }
-                                        ));
-                                    },
-                                );
-                            });
+                                        }
+                                    ));
+                                });
+                        });
                     }
                 } else {
                     ui.label("Select a Masternode to view details.");
@@ -2733,15 +2729,13 @@ impl MasternodeListDiffScreen {
                 && let Some(qualified_masternode) = mn_list.masternodes.get(&selected_pro_tx_hash)
             {
                 let masternode = &qualified_masternode.masternode_list_entry;
-                Frame::NONE
-                    .stroke(Stroke::new(1.0, border))
-                    .show(ui, |ui| {
-                        ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
-                        ScrollArea::vertical()
-                            .id_salt("render_mn_details_2")
-                            .show(ui, |ui| {
-                                ui.label(format!(
-                                    "Version: {}\n\
+                Frame::NONE.stroke(Stroke::new(1.0, border)).show(ui, |ui| {
+                    ui.set_min_size(Vec2::new(ui.available_width(), 300.0));
+                    ScrollArea::vertical()
+                        .id_salt("render_mn_details_2")
+                        .show(ui, |ui| {
+                            ui.label(format!(
+                                "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
                                      Service Address: {}:{}\n\
@@ -2751,41 +2745,40 @@ impl MasternodeListDiffScreen {
                                      Masternode Type: {}\n\
                                      Entry Hash: {}\n\
                                      Confirmed Hash hashed with ProRegTx: {}\n",
-                                    masternode.version,
-                                    masternode.pro_reg_tx_hash.reverse(),
-                                    match masternode.confirmed_hash {
-                                        None => "No confirmed hash".to_string(),
-                                        Some(confirmed_hash) =>
-                                            confirmed_hash.reverse().to_string(),
-                                    },
-                                    masternode.service_address.ip(),
-                                    masternode.service_address.port(),
-                                    masternode.operator_public_key,
-                                    masternode.key_id_voting,
-                                    masternode.is_valid,
-                                    match masternode.mn_type {
-                                        EntryMasternodeType::Regular => "Regular".to_string(),
-                                        EntryMasternodeType::HighPerformance {
-                                            platform_http_port,
-                                            platform_node_id,
-                                        } => {
-                                            format!(
-                                                "High Performance (Port: {}, Node ID: {})",
-                                                platform_http_port, platform_node_id
-                                            )
-                                        }
-                                    },
-                                    hex::encode(qualified_masternode.entry_hash),
-                                    if let Some(hash) =
-                                        qualified_masternode.confirmed_hash_hashed_with_pro_reg_tx
-                                    {
-                                        hash.reverse().to_string()
-                                    } else {
-                                        "None".to_string()
-                                    },
-                                ));
-                            });
-                    });
+                                masternode.version,
+                                masternode.pro_reg_tx_hash.reverse(),
+                                match masternode.confirmed_hash {
+                                    None => "No confirmed hash".to_string(),
+                                    Some(confirmed_hash) => confirmed_hash.reverse().to_string(),
+                                },
+                                masternode.service_address.ip(),
+                                masternode.service_address.port(),
+                                masternode.operator_public_key,
+                                masternode.key_id_voting,
+                                masternode.is_valid,
+                                match masternode.mn_type {
+                                    EntryMasternodeType::Regular => "Regular".to_string(),
+                                    EntryMasternodeType::HighPerformance {
+                                        platform_http_port,
+                                        platform_node_id,
+                                    } => {
+                                        format!(
+                                            "High Performance (Port: {}, Node ID: {})",
+                                            platform_http_port, platform_node_id
+                                        )
+                                    }
+                                },
+                                hex::encode(qualified_masternode.entry_hash),
+                                if let Some(hash) =
+                                    qualified_masternode.confirmed_hash_hashed_with_pro_reg_tx
+                                {
+                                    hash.reverse().to_string()
+                                } else {
+                                    "None".to_string()
+                                },
+                            ));
+                        });
+                });
             }
         } else {
             ui.label("Select a block height and Masternode.");

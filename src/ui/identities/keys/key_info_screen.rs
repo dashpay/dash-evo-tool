@@ -10,10 +10,10 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::theme::DashColors;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
@@ -106,8 +106,7 @@ impl ScreenLike for KeyInfoScreen {
                         // Purpose
                         ui.label(RichText::new("Purpose:").strong().color(text_primary));
                         ui.label(
-                            RichText::new(format!("{:?}", self.key.purpose()))
-                                .color(text_primary),
+                            RichText::new(format!("{:?}", self.key.purpose())).color(text_primary),
                         );
                         ui.end_row();
 
@@ -126,16 +125,14 @@ impl ScreenLike for KeyInfoScreen {
                         // Type
                         ui.label(RichText::new("Type:").strong().color(text_primary));
                         ui.label(
-                            RichText::new(format!("{:?}", self.key.key_type()))
-                                .color(text_primary),
+                            RichText::new(format!("{:?}", self.key.key_type())).color(text_primary),
                         );
                         ui.end_row();
 
                         // Read Only
                         ui.label(RichText::new("Read Only:").strong().color(text_primary));
                         ui.label(
-                            RichText::new(format!("{}", self.key.read_only()))
-                                .color(text_primary),
+                            RichText::new(format!("{}", self.key.read_only())).color(text_primary),
                         );
                         ui.end_row();
 

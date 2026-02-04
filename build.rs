@@ -74,7 +74,9 @@ fn resolve_ar(target: &str) -> Option<String> {
 
 fn resolve_tool(env_keys: &[String], candidates: &[&str]) -> Option<String> {
     for key in env_keys {
-        if let Ok(cmd) = env::var(key) && is_available(&cmd) {
+        if let Ok(cmd) = env::var(key)
+            && is_available(&cmd)
+        {
             return Some(cmd);
         }
     }

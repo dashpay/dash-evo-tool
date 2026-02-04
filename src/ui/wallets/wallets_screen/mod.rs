@@ -1905,19 +1905,19 @@ impl WalletsBalancesScreen {
         }
 
         // Refresh cached balances from the wallet so SPV updates are reflected
-        if let Some(wallet) = &self.selected_wallet {
-            if let Ok(wallet_guard) = wallet.read() {
-                use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-                for (addr_str, balance) in &mut self.receive_dialog.core_addresses {
-                    if let Ok(addr) = addr_str.parse::<Address<NetworkUnchecked>>() {
-                        if let Ok(addr) = addr.require_network(self.app_context.network) {
-                            *balance = wallet_guard
-                                .address_balances
-                                .get(&addr)
-                                .copied()
-                                .unwrap_or(0);
-                        }
-                    }
+        if let Some(wallet) = &self.selected_wallet
+            && let Ok(wallet_guard) = wallet.read()
+        {
+            use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+            for (addr_str, balance) in &mut self.receive_dialog.core_addresses {
+                if let Ok(addr) = addr_str.parse::<Address<NetworkUnchecked>>()
+                    && let Ok(addr) = addr.require_network(self.app_context.network)
+                {
+                    *balance = wallet_guard
+                        .address_balances
+                        .get(&addr)
+                        .copied()
+                        .unwrap_or(0);
                 }
             }
         }

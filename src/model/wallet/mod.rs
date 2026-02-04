@@ -99,6 +99,7 @@ pub trait DerivationPathHelpers {
     fn is_bip44(&self, network: Network) -> bool;
     fn is_bip44_external(&self, network: Network) -> bool;
     fn is_bip44_change(&self, network: Network) -> bool;
+    fn is_bip32(&self) -> bool;
     fn is_asset_lock_funding(&self, network: Network) -> bool;
     fn is_platform_payment(&self, network: Network) -> bool;
     fn bip44_account_index(&self) -> Option<u32>;
@@ -137,6 +138,12 @@ impl DerivationPathHelpers for DerivationPath {
         }
         let components = self.as_ref();
         components.len() >= 5 && components[3] == ChildNumber::Normal { index: 1 }
+    }
+
+    fn is_bip32(&self) -> bool {
+        let components = self.as_ref();
+        matches!(components.len(), 2..=3)
+            && components[0] == ChildNumber::Hardened { index: 0 }
     }
 
     fn is_asset_lock_funding(&self, network: Network) -> bool {

@@ -12,7 +12,7 @@ on:
     inputs:
       tag:
         description: "Version (i.e. v0.1.0)"
-        required: true
+        required: false
 
 permissions:
   id-token: write
@@ -700,6 +700,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: ${{ github.event.inputs.tag != '' }}
         with:
           tag_name: ${{ github.event.inputs.tag }}
           files: |

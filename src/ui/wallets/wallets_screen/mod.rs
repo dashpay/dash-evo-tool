@@ -326,7 +326,10 @@ impl WalletsBalancesScreen {
         if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
             *guard = hash;
         }
-        let _ = self.app_context.db.update_selected_wallet_hash(hash.as_ref());
+        let _ = self
+            .app_context
+            .db
+            .update_selected_wallet_hash(hash.as_ref());
     }
 
     fn persist_selected_single_key_hash(&self, hash: Option<[u8; 32]>) {
@@ -3776,13 +3779,19 @@ impl ScreenLike for WalletsBalancesScreen {
             .ok()
             .and_then(|mut pending| pending.take());
 
-        if let Some(seed_hash) = pending_seed_hash
-            && let Ok(wallets) = self.app_context.wallets.read()
-            && let Some(wallet) = wallets.get(&seed_hash)
-        {
-            self.select_hd_wallet(wallet.clone());
-            self.persist_selected_wallet_hash(Some(seed_hash));
-            return;
+        if let Some(seed_hash) = pending_seed_hash {
+            let selected_wallet = self
+                .app_context
+                .wallets
+                .read()
+                .ok()
+                .and_then(|wallets| wallets.get(&seed_hash).cloned());
+
+            if let Some(wallet) = selected_wallet {
+                self.select_hd_wallet(wallet);
+                self.persist_selected_wallet_hash(Some(seed_hash));
+                return;
+            }
         }
 
         // If no wallet of either type is selected but wallets exist, select the first HD wallet

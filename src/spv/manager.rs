@@ -12,7 +12,7 @@ use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
 use dash_sdk::dpp::key_wallet_manager::WalletEvent;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
-use dash_sdk::dpp::dashcore::{Address, Network, Transaction};
+use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
@@ -96,6 +96,17 @@ pub struct SpvStatusSnapshot {
 type SpvClient =
     DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>;
 
+/// Events forwarded from SPV to AppContext for asset lock proof construction.
+pub(crate) enum AssetLockFinalityEvent {
+    InstantLock {
+        txid: Txid,
+        instant_lock: Box<InstantLock>,
+    },
+    ChainLock {
+        height: u32,
+    },
+}
+
 /// Manages SPV client lifecycle and exposes status updates.
 /// Uses dash-spv's built-in state management while maintaining a dedicated runtime for performance.
 ///
@@ -121,6 +132,8 @@ pub struct SpvManager {
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
     // signal channel to trigger external reconcile on wallet-related events
     reconcile_tx: Mutex<Option<mpsc::Sender<()>>>,
+    // signal channel to forward instant lock / chain lock events for asset lock proof construction
+    finality_tx: Mutex<Option<mpsc::Sender<AssetLockFinalityEvent>>>,
     // Whether to use local Dash Core node instead of DNS seed discovery
     use_local_node: Arc<std::sync::atomic::AtomicBool>,
     // Cancellation token for clean shutdown
@@ -281,6 +294,7 @@ impl SpvManager {
             progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
+            finality_tx: Mutex::new(None),
             use_local_node: Arc::new(AtomicBool::new(false)),
             stop_token: Mutex::new(None),
             request_tx: Mutex::new(None),
@@ -502,6 +516,16 @@ impl SpvManager {
     pub fn register_reconcile_channel(&self) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel(64);
         if let Ok(mut guard) = self.reconcile_tx.lock() {
+            *guard = Some(tx);
+        }
+        rx
+    }
+
+    /// Create a finality event channel for external listeners.
+    /// Returns a receiver that will get events when SPV detects instant locks or chain locks.
+    pub(crate) fn register_finality_channel(&self) -> mpsc::Receiver<AssetLockFinalityEvent> {
+        let (tx, rx) = mpsc::channel(64);
+        if let Ok(mut guard) = self.finality_tx.lock() {
             *guard = Some(tx);
         }
         rx
@@ -1059,6 +1083,7 @@ impl SpvManager {
         mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>,
     ) {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
+        let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
         let status = Arc::clone(&self.status);
         let cancel = self.subtasks.cancellation_token.clone();
 
@@ -1076,6 +1101,25 @@ impl SpvManager {
                                     | SyncEvent::InstantLockReceived { .. }
                                     | SyncEvent::SyncComplete { .. }
                                 );
+
+                                // Forward finality-relevant events for asset lock proof construction
+                                if let Some(ref ftx) = finality_tx {
+                                    match &event {
+                                        SyncEvent::InstantLockReceived { instant_lock, .. } => {
+                                            let _ = ftx.try_send(AssetLockFinalityEvent::InstantLock {
+                                                txid: instant_lock.txid,
+                                                instant_lock: Box::new(instant_lock.clone()),
+                                            });
+                                        }
+                                        SyncEvent::ChainLockReceived { chain_lock, .. } => {
+                                            let _ = ftx.try_send(AssetLockFinalityEvent::ChainLock {
+                                                height: chain_lock.block_height,
+                                            });
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
                                 if matches!(event, SyncEvent::SyncComplete { .. })
                                     && let Ok(mut guard) = status.write()
                                 {

@@ -55,7 +55,10 @@ impl AccountCategory {
                 0 => "Main Account".to_string(),
                 idx => format!("BIP44 Account #{}", idx),
             },
-            AccountCategory::Bip32 => format!("BIP32 Account {:?}", index.unwrap_or(0)),
+            AccountCategory::Bip32 => match index {
+                Some(idx) if idx > 0 => format!("Legacy BIP32 Account #{}", idx),
+                _ => "Legacy BIP32 Account".to_string(),
+            },
             AccountCategory::CoinJoin => "CoinJoin".to_string(),
             AccountCategory::IdentityRegistration => "Identity Registration".to_string(),
             AccountCategory::IdentitySystem => "Identity System".to_string(),
@@ -94,7 +97,7 @@ impl AccountCategory {
                 Some("Standard BIP44 account (m/44'/5'/… ) used for normal wallet funds.")
             }
             AccountCategory::Bip32 => {
-                Some("Legacy BIP32 branch reserved for custom derivations or advanced tools.")
+                Some("Legacy BIP32 account (m/0'/… ). Funds here were received on older derivation paths.")
             }
             AccountCategory::CoinJoin => {
                 Some("CoinJoin mixing account. Funds here are earmarked for privacy transactions.")

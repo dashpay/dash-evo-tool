@@ -13,11 +13,11 @@ use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::settings::Settings;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, DerivationPathReference, DerivationPathType, Wallet,
-    WalletSeedHash, WalletTransaction,
+    AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
+    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::sdk_wrapper::initialize_sdk;
-use crate::spv::{CoreBackendMode, SpvManager};
+use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use crate::ui::RootScreenType;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::utils::tasks::TaskManager;
@@ -25,7 +25,7 @@ use bincode::config;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::{InstantLock, Transaction};
-use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut, Txid};
@@ -466,6 +466,7 @@ impl AppContext {
         // Register reconcile channel BEFORE starting SPV so the event handlers
         // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();
+        self.spv_setup_finality_listener();
         self.spv_manager.start(expected_wallets)?;
         Ok(())
     }
@@ -796,6 +797,89 @@ impl AppContext {
         (default_ref, default_type)
     }
 
+    /// Listen for SPV instant lock / chain lock events and populate
+    /// transactions_waiting_for_finality so identity registration can proceed.
+    pub fn spv_setup_finality_listener(self: &Arc<Self>) {
+        let rx = self.spv_manager.register_finality_channel();
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync(async move {
+            tokio::pin!(rx);
+            while let Some(event) = rx.recv().await {
+                if let Err(e) = ctx.handle_spv_finality_event(event).await {
+                    tracing::debug!("SPV finality event error: {}", e);
+                }
+            }
+        });
+    }
+
+    async fn handle_spv_finality_event(
+        &self,
+        event: AssetLockFinalityEvent,
+    ) -> Result<(), String> {
+        match event {
+            AssetLockFinalityEvent::InstantLock { txid, instant_lock } => {
+                // Check if this txid is pending in transactions_waiting_for_finality
+                let is_pending = {
+                    let transactions = self.transactions_waiting_for_finality.lock().unwrap();
+                    matches!(transactions.get(&txid), Some(None))
+                };
+                if !is_pending {
+                    return Ok(());
+                }
+
+                // Retrieve the full transaction from the database
+                let (tx, ..) = self
+                    .db
+                    .get_asset_lock_transaction(txid.as_byte_array())
+                    .map_err(|e| format!("DB error: {}", e))?
+                    .ok_or_else(|| "Asset lock transaction not found in DB".to_string())?;
+
+                self.received_asset_lock_finality(&tx, Some(*instant_lock), None)
+                    .map_err(|e| format!("Finality processing error: {}", e))?;
+            }
+            AssetLockFinalityEvent::ChainLock { height, .. } => {
+                // Get all pending txids (where proof is None)
+                let pending_txids: Vec<Txid> = {
+                    let transactions = self.transactions_waiting_for_finality.lock().unwrap();
+                    transactions
+                        .iter()
+                        .filter_map(|(txid, proof)| if proof.is_none() { Some(*txid) } else { None })
+                        .collect()
+                };
+                if pending_txids.is_empty() {
+                    return Ok(());
+                }
+
+                let sdk = {
+                    let guard = self.sdk.read().map_err(|_| "SDK lock poisoned")?;
+                    guard.clone()
+                };
+
+                for txid in pending_txids {
+                    match get_transaction_info_via_dapi(&sdk, &txid).await {
+                        Ok(tx_info) if tx_info.is_chain_locked && tx_info.height > 0 => {
+                            if let Ok(Some((tx, ..))) =
+                                self.db.get_asset_lock_transaction(txid.as_byte_array())
+                            {
+                                let _ = self.received_asset_lock_finality(
+                                    &tx,
+                                    None,
+                                    Some(tx_info.height),
+                                );
+                            }
+                        }
+                        _ => {
+                            // Transaction not yet chain-locked at this height, or DAPI
+                            // lookup failed — will retry on next chain lock event.
+                            let _ = height; // suppress unused warning
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Subscribe to SPV reconcile signals and debounce updates.
     pub fn spv_setup_reconcile_listener(self: &Arc<Self>) {
         use tokio::time::{Duration, Instant, sleep};
@@ -925,10 +1009,20 @@ impl AppContext {
                         if let Some(ai) = acc.get_address_info(&address) {
                             let account_type = acc.account_type.to_account_type();
                             let (path_reference, path_type) =
-                                Self::spv_account_metadata(&account_type).unwrap_or((
-                                    DerivationPathReference::BIP44,
-                                    DerivationPathType::CLEAR_FUNDS,
-                                ));
+                                Self::spv_account_metadata(&account_type).unwrap_or_else(|| {
+                                    let default_ref = if ai.path.is_bip44(self.network) {
+                                        DerivationPathReference::BIP44
+                                    } else if ai.path.is_bip32() {
+                                        DerivationPathReference::BIP32
+                                    } else {
+                                        tracing::warn!(
+                                            path = %ai.path,
+                                            "SPV address has unrecognized derivation path structure"
+                                        );
+                                        DerivationPathReference::Unknown
+                                    };
+                                    (default_ref, DerivationPathType::CLEAR_FUNDS)
+                                });
 
                             if let Ok(inserted) = self.register_spv_address(
                                 &wallet_arc,
@@ -1517,6 +1611,22 @@ impl AppContext {
         new_contract: &DataContract,
     ) -> Result<()> {
         self.db.replace_contract(contract_id, new_contract, self)
+    }
+
+    /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
+    pub(crate) async fn broadcast_raw_transaction(&self, tx: &Transaction) -> Result<Txid, String> {
+        match self.core_backend_mode() {
+            CoreBackendMode::Rpc => self
+                .core_client
+                .read()
+                .expect("Core client lock was poisoned")
+                .send_raw_transaction(tx)
+                .map_err(|e| e.to_string()),
+            CoreBackendMode::Spv => {
+                self.spv_manager.broadcast_transaction(tx).await?;
+                Ok(tx.txid())
+            }
+        }
     }
 
     pub(crate) fn received_transaction_finality(

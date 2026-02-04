@@ -3,8 +3,8 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info_via_dapi};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::spv::CoreBackendMode;
 use dash_sdk::Error;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::OutPoint;
@@ -115,25 +115,32 @@ impl AppContext {
                             Some(self),
                         ) {
                             Ok(transaction) => transaction,
-                            Err(_) => {
-                                wallet
-                                    .reload_utxos(
-                                        &self
-                                            .core_client
-                                            .read()
-                                            .expect("Core client lock was poisoned"),
-                                        self.network,
-                                        Some(self),
-                                    )
-                                    .map_err(|e| e.to_string())?;
-                                wallet.top_up_asset_lock_transaction(
-                                    sdk.network,
-                                    amount,
-                                    true,
-                                    identity_index,
-                                    top_up_index,
-                                    Some(self),
-                                )?
+                            Err(e) => {
+                                match self.core_backend_mode() {
+                                    CoreBackendMode::Rpc => {
+                                        wallet
+                                            .reload_utxos(
+                                                &self
+                                                    .core_client
+                                                    .read()
+                                                    .expect("Core client lock was poisoned"),
+                                                self.network,
+                                                Some(self),
+                                            )
+                                            .map_err(|e| e.to_string())?;
+                                        wallet.top_up_asset_lock_transaction(
+                                            sdk.network,
+                                            amount,
+                                            true,
+                                            identity_index,
+                                            top_up_index,
+                                            Some(self),
+                                        )?
+                                    }
+                                    CoreBackendMode::Spv => {
+                                        return Err(e);
+                                    }
+                                }
                             }
                         };
                         (
@@ -158,11 +165,8 @@ impl AppContext {
                         proofs.insert(tx_id, None);
                     }
 
-                    self.core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .send_raw_transaction(&asset_lock_transaction)
-                        .map_err(|e| e.to_string())?;
+                    self.broadcast_raw_transaction(&asset_lock_transaction)
+                        .await?;
 
                     // Store the asset lock transaction in the database immediately after sending.
                     // This ensures it's tracked even if the proof times out or top-up fails.
@@ -203,10 +207,13 @@ impl AppContext {
                         }
                     }
 
-                    // Wait for asset lock proof with timeout (2 minutes)
-                    const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                    // Wait for asset lock proof with timeout
+                    let timeout_duration = match self.core_backend_mode() {
+                        CoreBackendMode::Spv => Duration::from_secs(300),
+                        CoreBackendMode::Rpc => Duration::from_secs(120),
+                    };
                     let asset_lock_proof =
-                        match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                        match tokio::time::timeout(timeout_duration, async {
                             loop {
                                 {
                                     let proofs =
@@ -229,7 +236,7 @@ impl AppContext {
                                 return Err(format!(
                                     "Timeout waiting for asset lock proof after {} seconds. \
                                  The transaction may not have been confirmed by the network.",
-                                    ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                                    timeout_duration.as_secs()
                                 ));
                             }
                         };
@@ -277,11 +284,8 @@ impl AppContext {
                         proofs.insert(tx_id, None);
                     }
 
-                    self.core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .send_raw_transaction(&asset_lock_transaction)
-                        .map_err(|e| e.to_string())?;
+                    self.broadcast_raw_transaction(&asset_lock_transaction)
+                        .await?;
 
                     // Store the asset lock transaction in the database immediately after sending.
                     // This ensures it's tracked even if the proof times out or top-up fails.
@@ -315,10 +319,13 @@ impl AppContext {
                         let _ = wallet.update_address_balance(&input_address, new_balance, self);
                     }
 
-                    // Wait for asset lock proof with timeout (2 minutes)
-                    const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                    // Wait for asset lock proof with timeout
+                    let timeout_duration = match self.core_backend_mode() {
+                        CoreBackendMode::Spv => Duration::from_secs(300),
+                        CoreBackendMode::Rpc => Duration::from_secs(120),
+                    };
                     let asset_lock_proof =
-                        match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                        match tokio::time::timeout(timeout_duration, async {
                             loop {
                                 {
                                     let proofs =
@@ -341,7 +348,7 @@ impl AppContext {
                                 return Err(format!(
                                     "Timeout waiting for asset lock proof after {} seconds. \
                                  The transaction may not have been confirmed by the network.",
-                                    ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                                    timeout_duration.as_secs()
                                 ));
                             }
                         };

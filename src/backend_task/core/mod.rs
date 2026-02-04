@@ -255,9 +255,11 @@ impl AppContext {
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => self
                 .create_registration_asset_lock(wallet, amount, true, identity_index)
+                .await
                 .map_err(|e| format!("Error creating asset lock: {}", e)),
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => self
                 .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
+                .await
                 .map_err(|e| format!("Error creating top up asset lock: {}", e)),
             CoreTask::SendWalletPayment { wallet, request } => {
                 self.send_wallet_payment(wallet, request).await

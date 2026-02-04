@@ -11,6 +11,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
+use crate::ui::theme::DashColors;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -538,6 +539,12 @@ impl AddNewWalletScreen {
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let surface = DashColors::surface(dark_mode);
+        let border = DashColors::border(dark_mode);
+        let text_primary = DashColors::text_primary(dark_mode);
+        let text_secondary = DashColors::text_secondary(dark_mode);
+
         ui.add_space(15.0); // Add spacing from the top
         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
             ui.add_space(-6.0);
@@ -657,8 +664,8 @@ impl AddNewWalletScreen {
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
                         Frame::new()
-                            .fill(Color32::WHITE)
-                            .stroke(Stroke::new(1.0, Color32::BLACK))
+                            .fill(surface)
+                            .stroke(Stroke::new(1.0, border))
                             .corner_radius(5.0)
                             .inner_margin(Margin::same(10))
                             .show(ui, |ui| {
@@ -675,11 +682,11 @@ impl AddNewWalletScreen {
                                         for (i, word) in mnemonic.words().enumerate() {
                                             let number_text = RichText::new(format!("{} ", i + 1))
                                                 .size(row_height * 0.3)
-                                                .color(Color32::GRAY);
+                                                .color(text_secondary);
 
                                             let word_text = RichText::new(word)
                                                 .size(row_height * 0.5)
-                                                .color(Color32::BLACK);
+                                                .color(text_primary);
 
                                             ui.with_layout(
                                                 Layout::left_to_right(Align::Min),

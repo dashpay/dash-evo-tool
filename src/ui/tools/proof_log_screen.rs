@@ -5,6 +5,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use dash_sdk::drive::query::PathQuery;
@@ -210,7 +211,12 @@ impl ProofLogScreen {
         });
     }
 
-    fn highlight_proof_text(proof_text: &str, hashes: &[String], font_id: FontId) -> LayoutJob {
+    fn highlight_proof_text(
+        proof_text: &str,
+        hashes: &[String],
+        font_id: FontId,
+        text_color: Color32,
+    ) -> LayoutJob {
         let mut job = LayoutJob::default();
         let mut remaining_text = proof_text;
 
@@ -231,7 +237,7 @@ impl ProofLogScreen {
                     0.0,
                     TextFormat {
                         font_id: font_id.clone(),
-                        color: Color32::BLACK,
+                        color: text_color,
                         ..Default::default()
                     },
                 );
@@ -329,10 +335,14 @@ impl ProofLogScreen {
 
                 // Create the layout job with highlighted hashes
                 let font_id = TextStyle::Monospace.resolve(ui.style());
-                let layout_job = Self::highlight_proof_text(&proof_display, &hashes, font_id);
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let text_primary = DashColors::text_primary(dark_mode);
+                let border = DashColors::border(dark_mode);
+                let layout_job =
+                    Self::highlight_proof_text(&proof_display, &hashes, font_id, text_primary);
 
                 let frame = Frame::new()
-                    .stroke(Stroke::new(1.0, Color32::BLACK))
+                    .stroke(Stroke::new(1.0, border))
                     .fill(Color32::TRANSPARENT)
                     .corner_radius(2.0); // Set margins to zero
 

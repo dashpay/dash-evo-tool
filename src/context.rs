@@ -771,10 +771,7 @@ impl AppContext {
         });
     }
 
-    async fn handle_spv_finality_event(
-        &self,
-        event: AssetLockFinalityEvent,
-    ) -> Result<(), String> {
+    async fn handle_spv_finality_event(&self, event: AssetLockFinalityEvent) -> Result<(), String> {
         match event {
             AssetLockFinalityEvent::InstantLock { txid, instant_lock } => {
                 // Check if this txid is pending in transactions_waiting_for_finality
@@ -802,7 +799,9 @@ impl AppContext {
                     let transactions = self.transactions_waiting_for_finality.lock().unwrap();
                     transactions
                         .iter()
-                        .filter_map(|(txid, proof)| if proof.is_none() { Some(*txid) } else { None })
+                        .filter_map(
+                            |(txid, proof)| if proof.is_none() { Some(*txid) } else { None },
+                        )
                         .collect()
                 };
                 if pending_txids.is_empty() {

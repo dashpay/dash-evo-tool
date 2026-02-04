@@ -115,33 +115,31 @@ impl AppContext {
                             Some(self),
                         ) {
                             Ok(transaction) => transaction,
-                            Err(e) => {
-                                match self.core_backend_mode() {
-                                    CoreBackendMode::Rpc => {
-                                        wallet
-                                            .reload_utxos(
-                                                &self
-                                                    .core_client
-                                                    .read()
-                                                    .expect("Core client lock was poisoned"),
-                                                self.network,
-                                                Some(self),
-                                            )
-                                            .map_err(|e| e.to_string())?;
-                                        wallet.top_up_asset_lock_transaction(
-                                            sdk.network,
-                                            amount,
-                                            true,
-                                            identity_index,
-                                            top_up_index,
+                            Err(e) => match self.core_backend_mode() {
+                                CoreBackendMode::Rpc => {
+                                    wallet
+                                        .reload_utxos(
+                                            &self
+                                                .core_client
+                                                .read()
+                                                .expect("Core client lock was poisoned"),
+                                            self.network,
                                             Some(self),
-                                        )?
-                                    }
-                                    CoreBackendMode::Spv => {
-                                        return Err(e);
-                                    }
+                                        )
+                                        .map_err(|e| e.to_string())?;
+                                    wallet.top_up_asset_lock_transaction(
+                                        sdk.network,
+                                        amount,
+                                        true,
+                                        identity_index,
+                                        top_up_index,
+                                        Some(self),
+                                    )?
                                 }
-                            }
+                                CoreBackendMode::Spv => {
+                                    return Err(e);
+                                }
+                            },
                         };
                         (
                             tx_result.0,
@@ -212,34 +210,31 @@ impl AppContext {
                         CoreBackendMode::Spv => Duration::from_secs(300),
                         CoreBackendMode::Rpc => Duration::from_secs(120),
                     };
-                    let asset_lock_proof =
-                        match tokio::time::timeout(timeout_duration, async {
-                            loop {
-                                {
-                                    let proofs =
-                                        self.transactions_waiting_for_finality.lock().unwrap();
-                                    if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                        return proof.clone();
-                                    }
+                    let asset_lock_proof = match tokio::time::timeout(timeout_duration, async {
+                        loop {
+                            {
+                                let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                                if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                    return proof.clone();
                                 }
-                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                        })
-                        .await
-                        {
-                            Ok(proof) => proof,
-                            Err(_) => {
-                                // Clean up on timeout
-                                let mut proofs =
-                                    self.transactions_waiting_for_finality.lock().unwrap();
-                                proofs.remove(&tx_id);
-                                return Err(format!(
-                                    "Timeout waiting for asset lock proof after {} seconds. \
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                    })
+                    .await
+                    {
+                        Ok(proof) => proof,
+                        Err(_) => {
+                            // Clean up on timeout
+                            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                            proofs.remove(&tx_id);
+                            return Err(format!(
+                                "Timeout waiting for asset lock proof after {} seconds. \
                                  The transaction may not have been confirmed by the network.",
-                                    timeout_duration.as_secs()
-                                ));
-                            }
-                        };
+                                timeout_duration.as_secs()
+                            ));
+                        }
+                    };
 
                     (
                         asset_lock_proof,
@@ -324,34 +319,31 @@ impl AppContext {
                         CoreBackendMode::Spv => Duration::from_secs(300),
                         CoreBackendMode::Rpc => Duration::from_secs(120),
                     };
-                    let asset_lock_proof =
-                        match tokio::time::timeout(timeout_duration, async {
-                            loop {
-                                {
-                                    let proofs =
-                                        self.transactions_waiting_for_finality.lock().unwrap();
-                                    if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                        return proof.clone();
-                                    }
+                    let asset_lock_proof = match tokio::time::timeout(timeout_duration, async {
+                        loop {
+                            {
+                                let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                                if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                    return proof.clone();
                                 }
-                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
-                        })
-                        .await
-                        {
-                            Ok(proof) => proof,
-                            Err(_) => {
-                                // Clean up on timeout
-                                let mut proofs =
-                                    self.transactions_waiting_for_finality.lock().unwrap();
-                                proofs.remove(&tx_id);
-                                return Err(format!(
-                                    "Timeout waiting for asset lock proof after {} seconds. \
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                    })
+                    .await
+                    {
+                        Ok(proof) => proof,
+                        Err(_) => {
+                            // Clean up on timeout
+                            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                            proofs.remove(&tx_id);
+                            return Err(format!(
+                                "Timeout waiting for asset lock proof after {} seconds. \
                                  The transaction may not have been confirmed by the network.",
-                                    timeout_duration.as_secs()
-                                ));
-                            }
-                        };
+                                timeout_duration.as_secs()
+                            ));
+                        }
+                    };
 
                     (
                         asset_lock_proof,

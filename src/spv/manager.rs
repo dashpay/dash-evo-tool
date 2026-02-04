@@ -4,13 +4,12 @@ use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dash_spv::client::interface::{DashSpvClientCommand, DashSpvClientInterface};
+use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
-use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
-use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::SyncEvent;
+use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
 use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
-use dash_sdk::dpp::key_wallet_manager::WalletEvent;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -19,6 +18,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
     wallet_info_interface::WalletInfoInterface,
 };
+use dash_sdk::dpp::key_wallet_manager::WalletEvent;
 use dash_sdk::dpp::key_wallet_manager::wallet_interface::WalletInterface;
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
 // use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey; // not needed directly here
@@ -564,9 +564,7 @@ impl SpvManager {
                 wm.update_synced_height(0);
             }
             Err(_) => {
-                tracing::warn!(
-                    "Failed to reset WalletManager synced_height during SPV data clear"
-                );
+                tracing::warn!("Failed to reset WalletManager synced_height during SPV data clear");
             }
         }
 
@@ -1078,10 +1076,7 @@ impl SpvManager {
         });
     }
 
-    fn spawn_sync_event_handler(
-        &self,
-        mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>,
-    ) {
+    fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
         let status = Arc::clone(&self.status);

@@ -96,9 +96,9 @@ impl AccountCategory {
             AccountCategory::Bip44 => {
                 Some("Standard BIP44 account (m/44'/5'/… ) used for normal wallet funds.")
             }
-            AccountCategory::Bip32 => {
-                Some("Legacy BIP32 account (m/0'/… ). Funds here were received on older derivation paths.")
-            }
+            AccountCategory::Bip32 => Some(
+                "Legacy BIP32 account (m/0'/… ). Funds here were received on older derivation paths.",
+            ),
             AccountCategory::CoinJoin => {
                 Some("CoinJoin mixing account. Funds here are earmarked for privacy transactions.")
             }

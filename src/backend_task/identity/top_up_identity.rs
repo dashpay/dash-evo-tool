@@ -1,6 +1,6 @@
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
-use crate::context::AppContext;
+use crate::context::{AppContext, get_transaction_info_via_dapi};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Error;
@@ -47,30 +47,26 @@ impl AppContext {
                 ) => {
                     let tx_id = transaction.txid();
 
-                    // eprintln!("UseAssetLock: transaction id for {:#?} is {}", transaction, tx_id);
-                    let wallet = wallet.read().unwrap();
-                    let private_key = wallet
-                        .private_key_for_address(&address, self.network)?
-                        .ok_or("Asset Lock not valid for wallet")?;
+                    // Scope the read guard so it's dropped before the async DAPI call below
+                    let private_key = {
+                        let wallet = wallet.read().unwrap();
+                        wallet
+                            .private_key_for_address(&address, self.network)?
+                            .ok_or("Asset Lock not valid for wallet")?
+                    };
                     let asset_lock_proof = if let AssetLockProof::Instant(
                         instant_asset_lock_proof,
                     ) = asset_lock_proof.as_ref()
                     {
                         // we need to make sure the instant send asset lock is recent
-                        let raw_transaction_info = self
-                            .core_client
-                            .read()
-                            .expect("Core client lock was poisoned")
-                            .get_raw_transaction_info(&tx_id, None)
-                            .map_err(|e| e.to_string())?;
+                        let tx_info = get_transaction_info_via_dapi(&sdk, &tx_id).await?;
 
-                        if raw_transaction_info.chainlock
-                            && raw_transaction_info.height.is_some()
-                            && raw_transaction_info.confirmations.is_some()
-                            && raw_transaction_info.confirmations.unwrap() > 8
+                        if tx_info.is_chain_locked
+                            && tx_info.height > 0
+                            && tx_info.confirmations > 8
                         {
                             // Transaction is old enough that instant lock may have expired
-                            let tx_block_height = raw_transaction_info.height.unwrap() as u32;
+                            let tx_block_height = tx_info.height;
 
                             if tx_block_height <= metadata.core_chain_locked_height {
                                 // Platform has verified this Core block, use chain lock proof
@@ -410,15 +406,10 @@ impl AppContext {
                     || error_string.contains("wasn't created recently")
                 {
                     // Try to use chain asset lock proof instead
-                    let raw_transaction_info = self
-                        .core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .get_raw_transaction_info(&tx_id, None)
-                        .map_err(|e| e.to_string())?;
+                    let tx_info = get_transaction_info_via_dapi(&sdk, &tx_id).await?;
 
-                    if raw_transaction_info.chainlock && raw_transaction_info.height.is_some() {
-                        let tx_block_height = raw_transaction_info.height.unwrap() as u32;
+                    if tx_info.is_chain_locked && tx_info.height > 0 {
+                        let tx_block_height = tx_info.height;
 
                         if tx_block_height <= metadata.core_chain_locked_height {
                             // Platform has verified this Core block, use chain lock proof

@@ -1708,6 +1708,39 @@ impl AppContext {
     }
 }
 
+pub(crate) struct DapiTransactionInfo {
+    pub is_chain_locked: bool,
+    pub height: u32,
+    pub confirmations: u32,
+}
+
+/// Query transaction info from DAPI. Works in both SPV and RPC modes
+/// since DAPI (platform gRPC) is always available via the SDK.
+pub(crate) async fn get_transaction_info_via_dapi(
+    sdk: &Sdk,
+    tx_id: &Txid,
+) -> Result<DapiTransactionInfo, String> {
+    use dash_sdk::dapi_client::{DapiRequestExecutor, IntoInner, RequestSettings};
+    use dash_sdk::dapi_grpc::core::v0::GetTransactionRequest;
+
+    let response = sdk
+        .execute(
+            GetTransactionRequest {
+                id: tx_id.to_string(),
+            },
+            RequestSettings::default(),
+        )
+        .await
+        .into_inner()
+        .map_err(|e| format!("DAPI GetTransaction failed: {}", e))?;
+
+    Ok(DapiTransactionInfo {
+        is_chain_locked: response.is_chain_locked,
+        height: response.height,
+        confirmations: response.confirmations,
+    })
+}
+
 /// Returns the default platform version for the given network.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding

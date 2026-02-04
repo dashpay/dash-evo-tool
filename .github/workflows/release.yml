@@ -3,8 +3,8 @@ name: Release Dash Evo Tool
 on:
   push:
     tags:
-      - 'v*'
-      - 'v*-dev.*'
+      - "v*"
+      - "v*-dev.*"
   release:
     types:
       - published
@@ -121,10 +121,6 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
-        env:
-          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
-          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
-          CFLAGS_x86_64_pc_windows_gnu: "-O2"
 
       - name: Package release
         run: |
@@ -133,7 +129,7 @@ jobs:
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-${{ matrix.platform }}.zip'
+          subject-path: "dash-evo-tool-${{ matrix.platform }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -158,20 +154,20 @@ jobs:
         run: |
           echo "Disk usage before initial cleanup:"
           df -h
-          
+
           # Clean up homebrew cache
           brew cleanup --prune=all || true
-          
+
           # Remove Xcode caches
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
           sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
           sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
-          
+
           # Clean system caches
           sudo rm -rf /Library/Caches/* 2>/dev/null || true
           sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
           sudo rm -rf /private/var/folders/* 2>/dev/null || true
-          
+
           echo "Disk usage after initial cleanup:"
           df -h
 
@@ -194,7 +190,7 @@ jobs:
           rm -rf target/aarch64-apple-darwin/release/.fingerprint
           rm -rf target/aarch64-apple-darwin/debug
           rm -rf target/debug
-          
+
           # Remove the actual binary from target since we copied it
           rm -f target/aarch64-apple-darwin/release/dash-evo-tool
 
@@ -300,37 +296,37 @@ jobs:
           echo "Disk usage before cleanup:"
           df -h
           du -sh ~/* 2>/dev/null | sort -rh | head -20
-          
+
           # Remove the ENTIRE target directory since we already copied the binary
           rm -rf target
-          
+
           # Remove the entire Cargo directory
           rm -rf ~/.cargo
-          
+
           # Clean up homebrew completely
           brew cleanup --prune=all
           rm -rf $(brew --cache)
-          
+
           # Remove any unnecessary Xcode simulators and caches
           sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
           sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
           sudo rm -rf ~/Library/Caches 2>/dev/null || true
-          
+
           # Remove temporary icon files after creating the app bundle
           rm -rf AppIcon.iconset 2>/dev/null || true
-          
+
           # Clean system caches more aggressively
           sudo rm -rf /Library/Caches/* 2>/dev/null || true
           sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
           sudo rm -rf /private/var/folders/* 2>/dev/null || true
           sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
-          
+
           # Remove any iOS simulators and SDKs we don't need
           sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
-          
+
           echo "Disk usage after cleanup:"
           df -h
           du -sh ~/* 2>/dev/null | sort -rh | head -20
@@ -340,14 +336,14 @@ jobs:
           # Get app size for sparse image
           APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
           DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
-          
+
           # Create a sparse image instead of using srcfolder
           # Sparse images only use disk space as needed
           hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
-          
+
           # Mount the sparse image
           hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
-          
+
           # Copy app to mounted volume
           cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
           ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
@@ -356,13 +352,13 @@ jobs:
           rm -rf /Volumes/"Dash Evo Tool"/.fseventsd
           rm -rf /Volumes/"Dash Evo Tool"/.Spotlight-V100
           rm -f /Volumes/"Dash Evo Tool"/.DS_Store
-          
+
           # Unmount
           hdiutil detach /Volumes/"Dash Evo Tool"
-          
+
           # Convert sparse image to compressed DMG
           hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-arm64.dmg
-          
+
           # Clean up sparse image
           rm -f temp.sparseimage
 
@@ -400,7 +396,7 @@ jobs:
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-macos-arm64.dmg'
+          subject-path: "dash-evo-tool-macos-arm64.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -425,20 +421,20 @@ jobs:
         run: |
           echo "Disk usage before initial cleanup:"
           df -h
-          
+
           # Clean up homebrew cache
           brew cleanup --prune=all || true
-          
+
           # Remove Xcode caches
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/dyld 2>/dev/null || true
           sudo rm -rf ~/Library/Developer/Xcode/DerivedData 2>/dev/null || true
           sudo rm -rf ~/Library/Caches/com.apple.dt.Xcode 2>/dev/null || true
-          
+
           # Clean system caches
           sudo rm -rf /Library/Caches/* 2>/dev/null || true
           sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
           sudo rm -rf /private/var/folders/* 2>/dev/null || true
-          
+
           echo "Disk usage after initial cleanup:"
           df -h
 
@@ -461,7 +457,7 @@ jobs:
           rm -rf target/x86_64-apple-darwin/release/.fingerprint
           rm -rf target/x86_64-apple-darwin/debug
           rm -rf target/debug
-          
+
           # Remove the actual binary from target since we copied it
           rm -f target/x86_64-apple-darwin/release/dash-evo-tool
 
@@ -567,37 +563,37 @@ jobs:
           echo "Disk usage before cleanup:"
           df -h
           du -sh ~/* 2>/dev/null | sort -rh | head -20
-          
+
           # Remove the ENTIRE target directory since we already copied the binary
           rm -rf target
-          
+
           # Remove the entire Cargo directory
           rm -rf ~/.cargo
-          
+
           # Clean up homebrew completely
           brew cleanup --prune=all
           rm -rf $(brew --cache)
-          
+
           # Remove any unnecessary Xcode simulators and caches
           sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
           sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
           sudo rm -rf ~/Library/Caches 2>/dev/null || true
-          
+
           # Remove temporary icon files after creating the app bundle
           rm -rf AppIcon.iconset 2>/dev/null || true
-          
+
           # Clean system caches more aggressively
           sudo rm -rf /Library/Caches/* 2>/dev/null || true
           sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
           sudo rm -rf /private/var/folders/* 2>/dev/null || true
           sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
-          
+
           # Remove any iOS simulators and SDKs we don't need
           sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
-          
+
           echo "Disk usage after cleanup:"
           df -h
           du -sh ~/* 2>/dev/null | sort -rh | head -20
@@ -607,24 +603,24 @@ jobs:
           # Get app size for sparse image
           APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
           DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
-          
+
           # Create a sparse image instead of using srcfolder
           # Sparse images only use disk space as needed
           hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
-          
+
           # Mount the sparse image
           hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
-          
+
           # Copy app to mounted volume
           cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
           ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
-          
+
           # Unmount
           hdiutil detach /Volumes/"Dash Evo Tool"
-          
+
           # Convert sparse image to compressed DMG
           hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-x86_64.dmg
-          
+
           # Clean up sparse image
           rm -f temp.sparseimage
 
@@ -662,7 +658,7 @@ jobs:
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: 'dash-evo-tool-macos-x86_64.dmg'
+          subject-path: "dash-evo-tool-macos-x86_64.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

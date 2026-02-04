@@ -1765,8 +1765,9 @@ impl MasternodeListDiffScreen {
             .cache
             .dml_diffs_with_cached_quorum_heights
             .contains(&selected_key);
+        let new_quorums = dml.new_quorums.clone();
         let mut heights: HashMap<QuorumHash, CoreBlockHeight> = HashMap::new();
-        for quorum in &dml.new_quorums {
+        for quorum in &new_quorums {
             let height = if should_get_heights {
                 self.get_height_and_cache(&quorum.quorum_hash)
             } else {
@@ -1780,7 +1781,7 @@ impl MasternodeListDiffScreen {
         ScrollArea::vertical()
             .id_salt("quorum_list_scroll_area")
             .show(ui, |ui| {
-                for (q_index, quorum) in dml.new_quorums.iter().enumerate() {
+                for (q_index, quorum) in new_quorums.iter().enumerate() {
                     let quorum_height = heights
                         .get(&quorum.quorum_hash)
                         .copied()
@@ -2376,11 +2377,12 @@ impl MasternodeListDiffScreen {
             ui.label("Select a block height to show quorums.");
             return;
         };
+        let new_masternodes = dml.new_masternodes.clone();
 
         ScrollArea::vertical()
             .id_salt("quorum_list_scroll_area")
             .show(ui, |ui| {
-                for (m_index, masternode) in dml.new_masternodes.iter().enumerate() {
+                for (m_index, masternode) in new_masternodes.iter().enumerate() {
                     if ui
                         .selectable_label(
                             self.selection.selected_masternode_in_diff_index == Some(m_index),

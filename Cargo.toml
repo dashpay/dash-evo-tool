@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.30.1", features = ["signal"] }
 eframe = { version = "0.32.0", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "07f7eb649bdc1485b3a43f384da7f96232fcfbba", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "98a0ebeca4e6a9ae000d316c4c9c5b64f6fd3dd9", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -27,14 +27,14 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "07f7eb649bdc148
     "core_rpc_client",
     "core_spv",
 ] }
-grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "c5823c8239792f75f93f59f025aa335ab6d42c36" }
+grovestark = { git = "https://www.github.com/pauldelucia/grovestark", rev = "a70bdb1adac080d4f1dc10f2f4480d9dacd0f0da" }
 rayon = "1.8"
 thiserror = "2.0.12"
 serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml = { version = "0.9.34-deprecated" }
 tokio = { version = "1.46.1", features = ["full"] }
-bincode = { version = "=2.0.0-rc.3", features = ["serde"] }
+bincode = { version = "=2.0.1", features = ["serde"] }
 hex = { version = "0.4.3" }
 itertools = "0.14.0"
 enum-iterator = "2.1.0"

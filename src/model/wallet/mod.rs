@@ -142,8 +142,7 @@ impl DerivationPathHelpers for DerivationPath {
 
     fn is_bip32(&self) -> bool {
         let components = self.as_ref();
-        matches!(components.len(), 2..=3)
-            && components[0] == ChildNumber::Hardened { index: 0 }
+        matches!(components.len(), 2..=3) && components[0] == ChildNumber::Hardened { index: 0 }
     }
 
     fn is_asset_lock_funding(&self, network: Network) -> bool {

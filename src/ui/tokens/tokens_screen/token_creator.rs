@@ -1048,13 +1048,21 @@ impl TokensScreen {
         ui.style_mut().spacing.combo_height = 10.0;
         ui.style_mut().spacing.button_padding = egui::vec2(3.0, 0.0);
         ui.style_mut().visuals.widgets.inactive.fg_stroke.width = 1.0;
-        ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
+        ui.style_mut()
+            .text_styles
+            .get_mut(&egui::TextStyle::Body)
+            .unwrap()
+            .size = 12.0;
 
         ComboBox::from_id_salt(id_salt)
             .selected_text(format!("{}", current_language))
             .width(100.0)
             .show_ui(ui, |ui| {
-                ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
+                ui.style_mut()
+                    .text_styles
+                    .get_mut(&egui::TextStyle::Body)
+                    .unwrap()
+                    .size = 12.0;
                 for &language in TokenNameLanguage::selection_order() {
                     if !allow_all_languages && language != TokenNameLanguage::English {
                         continue;

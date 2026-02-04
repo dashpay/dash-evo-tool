@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use dash_evo_tool::*;
 
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};

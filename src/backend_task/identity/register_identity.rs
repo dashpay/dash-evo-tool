@@ -211,7 +211,12 @@ impl AppContext {
                 })
                 .await
                 {
-                    Ok(proof) => proof,
+                    Ok(proof) => {
+                        // Clean up finality tracking on success
+                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        proofs.remove(&tx_id);
+                        proof
+                    }
                     Err(_) => {
                         // Clean up on timeout
                         let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
@@ -351,7 +356,12 @@ impl AppContext {
                 })
                 .await
                 {
-                    Ok(proof) => proof,
+                    Ok(proof) => {
+                        // Clean up finality tracking on success
+                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        proofs.remove(&tx_id);
+                        proof
+                    }
                     Err(_) => {
                         // Clean up on timeout
                         let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();

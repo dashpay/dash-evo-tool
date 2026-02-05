@@ -92,10 +92,8 @@ pub fn add_left_panel(
 
                     // Add icon-based button if texture is loaded
                     if let Some(ref texture) = texture {
-                        let button = egui::Button::image(
-                            Image::new(texture).tint(button_color),
-                        )
-                        .frame(false); // Remove button frame
+                        let button = egui::Button::image(Image::new(texture).tint(button_color))
+                            .frame(false); // Remove button frame
 
                         if ui.add(button).clicked() {
                             action = AppAction::SetMainScreen(*screen_type);

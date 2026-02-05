@@ -7,7 +7,7 @@ use dash_sdk::dpp::dashcore::network::message::{NetworkMessage, RawNetworkMessag
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::network::message_sml::{GetMnListDiff, MnListDiff};
 use dash_sdk::dpp::dashcore::network::{Address, message_network, message_qrinfo};
-use rand::prelude::StdRng;
+use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use std::io::{ErrorKind, Read, Write};
@@ -250,7 +250,7 @@ impl CoreP2PHandler {
     // Note: get_dml_diff and get_qr_info are already defined above (lines ~351 and ~364)
     /// Perform the handshake (version/verack exchange) with the peer.
     pub fn handshake(&mut self) -> Result<(), String> {
-        let mut rng = StdRng::from_entropy();
+        let mut rng = StdRng::from_os_rng();
 
         // Build a version message.
         let version_msg = NetworkMessage::Version(message_network::VersionMessage {
@@ -267,11 +267,11 @@ impl CoreP2PHandler {
                 address: Default::default(),
                 port: self.stream.local_addr().map_err(|e| e.to_string())?.port(),
             },
-            nonce: rng.r#gen(),
+            nonce: rng.random(),
             user_agent: "/dash-evo-tool:0.9/".to_string(),
             start_height: 0,
             relay: false,
-            mn_auth_challenge: rng.r#gen(),
+            mn_auth_challenge: rng.random(),
             masternode_connection: false,
         });
 

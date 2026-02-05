@@ -397,7 +397,8 @@ pub fn add_top_panel(
                                     ui.add_space(3.0);
                                     let font = egui::FontId::proportional(16.0);
                                     let text_size = ui
-                                        .fonts(|f| {
+                                        .ctx()
+                                        .fonts_mut(|f| {
                                             f.layout_no_wrap(
                                                 text.to_string(),
                                                 font.clone(),

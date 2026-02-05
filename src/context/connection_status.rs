@@ -254,33 +254,26 @@ impl ConnectionStatus {
         let backend_mode = app_context.core_backend_mode();
         self.set_backend_mode(backend_mode);
 
-        if backend_mode == CoreBackendMode::Spv {
-            // SPV status is updated elsewhere
-            let spv_status = app_context.spv_manager().status().status;
-            self.set_spv_status(spv_status);
-            return;
-        }
+        match backend_mode {
+            CoreBackendMode::Spv => {
+                // SPV status is updated elsewhere
+                let spv_status = app_context.spv_manager().status().status;
+                self.set_spv_status(spv_status);
+            }
+            CoreBackendMode::Rpc => {
+                // Update ZMQ status if there's a new event
+                let disable_zmq = app_context
+                    .get_settings()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.disable_zmq)
+                    .unwrap_or(false);
+                self.set_disable_zmq(disable_zmq);
 
-        // just a safety check
-        if CoreBackendMode::Rpc != backend_mode {
-            tracing::error!(
-                "Unexpected backend mode in connection status refresh: {:?}",
-                backend_mode
-            );
-            return;
-        }
-
-        // Update ZMQ status if there's a new event
-        let disable_zmq = app_context
-            .get_settings()
-            .ok()
-            .flatten()
-            .map(|s| s.disable_zmq)
-            .unwrap_or(false);
-        self.set_disable_zmq(disable_zmq);
-
-        if let Ok(event) = app_context.rx_zmq_status.try_recv() {
-            self.set_zmq_status(event);
+                if let Ok(event) = app_context.rx_zmq_status.try_recv() {
+                    self.set_zmq_status(event);
+                }
+            }
         }
 
         self.refresh_overall();

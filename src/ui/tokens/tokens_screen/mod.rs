@@ -2985,13 +2985,15 @@ impl ScreenLike for TokensScreen {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Once;
 
     use crate::app_dir::copy_env_file_if_not_exists;
     use crate::database::Database;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 
-    use super::*; use dash_sdk::dpp::dashcore::Network;
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
     use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
@@ -2999,6 +3001,34 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+
+    fn ensure_test_env() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            copy_env_file_if_not_exists(); // required by AppContext::new()
+
+            // Ensure minimum required configs exist even if .env isn't loaded.
+            // Safety: tests set env vars once to ensure deterministic config.
+            // No other test mutates these values.
+            unsafe {
+                std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
+                std::env::set_var("MAINNET_core_host", "127.0.0.1");
+                std::env::set_var("MAINNET_core_rpc_port", "9998");
+                std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
+                std::env::set_var("MAINNET_core_rpc_password", "password");
+                std::env::set_var("MAINNET_insight_api_url", "http://127.0.0.1:3001");
+                std::env::set_var("MAINNET_show_in_ui", "true");
+
+                std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
+                std::env::set_var("LOCAL_core_host", "127.0.0.1");
+                std::env::set_var("LOCAL_core_rpc_port", "20302");
+                std::env::set_var("LOCAL_core_rpc_user", "dashmate");
+                std::env::set_var("LOCAL_core_rpc_password", "password");
+                std::env::set_var("LOCAL_insight_api_url", "http://127.0.0.1:3001");
+                std::env::set_var("LOCAL_show_in_ui", "true");
+            }
+        });
+    }
 
     impl ChangeControlRulesUI {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
@@ -3026,7 +3056,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        copy_env_file_if_not_exists(); // Required by AppContext::new()
+        ensure_test_env();
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3332,7 +3362,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        copy_env_file_if_not_exists(); // required by AppContext::new()
+        ensure_test_env();
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3452,7 +3482,7 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        copy_env_file_if_not_exists(); // required by AppContext::new()
+        ensure_test_env();
         let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
             .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);

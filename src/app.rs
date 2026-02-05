@@ -789,14 +789,14 @@ impl App for AppState {
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
-        if let Ok(event) = self.current_app_context().rx_zmq_status.try_recv()
-            && let Ok(mut status) = self.current_app_context().zmq_connection_status.lock()
-        {
-            *status = event;
-        }
+        let active_context = self.current_app_context().clone();
 
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
+            active_context
+                .connection_status()
+                .handle_task_result(&task_result, active_context.network);
+
             // Handle the result on the main thread
             match task_result {
                 TaskResult::Success(message) => {
@@ -984,112 +984,120 @@ impl App for AppState {
         }
 
         // Show welcome screen if onboarding not completed
-        let action = if self.show_welcome_screen {
-            if let Some(welcome_screen) = &mut self.welcome_screen {
-                welcome_screen.ui(ctx)
-            } else {
-                AppAction::None
-            }
+        let mut actions = Vec::new();
+        if self.show_welcome_screen
+            && let Some(welcome_screen) = &mut self.welcome_screen
+        {
+            actions.push(welcome_screen.ui(ctx));
         } else {
-            self.visible_screen_mut().ui(ctx)
+            actions.push(self.visible_screen_mut().ui(ctx));
         };
 
-        match action {
-            AppAction::AddScreen(screen) => self.screen_stack.push(screen),
-            AppAction::None => {}
-            AppAction::Refresh => self.visible_screen_mut().refresh(),
-            AppAction::PopScreen => {
-                if !self.screen_stack.is_empty() {
-                    self.screen_stack.pop();
+        // Schedule connection status refresh
+        actions.push(
+            active_context
+                .connection_status()
+                .trigger_refresh(active_context.as_ref()),
+        );
+
+        for action in actions {
+            match action {
+                AppAction::None => {}
+                AppAction::AddScreen(screen) => self.screen_stack.push(screen),
+                AppAction::Refresh => self.visible_screen_mut().refresh(),
+                AppAction::PopScreen => {
+                    if !self.screen_stack.is_empty() {
+                        self.screen_stack.pop();
+                    }
                 }
-            }
-            AppAction::PopScreenAndRefresh => {
-                if !self.screen_stack.is_empty() {
-                    self.screen_stack.pop();
+                AppAction::PopScreenAndRefresh => {
+                    if !self.screen_stack.is_empty() {
+                        self.screen_stack.pop();
+                    }
+                    if let Some(screen) = self.screen_stack.last_mut() {
+                        screen.refresh();
+                    } else {
+                        self.active_root_screen_mut().refresh_on_arrival();
+                    }
                 }
-                if let Some(screen) = self.screen_stack.last_mut() {
-                    screen.refresh();
-                } else {
+                AppAction::GoToMainScreen => {
+                    self.screen_stack = vec![];
                     self.active_root_screen_mut().refresh_on_arrival();
                 }
-            }
-            AppAction::GoToMainScreen => {
-                self.screen_stack = vec![];
-                self.active_root_screen_mut().refresh_on_arrival();
-            }
-            AppAction::BackendTask(task) => {
-                self.handle_backend_task(task);
-            }
-            AppAction::BackendTasks(tasks, mode) => {
-                self.handle_backend_tasks(tasks, mode);
-            }
-            AppAction::SetMainScreen(root_screen_type) => {
-                self.selected_main_screen = root_screen_type;
-                self.active_root_screen_mut().refresh_on_arrival();
-                self.current_app_context()
-                    .update_settings(root_screen_type)
-                    .ok();
-            }
-            AppAction::SetMainScreenThenGoToMainScreen(root_screen_type) => {
-                self.selected_main_screen = root_screen_type;
-                self.active_root_screen_mut().refresh_on_arrival();
-                self.current_app_context()
-                    .update_settings(root_screen_type)
-                    .ok();
-                self.screen_stack = vec![];
-            }
-            AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
-                self.selected_main_screen = root_screen_type;
-                self.active_root_screen_mut().refresh_on_arrival();
-                self.current_app_context()
-                    .update_settings(root_screen_type)
-                    .ok();
-                if !self.screen_stack.is_empty() {
-                    self.screen_stack.pop();
+                AppAction::BackendTask(task) => {
+                    self.handle_backend_task(task);
                 }
-            }
-            AppAction::SwitchNetwork(network) => {
-                self.change_network(network);
-                self.current_app_context()
-                    .update_settings(RootScreenType::RootScreenNetworkChooser)
-                    .ok();
-            }
-            AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
-                self.screen_stack = vec![screen];
-                self.selected_main_screen = root_screen_type;
-                self.active_root_screen_mut().refresh_on_arrival();
-                self.current_app_context()
-                    .update_settings(root_screen_type)
-                    .ok();
-            }
-            AppAction::Custom(_) => {}
-            AppAction::OnboardingComplete {
-                main_screen,
-                add_screen,
-            } => {
-                self.show_welcome_screen = false;
-                self.welcome_screen = None;
-                self.selected_main_screen = main_screen;
-                self.active_root_screen_mut().refresh_on_arrival();
-                self.current_app_context().update_settings(main_screen).ok();
-                // If there's an additional screen to push, create and push it
-                if let Some(screen_type) = add_screen {
-                    let screen = screen_type.create_screen(self.current_app_context());
-                    self.screen_stack.push(screen);
+                AppAction::BackendTasks(tasks, mode) => {
+                    self.handle_backend_tasks(tasks, mode);
                 }
-                // Start SPV sync after onboarding completes (if auto-start is enabled and developer mode is on)
-                // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
-                // Remove the is_developer_mode() check once SPV is production-ready.
-                let current_context = self.current_app_context();
-                let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(false);
-                if auto_start_spv
-                    && current_context.is_developer_mode()
-                    && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
-                {
-                    if let Err(e) = current_context.start_spv() {
-                        tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
-                    } else {
-                        tracing::info!("SPV sync started after onboarding");
+                AppAction::SetMainScreen(root_screen_type) => {
+                    self.selected_main_screen = root_screen_type;
+                    self.active_root_screen_mut().refresh_on_arrival();
+                    self.current_app_context()
+                        .update_settings(root_screen_type)
+                        .ok();
+                }
+                AppAction::SetMainScreenThenGoToMainScreen(root_screen_type) => {
+                    self.selected_main_screen = root_screen_type;
+                    self.active_root_screen_mut().refresh_on_arrival();
+                    self.current_app_context()
+                        .update_settings(root_screen_type)
+                        .ok();
+                    self.screen_stack = vec![];
+                }
+                AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
+                    self.selected_main_screen = root_screen_type;
+                    self.active_root_screen_mut().refresh_on_arrival();
+                    self.current_app_context()
+                        .update_settings(root_screen_type)
+                        .ok();
+                    if !self.screen_stack.is_empty() {
+                        self.screen_stack.pop();
+                    }
+                }
+                AppAction::SwitchNetwork(network) => {
+                    self.change_network(network);
+                    self.current_app_context()
+                        .update_settings(RootScreenType::RootScreenNetworkChooser)
+                        .ok();
+                }
+                AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
+                    self.screen_stack = vec![screen];
+                    self.selected_main_screen = root_screen_type;
+                    self.active_root_screen_mut().refresh_on_arrival();
+                    self.current_app_context()
+                        .update_settings(root_screen_type)
+                        .ok();
+                }
+                AppAction::Custom(_) => {}
+                AppAction::OnboardingComplete {
+                    main_screen,
+                    add_screen,
+                } => {
+                    self.show_welcome_screen = false;
+                    self.welcome_screen = None;
+                    self.selected_main_screen = main_screen;
+                    self.active_root_screen_mut().refresh_on_arrival();
+                    self.current_app_context().update_settings(main_screen).ok();
+                    // If there's an additional screen to push, create and push it
+                    if let Some(screen_type) = add_screen {
+                        let screen = screen_type.create_screen(self.current_app_context());
+                        self.screen_stack.push(screen);
+                    }
+                    // Start SPV sync after onboarding completes (if auto-start is enabled and developer mode is on)
+                    // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+                    // Remove the is_developer_mode() check once SPV is production-ready.
+                    let current_context = self.current_app_context();
+                    let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(false);
+                    if auto_start_spv
+                        && current_context.is_developer_mode()
+                        && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
+                    {
+                        if let Err(e) = current_context.start_spv() {
+                            tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
+                        } else {
+                            tracing::info!("SPV sync started after onboarding");
+                        }
                     }
                 }
             }

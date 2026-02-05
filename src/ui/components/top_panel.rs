@@ -1,8 +1,8 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
-use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
+use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -96,11 +96,9 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
 
 fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
     let mut action = AppAction::None;
-    let connected = app_context
-        .zmq_connection_status
-        .lock()
-        .map(|status| matches!(*status, ZMQConnectionEvent::Connected))
-        .unwrap_or(false);
+    let status = app_context.connection_status();
+    let backend_mode = status.backend_mode();
+    let connected = status.overall_connected();
 
     // Get time for pulsating animation (only when connected)
     let pulse_scale = if connected {
@@ -149,14 +147,13 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     if connected {
                         app_context.repaint_animation(ui.ctx());
                     }
-                    let tip = if connected {
-                        "Connected to Dash Core Wallet"
-                    } else {
-                        "Disconnected from Dash Core Wallet. Click to start it."
-                    };
+                    let tip = status.tooltip_text();
                     let resp = resp.on_hover_text(tip);
 
-                    if resp.clicked() && !connected {
+                    if resp.clicked()
+                        && backend_mode == CoreBackendMode::Rpc
+                        && !status.rpc_online()
+                    {
                         let settings = app_context.get_settings().ok().flatten();
 
                         let (custom_path, overwrite) = settings

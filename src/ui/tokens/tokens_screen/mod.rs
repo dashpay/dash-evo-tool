@@ -2977,6 +2977,9 @@ impl ScreenLike for TokensScreen {
                 );
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::RegisteredTokenContract => {
+                self.token_creator_status = TokenCreatorStatus::Complete;
+            }
             _ => {}
         }
     }

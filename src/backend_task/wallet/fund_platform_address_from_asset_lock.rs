@@ -46,7 +46,7 @@ impl AppContext {
         };
 
         // Check if we need to convert an old instant lock proof to a chain lock proof
-        use dash_sdk::dashcore_rpc::RpcApi;
+        use crate::context::get_transaction_info_via_dapi;
         use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
         use dash_sdk::platform::Fetch;
 
@@ -56,21 +56,12 @@ impl AppContext {
             // Get the transaction ID from the instant lock proof
             let tx_id = instant_asset_lock_proof.transaction().txid();
 
-            // Query the core client to check if the transaction has been chain-locked
-            let raw_transaction_info = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned")
-                .get_raw_transaction_info(&tx_id, None)
-                .map_err(|e| format!("Failed to get transaction info: {}", e))?;
+            // Query DAPI to check if the transaction has been chain-locked
+            let tx_info = get_transaction_info_via_dapi(&sdk, &tx_id).await?;
 
-            if raw_transaction_info.chainlock
-                && raw_transaction_info.height.is_some()
-                && raw_transaction_info.confirmations.is_some()
-                && raw_transaction_info.confirmations.unwrap() > 8
-            {
+            if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
                 // Transaction has been chain-locked with sufficient confirmations
-                let tx_block_height = raw_transaction_info.height.unwrap() as u32;
+                let tx_block_height = tx_info.height;
 
                 // Check if the platform has caught up to this block height
                 let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)

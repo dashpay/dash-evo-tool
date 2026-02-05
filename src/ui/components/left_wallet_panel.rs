@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use eframe::epaint::{Color32, Margin};
-use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
+use egui::{Context, Frame, Image, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 
@@ -92,9 +92,10 @@ pub fn add_left_panel(
 
                     // Add icon-based button if texture is loaded
                     if let Some(ref texture) = texture {
-                        let button = ImageButton::new(texture)
-                            .frame(false) // Remove button frame
-                            .tint(button_color);
+                        let button = egui::Button::image(
+                            Image::new(texture).tint(button_color),
+                        )
+                        .frame(false); // Remove button frame
 
                         if ui.add(button).clicked() {
                             action = AppAction::SetMainScreen(*screen_type);

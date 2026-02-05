@@ -843,7 +843,7 @@ impl IdentitiesScreen {
             let action = AppAction::None;
 
             // Draw dark overlay behind the popup
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Background,
                 egui::Id::new("confirm_removal_overlay"),
@@ -969,7 +969,7 @@ impl IdentitiesScreen {
         let identity_id = self.editing_alias_identity.unwrap();
 
         // Draw dark overlay behind the popup
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("edit_alias_overlay"),

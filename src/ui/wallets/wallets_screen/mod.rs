@@ -1946,7 +1946,7 @@ impl WalletsBalancesScreen {
 
         // Draw dark overlay behind the dialog (only when open)
         if open {
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Background,
                 egui::Id::new("receive_dialog_overlay"),
@@ -2326,7 +2326,7 @@ impl WalletsBalancesScreen {
         let dark_mode = ctx.style().visuals.dark_mode;
 
         // Draw dark overlay behind the popup
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("fund_platform_dialog_overlay"),
@@ -2525,7 +2525,7 @@ impl WalletsBalancesScreen {
 
         // Draw dark overlay behind the dialog
         if open {
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Background,
                 egui::Id::new("private_key_dialog_overlay"),

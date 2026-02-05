@@ -388,7 +388,7 @@ impl ScreenLike for AssetLockDetailScreen {
         // Private key popup
         if self.show_private_key_popup {
             // Draw dark overlay behind the popup
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Background,
                 egui::Id::new("private_key_popup_overlay"),

@@ -56,7 +56,7 @@ impl InfoPopup {
         }
 
         // Draw dark overlay behind the popup for better visibility
-        let screen_rect = ui.ctx().screen_rect();
+        let screen_rect = ui.ctx().content_rect();
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("info_popup_overlay"),

@@ -7,7 +7,7 @@ use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::spv::{CoreBackendMode, SpvStatus};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
@@ -21,6 +21,8 @@ pub struct ConnectionStatus {
     disable_zmq: AtomicBool,
     overall_connected: AtomicBool,
     last_update: Mutex<Instant>,
+    dapi_total_endpoints: AtomicU16,
+    dapi_available: AtomicBool,
 }
 
 impl ConnectionStatus {
@@ -33,6 +35,8 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_connected: AtomicBool::new(false),
             last_update: Mutex::new(Instant::now()),
+            dapi_total_endpoints: AtomicU16::new(0),
+            dapi_available: AtomicBool::new(true),
         }
     }
 
@@ -89,6 +93,32 @@ impl ConnectionStatus {
         self.disable_zmq.store(disable, Ordering::Relaxed);
     }
 
+    pub fn dapi_total_endpoints(&self) -> u16 {
+        self.dapi_total_endpoints.load(Ordering::Relaxed)
+    }
+
+    pub fn dapi_available(&self) -> bool {
+        self.dapi_available.load(Ordering::Relaxed)
+    }
+
+    pub fn set_dapi_status(&self, total: u16, available: bool) {
+        self.dapi_total_endpoints.store(total, Ordering::Relaxed);
+        self.dapi_available.store(available, Ordering::Relaxed);
+    }
+
+    /// Returns the DAPI status label suitable for display.
+    pub fn dapi_status_label(&self) -> String {
+        let total = self.dapi_total_endpoints();
+        let available = self.dapi_available();
+        if total == 0 {
+            "No endpoints configured".to_string()
+        } else if available {
+            format!("Available ({total} endpoints)")
+        } else {
+            format!("All {total} endpoints banned")
+        }
+    }
+
     pub fn spv_connected(status: SpvStatus) -> bool {
         status.is_active() || status == SpvStatus::Running
     }
@@ -113,9 +143,12 @@ impl ConnectionStatus {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
+        let dapi_available = self.dapi_available();
         let connected = match backend_mode {
-            CoreBackendMode::Rpc => self.rpc_online() && (disable_zmq || self.zmq_connected()),
-            CoreBackendMode::Spv => Self::spv_connected(spv_status),
+            CoreBackendMode::Rpc => {
+                self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available
+            }
+            CoreBackendMode::Spv => Self::spv_connected(spv_status) && dapi_available,
         };
         self.overall_connected.store(connected, Ordering::Relaxed);
     }
@@ -126,9 +159,12 @@ impl ConnectionStatus {
         disable_zmq: bool,
         spv_status: SpvStatus,
     ) -> bool {
+        let dapi_available = self.dapi_available();
         match backend_mode {
-            CoreBackendMode::Rpc => self.rpc_online() && (disable_zmq || self.zmq_connected()),
-            CoreBackendMode::Spv => Self::spv_connected(spv_status),
+            CoreBackendMode::Rpc => {
+                self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available
+            }
+            CoreBackendMode::Spv => Self::spv_connected(spv_status) && dapi_available,
         }
     }
 
@@ -136,6 +172,7 @@ impl ConnectionStatus {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
+        let dapi_status = format!("DAPI: {}", self.dapi_status_label());
         match backend_mode {
             CoreBackendMode::Rpc => {
                 let rpc_status = if self.rpc_online() {
@@ -152,21 +189,21 @@ impl ConnectionStatus {
                 };
 
                 if self.overall_connected() {
-                    format!("Connected to Dash Core Wallet\n{rpc_status}\n{zmq_status}")
+                    format!("Connected to Dash Core Wallet\n{rpc_status}\n{zmq_status}\n{dapi_status}")
                 } else if self.rpc_online() {
-                    format!("Dash Core connection incomplete\n{rpc_status}\n{zmq_status}")
+                    format!("Dash Core connection incomplete\n{rpc_status}\n{zmq_status}\n{dapi_status}")
                 } else {
                     format!(
-                        "Disconnected from Dash Core Wallet. Click to start it.\n{rpc_status}\n{zmq_status}"
+                        "Disconnected from Dash Core Wallet. Click to start it.\n{rpc_status}\n{zmq_status}\n{dapi_status}"
                     )
                 }
             }
             CoreBackendMode::Spv => {
                 let spv_label = format!("SPV: {:?}", spv_status);
                 if self.overall_connected() {
-                    format!("SPV connected\n{spv_label}")
+                    format!("SPV connected\n{spv_label}\n{dapi_status}")
                 } else {
-                    format!("SPV disconnected\n{spv_label}")
+                    format!("SPV disconnected\n{spv_label}\n{dapi_status}")
                 }
             }
         }
@@ -274,6 +311,14 @@ impl ConnectionStatus {
                     self.set_zmq_status(event);
                 }
             }
+        }
+
+        // Update DAPI endpoint status
+        if let Ok(sdk) = app_context.sdk.read() {
+            let address_list = sdk.address_list();
+            let total = address_list.len() as u16;
+            let available = address_list.get_live_address().is_some();
+            self.set_dapi_status(total, available);
         }
 
         self.refresh_overall();

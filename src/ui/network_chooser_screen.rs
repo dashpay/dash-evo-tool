@@ -605,6 +605,21 @@ impl NetworkChooserScreen {
                             let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
                             ui.colored_label(zmq_color, zmq_label);
                         }
+
+                        ui.label(",");
+                        ui.label("DAPI:");
+                        let dapi_total = status.dapi_total_endpoints();
+                        let dapi_available = status.dapi_available();
+                        if dapi_total == 0 {
+                            ui.colored_label(DashColors::text_secondary(dark_mode), status.dapi_status_label());
+                        } else {
+                            let dapi_color = if dapi_available {
+                                DashColors::SUCCESS
+                            } else {
+                                DashColors::ERROR
+                            };
+                            ui.colored_label(dapi_color, status.dapi_status_label());
+                        }
                     });
                 }
 
@@ -637,6 +652,22 @@ impl NetworkChooserScreen {
                             ui.colored_label(color, label);
                         }
                     });
+
+                    ui.horizontal(|ui| {
+                        ui.label("DAPI:");
+                        let dapi_total = status.dapi_total_endpoints();
+                        let dapi_available = status.dapi_available();
+                        if dapi_total == 0 {
+                            ui.colored_label(DashColors::text_secondary(dark_mode), status.dapi_status_label());
+                        } else {
+                            let dapi_color = if dapi_available {
+                                DashColors::SUCCESS
+                            } else {
+                                DashColors::ERROR
+                            };
+                            ui.colored_label(dapi_color, status.dapi_status_label());
+                        }
+                    });
                 }
 
                 if current_backend_mode == CoreBackendMode::Spv {
@@ -648,6 +679,22 @@ impl NetworkChooserScreen {
                             DashColors::ERROR
                         };
                         ui.colored_label(color, format!("{:?}", spv_status));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("DAPI:");
+                        let dapi_total = status.dapi_total_endpoints();
+                        let dapi_available = status.dapi_available();
+                        if dapi_total == 0 {
+                            ui.colored_label(DashColors::text_secondary(dark_mode), status.dapi_status_label());
+                        } else {
+                            let dapi_color = if dapi_available {
+                                DashColors::SUCCESS
+                            } else {
+                                DashColors::ERROR
+                            };
+                            ui.colored_label(dapi_color, status.dapi_status_label());
+                        }
                     });
                 }
             });

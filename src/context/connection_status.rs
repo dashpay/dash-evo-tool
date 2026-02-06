@@ -22,7 +22,7 @@ pub struct ConnectionStatus {
     overall_connected: AtomicBool,
     last_update: Mutex<Instant>,
     dapi_total_endpoints: AtomicU16,
-    dapi_available: AtomicBool,
+    dapi_available_endpoints: AtomicU16,
 }
 
 impl ConnectionStatus {
@@ -36,7 +36,7 @@ impl ConnectionStatus {
             overall_connected: AtomicBool::new(false),
             last_update: Mutex::new(Instant::now()),
             dapi_total_endpoints: AtomicU16::new(0),
-            dapi_available: AtomicBool::new(true),
+            dapi_available_endpoints: AtomicU16::new(0),
         }
     }
 
@@ -97,23 +97,27 @@ impl ConnectionStatus {
         self.dapi_total_endpoints.load(Ordering::Relaxed)
     }
 
-    pub fn dapi_available(&self) -> bool {
-        self.dapi_available.load(Ordering::Relaxed)
+    pub fn dapi_available_endpoints(&self) -> u16 {
+        self.dapi_available_endpoints.load(Ordering::Relaxed)
     }
 
-    pub fn set_dapi_status(&self, total: u16, available: bool) {
+    pub fn dapi_available(&self) -> bool {
+        self.dapi_available_endpoints.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn set_dapi_status(&self, total: u16, available: u16) {
         self.dapi_total_endpoints.store(total, Ordering::Relaxed);
-        self.dapi_available.store(available, Ordering::Relaxed);
+        self.dapi_available_endpoints.store(available, Ordering::Relaxed);
     }
 
     /// Returns the DAPI status label suitable for display.
     pub fn dapi_status_label(&self) -> String {
         let total = self.dapi_total_endpoints();
-        let available = self.dapi_available();
+        let available = self.dapi_available_endpoints();
         if total == 0 {
             "No endpoints configured".to_string()
-        } else if available {
-            format!("Available ({total} endpoints)")
+        } else if available > 0 {
+            format!("Available ({available}/{total} endpoints)")
         } else {
             format!("All {total} endpoints banned")
         }
@@ -317,7 +321,13 @@ impl ConnectionStatus {
         if let Ok(sdk) = app_context.sdk.read() {
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
-            let available = address_list.get_live_address().is_some();
+            let available = if address_list.get_live_address().is_some() {
+                // At least one endpoint is live; report total since we can't
+                // count individual available endpoints through the SDK API.
+                total
+            } else {
+                0
+            };
             self.set_dapi_status(total, available);
         }
 

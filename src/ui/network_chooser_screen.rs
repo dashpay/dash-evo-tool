@@ -37,6 +37,24 @@ enum DatabaseClearMessage {
     Error(String),
 }
 
+/// Renders DAPI endpoint status with appropriate color coding.
+fn add_dapi_status_label(ui: &mut Ui, status: &ConnectionStatus, dark_mode: bool) {
+    ui.label("DAPI:");
+    if status.dapi_total_endpoints() == 0 {
+        ui.colored_label(
+            DashColors::text_secondary(dark_mode),
+            status.dapi_status_label(),
+        );
+    } else {
+        let color = if status.dapi_available() {
+            DashColors::SUCCESS
+        } else {
+            DashColors::ERROR
+        };
+        ui.colored_label(color, status.dapi_status_label());
+    }
+}
+
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
@@ -607,19 +625,7 @@ impl NetworkChooserScreen {
                         }
 
                         ui.label(",");
-                        ui.label("DAPI:");
-                        let dapi_total = status.dapi_total_endpoints();
-                        let dapi_available = status.dapi_available();
-                        if dapi_total == 0 {
-                            ui.colored_label(DashColors::text_secondary(dark_mode), status.dapi_status_label());
-                        } else {
-                            let dapi_color = if dapi_available {
-                                DashColors::SUCCESS
-                            } else {
-                                DashColors::ERROR
-                            };
-                            ui.colored_label(dapi_color, status.dapi_status_label());
-                        }
+                        add_dapi_status_label(ui, status, dark_mode);
                     });
                 }
 
@@ -654,19 +660,7 @@ impl NetworkChooserScreen {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("DAPI:");
-                        let dapi_total = status.dapi_total_endpoints();
-                        let dapi_available = status.dapi_available();
-                        if dapi_total == 0 {
-                            ui.colored_label(DashColors::text_secondary(dark_mode), status.dapi_status_label());
-                        } else {
-                            let dapi_color = if dapi_available {
-                                DashColors::SUCCESS
-                            } else {
-                                DashColors::ERROR
-                            };
-                            ui.colored_label(dapi_color, status.dapi_status_label());
-                        }
+                        add_dapi_status_label(ui, status, dark_mode);
                     });
                 }
 
@@ -682,19 +676,7 @@ impl NetworkChooserScreen {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("DAPI:");
-                        let dapi_total = status.dapi_total_endpoints();
-                        let dapi_available = status.dapi_available();
-                        if dapi_total == 0 {
-                            ui.colored_label(DashColors::text_secondary(dark_mode), status.dapi_status_label());
-                        } else {
-                            let dapi_color = if dapi_available {
-                                DashColors::SUCCESS
-                            } else {
-                                DashColors::ERROR
-                            };
-                            ui.colored_label(dapi_color, status.dapi_status_label());
-                        }
+                        add_dapi_status_label(ui, status, dark_mode);
                     });
                 }
             });

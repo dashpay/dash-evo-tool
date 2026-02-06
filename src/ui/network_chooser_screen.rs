@@ -38,20 +38,23 @@ enum DatabaseClearMessage {
 }
 
 /// Renders DAPI endpoint status with appropriate color coding.
-fn add_dapi_status_label(ui: &mut Ui, status: &ConnectionStatus, dark_mode: bool) {
+fn add_dapi_status_label(
+    ui: &mut Ui,
+    dapi_total: u16,
+    dapi_available: bool,
+    dapi_label: &str,
+    dark_mode: bool,
+) {
     ui.label("DAPI:");
-    if status.dapi_total_endpoints() == 0 {
-        ui.colored_label(
-            DashColors::text_secondary(dark_mode),
-            status.dapi_status_label(),
-        );
+    if dapi_total == 0 {
+        ui.colored_label(DashColors::text_secondary(dark_mode), dapi_label);
     } else {
-        let color = if status.dapi_available() {
+        let color = if dapi_available {
             DashColors::SUCCESS
         } else {
             DashColors::ERROR
         };
-        ui.colored_label(color, status.dapi_status_label());
+        ui.colored_label(color, dapi_label);
     }
 }
 
@@ -475,6 +478,9 @@ impl NetworkChooserScreen {
                 None
             };
             let overall_connected = status.overall_connected();
+            let dapi_total = status.dapi_total_endpoints();
+            let dapi_available = status.dapi_available();
+            let dapi_label = status.dapi_status_label();
 
             // Button on the left with status
             ui.horizontal(|ui| {
@@ -625,7 +631,7 @@ impl NetworkChooserScreen {
                         }
 
                         ui.label(",");
-                        add_dapi_status_label(ui, status, dark_mode);
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
 
@@ -660,7 +666,7 @@ impl NetworkChooserScreen {
                     });
 
                     ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, status, dark_mode);
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
 
@@ -676,7 +682,7 @@ impl NetworkChooserScreen {
                     });
 
                     ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, status, dark_mode);
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
             });

@@ -440,7 +440,7 @@ impl WalletSendScreen {
             return estimate_platform_fee(fee_estimator, 1);
         }
 
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         if dest_type == AddressType::Core {
             let output_script = self
                 .destination_address
@@ -514,8 +514,23 @@ impl WalletSendScreen {
     }
 
     /// Detect address type from the address string
-    fn detect_address_type(&self, address: &str) -> AddressType {
-        Self::detect_address_type_static(address)
+    fn detect_address_type(address: &str) -> AddressType {
+        let trimmed = address.trim();
+        if trimmed.is_empty() {
+            return AddressType::Unknown;
+        }
+
+        // Check for Platform address (Bech32m format)
+        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+            return AddressType::Platform;
+        }
+
+        // Try to parse as Core address
+        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
+            return AddressType::Core;
+        }
+
+        AddressType::Unknown
     }
 
     fn min_output_amount(
@@ -630,7 +645,7 @@ impl WalletSendScreen {
 
     /// Get description of transaction type based on source and destination
     fn get_transaction_type_description(&self) -> &'static str {
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         match (&self.selected_source, dest_type) {
             (Some(SourceSelection::CoreWallet), AddressType::Core) => "Core Transaction",
             (Some(SourceSelection::CoreWallet), AddressType::Platform) => "Fund Platform Address",
@@ -662,7 +677,7 @@ impl WalletSendScreen {
             .ok_or("Please select a source")?;
 
         // Validate destination
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         if dest_type == AddressType::Unknown {
             return Err(
                 "Invalid destination address. Use a Dash address (X.../y...) or Platform address (evo1.../tevo1...)"
@@ -1344,7 +1359,7 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
 
         ui.horizontal(|ui| {
             ui.label(
@@ -1416,7 +1431,7 @@ impl WalletSendScreen {
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
-                let dest_type = self.detect_address_type(&self.destination_address);
+                let dest_type = Self::detect_address_type(&self.destination_address);
                 let hint = if dest_type == AddressType::Platform {
                     let destination =
                         PlatformAddress::from_bech32m_string(self.destination_address.trim())
@@ -1487,7 +1502,7 @@ impl WalletSendScreen {
             Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
             None => AddressType::Unknown,
         };
-        let output_type = self.detect_address_type(&self.destination_address);
+        let output_type = Self::detect_address_type(&self.destination_address);
         let min_amount = self.min_output_amount(input_type, output_type);
 
         Frame::group(ui.style())
@@ -1532,7 +1547,7 @@ impl WalletSendScreen {
         }
 
         // Show subtract fee checkbox for Core wallet to Core address transactions
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         if matches!(self.selected_source, Some(SourceSelection::CoreWallet))
             && dest_type == AddressType::Core
         {
@@ -1666,7 +1681,7 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         let has_destination = dest_type != AddressType::Unknown;
         let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
@@ -1832,7 +1847,7 @@ impl WalletSendScreen {
         // ========== FEE STRATEGY SECTION ==========
         // Only show for platform source or platform outputs
         let has_platform_output = self.advanced_outputs.iter().any(|o| {
-            let addr_type = Self::detect_address_type_static(&o.address);
+            let addr_type = Self::detect_address_type(&o.address);
             addr_type == AddressType::Platform
         });
 
@@ -2144,7 +2159,7 @@ impl WalletSendScreen {
         let addr_types: Vec<AddressType> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type_static(&o.address))
+            .map(|o| Self::detect_address_type(&o.address))
             .collect();
 
         for (idx, &addr_type) in addr_types.iter().enumerate() {
@@ -2219,26 +2234,6 @@ impl WalletSendScreen {
                 amount: String::new(),
             });
         }
-    }
-
-    /// Static version of detect_address_type that doesn't need self
-    fn detect_address_type_static(address: &str) -> AddressType {
-        let trimmed = address.trim();
-        if trimmed.is_empty() {
-            return AddressType::Unknown;
-        }
-
-        // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
-            return AddressType::Platform;
-        }
-
-        // Try to parse as Core address
-        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return AddressType::Core;
-        }
-
-        AddressType::Unknown
     }
 
     /// Render the send button for advanced mode
@@ -2328,7 +2323,7 @@ impl WalletSendScreen {
         let output_types: Vec<AddressType> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type_static(&o.address))
+            .map(|o| Self::detect_address_type(&o.address))
             .collect();
 
         let has_core_output = output_types.contains(&AddressType::Core);

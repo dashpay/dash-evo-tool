@@ -7,7 +7,7 @@ use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::spv::{CoreBackendMode, SpvStatus};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
@@ -107,7 +107,8 @@ impl ConnectionStatus {
 
     pub fn set_dapi_status(&self, total: u16, available: u16) {
         self.dapi_total_endpoints.store(total, Ordering::Relaxed);
-        self.dapi_available_endpoints.store(available, Ordering::Relaxed);
+        self.dapi_available_endpoints
+            .store(available, Ordering::Relaxed);
     }
 
     /// Returns the DAPI status label suitable for display.
@@ -193,9 +194,13 @@ impl ConnectionStatus {
                 };
 
                 if self.overall_connected() {
-                    format!("Connected to Dash Core Wallet\n{rpc_status}\n{zmq_status}\n{dapi_status}")
+                    format!(
+                        "Connected to Dash Core Wallet\n{rpc_status}\n{zmq_status}\n{dapi_status}"
+                    )
                 } else if self.rpc_online() {
-                    format!("Dash Core connection incomplete\n{rpc_status}\n{zmq_status}\n{dapi_status}")
+                    format!(
+                        "Dash Core connection incomplete\n{rpc_status}\n{zmq_status}\n{dapi_status}"
+                    )
                 } else {
                     format!(
                         "Disconnected from Dash Core Wallet. Click to start it.\n{rpc_status}\n{zmq_status}\n{dapi_status}"

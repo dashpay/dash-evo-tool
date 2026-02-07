@@ -260,7 +260,9 @@ pub async fn load_contacts(
         for (_, outgoing_doc) in outgoing.iter() {
             if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
             {
-                let to_id = Identifier::from_bytes(to_id_bytes.as_slice()).unwrap();
+                let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
+                    continue;
+                };
                 if to_id == from_id {
                     // Mutual contact found
                     contacts.insert(from_id);
@@ -304,7 +306,13 @@ pub async fn load_contacts(
                 if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId")
                     && let Ok(decrypted_id) = decrypt_to_user_id(enc_user_id, &enc_user_id_key)
                 {
-                    let contact_id = Identifier::from_bytes(&decrypted_id).unwrap();
+                    let Ok(contact_id) = Identifier::from_bytes(&decrypted_id) else {
+                        tracing::warn!(
+                            "Failed to parse decrypted contact ID (length {}), skipping contact info entry",
+                            decrypted_id.len()
+                        );
+                        continue;
+                    };
 
                     // Decrypt private data if available
                     let mut nickname = None;

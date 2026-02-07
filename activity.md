@@ -288,3 +288,8 @@
 **Task:** 2.2d Fix token configuration expect() in contract.rs
 **What was done:** Replaced `.expect("Expected to get token configuration")` on `expected_token_configuration()` in `contract.rs:104-105` with a `match` that logs a warning via `tracing::warn!` and `continue`s to skip that token if the configuration is missing. Previously, if a token position existed in `contract.tokens()` but had no matching configuration (e.g., due to contract data inconsistency), the backend task would panic. Now it logs the error with the token position and contract ID, and skips that token while still processing the rest.
 **Files changed:** src/backend_task/contract.rs
+
+## Run 41 — 2026-02-07
+**Task:** 2.2e Fix Identifier::from_bytes unwrap in contacts.rs
+**What was done:** Replaced 2 `.unwrap()` calls on `Identifier::from_bytes()` in `contacts.rs` with graceful error handling. (1) Line 263: `Identifier::from_bytes(to_id_bytes.as_slice()).unwrap()` in the mutual contact matching loop — replaced with `let Ok(to_id) = ... else { continue }` to skip outgoing documents with invalid identifier bytes. (2) Line 307: `Identifier::from_bytes(&decrypted_id).unwrap()` on decrypted contact ID — replaced with `let Ok(contact_id) = ... else { continue }` with a `tracing::warn!` logging the invalid length. The second case is higher risk since decrypted data may have unexpected length if the decryption key is wrong or the encrypted data is corrupted.
+**Files changed:** src/backend_task/dashpay/contacts.rs

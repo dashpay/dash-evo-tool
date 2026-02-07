@@ -606,7 +606,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.1a Remove commented-out `fetch_range_dml` dead code** (P2)
   Delete 126 lines of commented-out code at lines 971-1096. This is an abandoned function with no callers. If it's ever needed again, it exists in git history.
 
-- [ ] **3.1b Extract height/hash resolution and caching into a helper module** (P2)
+- [x] **3.1b Extract height/hash resolution and caching into a helper module** (P2)
   Extract these 9 functions (~300 lines) into a new `masternode_list_diff_screen/cache_helpers.rs` module (or similar):
   - `get_height()`, `get_height_or_error_as_string()`, `get_height_and_cache()`, `get_height_and_cache_or_error_as_string()`
   - `get_block_hash()`, `get_block_hash_and_cache()`
@@ -910,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 2 |
+| 3. Refactoring | 13 | 3 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

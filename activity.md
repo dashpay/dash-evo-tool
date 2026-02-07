@@ -359,3 +359,8 @@
 **Task:** 3.1a Remove commented-out `fetch_range_dml` dead code
 **What was done:** Deleted 126 lines of commented-out `fetch_range_dml` function at lines 971-1096 of `masternode_list_diff_screen.rs`. This was an abandoned function with no callers — it fetched a range of masternode list diffs by stepping through block heights. The code existed in git history if ever needed again. No functional change.
 **Files changed:** src/ui/tools/masternode_list_diff_screen.rs
+
+## Run 53 — 2026-02-07
+**Task:** 3.1b Extract height/hash resolution and caching into a helper module
+**What was done:** Extracted 5 cache fields and 11 cache-related methods (~300 lines) from `MasternodeListDiffScreen` into a new `CacheState` struct in `cache_helpers.rs`. Converted `masternode_list_diff_screen.rs` from a single file to a directory module (`masternode_list_diff_screen/mod.rs` + `cache_helpers.rs`). The `CacheState` struct holds `block_height_cache`, `block_hash_cache`, `masternode_list_quorum_hash_cache`, `chain_lock_sig_cache`, and `chain_lock_reversed_sig_cache`. Methods take `&MasternodeListEngine` and `&AppContext` as parameters instead of accessing them through `self`, which properly unbundles borrow scopes. Also removed 47 lines of commented-out `feed_qr_info_cl_sigs` dead code. Updated all ~40 call sites to use `self.cache.*` with explicit engine/context parameters, and consolidated 7 individual cache `.clear()` calls into `self.cache.clear()` and `self.cache.clear_chain_lock_caches()`.
+**Files changed:** src/ui/tools/masternode_list_diff_screen/mod.rs (renamed from masternode_list_diff_screen.rs), src/ui/tools/masternode_list_diff_screen/cache_helpers.rs (new)

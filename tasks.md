@@ -673,7 +673,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for incremental extraction (following masternode_list_diff_screen pattern):**
 
-- [ ] **3.2a Extract dialog rendering into wallets_screen/dialogs.rs** (P2)
+- [x] **3.2a Extract dialog rendering into wallets_screen/dialogs.rs** (P2)
   Move all 4 dedicated dialog rendering functions and their helpers (~900 lines) into a new `wallets_screen/dialogs.rs` module:
   - `render_send_dialog()` (lines 1820-1892) + `prepare_send_action()` (lines 2685-2734)
   - `render_receive_dialog()` (lines 1894-2251) + `open_receive_dialog()` (lines 2736-2758) + `load_core_addresses_for_receive()` (lines 2761-2804) + `load_platform_addresses_for_receive()` (lines 2807-2850) + `generate_platform_address()` (lines 2255-2266) + `generate_new_core_receive_address()` (lines 2270-2284)
@@ -958,7 +958,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 18 | 8 |
+| 3. Refactoring | 18 | 9 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

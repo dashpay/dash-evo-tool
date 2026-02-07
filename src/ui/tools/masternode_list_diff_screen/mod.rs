@@ -20,6 +20,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
+use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::network::constants::NetworkExt;
@@ -2010,6 +2011,204 @@ impl MasternodeListDiffScreen {
             ui.label("Select a block height and Masternode.");
         }
     }
+
+    fn handle_core_item_result(&mut self, core_item: CoreItem) {
+        match core_item {
+            CoreItem::InstantLockedTransaction(transaction, _, instant_lock) => {
+                let valid = self.attempt_verify_transaction_lock(&instant_lock);
+                self.instant_send_transactions
+                    .push((transaction, instant_lock, valid));
+            }
+            CoreItem::ChainLockedBlock(block, chain_lock) => {
+                self.received_new_block(block, chain_lock);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mn_list_fetched_diff(
+        &mut self,
+        base_height: CoreBlockHeight,
+        height: CoreBlockHeight,
+        diff: MnListDiff,
+    ) {
+        // Apply to engine
+        if base_height == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
+            match MasternodeListEngine::initialize_with_diff_to_height(
+                diff.clone(),
+                height,
+                self.app_context.network,
+            ) {
+                Ok(engine) => self.masternode_list_engine = engine,
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        } else if let Err(e) =
+            self.masternode_list_engine
+                .apply_diff(diff.clone(), Some(height), false, None)
+        {
+            self.error = Some(e.to_string());
+        }
+        self.mnlist_diffs.insert((base_height, height), diff);
+        // If this was the no-rotation path, queue the extra diffs needed for verification
+        if matches!(self.pending, Some(PendingTask::DmlDiffNoRotation)) {
+            if let Some(task) = self.build_validation_diffs_task() {
+                self.queued_task = Some(task);
+                self.display_message(
+                    "Fetched DMLs (no rotation); fetching validation diffs…",
+                    MessageType::Info,
+                );
+            } else if !self.masternode_list_engine.masternode_lists.is_empty() {
+                // Fallback: attempt verification directly
+                if let Err(e) = self
+                    .masternode_list_engine
+                    .verify_non_rotating_masternode_list_quorums(
+                        height,
+                        &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                    )
+                {
+                    self.error = Some(e.to_string());
+                }
+                self.pending = None;
+                self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
+            } else {
+                self.pending = None;
+                self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
+            }
+        } else {
+            self.pending = None;
+            self.display_message("Fetched DML diff", MessageType::Success);
+        }
+        self.selected_dml_diff_key = None;
+        self.selected_quorum_in_diff_index = None;
+    }
+
+    fn handle_mn_list_fetched_qr_info(&mut self, qr_info: QRInfo) {
+        // Warm heights and cache diffs before feed_qr_info
+        self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
+        self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
+        self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_c);
+        self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_2c);
+        self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_3c);
+        if let Some((_, d)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
+            self.insert_mn_list_diff(d);
+        }
+        for d in &qr_info.mn_list_diff_list {
+            self.insert_mn_list_diff(d);
+        }
+
+        // Apply to engine using a closure to resolve heights
+        let block_height_cache = self.cache.block_height_cache.clone();
+        let app_context = self.app_context.clone();
+        let get_height_fn = move |block_hash: &BlockHash| {
+            if block_hash.as_byte_array() == &[0; 32] {
+                return Ok(0);
+            }
+            if let Some(height) = block_height_cache.get(block_hash) {
+                return Ok(*height);
+            }
+            match app_context
+                .core_client
+                .read_or_recover()
+                .get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
+            {
+                Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
+                Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
+                    *block_hash,
+                )),
+            }
+        };
+        if let Err(e) = self.masternode_list_engine.feed_qr_info(
+            qr_info.clone(),
+            false,
+            true,
+            Some(get_height_fn),
+        ) {
+            self.error = Some(e.to_string());
+        }
+        // Store full qr_info for the QR tab
+        let key = qr_info.mn_list_diff_tip.block_hash;
+        self.qr_infos.insert(key, qr_info);
+        self.selected_dml_diff_key = None;
+        self.selected_quorum_in_diff_index = None;
+        // Queue extra diffs required for verification
+        if let Some(task) = self.build_validation_diffs_task() {
+            self.queued_task = Some(task);
+            self.display_message(
+                "Fetched QR info + DMLs; fetching validation diffs…",
+                MessageType::Info,
+            );
+        } else {
+            self.pending = None;
+            self.display_message("Fetched QR info + DMLs", MessageType::Success);
+        }
+    }
+
+    fn handle_mn_list_fetched_diffs(
+        &mut self,
+        items: Vec<((CoreBlockHeight, CoreBlockHeight), MnListDiff)>,
+    ) {
+        // Apply returned diffs sequentially
+        for ((base_h, h), diff) in items {
+            if base_h == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
+                if let Ok(engine) = MasternodeListEngine::initialize_with_diff_to_height(
+                    diff.clone(),
+                    h,
+                    self.app_context.network,
+                ) {
+                    self.masternode_list_engine = engine;
+                }
+            } else {
+                let _ = self
+                    .masternode_list_engine
+                    .apply_diff(diff.clone(), Some(h), false, None);
+            }
+            self.mnlist_diffs.insert((base_h, h), diff);
+        }
+        // Update rotating quorum heights cache
+        let hashes = self
+            .masternode_list_engine
+            .latest_masternode_list_rotating_quorum_hashes(&[]);
+        for hash in &hashes {
+            if let Ok(height) = self.cache.get_height_and_cache(
+                hash,
+                &mut self.masternode_list_engine,
+                &self.app_context,
+            ) {
+                self.cache.block_height_cache.insert(*hash, height);
+            }
+        }
+        // Verify non-rotating quorums
+        if let Some(latest_masternode_list) = self.masternode_list_engine.latest_masternode_list()
+            && let Err(e) = self
+                .masternode_list_engine
+                .verify_non_rotating_masternode_list_quorums(
+                    latest_masternode_list.known_height,
+                    &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
+                )
+        {
+            self.error = Some(e.to_string());
+        }
+        self.pending = None;
+        self.display_message(
+            "Fetched validation diffs and verified non-rotating quorums",
+            MessageType::Success,
+        );
+    }
+
+    fn handle_mn_list_chain_lock_sigs(&mut self, entries: Vec<(HeightHash, Option<BLSSignature>)>) {
+        for ((h, bh), sig) in entries {
+            self.cache.chain_lock_sig_cache.insert((h, bh), sig);
+            if let Some(sig) = sig {
+                self.cache
+                    .chain_lock_reversed_sig_cache
+                    .entry(sig)
+                    .or_default()
+                    .insert((h, bh));
+            }
+        }
+        self.pending = None;
+        self.display_message("Fetched chain lock signatures", MessageType::Success);
+    }
 }
 
 impl ScreenLike for MasternodeListDiffScreen {
@@ -2029,202 +2228,25 @@ impl ScreenLike for MasternodeListDiffScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreItem(core_item) = backend_task_success_result {
-            // println!("received core item {:?}", core_item);
-            match core_item {
-                CoreItem::InstantLockedTransaction(transaction, _, instant_lock) => {
-                    let valid = self.attempt_verify_transaction_lock(&instant_lock);
-                    self.instant_send_transactions
-                        .push((transaction, instant_lock, valid));
-                }
-                CoreItem::ChainLockedBlock(block, chain_lock) => {
-                    self.received_new_block(block, chain_lock);
-                }
-                _ => {}
-            }
-            return;
-        }
         match backend_task_success_result {
+            BackendTaskSuccessResult::CoreItem(core_item) => {
+                self.handle_core_item_result(core_item);
+            }
             BackendTaskSuccessResult::MnListFetchedDiff {
                 base_height,
                 height,
                 diff,
             } => {
-                // Apply to engine similarly to original UI method
-                if base_height == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
-                    match MasternodeListEngine::initialize_with_diff_to_height(
-                        diff.clone(),
-                        height,
-                        self.app_context.network,
-                    ) {
-                        Ok(engine) => self.masternode_list_engine = engine,
-                        Err(e) => self.error = Some(e.to_string()),
-                    }
-                } else if let Err(e) =
-                    self.masternode_list_engine
-                        .apply_diff(diff.clone(), Some(height), false, None)
-                {
-                    self.error = Some(e.to_string());
-                }
-                self.mnlist_diffs.insert((base_height, height), diff);
-                // If this was the no-rotation path, queue the extra diffs needed for verification (restored behavior)
-                if matches!(self.pending, Some(PendingTask::DmlDiffNoRotation)) {
-                    if let Some(task) = self.build_validation_diffs_task() {
-                        self.queued_task = Some(task);
-                        self.display_message(
-                            "Fetched DMLs (no rotation); fetching validation diffs…",
-                            MessageType::Info,
-                        );
-                    } else if !self.masternode_list_engine.masternode_lists.is_empty() {
-                        // Fallback: attempt verification directly
-                        if let Err(e) = self
-                            .masternode_list_engine
-                            .verify_non_rotating_masternode_list_quorums(
-                                height,
-                                &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
-                            )
-                        {
-                            self.error = Some(e.to_string());
-                        }
-                        self.pending = None;
-                        self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
-                    } else {
-                        self.pending = None;
-                        self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
-                    }
-                } else {
-                    self.pending = None;
-                    self.display_message("Fetched DML diff", MessageType::Success);
-                }
-                self.selected_dml_diff_key = None;
-                self.selected_quorum_in_diff_index = None;
+                self.handle_mn_list_fetched_diff(base_height, height, diff);
             }
             BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info } => {
-                // Warm heights and cache diffs before feed_qr_info (replicates old flow)
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_c);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_2c);
-                self.insert_mn_list_diff(&qr_info.mn_list_diff_at_h_minus_3c);
-                if let Some((_, d)) = &qr_info.quorum_snapshot_and_mn_list_diff_at_h_minus_4c {
-                    self.insert_mn_list_diff(d);
-                }
-                for d in &qr_info.mn_list_diff_list {
-                    self.insert_mn_list_diff(d);
-                }
-
-                // Apply to engine using the same closure as before to resolve heights
-                let block_height_cache = self.cache.block_height_cache.clone();
-                let app_context = self.app_context.clone();
-                let get_height_fn = move |block_hash: &BlockHash| {
-                    if block_hash.as_byte_array() == &[0; 32] {
-                        return Ok(0);
-                    }
-                    if let Some(height) = block_height_cache.get(block_hash) {
-                        return Ok(*height);
-                    }
-                    match app_context
-                        .core_client
-                        .read_or_recover()
-                        .get_block_header_info(
-                            &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                        ) {
-                        Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
-                        Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
-                            *block_hash,
-                        )),
-                    }
-                };
-                if let Err(e) = self.masternode_list_engine.feed_qr_info(
-                    qr_info.clone(),
-                    false,
-                    true,
-                    Some(get_height_fn),
-                ) {
-                    self.error = Some(e.to_string());
-                }
-                // Store full qr_info for the QR tab
-                let key = qr_info.mn_list_diff_tip.block_hash;
-                self.qr_infos.insert(key, qr_info);
-                self.selected_dml_diff_key = None;
-                self.selected_quorum_in_diff_index = None;
-                // Queue extra diffs required for verification (previous behavior)
-                if let Some(task) = self.build_validation_diffs_task() {
-                    self.queued_task = Some(task);
-                    self.display_message(
-                        "Fetched QR info + DMLs; fetching validation diffs…",
-                        MessageType::Info,
-                    );
-                } else {
-                    self.pending = None;
-                    self.display_message("Fetched QR info + DMLs", MessageType::Success);
-                }
+                self.handle_mn_list_fetched_qr_info(qr_info);
             }
             BackendTaskSuccessResult::MnListFetchedDiffs { items } => {
-                // Apply returned diffs sequentially
-                for ((base_h, h), diff) in items {
-                    if base_h == 0 && self.masternode_list_engine.masternode_lists.is_empty() {
-                        if let Ok(engine) = MasternodeListEngine::initialize_with_diff_to_height(
-                            diff.clone(),
-                            h,
-                            self.app_context.network,
-                        ) {
-                            self.masternode_list_engine = engine;
-                        }
-                    } else {
-                        let _ = self.masternode_list_engine.apply_diff(
-                            diff.clone(),
-                            Some(h),
-                            false,
-                            None,
-                        );
-                    }
-                    self.mnlist_diffs.insert((base_h, h), diff);
-                }
-                // Update rotating quorum heights cache (previous behavior)
-                let hashes = self
-                    .masternode_list_engine
-                    .latest_masternode_list_rotating_quorum_hashes(&[]);
-                for hash in &hashes {
-                    if let Ok(height) = self.cache.get_height_and_cache(
-                        hash,
-                        &mut self.masternode_list_engine,
-                        &self.app_context,
-                    ) {
-                        self.cache.block_height_cache.insert(*hash, height);
-                    }
-                }
-                // Verify non-rotating quorums as before
-                if let Some(latest_masternode_list) =
-                    self.masternode_list_engine.latest_masternode_list()
-                    && let Err(e) = self
-                        .masternode_list_engine
-                        .verify_non_rotating_masternode_list_quorums(
-                            latest_masternode_list.known_height,
-                            &[LLMQType::Llmqtype50_60, LLMQType::Llmqtype400_85],
-                        )
-                {
-                    self.error = Some(e.to_string());
-                }
-                self.pending = None;
-                self.display_message(
-                    "Fetched validation diffs and verified non-rotating quorums",
-                    MessageType::Success,
-                );
+                self.handle_mn_list_fetched_diffs(items);
             }
             BackendTaskSuccessResult::MnListChainLockSigs { entries } => {
-                for ((h, bh), sig) in entries {
-                    self.cache.chain_lock_sig_cache.insert((h, bh), sig);
-                    if let Some(sig) = sig {
-                        self.cache
-                            .chain_lock_reversed_sig_cache
-                            .entry(sig)
-                            .or_default()
-                            .insert((h, bh));
-                    }
-                }
-                self.pending = None;
-                self.display_message("Fetched chain lock signatures", MessageType::Success);
+                self.handle_mn_list_chain_lock_sigs(entries);
             }
             _ => {}
         }

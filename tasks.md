@@ -641,7 +641,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `attempt_verify_transaction_lock()` (7 lines)
   - `received_new_block()` (47 lines)
 
-- [ ] **3.1f Split display_task_result into per-variant handlers** (P3)
+- [x] **3.1f Split display_task_result into per-variant handlers** (P3)
   In `display_task_result()` (197 lines, line 4074), each match arm handles a different `BackendTaskSuccessResult` variant with 20-50 lines of inline logic. Extract each arm into a named method (e.g., `handle_mn_list_diff_result()`, `handle_qr_info_result()`, etc.) to improve readability.
 
 - [ ] **3.2 [META] Review wallets_screen/mod.rs (3813 lines)** (P2)
@@ -910,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 6 |
+| 3. Refactoring | 13 | 7 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

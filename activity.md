@@ -379,3 +379,8 @@
 **Task:** 3.1e Extract core items / chain-lock / instant-send rendering
 **What was done:** Extracted 7 core-items-related rendering functions (~358 lines) from `masternode_list_diff_screen/mod.rs` into a new `core_items_tab.rs` module. Functions moved: `render_selected_item_details()`, `render_core_items()` (main Core Items Viewer tab), `render_chain_lock_details()`, `render_instant_send_details()`, `attempt_verify_chain_lock()`, `attempt_verify_transaction_lock()`, `received_new_block()`. Also cleaned up 3 now-unused imports from mod.rs (`serialize as serialize2`, `ChainLock as ChainLock2`, `InstantLock as InstantLock2`). mod.rs reduced from 2711 to 2354 lines.
 **Files changed:** src/ui/tools/masternode_list_diff_screen/mod.rs, src/ui/tools/masternode_list_diff_screen/core_items_tab.rs (new)
+
+## Run 57 — 2026-02-07
+**Task:** 3.1f Split display_task_result into per-variant handlers
+**What was done:** Refactored the 201-line `display_task_result()` method in `masternode_list_diff_screen/mod.rs` from a monolithic match block into a thin dispatch method calling 5 named handler methods: `handle_core_item_result()` (CoreItem events), `handle_mn_list_fetched_diff()` (single diff application with optional validation queueing), `handle_mn_list_fetched_qr_info()` (QR info processing with height resolution closure), `handle_mn_list_fetched_diffs()` (batch diff application with quorum verification), `handle_mn_list_chain_lock_sigs()` (chain lock signature caching). The handlers are placed in the inherent `impl MasternodeListDiffScreen` block while `display_task_result` remains in the `ScreenLike` trait impl. No behavioral changes.
+**Files changed:** src/ui/tools/masternode_list_diff_screen/mod.rs

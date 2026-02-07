@@ -272,7 +272,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.3e Fix core-016: Safe config save with atomic write** (P2)
   In `src/config.rs` `save()` method, write to a temporary file first, then rename/move to the target path. This prevents config corruption if a write fails partway through (currently `File::create()` truncates immediately).
 
-- [ ] **1.3f Fix core-014: Logging initialization should not panic** (P2)
+- [x] **1.3f Fix core-014: Logging initialization should not panic** (P2)
   In `src/logging.rs:17-26`, replace `panic!`/`expect()` on log file creation and EnvFilter with fallback to stderr logging, so the app can still run even if log file setup fails.
 
 - [ ] **1.3g Fix core-001: Replace unwrap/expect on database initialization** (P2)
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 23 |
+| 1. Bug Triage | 27 | 24 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

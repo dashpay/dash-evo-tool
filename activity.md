@@ -167,3 +167,8 @@
 **Task:** 1.3e Fix core-016: Safe config save with atomic write
 **What was done:** Changed the `Config::save()` method to use atomic write: writes to a temporary file (`.env.tmp`) in the same directory first, flushes to disk, then renames it to `.env`. Previously, `File::create()` truncated the `.env` file immediately, so a partial write failure (disk full, permission change, process crash) would leave a corrupted config with no recovery. The rename operation is atomic on all target platforms (POSIX guarantees on macOS/Linux, and Windows provides atomic rename for same-volume operations). On rename failure, the temp file is cleaned up.
 **Files changed:** src/config.rs
+
+## Run 24 — 2026-02-07
+**Task:** 1.3f Fix core-014: Logging initialization should not panic
+**What was done:** Replaced three panic points in `logging.rs` with graceful fallbacks. (1) If the log file path cannot be determined or the file cannot be created, the logger now falls back to stderr with ANSI colors enabled, printing a warning to stderr about the fallback. (2) If the hardcoded EnvFilter string is invalid, it falls back to a simple "info" filter instead of panicking. Previously, any failure in log file creation or filter parsing would crash the application before it even started. The app can now run even if the log directory is missing, permissions are wrong, or disk is full.
+**Files changed:** src/logging.rs

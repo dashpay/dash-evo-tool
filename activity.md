@@ -53,3 +53,26 @@
 **Task:** 1.1g Fix wallet-015: Log silenced database errors in wallet operations
 **What was done:** Replaced two `let _ =` patterns in `send_single_key_wallet_payment.rs` with `if let Err(e)` blocks that log warnings via `tracing::warn!`. The first logs when dropping spent UTXOs from the database fails (line 233), and the second logs when updating single key wallet balances fails (lines 238-240). Previously these database errors were silently discarded, making it impossible to diagnose post-payment DB inconsistencies.
 **Files changed:** src/backend_task/core/send_single_key_wallet_payment.rs
+
+## Run 9 — 2026-02-07
+**Task:** 1.2 [META] Triage identity & token bugs
+**What was done:** Triaged 4 GitHub issues (GH#499, GH#224, GH#273, GH#478) and 46 auto-generated issue files (identity-001 through identity-014, ui-tokens-001 through ui-tokens-024, ui-identity-001 through ui-identity-013) against the current codebase. Verified each claim by reading relevant source code. Created 8 specific sub-tasks for confirmed bugs.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 8 (1.2a through 1.2h)
+
+**Summary of findings:**
+- GH#499(a) ALREADY IMPLEMENTED: ContractBounds supported in Identity Create
+- GH#499(b) PARTIALLY CONFIRMED: ENCRYPTION/DECRYPTION keys lack security level enforcement in manual add flow
+- GH#224 FALSE POSITIVE: Intentional simple mode behavior; advanced mode shows all keys
+- GH#273 CANNOT CONFIRM: Off-by-one may be in SDK, not DET code
+- GH#478 ALREADY FIXED by task 1.1c
+- identity-001 CONFIRMED: Two panic!() calls on unsupported key types (P0)
+- identity-002 CONFIRMED: Unwrap on try_into for hex decode (covered by 2.2 audit)
+- ui-tokens-021 CONFIRMED: Token reordering completely non-functional (assignment commented out)
+- ui-tokens-022 CONFIRMED: Wrong field checks in build_distribution_rules (logic error)
+- ui-tokens-010 CONFIRMED: expect("No key selected") in 8+ token screens
+- ui-identity-001 CONFIRMED: Unwrap panics if identity deleted during refresh
+- identity-007 CONFIRMED: Silenced wallet update errors in register/top-up
+- ui-identity-005/008 CONFIRMED: Silenced DB errors in identity deletion and contact save
+- 15 issues classified as FALSE POSITIVE or LOW PRIORITY
+- 4 issues deferred to existing tasks (2.5 lock poisoning, 2.6 SystemTime, 3.3 refactoring)

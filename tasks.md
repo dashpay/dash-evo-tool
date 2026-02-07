@@ -74,7 +74,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.1g Fix wallet-015: Log silenced database errors in wallet operations** (P2)
   In `src/backend_task/core/send_single_key_wallet_payment.rs` lines 233, 238-240, replace `let _ =` with `if let Err(e) = ... { tracing::warn!(...) }` to log database errors instead of silently discarding them.
 
-- [ ] **1.2 [META] Triage identity & token bugs** (P0)
+- [x] **1.2 [META] Triage identity & token bugs** (P0)
   Review:
   - GH#499 (Identity Create screen improvements)
   - GH#224 (Token creator only sees one key)
@@ -84,6 +84,85 @@ These META tasks validate reported bugs against the current codebase before any 
   - `issues/ui-tokens-*.md` files (ui-tokens-001 through ui-tokens-024)
   - `issues/ui-identity-*.md` files (ui-identity-001 through ui-identity-013)
   Same process: validate against code, root-cause, create fix tasks, note already-fixed.
+
+  **Triage Results:**
+
+  **GitHub Issues:**
+  - **GH#499 — PARTIALLY CONFIRMED.** (a) ContractBounds for keys in Identity Create: already implemented — default keys include ContractBounds, and the pipeline supports them. (b) Security level validation per key purpose: TRANSFER keys are correctly locked to CRITICAL, but ENCRYPTION/DECRYPTION keys lack UI enforcement of the MEDIUM requirement when manually adding keys. Fix: add validation in add_key flow.
+  - **GH#224 — FALSE POSITIVE (by design).** Token creator simple mode auto-selects the first eligible key via `.find()`. Advanced mode properly shows all keys matching transaction requirements via `add_identity_key_chooser`. The "only sees one key" is a UX limitation in simple mode, not a bug. Users can switch to advanced mode.
+  - **GH#273 — CANNOT CONFIRM.** Reward estimation logic delegates to SDK methods (`cycle_start()`, `current_interval()`, `max_cycle_moment()`). The DET code itself handles ranges correctly with `RangeInclusive`. The off-by-one may be in the SDK or in block timing. Cannot reproduce without test environment. Deferring.
+  - **GH#478 — ALREADY FIXED by task 1.1c.** Wallet balance top-up max button now reserves estimated fees.
+
+  **Issue Files (identity-001 through identity-014):**
+  - **identity-001 (panic on unsupported key type)** — CONFIRMED. Two `panic!("need a ECDSA Key for now")` calls at `src/backend_task/identity/mod.rs:167,193` in `to_public_keys_map()`. Triggers on any KeyType other than ECDSA_SECP256K1 or ECDSA_HASH160 (e.g., BLS12_381, EDDSA_25519_HASH160). Fix: return error instead of panic.
+  - **identity-002 (unwrap on try_into)** — CONFIRMED. `src/backend_task/identity/mod.rs:317` has `.try_into().unwrap()` on hex decode result. While input is length-checked at 64 chars, the unwrap is fragile. Fix: use `try_into().map_err(...)`.
+  - **identity-003 (unchecked max unwrap)** — FALSE POSITIVE. Code uses `unwrap_or()` safely.
+  - **identity-004 (expect on lock poisoning)** — CONFIRMED but deferred to task 2.5 (lock poisoning strategy). Multiple `.expect()` on `.lock()` in register_identity.rs and top_up_identity.rs.
+  - **identity-005 (UTXO removal timing)** — CONFIRMED but LOW PRIORITY. UTXOs removed before proof confirmation; in practice the proof almost always arrives.
+  - **identity-006 (refresh returns wrong identity)** — FALSE POSITIVE. Return value is a completion signal; actual identity is correctly updated in DB and memory before return.
+  - **identity-007 (silently ignored wallet update errors)** — CONFIRMED. `let _ =` patterns in register_identity.rs:192,333 and top_up_identity.rs:206,319. Same pattern as wallet-015 (already fixed). Fix: add tracing::warn.
+  - **identity-008 (inconsistent wallet update patterns)** — LOW PRIORITY. Inconsistent but functional code in mod.rs:612-680.
+  - **identity-009 (unwrap on label to_str)** — FALSE POSITIVE. All uses have `.unwrap_or_default()` or `.ok()` fallbacks.
+  - **identity-010 (duplicate DPNS fetch code)** — LOW PRIORITY. Code duplication across 6 files, belongs in refactoring (Section 3).
+  - **identity-011 (unused wallet clone)** — LOW PRIORITY. Minor inefficiency.
+  - **identity-012 (potential deadlock in transfer)** — FALSE POSITIVE. Operations use owned Vec, not shared locks.
+  - **identity-013 (wallet clone in top-up)** — LOW PRIORITY. Minor inefficiency.
+  - **identity-014 (missing wallet association in DPNS load)** — LOW PRIORITY. Edge case in data preservation.
+
+  **Issue Files (ui-tokens-001 through ui-tokens-024):**
+  - **ui-tokens-001 through ui-tokens-004** — LOW PRIORITY. Fragile `is_err()`/`is_some()` + `unwrap()` patterns. Technically safe due to prior checks but vulnerable to refactoring. Covered by task 2.2 audit.
+  - **ui-tokens-005 (mutex lock unwrap)** — CONFIRMED but deferred to task 2.5 (lock poisoning strategy).
+  - **ui-tokens-006 (expect on SystemTime)** — CONFIRMED but deferred to task 2.6 (SystemTime expects).
+  - **ui-tokens-007 (silent parse errors)** — LOW PRIORITY. Silent `unwrap_or(0)` in build_distribution_rules is arguably acceptable for optional fields.
+  - **ui-tokens-008 (expect on embedded images)** — CONFIRMED. Two `.expect()` calls in `load_formula_image()` at `tokens_screen/mod.rs:84-86`. These are on compile-time embedded images so LOW RISK, but still shouldn't panic.
+  - **ui-tokens-009 (unwrap in UI style mutation)** — LOW PRIORITY. TextStyle::Body always exists in egui.
+  - **ui-tokens-010 (expect on signing key)** — CONFIRMED. `.expect("No key selected")` in 8+ token action screens. Users could trigger this if no key is selected. Fix: validate key selection before submit, return error instead of panic.
+  - **ui-tokens-011 through ui-tokens-013** — LOW PRIORITY. Unwrap chains that are mostly guarded by prior state.
+  - **ui-tokens-014 (very large function)** — CONFIRMED but deferred to task 3.3 (tokens_screen refactoring).
+  - **ui-tokens-015 (duplicate control rules UI)** — CONFIRMED but deferred to task 3.3. ~250 lines of duplicate code.
+  - **ui-tokens-021 (commented-out reorder assignment)** — CONFIRMED. `reorder_vec_to()` in `tokens_screen/mod.rs:1799` builds reordered map but assignment `self.my_tokens = reordered` is commented out. Token reordering is completely non-functional.
+  - **ui-tokens-022 (inconsistent field check logic)** — CONFIRMED. `build_distribution_rules()` in `tokens_screen/mod.rs` checks `step_decreasing_start_period_offset_input.is_empty()` for min_value and max_interval_count fields instead of their own inputs. Logic error causing incorrect distribution rule construction.
+  - **ui-tokens-023 (TODO filtering not implemented)** — CONFIRMED. destroy_frozen_funds_screen and unfreeze_tokens_screen show all identities instead of filtering to only frozen ones. UX issue.
+  - **ui-tokens-024 (test unwraps in production code)** — LOW PRIORITY. Test code mixed into production file.
+
+  **Issue Files (ui-identity-001 through ui-identity-013):**
+  - **ui-identity-001 (unwrap on identity refresh)** — CONFIRMED. `transfer_screen.rs:504-511` and `withdraw_screen.rs:320-329` both use `.unwrap()` after `.find()` to locate identity by ID. If identity was deleted during refresh, this panics. Fix: handle None case gracefully.
+  - **ui-identity-002 (mutex poison handling)** — CONFIRMED but deferred to task 2.5.
+  - **ui-identity-003 (missing wallet validation)** — FALSE POSITIVE. The `.expect()` on `ensure_correct_identity_keys()` is intentional error handling.
+  - **ui-identity-004 (wallet unlock state not reset)** — LOW PRIORITY. UX annoyance, not a crash bug.
+  - **ui-identity-005 (identity deletion errors ignored)** — CONFIRMED. `.ok()` in `identities_screen.rs:936-952` silently discards DB deletion errors. Fix: log errors via tracing::warn.
+  - **ui-identity-006 (avatar cache unbounded)** — PARTIALLY CONFIRMED. contacts_list.rs correctly clears cache on identity switch, but profile_screen.rs intentionally preserves cache across changes without eviction policy. Could grow unbounded with many avatars.
+  - **ui-identity-007 (avatar loading no cancellation)** — LOW PRIORITY. Tokio tasks for avatar loading have no cancellation, but they're short-lived.
+  - **ui-identity-008 (database save errors ignored)** — CONFIRMED. Same pattern as ui-identity-005. Silent `.ok()` discards DB save errors in contacts_list.rs.
+  - **ui-identity-009 (profile validation inconsistency)** — LOW PRIORITY. Bio length limit mismatch (250 vs 140) — cosmetic.
+  - **ui-identity-010 (assume_checked address parsing)** — CONFIRMED but JUSTIFIED. Comment in transfer_screen.rs:271-281 explains DIP-18 requires `assume_checked()` because platform addresses share version bytes across testnet/devnet/regtest. Not a bug.
+  - **ui-identity-011 (withdrawal address validation timing)** — LOW PRIORITY. UX flaw where validation occurs after confirmation dialog.
+  - **ui-identity-012 (self-contact filtering)** — LOW PRIORITY. Edge case in one code path.
+  - **ui-identity-013 (error message duplication)** — LOW PRIORITY. Cosmetic issue.
+
+- [ ] **1.2a Fix identity-001: Replace panic on unsupported key types** (P0)
+  In `src/backend_task/identity/mod.rs:167,193`, replace `panic!("need a ECDSA Key for now")` with proper error return (e.g., `return Err(format!("Unsupported key type: {:?}", key_type))`). Two locations in `to_public_keys_map()`.
+
+- [ ] **1.2b Fix ui-tokens-021: Uncomment reorder assignment** (P1)
+  In `src/ui/tokens/tokens_screen/mod.rs`, the `reorder_vec_to()` function builds a reordered map but the assignment `self.my_tokens = reordered` is commented out (~line 1799). Uncomment or properly implement the assignment so token reordering works.
+
+- [ ] **1.2c Fix ui-tokens-022: Wrong field checks in build_distribution_rules** (P1)
+  In `src/ui/tokens/tokens_screen/mod.rs` `build_distribution_rules()`, lines ~2044 and ~2058 check `step_decreasing_start_period_offset_input.is_empty()` for min_value and max_interval_count. Each should check its own corresponding input field instead.
+
+- [ ] **1.2d Fix ui-tokens-010: Replace expect on signing key in token screens** (P1)
+  Replace `.expect("No key selected")` with proper validation/error handling in 8+ token action screens: transfer_tokens_screen.rs, freeze_tokens_screen.rs, unfreeze_tokens_screen.rs, mint_tokens_screen.rs, destroy_frozen_funds_screen.rs, claim_tokens_screen.rs, pause_tokens_screen.rs, resume_tokens_screen.rs.
+
+- [ ] **1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh** (P1)
+  In `src/ui/identities/transfer_screen.rs:504-511` and `src/ui/identities/withdraw_screen.rs:320-329`, replace `.unwrap()` after `.find()` with graceful handling (e.g., show error message if identity not found instead of panicking).
+
+- [ ] **1.2f Fix identity-007: Log silenced wallet update errors in identity registration** (P2)
+  In `src/backend_task/identity/register_identity.rs:192,333` and `src/backend_task/identity/top_up_identity.rs:206,319`, replace `let _ =` with `if let Err(e)` + `tracing::warn!` (same pattern as task 1.1g).
+
+- [ ] **1.2g Fix ui-identity-005/008: Log silenced DB errors in identity deletion and contact save** (P2)
+  Replace `.ok()` with logged error handling in `src/ui/identities/identities_screen.rs:936-952` and `src/ui/dashpay/contacts_list.rs` DB save operations.
+
+- [ ] **1.2h Fix GH#499b: Add security level validation for ENCRYPTION/DECRYPTION keys** (P2)
+  In the Identity Create add_key flow, enforce that ENCRYPTION and DECRYPTION key purposes use SecurityLevel::MEDIUM (as required by Platform). Currently only TRANSFER keys are locked to CRITICAL. Add UI validation or auto-lock for enc/dec keys.
 
 - [ ] **1.3 [META] Triage core/config/infrastructure bugs** (P1)
   Review:
@@ -413,12 +492,12 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 49 (24 META + 25 direct)
+**Total tasks:** 57 (24 META + 33 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 8 |
+| 1. Bug Triage | 19 | 9 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

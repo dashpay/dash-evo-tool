@@ -533,7 +533,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Line 194: CoreClient creation → log error, return None
   - Lines 198,205: Database wallet queries → log error, return None
 
-- [ ] **2.3b Fix context.rs asset lock processing expects** (P2)
+- [x] **2.3b Fix context.rs asset lock processing expects** (P2)
   In `src/context.rs:1641,1644`, replace `.expect()` on credit output access and address derivation with `?` error propagation. The enclosing function `received_asset_lock_finality()` already returns `Result<(), String>`.
 
 - [ ] **2.3c Fix database/wallet.rs data loading expects** (P1)
@@ -839,7 +839,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 20 | 13 |
+| 2. Stability | 20 | 14 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

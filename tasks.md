@@ -453,7 +453,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `src/backend_task/contested_names/vote_on_dpns_name.rs:39`
   Also replace `.expect("expected str")` on `Value::as_str()` at `query_dpns_contested_resources.rs:135` with `ok_or()?.to_string()`.
 
-- [ ] **2.2b Fix channel send/semaphore panics in contested resources query** (P1)
+- [x] **2.2b Fix channel send/semaphore panics in contested resources query** (P1)
   In `src/backend_task/contested_names/query_dpns_contested_resources.rs`:
   - Lines 175, 208: Replace `semaphore.acquire_owned().await.unwrap()` with `.map_err()?` or graceful return.
   - Lines 183, 190, 220, 227: Replace `.expect("expected to send ...")` on `sender.send().await` with `if let Err(e)` that logs and returns (receiver may be dropped during shutdown).
@@ -770,7 +770,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 15 | 7 |
+| 2. Stability | 15 | 8 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

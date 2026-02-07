@@ -273,3 +273,8 @@
 **Task:** 2.2a Fix document type expect() calls in contested names
 **What was done:** Replaced `.expect("expected document type")` on `document_type_for_name("domain")` with `.map_err(|_| "...".to_string())?` in all 3 contested names files. Also replaced `.expect("expected str")` on `Value::as_str()` in `query_dpns_contested_resources.rs` with `filter_map` that logs a warning and skips non-string values. Updated the adjacent `.last().unwrap()` to use `let Some(...) = ... else { break }` since the filtered list could now be empty. Previously, if the DPNS contract structure changed or a contested resource had a non-string value, the app would panic in the backend task thread.
 **Files changed:** src/backend_task/contested_names/query_dpns_contested_resources.rs, src/backend_task/contested_names/query_dpns_vote_contenders.rs, src/backend_task/contested_names/vote_on_dpns_name.rs
+
+## Run 38 — 2026-02-07
+**Task:** 2.2b Fix channel send/semaphore panics in contested resources query
+**What was done:** Replaced 6 panicking calls inside `tokio::spawn` blocks in `query_dpns_contested_resources.rs` with graceful error handling. Two `semaphore.acquire_owned().await.unwrap()` calls (lines 180, 213) replaced with `match` that logs an error and returns early if the semaphore is closed. Four `.expect("expected to send ...")` calls on `sender.send().await` (lines 188, 195, 225, 232) replaced with `if let Err(e)` that logs a warning and continues. These panics could occur during app shutdown when the UI receiver is dropped or when the semaphore is closed, causing spawned task threads to panic unnecessarily.
+**Files changed:** src/backend_task/contested_names/query_dpns_contested_resources.rs

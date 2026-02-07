@@ -384,3 +384,9 @@
 **Task:** 3.1f Split display_task_result into per-variant handlers
 **What was done:** Refactored the 201-line `display_task_result()` method in `masternode_list_diff_screen/mod.rs` from a monolithic match block into a thin dispatch method calling 5 named handler methods: `handle_core_item_result()` (CoreItem events), `handle_mn_list_fetched_diff()` (single diff application with optional validation queueing), `handle_mn_list_fetched_qr_info()` (QR info processing with height resolution closure), `handle_mn_list_fetched_diffs()` (batch diff application with quorum verification), `handle_mn_list_chain_lock_sigs()` (chain lock signature caching). The handlers are placed in the inherent `impl MasternodeListDiffScreen` block while `display_task_result` remains in the `ScreenLike` trait impl. No behavioral changes.
 **Files changed:** src/ui/tools/masternode_list_diff_screen/mod.rs
+
+## Run 58 — 2026-02-07
+**Task:** 3.2 [META] Review wallets_screen/mod.rs (3824 lines)
+**What was done:** Thoroughly analyzed the 3,824-line wallets_screen/mod.rs file. Identified ~73 methods (11 over 100 lines), 4 dedicated dialog rendering functions, 2 inline dialogs in the 460-line ui() method, 5 table rendering locations, and 6 struct/enum definitions. Mapped logical groupings: dialogs (~900 lines extractable), single-key wallet view (173 lines), address table (293 lines), wallet selection (267 lines), and inline dialog/action code in ui() (~300 lines). No commented-out dead code found. Created 5 specific extraction sub-tasks following the same pattern used for masternode_list_diff_screen refactoring.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 5 (3.2a through 3.2e)

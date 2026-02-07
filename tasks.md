@@ -644,12 +644,60 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.1f Split display_task_result into per-variant handlers** (P3)
   In `display_task_result()` (197 lines, line 4074), each match arm handles a different `BackendTaskSuccessResult` variant with 20-50 lines of inline logic. Extract each arm into a named method (e.g., `handle_mn_list_diff_result()`, `handle_qr_info_result()`, etc.) to improve readability.
 
-- [ ] **3.2 [META] Review wallets_screen/mod.rs (3813 lines)** (P2)
+- [x] **3.2 [META] Review wallets_screen/mod.rs (3813 lines)** (P2)
   Identify logical split points in this file. Look for:
   - Independent UI sections that could be separate files/modules
   - State that could be grouped into sub-structs
   - Helper functions that belong in utilities
   Create specific sub-tasks with line ranges and proposed module names.
+
+  **Review Results:**
+
+  **File structure (3,824 lines, ~73 methods, 11 methods over 100 lines):**
+  - `WalletsBalancesScreen` struct with 23 fields, 4 nested dialog state structs
+  - Main impl block: 2,936 lines (lines 240-3175)
+  - ScreenLike impl: 643 lines (lines 3182-3824), dominated by `ui()` at 460 lines
+  - 4 dedicated dialog rendering functions (send: 73 lines, receive: 358 lines, fund platform: 173 lines, private key: 111 lines)
+  - 2 inline dialogs in `ui()` (rename: 68 lines, SK unlock: 117 lines)
+  - 5 table rendering locations (address table: 293 lines, accounts section: 78 lines, transactions: 109 lines, asset locks: 154 lines, SK wallet UTXOs: 173 lines)
+  - No commented-out dead code blocks
+
+  **Largest functions:** `ui()` (460 lines), `render_receive_dialog()` (358 lines), `render_address_table()` (293 lines), `render_wallet_selection()` (267 lines), `render_single_key_wallet_view()` (173 lines), `render_fund_platform_dialog()` (173 lines)
+
+  **Logical groupings for extraction:**
+  1. **Dialogs** (~715 lines): `render_send_dialog`, `render_receive_dialog`, `render_fund_platform_dialog`, `render_private_key_dialog`, plus their helper methods (`prepare_send_action`, `prepare_fund_platform_action`, `open_receive_dialog`, `load_core_addresses_for_receive`, `load_platform_addresses_for_receive`, `generate_platform_address`, `generate_new_core_receive_address`). Also the inline rename/SK-unlock dialogs from `ui()`. All have dedicated state structs already.
+  2. **Single-key wallet view** (~173 lines): `render_single_key_wallet_view` is self-contained with UTXO pagination logic.
+  3. **Address table rendering** (~293 lines): `render_address_table` plus sorting helpers (`toggle_sort`, `sort_address_data`, `categorize_path`).
+  4. **Wallet selection panel** (~267 lines): `render_wallet_selection` with associated selection/persistence methods.
+  5. **`ui()` method** (460 lines): Contains inline rename dialog (68 lines), SK unlock dialog (117 lines), HD wallet unlock handling (70 lines), custom action dispatch (50 lines), and top-level orchestration. The inline dialogs should be extracted to methods.
+
+  **Sub-tasks created for incremental extraction (following masternode_list_diff_screen pattern):**
+
+- [ ] **3.2a Extract dialog rendering into wallets_screen/dialogs.rs** (P2)
+  Move all 4 dedicated dialog rendering functions and their helpers (~900 lines) into a new `wallets_screen/dialogs.rs` module:
+  - `render_send_dialog()` (lines 1820-1892) + `prepare_send_action()` (lines 2685-2734)
+  - `render_receive_dialog()` (lines 1894-2251) + `open_receive_dialog()` (lines 2736-2758) + `load_core_addresses_for_receive()` (lines 2761-2804) + `load_platform_addresses_for_receive()` (lines 2807-2850) + `generate_platform_address()` (lines 2255-2266) + `generate_new_core_receive_address()` (lines 2270-2284)
+  - `render_fund_platform_dialog()` (lines 2287-2459) + `prepare_fund_platform_action()` (lines 2575-2683)
+  - `render_private_key_dialog()` (lines 2462-2572) + `derive_private_key_wif()` (lines 2883-2894)
+  - Also `draw_modal_overlay()` (lines 1788-1799) + `modal_frame()` (lines 1801-1818) (shared helpers)
+  Keep dialog state structs (`SendDialogState`, `ReceiveDialogState`, `FundPlatformAddressDialogState`, `PrivateKeyDialogState`) in the new file since they're only used by these dialogs.
+
+- [ ] **3.2b Extract single-key wallet view into wallets_screen/single_key_view.rs** (P2)
+  Move `render_single_key_wallet_view()` (lines 2928-3100, 173 lines) into a new file. This is a self-contained rendering function for single-key wallets with UTXO table and pagination. The `utxo_page` field stays on `WalletsBalancesScreen` but the rendering method moves.
+
+- [ ] **3.2c Extract address table rendering into wallets_screen/address_table.rs** (P2)
+  Move `render_address_table()` (lines 747-1039, 293 lines) plus sorting helpers `toggle_sort()`, `sort_address_data()`, `categorize_path()` (~40 lines), and the `AddressData` struct + impl into a new file. Also move `SortColumn` and `SortOrder` enums. This is the largest single rendering function.
+
+- [ ] **3.2d Extract inline dialogs from ui() into named methods** (P3)
+  The `ui()` method (460 lines) contains two inline dialog implementations:
+  - Rename dialog (lines 3322-3389, ~68 lines) → extract to `render_rename_dialog(&mut self, ctx: &Context)`
+  - SK wallet unlock dialog (lines 3464-3579, ~117 lines) → extract to `render_sk_unlock_dialog(&mut self, ctx: &Context) -> AppAction`
+  - HD wallet unlock handling (lines 3391-3462, ~72 lines) → extract to `handle_hd_unlock_result(&mut self) -> AppAction`
+  - Custom action dispatch (lines 3587-3636, ~50 lines) → extract to `handle_custom_actions(&mut self, action: &mut AppAction)`
+  This should reduce `ui()` from ~460 lines to ~150 lines of orchestration.
+
+- [ ] **3.2e Extract asset lock rendering into wallets_screen/asset_locks.rs** (P3)
+  Move `render_wallet_asset_locks()` (lines 1168-1321, 154 lines) into a new file. This is a self-contained table rendering function for asset lock transactions with its own status display, action buttons, and pagination.
 
 - [ ] **3.3 [META] Review tokens_screen/mod.rs (3707 lines)** (P2)
   Same approach as 3.2. Token listing, creation, and configuration are likely separable concerns.
@@ -910,7 +958,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 7 |
+| 3. Refactoring | 18 | 8 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

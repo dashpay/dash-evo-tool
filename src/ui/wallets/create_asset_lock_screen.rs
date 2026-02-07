@@ -615,7 +615,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                     ui.add_space(20.0);
 
                                     if let Some(error_message) = self.error_message.as_ref() {
-                                        ui.colored_label(egui::Color32::DARK_RED, error_message);
+                                        ui.add(egui::Label::new(egui::RichText::new(error_message.as_str()).color(egui::Color32::DARK_RED)).wrap());
                                         ui.add_space(20.0);
                                     }
 

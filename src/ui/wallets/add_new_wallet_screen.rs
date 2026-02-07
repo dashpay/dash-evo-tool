@@ -898,7 +898,7 @@ impl ScreenLike for AddNewWalletScreen {
                 .collapsible(false)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::new(0.0, 0.0))
                 .show(ctx, |ui| {
-                    ui.label(error_message);
+                    ui.add(egui::Label::new(error_message).wrap());
                     ui.add_space(10.0);
                     if ui.button("Close").clicked() {
                         self.error = None; // Clear the error to close the popup

@@ -203,3 +203,8 @@
 - ui-contracts-017/018: Partially confirmed, covered by tasks 2.2 and 2.6
 - ui-dpns-019: Confirmed, deferred to task 2.5 (lock poisoning)
 - 5 issues classified as LOW PRIORITY
+
+## Run 28 — 2026-02-07
+**Task:** 1.4a Fix GH#482: Add text wrapping to error/warning message displays
+**What was done:** Replaced all unwrapped error/warning label displays with `ui.add(egui::Label::new(...).wrap())` pattern across 6 wallet UI files (9 instances total). Previously, `ui.colored_label()` and `ui.label(RichText::new(...))` calls had no text wrapping, causing long error messages to overflow horizontally off-screen on smaller displays. Changed to use `egui::Label::new(...).wrap()` which enables automatic text wrapping within the available UI width. Affected locations: wallets_screen/mod.rs (SK unlock error), import_mnemonic_screen.rs (2 general/seed errors), add_new_wallet_screen.rs (error popup), send_screen.rs (wallet lock warning + send error), create_asset_lock_screen.rs (QR code error), single_key_send_screen.rs (recipient error + general error).
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/import_mnemonic_screen.rs, src/ui/wallets/add_new_wallet_screen.rs, src/ui/wallets/send_screen.rs, src/ui/wallets/create_asset_lock_screen.rs, src/ui/wallets/single_key_send_screen.rs

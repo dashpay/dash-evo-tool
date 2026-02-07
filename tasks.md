@@ -321,7 +321,7 @@ These META tasks validate reported bugs against the current codebase before any 
   **Issue Files (ui-dpns-019):**
   - **ui-dpns-019 (Mutex unwrap in DPNS screen)** — CONFIRMED but deferred to task 2.5. 11 instances of `.lock().unwrap()` in `dpns_contested_names_screen.rs` on three Mutex fields. Same lock poisoning pattern.
 
-- [ ] **1.4a Fix GH#482: Add text wrapping to error/warning message displays** (P1)
+- [x] **1.4a Fix GH#482: Add text wrapping to error/warning message displays** (P1)
   Add `.wrap()` to all error/warning message labels that currently overflow horizontally. Affected locations:
   - `src/ui/wallets/wallets_screen/mod.rs:~3541` (SK unlock error)
   - `src/ui/wallets/import_mnemonic_screen.rs:479,609`
@@ -649,7 +649,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 30 | 27 |
+| 1. Bug Triage | 30 | 28 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

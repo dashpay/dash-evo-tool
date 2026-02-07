@@ -378,7 +378,12 @@ impl SingleKeyWalletSendScreen {
 
                     if let Some(error) = &self.recipients[i].error {
                         ui.add_space(5.0);
-                        ui.label(RichText::new(error).color(DashColors::ERROR).size(12.0));
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(error).color(DashColors::ERROR).size(12.0),
+                            )
+                            .wrap(),
+                        );
                     }
                 }
             });
@@ -802,7 +807,10 @@ impl SingleKeyWalletSendScreen {
 
                 if let Some(error) = &self.error_message {
                     ui.add_space(5.0);
-                    ui.label(RichText::new(error).color(DashColors::ERROR).size(12.0));
+                    ui.add(
+                        egui::Label::new(RichText::new(error).color(DashColors::ERROR).size(12.0))
+                            .wrap(),
+                    );
                 }
             });
 

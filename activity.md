@@ -86,3 +86,8 @@
 **Task:** 1.2b Fix ui-tokens-021: Uncomment reorder assignment
 **What was done:** Uncommented `self.my_tokens = reordered;` in `reorder_vec_to()` at `src/ui/tokens/tokens_screen/mod.rs:1799` so token reordering actually takes effect. Also added a safety loop to append any tokens not present in the saved order (e.g., newly added tokens since the last save) to the end, preventing data loss. Previously, the function built the reordered map but never assigned it, making the drag-to-reorder and saved-order features completely non-functional.
 **Files changed:** src/ui/tokens/tokens_screen/mod.rs
+
+## Run 12 — 2026-02-07
+**Task:** 1.2c Fix ui-tokens-022: Wrong field checks in build_distribution_rules
+**What was done:** Fixed two incorrect emptiness checks in `build_distribution_rules()` in `src/ui/tokens/tokens_screen/mod.rs`. Lines 2051 and 2065 both checked `step_decreasing_start_period_offset_input.is_empty()` to gate `min_value` and `max_interval_count`, but should have checked their own corresponding input fields. Changed to `step_decreasing_min_value_input.is_empty()` and `step_decreasing_max_interval_count_input.is_empty()` respectively. Previously, if the start_period_offset was empty but min_value or max_interval_count had values, those values would be silently set to None. Conversely, if start_period_offset was non-empty but min_value/max_interval_count were empty, the code would attempt to parse empty strings and return an error.
+**Files changed:** src/ui/tokens/tokens_screen/mod.rs

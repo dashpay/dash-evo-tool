@@ -146,7 +146,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2b Fix ui-tokens-021: Uncomment reorder assignment** (P1)
   In `src/ui/tokens/tokens_screen/mod.rs`, the `reorder_vec_to()` function builds a reordered map but the assignment `self.my_tokens = reordered` is commented out (~line 1799). Uncomment or properly implement the assignment so token reordering works.
 
-- [ ] **1.2c Fix ui-tokens-022: Wrong field checks in build_distribution_rules** (P1)
+- [x] **1.2c Fix ui-tokens-022: Wrong field checks in build_distribution_rules** (P1)
   In `src/ui/tokens/tokens_screen/mod.rs` `build_distribution_rules()`, lines ~2044 and ~2058 check `step_decreasing_start_period_offset_input.is_empty()` for min_value and max_interval_count. Each should check its own corresponding input field instead.
 
 - [ ] **1.2d Fix ui-tokens-010: Replace expect on signing key in token screens** (P1)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 11 |
+| 1. Bug Triage | 19 | 12 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

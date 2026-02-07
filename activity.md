@@ -405,3 +405,8 @@
 **Task:** 3.2c Extract address table rendering into wallets_screen/address_table.rs
 **What was done:** Extracted `render_address_table()` (~293 lines), `toggle_sort()`, `sort_address_data()`, `categorize_path()`, plus `AddressData` struct/impl and `SortColumn`/`SortOrder` enums into a new `wallets_screen/address_table.rs` module. This is the largest single rendering function in the wallets screen, responsible for the sortable address table with balance display, UTXO counts, and private key viewing. Cleaned up unused imports (`Network`, `ChildNumber`, `DerivationPath`, `DerivationPathReference`) from mod.rs. mod.rs reduced from ~2499 to ~2155 lines.
 **Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/address_table.rs (new)
+
+## Run 62 — 2026-02-07
+**Task:** 3.2d Extract inline dialogs from ui() into named methods
+**What was done:** Extracted 4 inline code blocks from the 460-line `ui()` method into named methods on `WalletsBalancesScreen`: `render_rename_dialog()` (~68 lines, wallet rename dialog), `handle_hd_unlock_result()` (~72 lines, HD wallet unlock popup result handling), `render_sk_unlock_dialog()` (~115 lines, single-key wallet unlock dialog), and `handle_custom_actions()` (~50 lines, custom refresh/search action dispatch). The `ui()` method is now ~155 lines of orchestration code. No behavior changes.
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs

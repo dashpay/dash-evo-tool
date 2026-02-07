@@ -688,7 +688,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.2c Extract address table rendering into wallets_screen/address_table.rs** (P2)
   Move `render_address_table()` (lines 747-1039, 293 lines) plus sorting helpers `toggle_sort()`, `sort_address_data()`, `categorize_path()` (~40 lines), and the `AddressData` struct + impl into a new file. Also move `SortColumn` and `SortOrder` enums. This is the largest single rendering function.
 
-- [ ] **3.2d Extract inline dialogs from ui() into named methods** (P3)
+- [x] **3.2d Extract inline dialogs from ui() into named methods** (P3)
   The `ui()` method (460 lines) contains two inline dialog implementations:
   - Rename dialog (lines 3322-3389, ~68 lines) → extract to `render_rename_dialog(&mut self, ctx: &Context)`
   - SK wallet unlock dialog (lines 3464-3579, ~117 lines) → extract to `render_sk_unlock_dialog(&mut self, ctx: &Context) -> AppAction`

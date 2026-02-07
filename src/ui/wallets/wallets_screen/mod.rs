@@ -1459,6 +1459,342 @@ impl WalletsBalancesScreen {
             }
         }
     }
+
+    fn render_rename_dialog(&mut self, ctx: &Context) {
+        if !self.show_rename_dialog {
+            return;
+        }
+        egui::Window::new("Rename Wallet")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.label("Enter new wallet name:");
+                    ui.add_space(5.0);
+
+                    let text_edit = egui::TextEdit::singleline(&mut self.rename_input)
+                        .hint_text("Enter wallet name")
+                        .desired_width(250.0);
+                    ui.add(text_edit);
+
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            // Limit the alias length to 64 characters
+                            if self.rename_input.len() > 64 {
+                                self.rename_input.truncate(64);
+                            }
+
+                            // Handle HD wallet rename
+                            if let Some(selected_wallet) = &self.selected_wallet {
+                                let mut wallet = selected_wallet.write_or_recover();
+                                wallet.alias = Some(self.rename_input.clone());
+
+                                // Update the alias in the database
+                                let seed_hash = wallet.seed_hash();
+                                self.app_context
+                                    .db
+                                    .set_wallet_alias(&seed_hash, Some(self.rename_input.clone()))
+                                    .ok();
+                            }
+                            // Handle single key wallet rename
+                            else if let Some(selected_sk_wallet) =
+                                &self.selected_single_key_wallet
+                            {
+                                let mut wallet = selected_sk_wallet.write_or_recover();
+                                wallet.alias = Some(self.rename_input.clone());
+
+                                // Update the alias in the database
+                                let key_hash = wallet.key_hash;
+                                self.app_context
+                                    .db
+                                    .update_single_key_wallet_alias(
+                                        &key_hash,
+                                        Some(&self.rename_input),
+                                    )
+                                    .ok();
+                            }
+
+                            self.show_rename_dialog = false;
+                            self.rename_input.clear();
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            self.show_rename_dialog = false;
+                            self.rename_input.clear();
+                        }
+                    });
+                });
+            });
+    }
+
+    fn handle_hd_unlock_result(&mut self, ctx: &Context) -> AppAction {
+        let mut action = AppAction::None;
+
+        let Some(wallet_arc) = self.selected_wallet.clone() else {
+            return action;
+        };
+
+        let result = self
+            .wallet_unlock_popup
+            .show(ctx, &wallet_arc, &self.app_context);
+        match result {
+            WalletUnlockResult::Unlocked => {
+                // Check if we were trying to view a private key
+                if let Some(path) = self.private_key_dialog.pending_derivation_path.take()
+                    && let Some(address) = self.private_key_dialog.pending_address.take()
+                {
+                    match self.derive_private_key_wif(&path) {
+                        Ok(key) => {
+                            self.private_key_dialog.is_open = true;
+                            self.private_key_dialog.address = address;
+                            self.private_key_dialog.private_key_wif = key;
+                            self.private_key_dialog.show_key = false;
+                        }
+                        Err(err) => {
+                            self.display_message(&err, MessageType::Error);
+                        }
+                    }
+                }
+
+                // Check if we were trying to fund a Platform address
+                if self.fund_platform_dialog.pending_fund_after_unlock {
+                    self.fund_platform_dialog.pending_fund_after_unlock = false;
+                    action |= self.prepare_fund_platform_action();
+                }
+
+                // Check if we were trying to refresh the wallet
+                // Note: handle_wallet_unlocked also queues a refresh in the background,
+                // but we dispatch our own so the UI gets the result and can stop the spinner
+                if self.pending_refresh_after_unlock {
+                    self.pending_refresh_after_unlock = false;
+                    if let Some(wallet_arc) = &self.selected_wallet {
+                        self.refreshing = true;
+                        action |= self.create_pending_refresh_action(wallet_arc);
+                    }
+                }
+
+                // Check if we were trying to search for asset locks
+                if self.pending_asset_lock_search_after_unlock {
+                    self.pending_asset_lock_search_after_unlock = false;
+                    if let Some(wallet_arc) = self.selected_wallet.clone() {
+                        self.display_message(
+                            "Searching for unused asset locks...",
+                            MessageType::Info,
+                        );
+                        action |= AppAction::BackendTask(BackendTask::CoreTask(
+                            CoreTask::RecoverAssetLocks(wallet_arc),
+                        ));
+                    }
+                }
+            }
+            WalletUnlockResult::Cancelled => {
+                // Clear any pending private key view request on cancel
+                self.private_key_dialog.pending_derivation_path = None;
+                self.private_key_dialog.pending_address = None;
+
+                // Clear pending fund request on cancel
+                self.fund_platform_dialog.pending_fund_after_unlock = false;
+
+                // Clear pending refresh request on cancel
+                self.pending_refresh_after_unlock = false;
+
+                // Clear pending asset lock search on cancel
+                self.pending_asset_lock_search_after_unlock = false;
+            }
+            WalletUnlockResult::Pending => {}
+        }
+
+        action
+    }
+
+    fn render_sk_unlock_dialog(&mut self, ctx: &Context) -> AppAction {
+        let mut action = AppAction::None;
+
+        if !self.show_sk_unlock_dialog {
+            return action;
+        }
+
+        let mut close_dialog = false;
+        egui::Window::new("Unlock Wallet")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    if let Some(wallet_arc) = &self.selected_single_key_wallet
+                        && let Ok(wallet) = wallet_arc.read()
+                    {
+                        if let Some(alias) = &wallet.alias {
+                            ui.label(format!(
+                                "Wallet \"{}\" is locked. Please enter the password to unlock it:",
+                                alias
+                            ));
+                        } else {
+                            ui.label(
+                                "This wallet is locked. Please enter the password to unlock it:",
+                            );
+                        }
+                    }
+
+                    ui.add_space(10.0);
+
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let mut attempt_unlock = false;
+
+                    ui.horizontal(|ui| {
+                        let password_input = ui.add(
+                            egui::TextEdit::singleline(&mut self.sk_wallet_password)
+                                .password(!self.sk_show_password)
+                                .hint_text("Enter password")
+                                .desired_width(250.0)
+                                .text_color(DashColors::text_primary(dark_mode))
+                                .background_color(DashColors::input_background(dark_mode)),
+                        );
+
+                        if password_input.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            attempt_unlock = true;
+                        }
+                    });
+
+                    ui.add_space(5.0);
+
+                    ui.checkbox(&mut self.sk_show_password, "Show Password");
+
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Unlock").clicked() {
+                            attempt_unlock = true;
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            close_dialog = true;
+                        }
+                    });
+
+                    if attempt_unlock {
+                        if let Some(wallet_arc) = &self.selected_single_key_wallet {
+                            let mut wallet = wallet_arc.write_or_recover();
+                            let unlock_result = wallet.open(&self.sk_wallet_password);
+
+                            match unlock_result {
+                                Ok(_) => {
+                                    self.sk_error_message = None;
+                                    close_dialog = true;
+                                }
+                                Err(_) => {
+                                    self.sk_error_message = Some("Incorrect Password".to_string());
+                                }
+                            }
+                        }
+                        self.sk_wallet_password.zeroize();
+                    }
+
+                    // Display error message if the password was incorrect
+                    if let Some(error_message) = self.sk_error_message.clone() {
+                        ui.add_space(5.0);
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!("Error: {}", error_message))
+                                                .color(error_color),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.sk_error_message = None;
+                                    }
+                                });
+                            });
+                    }
+                });
+            });
+
+        if close_dialog {
+            self.show_sk_unlock_dialog = false;
+            self.sk_wallet_password.zeroize();
+            self.sk_error_message = None;
+
+            // Check if we were trying to refresh the SK wallet
+            if self.pending_refresh_after_unlock {
+                self.pending_refresh_after_unlock = false;
+                if let Some(wallet_arc) = &self.selected_single_key_wallet {
+                    self.refreshing = true;
+                    action |= AppAction::BackendTask(BackendTask::CoreTask(
+                        CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
+                    ));
+                }
+            }
+        }
+
+        action
+    }
+
+    fn handle_custom_actions(&mut self, action: &mut AppAction) {
+        let AppAction::Custom(ref cmd) = *action else {
+            return;
+        };
+
+        if cmd == "RefreshHDWallet" {
+            if let Some(wallet_arc) = &self.selected_wallet {
+                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                if is_locked {
+                    // Wallet is locked - open unlock popup and store the refresh mode
+                    self.pending_refresh_after_unlock = true;
+                    self.pending_refresh_mode = self.refresh_mode;
+                    self.wallet_unlock_popup.open();
+                    *action = AppAction::None;
+                } else {
+                    // Wallet is unlocked - proceed with refresh using selected mode
+                    self.refreshing = true;
+                    *action = self.create_refresh_action(wallet_arc);
+                }
+            }
+        } else if cmd == "RefreshSKWallet"
+            && let Some(wallet_arc) = &self.selected_single_key_wallet
+        {
+            let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+            if is_locked {
+                // SK wallet is locked - open unlock dialog
+                self.pending_refresh_after_unlock = true;
+                self.show_sk_unlock_dialog = true;
+                *action = AppAction::None;
+            } else {
+                // SK wallet is unlocked - proceed with refresh
+                self.refreshing = true;
+                *action = AppAction::BackendTask(BackendTask::CoreTask(
+                    CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
+                ));
+            }
+        } else if cmd == "SearchAssetLocks"
+            && let Some(wallet_arc) = self.selected_wallet.clone()
+        {
+            let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+            if is_locked {
+                // Wallet is locked - open unlock popup
+                self.pending_asset_lock_search_after_unlock = true;
+                self.wallet_unlock_popup.open();
+                *action = AppAction::None;
+            } else {
+                // Wallet is unlocked - proceed with search
+                self.display_message("Searching for unused asset locks...", MessageType::Info);
+                *action = AppAction::BackendTask(BackendTask::CoreTask(
+                    CoreTask::RecoverAssetLocks(wallet_arc),
+                ));
+            }
+        }
+    }
 }
 
 impl Drop for WalletsBalancesScreen {
@@ -1606,265 +1942,9 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= self.render_fund_platform_dialog(ctx);
         self.render_private_key_dialog(ctx);
 
-        // Rename dialog
-        if self.show_rename_dialog {
-            egui::Window::new("Rename Wallet")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.label("Enter new wallet name:");
-                        ui.add_space(5.0);
-
-                        let text_edit = egui::TextEdit::singleline(&mut self.rename_input)
-                            .hint_text("Enter wallet name")
-                            .desired_width(250.0);
-                        ui.add(text_edit);
-
-                        ui.add_space(10.0);
-
-                        ui.horizontal(|ui| {
-                            if ui.button("Save").clicked() {
-                                // Limit the alias length to 64 characters
-                                if self.rename_input.len() > 64 {
-                                    self.rename_input.truncate(64);
-                                }
-
-                                // Handle HD wallet rename
-                                if let Some(selected_wallet) = &self.selected_wallet {
-                                    let mut wallet = selected_wallet.write_or_recover();
-                                    wallet.alias = Some(self.rename_input.clone());
-
-                                    // Update the alias in the database
-                                    let seed_hash = wallet.seed_hash();
-                                    self.app_context
-                                        .db
-                                        .set_wallet_alias(
-                                            &seed_hash,
-                                            Some(self.rename_input.clone()),
-                                        )
-                                        .ok();
-                                }
-                                // Handle single key wallet rename
-                                else if let Some(selected_sk_wallet) =
-                                    &self.selected_single_key_wallet
-                                {
-                                    let mut wallet = selected_sk_wallet.write_or_recover();
-                                    wallet.alias = Some(self.rename_input.clone());
-
-                                    // Update the alias in the database
-                                    let key_hash = wallet.key_hash;
-                                    self.app_context
-                                        .db
-                                        .update_single_key_wallet_alias(
-                                            &key_hash,
-                                            Some(&self.rename_input),
-                                        )
-                                        .ok();
-                                }
-
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
-
-                            if ui.button("Cancel").clicked() {
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
-                        });
-                    });
-                });
-        }
-
-        // HD Wallet unlock popup
-        if let Some(wallet_arc) = &self.selected_wallet.clone() {
-            let result = self
-                .wallet_unlock_popup
-                .show(ctx, wallet_arc, &self.app_context);
-            match result {
-                WalletUnlockResult::Unlocked => {
-                    // Check if we were trying to view a private key
-                    if let Some(path) = self.private_key_dialog.pending_derivation_path.take()
-                        && let Some(address) = self.private_key_dialog.pending_address.take()
-                    {
-                        match self.derive_private_key_wif(&path) {
-                            Ok(key) => {
-                                self.private_key_dialog.is_open = true;
-                                self.private_key_dialog.address = address;
-                                self.private_key_dialog.private_key_wif = key;
-                                self.private_key_dialog.show_key = false;
-                            }
-                            Err(err) => {
-                                self.display_message(&err, MessageType::Error);
-                            }
-                        }
-                    }
-
-                    // Check if we were trying to fund a Platform address
-                    if self.fund_platform_dialog.pending_fund_after_unlock {
-                        self.fund_platform_dialog.pending_fund_after_unlock = false;
-                        action |= self.prepare_fund_platform_action();
-                    }
-
-                    // Check if we were trying to refresh the wallet
-                    // Note: handle_wallet_unlocked also queues a refresh in the background,
-                    // but we dispatch our own so the UI gets the result and can stop the spinner
-                    if self.pending_refresh_after_unlock {
-                        self.pending_refresh_after_unlock = false;
-                        if let Some(wallet_arc) = &self.selected_wallet {
-                            self.refreshing = true;
-                            action |= self.create_pending_refresh_action(wallet_arc);
-                        }
-                    }
-
-                    // Check if we were trying to search for asset locks
-                    if self.pending_asset_lock_search_after_unlock {
-                        self.pending_asset_lock_search_after_unlock = false;
-                        if let Some(wallet_arc) = self.selected_wallet.clone() {
-                            self.display_message(
-                                "Searching for unused asset locks...",
-                                MessageType::Info,
-                            );
-                            action |= AppAction::BackendTask(BackendTask::CoreTask(
-                                CoreTask::RecoverAssetLocks(wallet_arc),
-                            ));
-                        }
-                    }
-                }
-                WalletUnlockResult::Cancelled => {
-                    // Clear any pending private key view request on cancel
-                    self.private_key_dialog.pending_derivation_path = None;
-                    self.private_key_dialog.pending_address = None;
-
-                    // Clear pending fund request on cancel
-                    self.fund_platform_dialog.pending_fund_after_unlock = false;
-
-                    // Clear pending refresh request on cancel
-                    self.pending_refresh_after_unlock = false;
-
-                    // Clear pending asset lock search on cancel
-                    self.pending_asset_lock_search_after_unlock = false;
-                }
-                WalletUnlockResult::Pending => {}
-            }
-        }
-
-        // SK wallet unlock dialog
-        if self.show_sk_unlock_dialog {
-            let mut close_dialog = false;
-            egui::Window::new("Unlock Wallet")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        if let Some(wallet_arc) = &self.selected_single_key_wallet
-                            && let Ok(wallet) = wallet_arc.read() {
-                                if let Some(alias) = &wallet.alias {
-                                    ui.label(format!(
-                                        "Wallet \"{}\" is locked. Please enter the password to unlock it:",
-                                        alias
-                                    ));
-                                } else {
-                                    ui.label("This wallet is locked. Please enter the password to unlock it:");
-                                }
-                            }
-
-                        ui.add_space(10.0);
-
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        let mut attempt_unlock = false;
-
-                        ui.horizontal(|ui| {
-                            let password_input = ui.add(
-                                egui::TextEdit::singleline(&mut self.sk_wallet_password)
-                                    .password(!self.sk_show_password)
-                                    .hint_text("Enter password")
-                                    .desired_width(250.0)
-                                    .text_color(DashColors::text_primary(dark_mode))
-                                    .background_color(DashColors::input_background(dark_mode)),
-                            );
-
-                            if password_input.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                attempt_unlock = true;
-                            }
-                        });
-
-                        ui.add_space(5.0);
-
-                        ui.checkbox(&mut self.sk_show_password, "Show Password");
-
-                        ui.add_space(10.0);
-
-                        ui.horizontal(|ui| {
-                            if ui.button("Unlock").clicked() {
-                                attempt_unlock = true;
-                            }
-
-                            if ui.button("Cancel").clicked() {
-                                close_dialog = true;
-                            }
-                        });
-
-                        if attempt_unlock {
-                            if let Some(wallet_arc) = &self.selected_single_key_wallet {
-                                let mut wallet = wallet_arc.write_or_recover();
-                                let unlock_result = wallet.open(&self.sk_wallet_password);
-
-                                match unlock_result {
-                                    Ok(_) => {
-                                        self.sk_error_message = None;
-                                        close_dialog = true;
-                                    }
-                                    Err(_) => {
-                                        self.sk_error_message =
-                                            Some("Incorrect Password".to_string());
-                                    }
-                                }
-                            }
-                            self.sk_wallet_password.zeroize();
-                        }
-
-                        // Display error message if the password was incorrect
-                        if let Some(error_message) = self.sk_error_message.clone() {
-                            ui.add_space(5.0);
-                            let error_color = Color32::from_rgb(255, 100, 100);
-                            Frame::new()
-                                .fill(error_color.gamma_multiply(0.1))
-                                .inner_margin(Margin::symmetric(10, 8))
-                                .corner_radius(5.0)
-                                .stroke(egui::Stroke::new(1.0, error_color))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.add(egui::Label::new(RichText::new(format!("Error: {}", error_message)).color(error_color)).wrap());
-                                        ui.add_space(10.0);
-                                        if ui.small_button("Dismiss").clicked() {
-                                            self.sk_error_message = None;
-                                        }
-                                    });
-                                });
-                        }
-                    });
-                });
-
-            if close_dialog {
-                self.show_sk_unlock_dialog = false;
-                self.sk_wallet_password.zeroize();
-                self.sk_error_message = None;
-
-                // Check if we were trying to refresh the SK wallet
-                if self.pending_refresh_after_unlock {
-                    self.pending_refresh_after_unlock = false;
-                    if let Some(wallet_arc) = &self.selected_single_key_wallet {
-                        self.refreshing = true;
-                        action |= AppAction::BackendTask(BackendTask::CoreTask(
-                            CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
-                        ));
-                    }
-                }
-            }
-        }
+        self.render_rename_dialog(ctx);
+        action |= self.handle_hd_unlock_result(ctx);
+        action |= self.render_sk_unlock_dialog(ctx);
 
         if let AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(_, _))) =
             action
@@ -1872,57 +1952,7 @@ impl ScreenLike for WalletsBalancesScreen {
             self.refreshing = true;
         }
 
-        // Handle custom refresh actions - check wallet lock status
-        if let AppAction::Custom(ref cmd) = action {
-            if cmd == "RefreshHDWallet" {
-                if let Some(wallet_arc) = &self.selected_wallet {
-                    let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
-                    if is_locked {
-                        // Wallet is locked - open unlock popup and store the refresh mode
-                        self.pending_refresh_after_unlock = true;
-                        self.pending_refresh_mode = self.refresh_mode;
-                        self.wallet_unlock_popup.open();
-                        action = AppAction::None;
-                    } else {
-                        // Wallet is unlocked - proceed with refresh using selected mode
-                        self.refreshing = true;
-                        action = self.create_refresh_action(wallet_arc);
-                    }
-                }
-            } else if cmd == "RefreshSKWallet"
-                && let Some(wallet_arc) = &self.selected_single_key_wallet
-            {
-                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
-                if is_locked {
-                    // SK wallet is locked - open unlock dialog
-                    self.pending_refresh_after_unlock = true;
-                    self.show_sk_unlock_dialog = true;
-                    action = AppAction::None;
-                } else {
-                    // SK wallet is unlocked - proceed with refresh
-                    self.refreshing = true;
-                    action = AppAction::BackendTask(BackendTask::CoreTask(
-                        CoreTask::RefreshSingleKeyWalletInfo(wallet_arc.clone()),
-                    ));
-                }
-            } else if cmd == "SearchAssetLocks"
-                && let Some(wallet_arc) = self.selected_wallet.clone()
-            {
-                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
-                if is_locked {
-                    // Wallet is locked - open unlock popup
-                    self.pending_asset_lock_search_after_unlock = true;
-                    self.wallet_unlock_popup.open();
-                    action = AppAction::None;
-                } else {
-                    // Wallet is unlocked - proceed with search
-                    self.display_message("Searching for unused asset locks...", MessageType::Info);
-                    action = AppAction::BackendTask(BackendTask::CoreTask(
-                        CoreTask::RecoverAssetLocks(wallet_arc),
-                    ));
-                }
-            }
-        }
+        self.handle_custom_actions(&mut action);
 
         // Combine with pending refresh action
         action |= pending_refresh_action;

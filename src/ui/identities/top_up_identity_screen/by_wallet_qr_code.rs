@@ -17,7 +17,7 @@ impl TopUpIdentityScreen {
                     let mut wallet = wallet_guard.write().unwrap();
                     let receive_address = wallet.receive_address(
                         self.app_context.network,
-                        false,
+                        true,
                         Some(&self.app_context),
                     )?;
 

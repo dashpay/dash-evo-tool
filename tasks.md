@@ -58,7 +58,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.1c Fix GH#478: Wallet balance top-up max button doesn't reserve fees** (P1)
   In `src/ui/identities/top_up_identity_screen/mod.rs:374-381`, the "UseWalletBalance" max amount calculation should subtract estimated fees (similar to how `by_platform_address.rs:104-105` does it). Currently sets max to raw `total_balance_duffs * 1000` with no fee buffer.
 
-- [ ] **1.1d Fix GH#85: Funding address reuse across identities** (P1)
+- [x] **1.1d Fix GH#85: Funding address reuse across identities** (P1)
   Change `receive_address()` calls from `skip_known_addresses_with_no_funds=false` to `true` in these 4 files:
   - `src/ui/identities/add_new_identity_screen/by_wallet_qr_code.rs:26`
   - `src/ui/identities/top_up_identity_screen/by_wallet_qr_code.rs:20`
@@ -418,7 +418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 4 |
+| 1. Bug Triage | 11 | 5 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

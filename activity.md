@@ -33,3 +33,8 @@
 **Task:** 1.1c Fix GH#478: Wallet balance top-up max button doesn't reserve fees
 **What was done:** In `top_up_funding_amount_input()` in `mod.rs`, the "UseWalletBalance" max amount calculation now subtracts the estimated identity top-up fee before setting the max. Previously, the max was set to `total_balance_duffs * 1000` (raw credits) with no fee buffer, causing the top-up to fail with "Insufficient combined address balances" when the user clicked Max. Now uses `fee_estimator.estimate_identity_topup()` to reserve fees, matching the pattern already used by `by_platform_address.rs`. Also added a `set_max_exceeded_hint` showing the reserved fee amount.
 **Files changed:** src/ui/identities/top_up_identity_screen/mod.rs
+
+## Run 5 — 2026-02-07
+**Task:** 1.1d Fix GH#85: Funding address reuse across identities
+**What was done:** Changed `receive_address()` calls from `skip_known_addresses_with_no_funds=false` to `true` in 4 locations: add_new_identity_screen/by_wallet_qr_code.rs, top_up_identity_screen/by_wallet_qr_code.rs, create_asset_lock_screen.rs, and generate_receive_address.rs. Previously, these all passed `false`, which allowed returning a previously-used address that happened to have zero balance, causing the same funding address to be reused across multiple identity registrations and top-ups. With `true`, the wallet skips known zero-balance addresses and generates a fresh one each time.
+**Files changed:** src/ui/identities/add_new_identity_screen/by_wallet_qr_code.rs, src/ui/identities/top_up_identity_screen/by_wallet_qr_code.rs, src/ui/wallets/create_asset_lock_screen.rs, src/backend_task/wallet/generate_receive_address.rs

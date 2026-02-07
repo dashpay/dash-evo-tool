@@ -278,6 +278,12 @@ impl MintTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        if self.selected_key.is_none() {
+            self.error_message = Some("No signing key selected".into());
+            self.status = MintTokensStatus::ErrorMessage("No key selected".into());
+            return AppAction::None;
+        }
+
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
             self.error_message = Some("Invalid amount".into());
@@ -327,7 +333,7 @@ impl MintTokensScreen {
             sending_identity: self.identity_token_info.identity.clone(),
             data_contract,
             token_position: self.identity_token_info.token_position,
-            signing_key: self.selected_key.clone().expect("No key selected"),
+            signing_key: self.selected_key.clone().unwrap(),
             public_note: if self.group_action_id.is_some() {
                 None
             } else {

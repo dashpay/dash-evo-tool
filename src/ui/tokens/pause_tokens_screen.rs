@@ -207,6 +207,13 @@ impl PauseTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
+
+                if self.selected_key.is_none() {
+                    self.error_message = Some("No signing key selected".into());
+                    self.status = PauseTokensStatus::ErrorMessage("No key selected".into());
+                    return AppAction::None;
+                }
+
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("Time went backwards")
@@ -237,7 +244,7 @@ impl PauseTokensScreen {
                     actor_identity: self.identity.clone(),
                     data_contract,
                     token_position: self.identity_token_info.token_position,
-                    signing_key: self.selected_key.clone().expect("No key selected"),
+                    signing_key: self.selected_key.clone().unwrap(),
                     public_note: if self.group_action_id.is_some() {
                         None
                     } else {

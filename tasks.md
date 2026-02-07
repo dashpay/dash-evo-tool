@@ -149,7 +149,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2c Fix ui-tokens-022: Wrong field checks in build_distribution_rules** (P1)
   In `src/ui/tokens/tokens_screen/mod.rs` `build_distribution_rules()`, lines ~2044 and ~2058 check `step_decreasing_start_period_offset_input.is_empty()` for min_value and max_interval_count. Each should check its own corresponding input field instead.
 
-- [ ] **1.2d Fix ui-tokens-010: Replace expect on signing key in token screens** (P1)
+- [x] **1.2d Fix ui-tokens-010: Replace expect on signing key in token screens** (P1)
   Replace `.expect("No key selected")` with proper validation/error handling in 8+ token action screens: transfer_tokens_screen.rs, freeze_tokens_screen.rs, unfreeze_tokens_screen.rs, mint_tokens_screen.rs, destroy_frozen_funds_screen.rs, claim_tokens_screen.rs, pause_tokens_screen.rs, resume_tokens_screen.rs.
 
 - [ ] **1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh** (P1)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 12 |
+| 1. Bug Triage | 19 | 13 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

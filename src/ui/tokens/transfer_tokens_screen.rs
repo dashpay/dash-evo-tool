@@ -193,6 +193,12 @@ impl TransferTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        if self.selected_key.is_none() {
+            self.transfer_tokens_status =
+                TransferTokensStatus::ErrorMessage("No signing key selected".into());
+            return AppAction::None;
+        }
+
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.transfer_tokens_status =
                 TransferTokensStatus::ErrorMessage("Invalid amount".into());
@@ -234,7 +240,7 @@ impl TransferTokensScreen {
                 amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
                 data_contract,
                 token_position: self.identity_token_balance.token_position,
-                signing_key: self.selected_key.clone().expect("No key selected"),
+                signing_key: self.selected_key.clone().unwrap(),
                 public_note: self.public_note.clone(),
             },
         )))

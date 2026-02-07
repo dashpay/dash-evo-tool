@@ -703,7 +703,10 @@ impl AppState {
             Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
             Network::Devnet => self.devnet_app_context.as_ref().expect("expected devnet"),
             Network::Regtest => self.local_app_context.as_ref().expect("expected local"),
-            _ => todo!(),
+            _ => unreachable!(
+                "Unknown network variant {:?} in current_app_context",
+                self.chosen_network
+            ),
         }
     }
 

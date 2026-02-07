@@ -257,7 +257,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.3b Fix core-006: Replace expect() on ZMQ listener creation** (P1)
   In `src/app.rs:413,440,467,494`, replace `expect()` on `CoreZMQListener::spawn_listener()` with error handling that logs the failure and continues without ZMQ (degraded mode) instead of crashing the app. All four network listeners.
 
-- [ ] **1.3c Fix core-019/context-013/infra-001: Replace unimplemented!/todo! macros** (P1)
+- [x] **1.3c Fix core-019/context-013/infra-001: Replace unimplemented!/todo! macros** (P1)
   Replace panic-inducing macros with proper error handling:
   - `src/app_dir.rs:61` — `unimplemented!()` for unknown network
   - `src/app.rs:682` — `todo!()` for unknown network in current_app_context
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 20 |
+| 1. Bug Triage | 27 | 21 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

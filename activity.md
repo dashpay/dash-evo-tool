@@ -152,3 +152,8 @@
 **Task:** 1.3b Fix core-006: Replace expect() on ZMQ listener creation
 **What was done:** Replaced `.expect()` on `CoreZMQListener::spawn_listener()` with `match` blocks that log the error via `tracing::error!` and return `None` instead of panicking, for all 4 network listeners (mainnet, testnet, devnet, local/regtest) in `app.rs`. If a ZMQ endpoint is unreachable or the port is in use, the app now continues in degraded mode (without ZMQ-based instant notifications for that network) instead of crashing. The fields were already `Option<CoreZMQListener>`, so downstream code already handles `None` gracefully.
 **Files changed:** src/app.rs
+
+## Run 21 — 2026-02-07
+**Task:** 1.3c Fix core-019/context-013/infra-001: Replace unimplemented!/todo! macros
+**What was done:** Replaced panic-inducing macros with proper error handling in 3 locations: (1) `app_dir.rs:61` — changed `unimplemented!()` in `core_cookie_path()` to return `Err(io::Error)` for unsupported networks, restructuring the closure from `.map()` to `.and_then()` to allow error propagation. (2) `app.rs:706` — changed `todo!()` in `current_app_context()` to `unreachable!()` with a descriptive message, since this function returns `&Arc<AppContext>` and the UI only allows selecting known networks. (3) `core_p2p_handler.rs:54` — changed `panic!("Unsupported network type")` to `return Err(format!(...))` since the function already returns `Result<_, String>`.
+**Files changed:** src/app_dir.rs, src/app.rs, src/components/core_p2p_handler.rs

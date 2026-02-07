@@ -395,3 +395,8 @@
 **Task:** 3.2a Extract dialog rendering into wallets_screen/dialogs.rs
 **What was done:** Extracted all 4 dialog rendering functions and their 10+ helper methods (~1151 lines) from `wallets_screen/mod.rs` into a new `wallets_screen/dialogs.rs` module. Functions moved: `draw_modal_overlay()`, `modal_frame()`, `render_send_dialog()`, `render_receive_dialog()`, `render_fund_platform_dialog()`, `render_private_key_dialog()`, `prepare_send_action()`, `prepare_fund_platform_action()`, `open_receive_dialog()`, `load_core_addresses_for_receive()`, `load_platform_addresses_for_receive()`, `generate_platform_address()`, `generate_new_core_receive_address()`, `derive_private_key_wif()`. Also moved 4 dialog state structs (`SendDialogState`, `ReceiveDialogState`, `FundPlatformAddressDialogState`, `PrivateKeyDialogState`) and the `ReceiveAddressType` enum. Cleaned up unused imports from mod.rs. mod.rs reduced from 3824 to 2673 lines.
 **Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/dialogs.rs (new)
+
+## Run 60 — 2026-02-07
+**Task:** 3.2b Extract single-key wallet view into wallets_screen/single_key_view.rs
+**What was done:** Extracted `render_single_key_wallet_view()` (174 lines) from `wallets_screen/mod.rs` into a new `wallets_screen/single_key_view.rs` module. This self-contained function renders the detail view for selected single-key wallets including balance display, Send/Receive action buttons, and paginated UTXO table. The `utxo_page` field remains on `WalletsBalancesScreen`; only the rendering method moved. mod.rs reduced from 2673 to 2499 lines.
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/single_key_view.rs (new)

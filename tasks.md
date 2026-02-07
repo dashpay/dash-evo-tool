@@ -682,7 +682,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Also `draw_modal_overlay()` (lines 1788-1799) + `modal_frame()` (lines 1801-1818) (shared helpers)
   Keep dialog state structs (`SendDialogState`, `ReceiveDialogState`, `FundPlatformAddressDialogState`, `PrivateKeyDialogState`) in the new file since they're only used by these dialogs.
 
-- [ ] **3.2b Extract single-key wallet view into wallets_screen/single_key_view.rs** (P2)
+- [x] **3.2b Extract single-key wallet view into wallets_screen/single_key_view.rs** (P2)
   Move `render_single_key_wallet_view()` (lines 2928-3100, 173 lines) into a new file. This is a self-contained rendering function for single-key wallets with UTXO table and pagination. The `utxo_page` field stays on `WalletsBalancesScreen` but the rendering method moves.
 
 - [ ] **3.2c Extract address table rendering into wallets_screen/address_table.rs** (P2)
@@ -958,7 +958,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 18 | 9 |
+| 3. Refactoring | 18 | 10 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

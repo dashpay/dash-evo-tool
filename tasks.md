@@ -71,7 +71,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.1f Fix wallet-023: Replace panic on Dash-Qt spawn failure** (P2)
   In `src/backend_task/core/start_dash_qt.rs:64`, replace `.expect("Failed to spawn dash-qt process")` with proper error propagation using `map_err`.
 
-- [ ] **1.1g Fix wallet-015: Log silenced database errors in wallet operations** (P2)
+- [x] **1.1g Fix wallet-015: Log silenced database errors in wallet operations** (P2)
   In `src/backend_task/core/send_single_key_wallet_payment.rs` lines 233, 238-240, replace `let _ =` with `if let Err(e) = ... { tracing::warn!(...) }` to log database errors instead of silently discarding them.
 
 - [ ] **1.2 [META] Triage identity & token bugs** (P0)
@@ -418,7 +418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 7 |
+| 1. Bug Triage | 11 | 8 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

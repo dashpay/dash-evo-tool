@@ -48,3 +48,8 @@
 **Task:** 1.1f Fix wallet-023: Replace panic on Dash-Qt spawn failure
 **What was done:** Replaced `.expect("Failed to spawn dash-qt process")` with a `match` that logs the error via `tracing::error!` and returns early from the async block instead of panicking. This prevents the entire application from crashing if the Dash-Qt binary cannot be spawned (e.g., binary not found, permission denied, or path misconfigured). The error was already being logged by `inspect_err` but was then immediately followed by a panic via `expect`.
 **Files changed:** src/backend_task/core/start_dash_qt.rs
+
+## Run 8 — 2026-02-07
+**Task:** 1.1g Fix wallet-015: Log silenced database errors in wallet operations
+**What was done:** Replaced two `let _ =` patterns in `send_single_key_wallet_payment.rs` with `if let Err(e)` blocks that log warnings via `tracing::warn!`. The first logs when dropping spent UTXOs from the database fails (line 233), and the second logs when updating single key wallet balances fails (lines 238-240). Previously these database errors were silently discarded, making it impossible to diagnose post-payment DB inconsistencies.
+**Files changed:** src/backend_task/core/send_single_key_wallet_payment.rs

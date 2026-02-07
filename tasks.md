@@ -49,7 +49,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - **wallet-023 (Dash-Qt spawn panic)** — CONFIRMED. `start_dash_qt.rs:64` uses `.expect()` on spawn, will panic if binary not found.
   - **wallet-024 (signature length overflow)** — FALSE POSITIVE. DER signatures and pubkeys are always well under 255 bytes.
 
-- [ ] **1.1a Fix GH#522: Auto-refresh UTXOs on app startup** (P0)
+- [x] **1.1a Fix GH#522: Auto-refresh UTXOs on app startup** (P0)
   In `src/context.rs` `bootstrap_loaded_wallets()` (or equivalent startup path), trigger a background `reload_utxos()` call for each loaded wallet after initialization, so UTXOs reflect current Core state without manual Refresh.
 
 - [ ] **1.1b Fix GH#476: Hardcoded fee strategy in platform address funding** (P0)
@@ -369,7 +369,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 1 |
+| 1. Bug Triage | 11 | 2 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

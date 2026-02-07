@@ -18,3 +18,8 @@
 - wallet-015 CONFIRMED: Silently ignored database errors
 - wallet-001, wallet-009, wallet-024: FALSE POSITIVE
 - Remaining wallet issues: LOW PRIORITY or covered by other tasks
+
+## Run 2 — 2026-02-07
+**Task:** 1.1a Fix GH#522: Auto-refresh UTXOs on app startup
+**What was done:** Added automatic UTXO refresh on startup in `bootstrap_loaded_wallets()`. In RPC mode, spawns background tasks to call `refresh_wallet_info` for each HD wallet and `refresh_single_key_wallet_info` for each single-key wallet. SPV mode is unaffected (handles UTXOs via reconciliation). This ensures wallet balances are current without requiring the user to manually click Refresh.
+**Files changed:** src/context.rs

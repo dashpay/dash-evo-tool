@@ -268,3 +268,8 @@
 - 2 Identifier::from_bytes `.unwrap()` calls on decrypted/platform data in contacts.rs
 - 2 SystemTime panics — deferred to task 2.6
 - ~80 lock poisoning unwraps — deferred to task 2.5
+
+## Run 37 — 2026-02-07
+**Task:** 2.2a Fix document type expect() calls in contested names
+**What was done:** Replaced `.expect("expected document type")` on `document_type_for_name("domain")` with `.map_err(|_| "...".to_string())?` in all 3 contested names files. Also replaced `.expect("expected str")` on `Value::as_str()` in `query_dpns_contested_resources.rs` with `filter_map` that logs a warning and skips non-string values. Updated the adjacent `.last().unwrap()` to use `let Some(...) = ... else { break }` since the filtered list could now be empty. Previously, if the DPNS contract structure changed or a contested resource had a non-string value, the app would panic in the backend task thread.
+**Files changed:** src/backend_task/contested_names/query_dpns_contested_resources.rs, src/backend_task/contested_names/query_dpns_vote_contenders.rs, src/backend_task/contested_names/vote_on_dpns_name.rs

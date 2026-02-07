@@ -446,7 +446,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `payments.rs:187` — `ChildNumber::from_normal_idx(0).unwrap()`. SAFE (0 < 2^31).
   - All test-only code in dashpay/, identity/ test modules. SAFE.
 
-- [ ] **2.2a Fix document type expect() calls in contested names** (P1)
+- [x] **2.2a Fix document type expect() calls in contested names** (P1)
   Replace `.expect("expected document type")` on `document_type_for_name("domain")` with `?` error propagation in 3 files:
   - `src/backend_task/contested_names/query_dpns_contested_resources.rs:24`
   - `src/backend_task/contested_names/query_dpns_vote_contenders.rs:25`
@@ -770,7 +770,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 15 | 6 |
+| 2. Stability | 15 | 7 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

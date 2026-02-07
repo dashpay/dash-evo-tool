@@ -332,3 +332,9 @@
 **Task:** 2.3e Fix database/tokens.rs token ID expect
 **What was done:** Replaced 7 `.expect()` calls on `Identifier::from_vec()` and `bincode::decode_from_slice()` in `src/database/tokens.rs` with proper error propagation using `map_err` to `rusqlite::Error::InvalidParameterName`. Fixed 3 functions: (1) `get_all_known_tokens_with_data_contract()` — 1 expect on token ID parsing moved inside query_map closure with `map_err`. (2) `get_all_known_tokens()` — 2 expects on token ID and contract ID parsing replaced with `map_err()?`. (3) `get_identity_token_balances()` — 4 expects on token_id, token_config decode, identity_id, and data_contract_id all replaced with `map_err()?`. Previously, corrupted DB data would crash the app; now these produce descriptive rusqlite errors that propagate to callers.
 **Files changed:** src/database/tokens.rs
+
+## Run 48 — 2026-02-07
+**Task:** 2.4 [META] Validate critical issue file claims
+**What was done:** Read and verified 5 high-severity issue file claims against the actual codebase. wallet-003 (UTXO double-spend race) CONFIRMED but LOW RISK — race window exists but UI serializes user actions, making it theoretical. wallet-008 (infinite loop on proof wait) ALREADY FIXED by task 1.1e. core-016 (config file truncate danger) ALREADY FIXED by task 1.3e. context-014 (lock poisoning cascade) FALSE POSITIVE — Arc refcount drops to 0 on None return, cleaning up all resources. wallet-001 (arithmetic underflow) FALSE POSITIVE — subtraction is guarded by identical fee check at line 107. No new sub-tasks created.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 0

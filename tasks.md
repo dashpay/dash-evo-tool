@@ -542,7 +542,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **2.3d Fix database/contested_names.rs Identifier expects** (P1)
   In `src/database/contested_names.rs`, replace 6 `.expect()` on `Identifier::from_bytes()` with `map_err` in the query_map closures at lines 77, 118, 126, 211, 252, 260. These are inside closures returning `rusqlite::Result`, so convert to `Err(rusqlite::Error::InvalidParameterName(...))`.
 
-- [ ] **2.3e Fix database/tokens.rs token ID expect** (P2)
+- [x] **2.3e Fix database/tokens.rs token ID expect** (P2)
   In `src/database/tokens.rs:242`, replace `.expect("Failed to parse token ID")` on `Identifier::from_vec()` with `map_err` to rusqlite error.
 
 - [ ] **2.4 [META] Validate critical issue file claims** (P0)
@@ -839,7 +839,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 20 | 16 |
+| 2. Stability | 20 | 17 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

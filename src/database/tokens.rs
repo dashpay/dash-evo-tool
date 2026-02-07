@@ -238,8 +238,12 @@ impl Database {
                 rusqlite::Error::ToSqlConversionFailure(Box::new(e))
             })?;
 
+            let token_id = Identifier::from_vec(row.get(0)?).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse token ID: {}", e))
+            })?;
+
             Ok((
-                Identifier::from_vec(row.get(0)?).expect("Failed to parse token ID"),
+                token_id,
                 row.get::<_, String>(1)?,
                 token_cfg,
                 data_contract,
@@ -312,8 +316,12 @@ impl Database {
         for row in rows {
             let (token_id_res, token_alias, token_cfg, contract_id_res, pos) = row?;
 
-            let token_id = token_id_res.expect("Failed to parse token ID");
-            let data_contract_id = contract_id_res.expect("Failed to parse contract ID");
+            let token_id = token_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse token ID: {}", e))
+            })?;
+            let data_contract_id = contract_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse contract ID: {}", e))
+            })?;
 
             result.insert(
                 token_id,
@@ -380,10 +388,24 @@ impl Database {
             token_position,
         ) in rows_data
         {
-            let token_id = token_id_res.expect("Failed to parse token_identifier");
-            let token_config = token_config.expect("Missing token_config").0;
-            let identity_id = identity_id_res.expect("Failed to parse identity_id");
-            let data_contract_id = data_contract_id_res.expect("Failed to parse data_contract_id");
+            let token_id = token_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to parse token_identifier: {}",
+                    e
+                ))
+            })?;
+            let token_config = token_config.map(|(cfg, _)| cfg).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Missing token_config: {}", e))
+            })?;
+            let identity_id = identity_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse identity_id: {}", e))
+            })?;
+            let data_contract_id = data_contract_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to parse data_contract_id: {}",
+                    e
+                ))
+            })?;
 
             let identity_token_balance = IdentityTokenBalance {
                 token_id,

@@ -38,3 +38,8 @@
 **Task:** 1.1d Fix GH#85: Funding address reuse across identities
 **What was done:** Changed `receive_address()` calls from `skip_known_addresses_with_no_funds=false` to `true` in 4 locations: add_new_identity_screen/by_wallet_qr_code.rs, top_up_identity_screen/by_wallet_qr_code.rs, create_asset_lock_screen.rs, and generate_receive_address.rs. Previously, these all passed `false`, which allowed returning a previously-used address that happened to have zero balance, causing the same funding address to be reused across multiple identity registrations and top-ups. With `true`, the wallet skips known zero-balance addresses and generates a fresh one each time.
 **Files changed:** src/ui/identities/add_new_identity_screen/by_wallet_qr_code.rs, src/ui/identities/top_up_identity_screen/by_wallet_qr_code.rs, src/ui/wallets/create_asset_lock_screen.rs, src/backend_task/wallet/generate_receive_address.rs
+
+## Run 6 — 2026-02-07
+**Task:** 1.1e Fix wallet-008: Add timeout to asset lock proof wait loop
+**What was done:** Replaced the infinite busy-loop waiting for an asset lock proof (InstantLock or ChainLock) with a `tokio::select!`-based loop that times out after 5 minutes. If the proof never arrives (due to network issues, rejected transaction, ZMQ listener failure, or quorum problems), the function now returns a descriptive error instead of hanging forever. The timeout branch also cleans up the finality tracking entry to prevent map leaks.
+**Files changed:** src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs

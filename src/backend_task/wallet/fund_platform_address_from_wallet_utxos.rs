@@ -137,17 +137,27 @@ impl AppContext {
             }
         }
 
-        // Step 5: Wait for asset lock proof (InstantLock or ChainLock)
+        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
         let asset_lock_proof: AssetLockProof;
+        let timeout = tokio::time::sleep(Duration::from_secs(300)); // 5 minute timeout
+        tokio::pin!(timeout);
+
         loop {
-            {
-                let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                if let Some(Some(proof)) = proofs.get(&tx_id) {
-                    asset_lock_proof = proof.clone();
-                    break;
+            tokio::select! {
+                _ = &mut timeout => {
+                    // Clean up the finality tracking entry before returning error
+                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    proofs.remove(&tx_id);
+                    return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                        asset_lock_proof = proof.clone();
+                        break;
+                    }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         // Step 6: Clean up the finality tracking

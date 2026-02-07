@@ -182,7 +182,12 @@ impl AppContext {
                             .get(&address)
                             .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
                             .unwrap_or(0);
-                        let _ = wallet.update_address_balance(&address, new_balance, self);
+                        if let Err(e) = wallet.update_address_balance(&address, new_balance, self) {
+                            tracing::warn!(
+                                "Failed to update address balance in database after identity registration: {}",
+                                e
+                            );
+                        }
                     }
                 }
 
@@ -323,7 +328,13 @@ impl AppContext {
                         .get(&input_address)
                         .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
                         .unwrap_or(0);
-                    let _ = wallet.update_address_balance(&input_address, new_balance, self);
+                    if let Err(e) = wallet.update_address_balance(&input_address, new_balance, self)
+                    {
+                        tracing::warn!(
+                            "Failed to update address balance in database after identity registration: {}",
+                            e
+                        );
+                    }
                 }
 
                 // Wait for asset lock proof with timeout (2 minutes)

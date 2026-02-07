@@ -101,3 +101,8 @@
 **Task:** 1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh
 **What was done:** Replaced `.unwrap()` chains in `refresh()` methods of both `transfer_screen.rs` and `withdraw_screen.rs` with graceful handling. Now uses `.unwrap_or_default()` on `load_local_qualified_identities()` (instead of panicking on DB error) and `if let Some(...)` on `.find()` (instead of panicking when identity is not found). If the identity was deleted during refresh, the screen keeps its current identity data instead of crashing. Transfer screen also refreshes `known_identities` list during refresh.
 **Files changed:** src/ui/identities/transfer_screen.rs, src/ui/identities/withdraw_screen.rs
+
+## Run 15 — 2026-02-07
+**Task:** 1.2f Fix identity-007: Log silenced wallet update errors in identity registration
+**What was done:** Replaced four `let _ =` patterns with `if let Err(e)` + `tracing::warn!` in register_identity.rs (2 locations) and top_up_identity.rs (2 locations). All four were silently discarding errors from `wallet.update_address_balance()` after spending UTXOs during identity registration and top-up. Now logs warnings with descriptive messages, making it possible to diagnose post-operation DB inconsistencies.
+**Files changed:** src/backend_task/identity/register_identity.rs, src/backend_task/identity/top_up_identity.rs

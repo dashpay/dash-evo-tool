@@ -155,7 +155,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh** (P1)
   In `src/ui/identities/transfer_screen.rs:504-511` and `src/ui/identities/withdraw_screen.rs:320-329`, replace `.unwrap()` after `.find()` with graceful handling (e.g., show error message if identity not found instead of panicking).
 
-- [ ] **1.2f Fix identity-007: Log silenced wallet update errors in identity registration** (P2)
+- [x] **1.2f Fix identity-007: Log silenced wallet update errors in identity registration** (P2)
   In `src/backend_task/identity/register_identity.rs:192,333` and `src/backend_task/identity/top_up_identity.rs:206,319`, replace `let _ =` with `if let Err(e)` + `tracing::warn!` (same pattern as task 1.1g).
 
 - [ ] **1.2g Fix ui-identity-005/008: Log silenced DB errors in identity deletion and contact save** (P2)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 14 |
+| 1. Bug Triage | 19 | 15 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

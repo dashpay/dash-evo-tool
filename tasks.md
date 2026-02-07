@@ -68,7 +68,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.1e Fix wallet-008: Add timeout to asset lock proof wait loop** (P1)
   In `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs:139-148`, add a timeout (e.g., 5 minutes) to the proof-wait loop so the task doesn't hang indefinitely if the proof never arrives.
 
-- [ ] **1.1f Fix wallet-023: Replace panic on Dash-Qt spawn failure** (P2)
+- [x] **1.1f Fix wallet-023: Replace panic on Dash-Qt spawn failure** (P2)
   In `src/backend_task/core/start_dash_qt.rs:64`, replace `.expect("Failed to spawn dash-qt process")` with proper error propagation using `map_err`.
 
 - [ ] **1.1g Fix wallet-015: Log silenced database errors in wallet operations** (P2)
@@ -418,7 +418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 6 |
+| 1. Bug Triage | 11 | 7 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

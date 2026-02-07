@@ -43,3 +43,8 @@
 **Task:** 1.1e Fix wallet-008: Add timeout to asset lock proof wait loop
 **What was done:** Replaced the infinite busy-loop waiting for an asset lock proof (InstantLock or ChainLock) with a `tokio::select!`-based loop that times out after 5 minutes. If the proof never arrives (due to network issues, rejected transaction, ZMQ listener failure, or quorum problems), the function now returns a descriptive error instead of hanging forever. The timeout branch also cleans up the finality tracking entry to prevent map leaks.
 **Files changed:** src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs
+
+## Run 7 — 2026-02-07
+**Task:** 1.1f Fix wallet-023: Replace panic on Dash-Qt spawn failure
+**What was done:** Replaced `.expect("Failed to spawn dash-qt process")` with a `match` that logs the error via `tracing::error!` and returns early from the async block instead of panicking. This prevents the entire application from crashing if the Dash-Qt binary cannot be spawned (e.g., binary not found, permission denied, or path misconfigured). The error was already being logged by `inspect_err` but was then immediately followed by a panic via `expect`.
+**Files changed:** src/backend_task/core/start_dash_qt.rs

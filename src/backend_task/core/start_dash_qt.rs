@@ -56,12 +56,13 @@ impl AppContext {
         let cancel = self.subtasks.cancellation_token.clone();
         let db = Arc::clone(&self.db);
         self.subtasks.spawn_sync(async move {
-            let mut dash_qt = command
-                .spawn()
-                .inspect_err(
-                    |e| tracing::error!(error=?e, ?command, "failed to start dash-qt binary"),
-                )
-                .expect("Failed to spawn dash-qt process");
+            let mut dash_qt = match command.spawn() {
+                Ok(child) => child,
+                Err(e) => {
+                    tracing::error!(error=?e, ?command, "failed to start dash-qt binary");
+                    return;
+                }
+            };
 
             tracing::debug!(?command, pid = dash_qt.id(), "dash-qt started");
 

@@ -161,7 +161,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2g Fix ui-identity-005/008: Log silenced DB errors in identity deletion and contact save** (P2)
   Replace `.ok()` with logged error handling in `src/ui/identities/identities_screen.rs:936-952` and `src/ui/dashpay/contacts_list.rs` DB save operations.
 
-- [ ] **1.2h Fix GH#499b: Add security level validation for ENCRYPTION/DECRYPTION keys** (P2)
+- [x] **1.2h Fix GH#499b: Add security level validation for ENCRYPTION/DECRYPTION keys** (P2)
   In the Identity Create add_key flow, enforce that ENCRYPTION and DECRYPTION key purposes use SecurityLevel::MEDIUM (as required by Platform). Currently only TRANSFER keys are locked to CRITICAL. Add UI validation or auto-lock for enc/dec keys.
 
 - [ ] **1.3 [META] Triage core/config/infrastructure bugs** (P1)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 16 |
+| 1. Bug Triage | 19 | 17 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

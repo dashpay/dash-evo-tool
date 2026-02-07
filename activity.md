@@ -111,3 +111,8 @@
 **Task:** 1.2g Fix ui-identity-005/008: Log silenced DB errors in identity deletion and contact save
 **What was done:** Replaced `.ok()` and `let _ =` patterns with `if let Err(e)` + `tracing::warn!` in 2 files. In identities_screen.rs, replaced 2 `.ok()` calls on `delete_local_qualified_identity` (for both the identity and its associated voter identity). In contacts_list.rs, replaced 4 `let _ =` calls: `clear_dashpay_contacts`, two `save_dashpay_contact` calls, and `save_contact_private_info`. All now log warnings instead of silently discarding DB errors.
 **Files changed:** src/ui/identities/identities_screen.rs, src/ui/dashpay/contacts_list.rs
+
+## Run 17 — 2026-02-07
+**Task:** 1.2h Fix GH#499b: Add security level validation for ENCRYPTION/DECRYPTION keys
+**What was done:** In the Identity Create screen's `render_keys_input()` in `add_new_identity_screen/mod.rs`, added ENCRYPTION and DECRYPTION as selectable purpose options in the purpose combo box, and enforced security level constraints: ENCRYPTION/DECRYPTION keys are locked to SecurityLevel::MEDIUM (matching Platform requirements), TRANSFER remains locked to CRITICAL, and AUTHENTICATION allows CRITICAL/HIGH/MEDIUM. Added auto-set logic that changes security level when purpose is switched. Previously, the purpose selector only offered AUTHENTICATION and TRANSFER, but the default keys included ENCRYPTION/DECRYPTION keys whose security level could be changed to invalid values via the unlocked security level combo box, causing state transitions to fail on Platform.
+**Files changed:** src/ui/identities/add_new_identity_screen/mod.rs

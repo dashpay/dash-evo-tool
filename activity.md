@@ -76,3 +76,8 @@
 - ui-identity-005/008 CONFIRMED: Silenced DB errors in identity deletion and contact save
 - 15 issues classified as FALSE POSITIVE or LOW PRIORITY
 - 4 issues deferred to existing tasks (2.5 lock poisoning, 2.6 SystemTime, 3.3 refactoring)
+
+## Run 10 — 2026-02-07
+**Task:** 1.2a Fix identity-001: Replace panic on unsupported key types
+**What was done:** Changed `to_public_keys_map()` in `src/backend_task/identity/mod.rs` to return `Result<BTreeMap<KeyID, IdentityPublicKey>, String>` instead of panicking on unsupported key types. Replaced both `panic!("need a ECDSA Key for now")` calls (lines 167, 193) with descriptive error returns. Converted the inner `.map()` closure to a `for` loop to enable early `return Err(...)`. Updated both callers in `register_identity.rs` (lines 365, 720) to propagate the error with `?`.
+**Files changed:** src/backend_task/identity/mod.rs, src/backend_task/identity/register_identity.rs

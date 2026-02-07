@@ -140,7 +140,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - **ui-identity-012 (self-contact filtering)** — LOW PRIORITY. Edge case in one code path.
   - **ui-identity-013 (error message duplication)** — LOW PRIORITY. Cosmetic issue.
 
-- [ ] **1.2a Fix identity-001: Replace panic on unsupported key types** (P0)
+- [x] **1.2a Fix identity-001: Replace panic on unsupported key types** (P0)
   In `src/backend_task/identity/mod.rs:167,193`, replace `panic!("need a ECDSA Key for now")` with proper error return (e.g., `return Err(format!("Unsupported key type: {:?}", key_type))`). Two locations in `to_public_keys_map()`.
 
 - [ ] **1.2b Fix ui-tokens-021: Uncomment reorder assignment** (P1)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 9 |
+| 1. Bug Triage | 19 | 10 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

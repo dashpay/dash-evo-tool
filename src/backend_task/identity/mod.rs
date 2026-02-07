@@ -146,7 +146,7 @@ impl IdentityKeys {
 
         key_map.into()
     }
-    pub fn to_public_keys_map(&self) -> BTreeMap<KeyID, IdentityPublicKey> {
+    pub fn to_public_keys_map(&self) -> Result<BTreeMap<KeyID, IdentityPublicKey>, String> {
         let Self {
             master_private_key,
             master_private_key_type,
@@ -164,7 +164,12 @@ impl IdentityKeys {
                     .to_byte_array()
                     .to_vec()
                     .into(),
-                _ => panic!("need a ECDSA Key for now"),
+                other => {
+                    return Err(format!(
+                        "Unsupported master key type: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
+                        other
+                    ));
+                }
             };
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
@@ -179,34 +184,39 @@ impl IdentityKeys {
 
             key_map.insert(0, key);
         }
-        key_map.extend(keys_input.iter().enumerate().map(
-            |(i, ((private_key, _), key_type, purpose, security_level, contract_bounds))| {
-                let id = (i + 1) as KeyID;
-                let data = match key_type {
-                    KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
-                    KeyType::ECDSA_HASH160 => private_key
-                        .public_key(&secp)
-                        .pubkey_hash()
-                        .to_byte_array()
-                        .to_vec()
-                        .into(),
-                    _ => panic!("need a ECDSA Key for now"),
-                };
-                let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-                    id,
-                    purpose: *purpose,
-                    security_level: *security_level,
-                    contract_bounds: contract_bounds.clone(),
-                    key_type: *key_type,
-                    read_only: false,
-                    data,
-                    disabled_at: None,
-                });
-                (id, identity_public_key)
-            },
-        ));
+        for (i, ((private_key, _), key_type, purpose, security_level, contract_bounds)) in
+            keys_input.iter().enumerate()
+        {
+            let id = (i + 1) as KeyID;
+            let data = match key_type {
+                KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
+                KeyType::ECDSA_HASH160 => private_key
+                    .public_key(&secp)
+                    .pubkey_hash()
+                    .to_byte_array()
+                    .to_vec()
+                    .into(),
+                other => {
+                    return Err(format!(
+                        "Unsupported key type for key {}: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
+                        id, other
+                    ));
+                }
+            };
+            let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id,
+                purpose: *purpose,
+                security_level: *security_level,
+                contract_bounds: contract_bounds.clone(),
+                key_type: *key_type,
+                read_only: false,
+                data,
+                disabled_at: None,
+            });
+            key_map.insert(id, identity_public_key);
+        }
 
-        key_map
+        Ok(key_map)
     }
 }
 

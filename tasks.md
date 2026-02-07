@@ -334,7 +334,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.4b Fix ui-core-012: Ensure wallet password zeroization on all exit paths** (P1)
   In `src/ui/wallets/wallet_unlock.rs`, ensure the password field is zeroized not just on unlock attempt, but also when the dialog is dismissed, the screen is navigated away from, or the component is dropped. Consider implementing `Drop` for the containing struct or adding zeroization in all non-unlock exit paths.
 
-- [ ] **1.4c Fix ui-core-004: Replace expect() on settings save in network chooser** (P2)
+- [x] **1.4c Fix ui-core-004: Replace expect() on settings save in network chooser** (P2)
   In `src/ui/network_chooser_screen.rs`, replace `.expect("Expected to save db settings")` calls (lines ~755, ~775, ~825) with `if let Err(e)` + `tracing::warn!`. Settings save failure shouldn't crash the application.
 
 ---
@@ -649,7 +649,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 30 | 29 |
+| 1. Bug Triage | 30 | 30 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

@@ -213,3 +213,8 @@
 **Task:** 1.4b Fix ui-core-012: Ensure wallet password zeroization on all exit paths
 **What was done:** Added `Drop` implementations that zeroize password fields for all structs holding wallet passwords: `WalletUnlockPopup`, `CreateAssetLockScreen`, `AssetLockDetailScreen`, `WalletsBalancesScreen`, and `SingleKeyWalletSendScreen`. Previously, passwords were only zeroized in the unlock-attempt path; if a user typed a password then navigated away, switched screens, or the component was dropped without unlocking, the password string remained in memory unzeroized. Also changed `sk_wallet_password.clear()` calls in `WalletsBalancesScreen` and `wallet_password.clear()` in `SingleKeyWalletSendScreen` to `.zeroize()` (`.clear()` only sets length to 0 without overwriting the buffer, while `.zeroize()` overwrites all bytes with zeros).
 **Files changed:** src/ui/components/wallet_unlock_popup.rs, src/ui/wallets/create_asset_lock_screen.rs, src/ui/wallets/asset_lock_detail_screen.rs, src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/single_key_send_screen.rs
+
+## Run 30 — 2026-02-07
+**Task:** 1.4c Fix ui-core-004: Replace expect() on settings save in network chooser
+**What was done:** Replaced three `.expect("Expected to save db settings")` calls in `network_chooser_screen.rs` with `if let Err(e)` + `tracing::warn!` (or collapsed `&& let Err(e)` form per clippy). The three locations are: (1) after selecting a valid Dash-Qt executable path, (2) after clearing the Dash-Qt path, and (3) after toggling the "Overwrite dash.conf" checkbox. Previously, a database write failure on any of these settings saves would crash the application. Now they log a warning and continue.
+**Files changed:** src/ui/network_chooser_screen.rs

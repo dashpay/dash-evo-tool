@@ -53,6 +53,6 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
-        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())))),
+        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())?))),
     )
 }

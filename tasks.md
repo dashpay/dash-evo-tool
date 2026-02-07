@@ -275,7 +275,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.3f Fix core-014: Logging initialization should not panic** (P2)
   In `src/logging.rs:17-26`, replace `panic!`/`expect()` on log file creation and EnvFilter with fallback to stderr logging, so the app can still run even if log file setup fails.
 
-- [ ] **1.3g Fix core-001: Replace unwrap/expect on database initialization** (P2)
+- [x] **1.3g Fix core-001: Replace unwrap/expect on database initialization** (P2)
   In `src/app.rs:170-172`, replace `expect()` and `unwrap()` on database file path creation and initialization with proper error handling that shows a user-friendly error dialog instead of panicking.
 
 - [ ] **1.3h Fix infra-012: Replace expect() calls on document property access in platform_info.rs** (P2)
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 24 |
+| 1. Bug Triage | 27 | 25 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

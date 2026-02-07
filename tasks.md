@@ -387,7 +387,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Line 698: `expect("Expected at least one credit output")` → return Err
   These are in a closure returning `rusqlite::Result`, so convert to `Err(rusqlite::Error::InvalidParameterName(...))` or similar.
 
-- [ ] **2.1c Fix network context expect() in app.rs current_app_context** (P1)
+- [x] **2.1c Fix network context expect() in app.rs current_app_context** (P1)
   In `src/app.rs:691-693`, the three `expect()` calls on `as_ref()` for testnet/devnet/local contexts will panic if the context failed to initialize. Options:
   - Return `Option<&Arc<AppContext>>` or `Result<&Arc<AppContext>, String>` and handle gracefully in callers
   - Or fall back to mainnet context with a warning (less ideal)
@@ -702,7 +702,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 10 | 3 |
+| 2. Stability | 10 | 4 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

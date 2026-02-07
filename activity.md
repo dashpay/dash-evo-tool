@@ -106,3 +106,8 @@
 **Task:** 1.2f Fix identity-007: Log silenced wallet update errors in identity registration
 **What was done:** Replaced four `let _ =` patterns with `if let Err(e)` + `tracing::warn!` in register_identity.rs (2 locations) and top_up_identity.rs (2 locations). All four were silently discarding errors from `wallet.update_address_balance()` after spending UTXOs during identity registration and top-up. Now logs warnings with descriptive messages, making it possible to diagnose post-operation DB inconsistencies.
 **Files changed:** src/backend_task/identity/register_identity.rs, src/backend_task/identity/top_up_identity.rs
+
+## Run 16 — 2026-02-07
+**Task:** 1.2g Fix ui-identity-005/008: Log silenced DB errors in identity deletion and contact save
+**What was done:** Replaced `.ok()` and `let _ =` patterns with `if let Err(e)` + `tracing::warn!` in 2 files. In identities_screen.rs, replaced 2 `.ok()` calls on `delete_local_qualified_identity` (for both the identity and its associated voter identity). In contacts_list.rs, replaced 4 `let _ =` calls: `clear_dashpay_contacts`, two `save_dashpay_contact` calls, and `save_contact_private_info`. All now log warnings instead of silently discarding DB errors.
+**Files changed:** src/ui/identities/identities_screen.rs, src/ui/dashpay/contacts_list.rs

@@ -1044,10 +1044,13 @@ impl ScreenLike for ContactsList {
 
                     // Clear all existing contacts for this identity from database first
                     // This prevents stale contacts from persisting
-                    let _ = self
+                    if let Err(e) = self
                         .app_context
                         .db
-                        .clear_dashpay_contacts(&owner_id, &network_str);
+                        .clear_dashpay_contacts(&owner_id, &network_str)
+                    {
+                        tracing::warn!("Failed to clear dashpay contacts from database: {}", e);
+                    }
 
                     // Convert ContactData to Contact structs and save to database
                     for contact_data in contacts_data {
@@ -1073,7 +1076,7 @@ impl ScreenLike for ContactsList {
                         self.contacts.insert(contact_data.identity_id, contact);
 
                         // Save to database
-                        let _ = self.app_context.db.save_dashpay_contact(
+                        if let Err(e) = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_data.identity_id,
                             &network_str,
@@ -1082,16 +1085,23 @@ impl ScreenLike for ContactsList {
                             contact_data.avatar_url.as_deref(),
                             None,       // public_message - not yet fetched
                             "accepted", // Only accepted contacts are returned from load_contacts
-                        );
+                        ) {
+                            tracing::warn!("Failed to save dashpay contact to database: {}", e);
+                        }
 
                         // Save private info if present
-                        if let Some(nickname) = &contact_data.nickname {
-                            let _ = self.app_context.db.save_contact_private_info(
+                        if let Some(nickname) = &contact_data.nickname
+                            && let Err(e) = self.app_context.db.save_contact_private_info(
                                 &owner_id,
                                 &contact_data.identity_id,
                                 nickname,
                                 &contact_data.note.unwrap_or_default(),
                                 contact_data.is_hidden,
+                            )
+                        {
+                            tracing::warn!(
+                                "Failed to save contact private info to database: {}",
+                                e
                             );
                         }
                     }
@@ -1163,7 +1173,7 @@ impl ScreenLike for ContactsList {
                     if let Some(identity) = &self.selected_identity {
                         let owner_id = identity.identity.id();
                         let network_str = self.app_context.network.to_string();
-                        let _ = self.app_context.db.save_dashpay_contact(
+                        if let Err(e) = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_id,
                             &network_str,
@@ -1172,7 +1182,12 @@ impl ScreenLike for ContactsList {
                             contact.avatar_url.as_deref(),
                             public_message.as_deref(),
                             "accepted",
-                        );
+                        ) {
+                            tracing::warn!(
+                                "Failed to save updated contact profile to database: {}",
+                                e
+                            );
+                        }
                     }
                 }
             }

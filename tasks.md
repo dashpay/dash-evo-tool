@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
   **Remaining refactoring after PR#520 (sub-tasks below):**
   PR#520 handles the state decomposition well. The remaining work is extracting **rendering logic** and **data-layer functions** into separate files/modules, plus dead code cleanup.
 
-- [ ] **3.1a Remove commented-out `fetch_range_dml` dead code** (P2)
+- [x] **3.1a Remove commented-out `fetch_range_dml` dead code** (P2)
   Delete 126 lines of commented-out code at lines 971-1096. This is an abandoned function with no callers. If it's ever needed again, it exists in git history.
 
 - [ ] **3.1b Extract height/hash resolution and caching into a helper module** (P2)
@@ -910,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 1 |
+| 3. Refactoring | 13 | 2 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

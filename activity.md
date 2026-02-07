@@ -354,3 +354,8 @@
 **What was done:** Reviewed PR#520 (state decomposition into 7 sub-structs, +850/-799 lines, still ~4400 lines after). Analyzed the current 4392-line file: found 69 functions (13 over 100 lines), 126 lines of commented-out dead code, 5 cache structures with 9 helper functions, shared rendering patterns not yet abstracted, a 197-line match block in display_task_result(), and FileDialog I/O mixed into rendering. PR#520 handles state organization well; remaining work is rendering extraction into sub-modules and dead code cleanup. Created 6 sub-tasks.
 **Files changed:** tasks.md, activity.md
 **Sub-tasks created:** 6 (3.1a through 3.1f)
+
+## Run 52 — 2026-02-07
+**Task:** 3.1a Remove commented-out `fetch_range_dml` dead code
+**What was done:** Deleted 126 lines of commented-out `fetch_range_dml` function at lines 971-1096 of `masternode_list_diff_screen.rs`. This was an abandoned function with no callers — it fetched a range of masternode list diffs by stepping through block heights. The code existed in git history if ever needed again. No functional change.
+**Files changed:** src/ui/tools/masternode_list_diff_screen.rs

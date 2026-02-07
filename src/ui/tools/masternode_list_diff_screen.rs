@@ -4,6 +4,7 @@ use crate::backend_task::mnlist::MnListTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
@@ -286,7 +287,7 @@ impl MasternodeListDiffScreen {
             return None;
         }
 
-        let client = self.app_context.core_client.read().unwrap();
+        let client = self.app_context.core_client.read_or_recover();
         let mut chain: Vec<(u32, BlockHash, u32, BlockHash)> = Vec::new();
 
         // Determine base starting point similar to previous logic
@@ -345,8 +346,7 @@ impl MasternodeListDiffScreen {
                 return match self
                     .app_context
                     .core_client
-                    .read()
-                    .unwrap()
+                    .read_or_recover()
                     .get_block_header_info(
                         &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                     ) {
@@ -382,8 +382,7 @@ impl MasternodeListDiffScreen {
                 return match self
                     .app_context
                     .core_client
-                    .read()
-                    .unwrap()
+                    .read_or_recover()
                     .get_block_header_info(
                         &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                     ) {
@@ -415,8 +414,7 @@ impl MasternodeListDiffScreen {
             let block = self
                 .app_context
                 .core_client
-                .read()
-                .unwrap()
+                .read_or_recover()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
                 .map_err(|e| e.to_string())?;
             let Some(coinbase) = block
@@ -454,8 +452,7 @@ impl MasternodeListDiffScreen {
             let block = self
                 .app_context
                 .core_client
-                .read()
-                .unwrap()
+                .read_or_recover()
                 .get_block(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
                 .map_err(|e| e.to_string())?;
             let Some(coinbase) = block
@@ -485,8 +482,7 @@ impl MasternodeListDiffScreen {
                 return match self
                     .app_context
                     .core_client
-                    .read()
-                    .unwrap()
+                    .read_or_recover()
                     .get_block_hash(height)
                 {
                     Ok(block_hash) => Ok(BlockHash::from_byte_array(block_hash.to_byte_array())),
@@ -519,8 +515,7 @@ impl MasternodeListDiffScreen {
         match self
             .app_context
             .core_client
-            .read()
-            .unwrap()
+            .read_or_recover()
             .get_block_hash(height)
         {
             Ok(core_block_hash) => {
@@ -665,8 +660,7 @@ impl MasternodeListDiffScreen {
             match self
                 .app_context
                 .core_client
-                .read()
-                .unwrap()
+                .read_or_recover()
                 .get_block_hash(0)
             {
                 Ok(block_hash) => (0, BlockHash::from_byte_array(block_hash.to_byte_array())),
@@ -679,8 +673,7 @@ impl MasternodeListDiffScreen {
                 Ok(start) => match self
                     .app_context
                     .core_client
-                    .read()
-                    .unwrap()
+                    .read_or_recover()
                     .get_block_hash(start)
                 {
                     Ok(block_hash) => (
@@ -700,16 +693,14 @@ impl MasternodeListDiffScreen {
             match self
                 .app_context
                 .core_client
-                .read()
-                .unwrap()
+                .read_or_recover()
                 .get_best_block_hash()
             {
                 Ok(block_hash) => {
                     match self
                         .app_context
                         .core_client
-                        .read()
-                        .unwrap()
+                        .read_or_recover()
                         .get_block_header_info(&block_hash)
                     {
                         Ok(header) => {
@@ -733,8 +724,7 @@ impl MasternodeListDiffScreen {
                 Ok(end) => match self
                     .app_context
                     .core_client
-                    .read()
-                    .unwrap()
+                    .read_or_recover()
                     .get_block_hash(end)
                 {
                     Ok(block_hash) => (end, BlockHash::from_byte_array(block_hash.to_byte_array())),
@@ -839,8 +829,7 @@ impl MasternodeListDiffScreen {
             let validation_hash = match self
                 .app_context
                 .core_client
-                .read()
-                .unwrap()
+                .read_or_recover()
                 .get_block_hash(height - 8)
             {
                 Ok(block_hash) => block_hash,
@@ -874,8 +863,7 @@ impl MasternodeListDiffScreen {
                     None => match self
                         .app_context
                         .core_client
-                        .read()
-                        .unwrap()
+                        .read_or_recover()
                         .get_block_hash(0)
                     {
                         Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
@@ -979,133 +967,6 @@ impl MasternodeListDiffScreen {
         self.mnlist_diffs
             .insert((base_block_height, block_height), list_diff);
     }
-
-    // fn fetch_range_dml(&mut self, step: u32, include_at_minus_8: bool, count: u32) {
-    //     let ((base_block_height, base_block_hash), (block_height, block_hash)) =
-    //         match self.parse_heights() {
-    //             Ok(a) => a,
-    //             Err(e) => {
-    //                 self.error = Some(e);
-    //                 return;
-    //             }
-    //         };
-    //
-    //     let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
-    //         Ok(p2p_handler) => p2p_handler,
-    //         Err(e) => {
-    //             self.error = Some(e);
-    //             return;
-    //         }
-    //     };
-    //
-    //     let rem = block_height % 24;
-    //
-    //     let intermediate_block_height = (block_height - rem).saturating_sub(count * step);
-    //
-    //     let intermediate_block_hash = match self
-    //         .app_context
-    //         .core_client
-    //         .get_block_hash(intermediate_block_height)
-    //     {
-    //         Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-    //         Err(e) => {
-    //             self.error = Some(e.to_string());
-    //             return;
-    //         }
-    //     };
-    //
-    //     self.fetch_single_dml(
-    //         &mut p2p_handler,
-    //         base_block_hash,
-    //         base_block_height,
-    //         intermediate_block_hash,
-    //         intermediate_block_height,
-    //         false,
-    //     );
-    //
-    //     let mut last_height = intermediate_block_height;
-    //     let mut last_block_hash = intermediate_block_hash;
-    //
-    //     for _i in 0..count {
-    //         if include_at_minus_8 {
-    //             let end_height = last_height + step - 8;
-    //             let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
-    //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-    //                 Err(e) => {
-    //                     self.error = Some(e.to_string());
-    //                     return;
-    //                 }
-    //             };
-    //             self.fetch_single_dml(
-    //                 &mut p2p_handler,
-    //                 last_block_hash,
-    //                 last_height,
-    //                 end_block_hash,
-    //                 end_height,
-    //             );
-    //             last_height = end_height;
-    //             last_block_hash = end_block_hash;
-    //
-    //             let end_height = last_height + 8;
-    //             let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
-    //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-    //                 Err(e) => {
-    //                     self.error = Some(e.to_string());
-    //                     return;
-    //                 }
-    //             };
-    //             self.fetch_single_dml(
-    //                 &mut p2p_handler,
-    //                 last_block_hash,
-    //                 last_height,
-    //                 end_block_hash,
-    //                 end_height,
-    //             );
-    //             last_height = end_height;
-    //             last_block_hash = end_block_hash;
-    //         } else {
-    //             let end_height = last_height + step;
-    //             let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
-    //                 Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-    //                 Err(e) => {
-    //                     self.error = Some(e.to_string());
-    //                     return;
-    //                 }
-    //             };
-    //             self.fetch_single_dml(
-    //                 &mut p2p_handler,
-    //                 last_block_hash,
-    //                 last_height,
-    //                 end_block_hash,
-    //                 end_height,
-    //             );
-    //             last_height = end_height;
-    //             last_block_hash = end_block_hash;
-    //         }
-    //     }
-    //
-    //     if rem != 0 {
-    //         let end_height = last_height + rem;
-    //         let end_block_hash = match self.app_context.core_client.read().unwrap().get_block_hash(end_height) {
-    //             Ok(block_hash) => BlockHash::from_byte_array(block_hash.to_byte_array()),
-    //             Err(e) => {
-    //                 self.error = Some(e.to_string());
-    //                 return;
-    //             }
-    //         };
-    //         self.fetch_single_dml(
-    //             &mut p2p_handler,
-    //             last_block_hash,
-    //             last_height,
-    //             end_block_hash,
-    //             end_height,
-    //         );
-    //     }
-    //
-    //     // Reset selections when new data is loaded
-    //     self.selected_dml_diff_key = None;
-    //     self.selected_quorum_in_diff_index = None;
-    // }
 
     /// Clear all data and reset to initial state
     pub(crate) fn clear(&mut self) {
@@ -1349,8 +1210,7 @@ impl MasternodeListDiffScreen {
                 }
                 match app_context
                     .core_client
-                    .read()
-                    .unwrap()
+                    .read_or_recover()
                     .get_block_header_info(
                         &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                     ) {
@@ -4181,8 +4041,7 @@ impl ScreenLike for MasternodeListDiffScreen {
                     }
                     match app_context
                         .core_client
-                        .read()
-                        .unwrap()
+                        .read_or_recover()
                         .get_block_header_info(
                             &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
                         ) {

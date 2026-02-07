@@ -624,7 +624,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `render_mn_list_diff_list()` (15 lines)
   - `show_mn_list_diff_heights_as_string()` (37 lines)
 
-- [ ] **3.1d Extract quorum viewer rendering into a separate file** (P2)
+- [x] **3.1d Extract quorum viewer rendering into a separate file** (P2)
   Move quorum-viewer-related functions (~550 lines) into `masternode_list_diff_screen/quorum_viewer_tab.rs`:
   - `render_quorums()` (151 lines)
   - `render_quorum_details()` (201 lines)
@@ -910,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 4 |
+| 3. Refactoring | 13 | 5 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

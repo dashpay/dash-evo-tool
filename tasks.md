@@ -398,11 +398,79 @@ These META tasks validate reported bugs against the current codebase before any 
   (1) `src/context.rs:1799` — Replace `panic!("unsupported network")` in `default_platform_version()` with a safe fallback (e.g., return the latest platform version for unknown variants, since this is a const fn).
   (2) `src/ui/tokens/update_token_config.rs:678` — Replace `unimplemented!("marketplace settings")` with `ui.label("Marketplace settings are not yet supported.")` so it shows a message instead of crashing.
 
-- [ ] **2.2 [META] Audit `unwrap()`/`expect()` in `src/backend_task/`** (P1)
+- [x] **2.2 [META] Audit `unwrap()`/`expect()` in `src/backend_task/`** (P1)
   Categorize every `unwrap()`/`expect()` call in the backend_task directory as:
   - **Safe**: value is guaranteed (e.g., regex compile of literal, `Some` just checked)
   - **Unsafe**: can actually panic in production
   Create fix tasks for all unsafe instances. Prioritize by crash likelihood.
+
+  **Audit Results:**
+
+  **Total calls found:** ~194
+  **Lock unwraps (`.read().unwrap()`, `.write().unwrap()`, `.lock().unwrap()`, `.expect("...lock was poisoned")`):** ~80 instances across all files. ALL DEFERRED to task 2.5 (lock poisoning strategy).
+  **Test-only unwraps (`#[cfg(test)]` / `#[test]`):** ~65 instances in dashpay tests (encryption.rs, avatar_processing.rs, dip14_derivation.rs, hd_derivation.rs, encryption_tests.rs, payments.rs test module). ALL SAFE.
+
+  **UNSAFE production calls requiring fixes:**
+
+  **P1 — Contract/document type expects (crash on SDK data mismatch):**
+  - `contract.rs:105` — `.expect("Expected to get token configuration")` on `expected_token_configuration()`. Panics if contract tokens map is inconsistent.
+  - `query_dpns_contested_resources.rs:24` — `.expect("expected document type")` on `document_type_for_name("domain")`. Panics if DPNS contract lacks "domain" type.
+  - `query_dpns_vote_contenders.rs:25` — `.expect("expected document type")` — same pattern.
+  - `vote_on_dpns_name.rs:39` — `.expect("expected document type")` — same pattern.
+  - `query_dpns_contested_resources.rs:135` — `.expect("expected str")` on `Value::as_str()`. Panics if contested resource is not a string.
+  - `query_dpns_contested_resources.rs:140` — `.last().unwrap()` on list that was just checked non-empty. SAFE (guarded by break on line 124).
+
+  **P1 — Identity registration/top-up transition panics:**
+  - `register_identity.rs:405` — `.expect("expected to make identity")` on `Identity::new_with_id_and_keys()`. Only in fallback when identity not fetched.
+  - `register_identity.rs:695` — `.expect("expected to make transition")` on `IdentityCreateTransition::try_from_identity_with_signer()`. In error-reporting path but still panics.
+  - `top_up_identity.rs:532` — `.expect("expected to make transition")` on `IdentityTopUpTransition::try_from_identity()`. Same pattern.
+
+  **P1 — Channel send panics in spawned tasks:**
+  - `query_dpns_contested_resources.rs:175,208` — `semaphore.acquire_owned().await.unwrap()`. Panics if semaphore closed during shutdown.
+  - `query_dpns_contested_resources.rs:183,190,220,227` — `.expect("expected to send ...")` on channel `sender.send()`. Panics if UI receiver dropped.
+
+  **P2 — Data conversion panics:**
+  - `identity/mod.rs:327` — `.try_into().unwrap()` on hex decode result. Input is length-checked at 64 chars (line 323), so decoded output is always 32 bytes. SAFE.
+  - `contacts.rs:263` — `Identifier::from_bytes(to_id_bytes).unwrap()`. Data from `Value::Identifier` match arm — should always be 32 bytes. LOW RISK.
+  - `contacts.rs:307` — `Identifier::from_bytes(&decrypted_id).unwrap()`. Decrypted data could be wrong length if decryption fails silently. MEDIUM RISK.
+  - `load_identity_from_wallet.rs:80,82` — `.expect("queried public key/wallet key index should exist...")`. Assumes control flow guarantees. LOW RISK.
+  - `discover_identities.rs:97` — `existing.unwrap()` after `is_ok()` check on same binding. SAFE (single-threaded evaluation).
+  - `contact_info.rs:495` — `.expect("entropy should be 32 bytes")` on Bytes32 try_into. SAFE (Bytes32 is always 32 bytes).
+  - `query_token_non_claimed_perpetual_distribution_rewards.rs:139` — `.expect("epoch so far in future")` on u16 try_into. SAFE (epoch index is small).
+
+  **P2 — SystemTime panics (deferred to task 2.6):**
+  - `payments.rs:299,312` — `duration_since(UNIX_EPOCH).unwrap()`. Covered by task 2.6.
+
+  **SAFE calls (no action needed):**
+  - `incoming_payments.rs:228-235` — `ChildNumber::from_hardened_idx(9/5/15/0).unwrap()` and `from_normal_idx(hash).unwrap()`. All hardcoded values < 2^31, and `hash_identifier_to_u32()` masks with `0x7FFFFFFF`. SAFE.
+  - `payments.rs:187` — `ChildNumber::from_normal_idx(0).unwrap()`. SAFE (0 < 2^31).
+  - All test-only code in dashpay/, identity/ test modules. SAFE.
+
+- [ ] **2.2a Fix document type expect() calls in contested names** (P1)
+  Replace `.expect("expected document type")` on `document_type_for_name("domain")` with `?` error propagation in 3 files:
+  - `src/backend_task/contested_names/query_dpns_contested_resources.rs:24`
+  - `src/backend_task/contested_names/query_dpns_vote_contenders.rs:25`
+  - `src/backend_task/contested_names/vote_on_dpns_name.rs:39`
+  Also replace `.expect("expected str")` on `Value::as_str()` at `query_dpns_contested_resources.rs:135` with `ok_or()?.to_string()`.
+
+- [ ] **2.2b Fix channel send/semaphore panics in contested resources query** (P1)
+  In `src/backend_task/contested_names/query_dpns_contested_resources.rs`:
+  - Lines 175, 208: Replace `semaphore.acquire_owned().await.unwrap()` with `.map_err()?` or graceful return.
+  - Lines 183, 190, 220, 227: Replace `.expect("expected to send ...")` on `sender.send().await` with `if let Err(e)` that logs and returns (receiver may be dropped during shutdown).
+
+- [ ] **2.2c Fix identity/top-up transition expect() calls** (P1)
+  Replace `.expect()` with `?` error propagation in 3 locations:
+  - `src/backend_task/identity/register_identity.rs:405` — `.expect("expected to make identity")`
+  - `src/backend_task/identity/register_identity.rs:695` — `.expect("expected to make transition")`
+  - `src/backend_task/identity/top_up_identity.rs:532` — `.expect("expected to make transition")`
+
+- [ ] **2.2d Fix token configuration expect() in contract.rs** (P1)
+  In `src/backend_task/contract.rs:105`, replace `.expect("Expected to get token configuration")` with `?` error propagation. If a token position exists in `contract.tokens()` but has no matching configuration, log a warning and skip that token instead of panicking.
+
+- [ ] **2.2e Fix Identifier::from_bytes unwrap in contacts.rs** (P2)
+  In `src/backend_task/dashpay/contacts.rs`:
+  - Line 263: Replace `.unwrap()` on `Identifier::from_bytes(to_id_bytes)` with `.map_err()?`.
+  - Line 307: Replace `.unwrap()` on `Identifier::from_bytes(&decrypted_id)` with `.map_err()?` or `continue` on error (decrypted data may be invalid).
 
 - [ ] **2.3 [META] Audit `unwrap()`/`expect()` in `src/context.rs` and `src/database/`** (P1)
   Same categorization approach as 2.2. These are critical infrastructure files.
@@ -702,7 +770,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 10 | 5 |
+| 2. Stability | 15 | 6 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

@@ -253,3 +253,18 @@
 **Task:** 2.1d Fix remaining low-risk panics (context.rs, update_token_config.rs)
 **What was done:** Fixed two low-risk panics: (1) In `context.rs:1799`, replaced `panic!("unsupported network")` in the `default_platform_version()` const fn with a safe fallback that returns `&PLATFORM_V11` for any unknown `Network` variant. Since all 4 known variants already return `PLATFORM_V11`, this wildcard arm only fires if the external `#[non_exhaustive]` Network enum adds new variants in the future. (2) In `update_token_config.rs:678`, replaced `unimplemented!("marketplace settings not implemented yet")` with `ui.label("Marketplace settings are not yet supported.")` so users see an informational message instead of the app crashing when encountering a `MarketplaceTradeMode` token configuration item.
 **Files changed:** src/context.rs, src/ui/tokens/update_token_config.rs
+
+## Run 36 — 2026-02-07
+**Task:** 2.2 [META] Audit unwrap()/expect() in src/backend_task/
+**What was done:** Audited all ~194 `.unwrap()` and `.expect()` calls across the entire `src/backend_task/` directory (tokens, contract, contested_names, dashpay, identity, core, wallet, mod.rs, mnlist.rs, platform_info.rs). Categorized each as Safe, Unsafe, Lock-related (deferred to 2.5), Test-only, or SystemTime (deferred to 2.6). Found ~80 lock unwraps (all deferred), ~65 test-only (all safe), and ~20 unsafe production calls requiring fixes. Created 5 specific sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 5 (2.2a through 2.2e)
+
+**Key unsafe findings:**
+- 4 document type `.expect()` calls in contested_names/ — panic if DPNS contract structure changes
+- 6 channel send/semaphore `.expect()` calls in spawned tasks — panic if receiver dropped during shutdown
+- 3 identity/top-up transition `.expect()` calls — panic if SDK state transition construction fails
+- 1 token configuration `.expect()` — panic if contract tokens map is inconsistent
+- 2 Identifier::from_bytes `.unwrap()` calls on decrypted/platform data in contacts.rs
+- 2 SystemTime panics — deferred to task 2.6
+- ~80 lock poisoning unwraps — deferred to task 2.5

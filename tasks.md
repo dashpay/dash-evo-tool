@@ -539,7 +539,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **2.3c Fix database/wallet.rs data loading expects** (P1)
   In `src/database/wallet.rs`, replace ~10 `.expect()` calls in query_map closures with `map_err` to rusqlite errors. Affected lines: 144, 440, 457, 551, 556, 643, 647, 780, 782, 785. These are all inside closures that return `rusqlite::Result`, so convert with `map_err(|e| rusqlite::Error::InvalidParameterName(format!(...)))`.
 
-- [ ] **2.3d Fix database/contested_names.rs Identifier expects** (P1)
+- [x] **2.3d Fix database/contested_names.rs Identifier expects** (P1)
   In `src/database/contested_names.rs`, replace 6 `.expect()` on `Identifier::from_bytes()` with `map_err` in the query_map closures at lines 77, 118, 126, 211, 252, 260. These are inside closures returning `rusqlite::Result`, so convert to `Err(rusqlite::Error::InvalidParameterName(...))`.
 
 - [ ] **2.3e Fix database/tokens.rs token ID expect** (P2)
@@ -839,7 +839,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 20 | 15 |
+| 2. Stability | 20 | 16 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

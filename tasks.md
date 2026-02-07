@@ -614,7 +614,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `feed_qr_info_block_heights()`, `feed_mn_list_diff_heights()`, `feed_quorum_entry_height()`
   These all operate on the cache fields (`block_height_cache`, `block_hash_cache`, `chain_lock_sig_cache`, etc.) and can be grouped as methods on a `CacheState` struct (building on PR#520's struct).
 
-- [ ] **3.1c Extract QR info rendering into a separate file** (P2)
+- [x] **3.1c Extract QR info rendering into a separate file** (P2)
   Move these QR-info-related rendering functions (~400 lines) into `masternode_list_diff_screen/qr_info_tab.rs`:
   - `render_qr_info()` (167 lines, includes FileDialog I/O)
   - `render_quorum_snapshots()` (38 lines)
@@ -910,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 3 |
+| 3. Refactoring | 13 | 4 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

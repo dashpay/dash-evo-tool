@@ -289,6 +289,20 @@
 **What was done:** Replaced `.expect("Expected to get token configuration")` on `expected_token_configuration()` in `contract.rs:104-105` with a `match` that logs a warning via `tracing::warn!` and `continue`s to skip that token if the configuration is missing. Previously, if a token position existed in `contract.tokens()` but had no matching configuration (e.g., due to contract data inconsistency), the backend task would panic. Now it logs the error with the token position and contract ID, and skips that token while still processing the rest.
 **Files changed:** src/backend_task/contract.rs
 
+## Run 42 — 2026-02-07
+**Task:** 2.3 [META] Audit unwrap()/expect() in src/context.rs and src/database/
+**What was done:** Audited all ~95 `.unwrap()` and `.expect()` calls across `src/context.rs` (~38 calls) and `src/database/` (~57 calls across 17 files). Classified each as Safe, Unsafe, Lock-related (deferred to 2.5), SystemTime (deferred to 2.6), or Test-only. Found ~64 lock unwraps (all deferred), ~30 test-only (all safe), 2 SystemTime unwraps (deferred), and ~25 unsafe production calls requiring fixes. Created 5 specific sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 5 (2.3a through 2.3e)
+
+**Key unsafe findings:**
+- context.rs: 9 initialization expects (SPV/RPC provider, 5 system contracts, cookie path, CoreClient, 2 DB wallet queries) — all crash app on startup config issues
+- context.rs: 2 asset lock processing expects (credit output, address derivation) — crash on malformed tx data
+- database/wallet.rs: 10 data loading expects in query_map closures (address parsing, ExtendedPubKey decode, txid, derivation path, transaction deserialization) — crash on DB corruption
+- database/contested_names.rs: 6 Identifier::from_bytes expects — crash on wrong-length BLOB in DB
+- database/tokens.rs: 1 Identifier::from_vec expect — crash on corrupted token ID
+- Prior fixes confirmed: task 2.1a (initialization.rs migration), task 2.1b (wallet.rs asset lock loading)
+
 ## Run 41 — 2026-02-07
 **Task:** 2.2e Fix Identifier::from_bytes unwrap in contacts.rs
 **What was done:** Replaced 2 `.unwrap()` calls on `Identifier::from_bytes()` in `contacts.rs` with graceful error handling. (1) Line 263: `Identifier::from_bytes(to_id_bytes.as_slice()).unwrap()` in the mutual contact matching loop — replaced with `let Ok(to_id) = ... else { continue }` to skip outgoing documents with invalid identifier bytes. (2) Line 307: `Identifier::from_bytes(&decrypted_id).unwrap()` on decrypted contact ID — replaced with `let Ok(contact_id) = ... else { continue }` with a `tracing::warn!` logging the invalid length. The second case is higher risk since decrypted data may have unexpected length if the decryption key is wrong or the encrypted data is corrupted.

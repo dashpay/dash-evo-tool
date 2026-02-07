@@ -472,9 +472,78 @@ These META tasks validate reported bugs against the current codebase before any 
   - Line 263: Replace `.unwrap()` on `Identifier::from_bytes(to_id_bytes)` with `.map_err()?`.
   - Line 307: Replace `.unwrap()` on `Identifier::from_bytes(&decrypted_id)` with `.map_err()?` or `continue` on error (decrypted data may be invalid).
 
-- [ ] **2.3 [META] Audit `unwrap()`/`expect()` in `src/context.rs` and `src/database/`** (P1)
+- [x] **2.3 [META] Audit `unwrap()`/`expect()` in `src/context.rs` and `src/database/`** (P1)
   Same categorization approach as 2.2. These are critical infrastructure files.
   Reference: `issues/context-001` through `context-023`, `issues/db-*.md`.
+
+  **Audit Results:**
+
+  **Total calls found:** ~95 (context.rs: ~38, database/: ~57)
+  **Lock unwraps (`.read().unwrap()`, `.write().unwrap()`, `.lock().unwrap()`):** ~64 instances across all files. ALL DEFERRED to task 2.5 (lock poisoning strategy).
+  **SystemTime unwraps:** 2 instances in contested_names.rs (lines 85, 219). DEFERRED to task 2.6.
+  **Test-only unwraps:** ~30+ instances in database test modules. ALL SAFE.
+
+  **UNSAFE production calls requiring fixes:**
+
+  **P1 — context.rs initialization expects (crash on startup configuration issues):**
+  - `context.rs:136` — `.expect("Failed to initialize SPV provider")` on SpvProvider::new(). Panics if DB or network config is bad.
+  - `context.rs:138` — `.expect("Failed to initialize RPC provider")` on RpcProvider::new(). Panics on network config issues.
+  - `context.rs:151,155,159,163,167` — Five `.expect()` on `load_system_data_contract()` for DPNS, Withdrawals, TokenHistory, KeywordSearch, Dashpay. Panics if platform version doesn't support a contract.
+  - `context.rs:174` — `.expect("expected to get cookie path")` on core_cookie_path(). Panics on filesystem/config issues.
+  - `context.rs:194` — `.expect("Failed to create CoreClient")` after cookie+userpass fallback. Panics if both auth methods fail.
+  - `context.rs:198` — `.expect("expected to get wallets")` on DB query. Panics on schema mismatch/corruption.
+  - `context.rs:205` — `.expect("expected to get single key wallets")` on DB query. Same risk.
+
+  **P2 — context.rs asset lock processing expects:**
+  - `context.rs:1641` — `.expect("Expected at least one credit output")` on `payload.credit_outputs.first()`. Panics on malformed asset lock transaction data.
+  - `context.rs:1644` — `.expect("expected an address")` on `Address::from_script()`. Panics on corrupted script_pubkey.
+
+  **P1 — database/wallet.rs data loading expects (crash on DB corruption):**
+  - `wallet.rs:144` — `.expect("Expected address to be valid for network")` on check_address_for_network(). Panics if stored address doesn't match network.
+  - `wallet.rs:440` — `.expect("Failed to decode ExtendedPubKey")` on decode. Panics on corrupted pubkey data.
+  - `wallet.rs:457` — `.expect("expected to decrypt seed with no password")` on try_into. Panics if stored seed data is wrong length.
+  - `wallet.rs:551` — `.expect("Invalid address format")` on Address::from_str(). Panics on corrupted address data.
+  - `wallet.rs:556` — `.expect("Expected to convert to derivation path")` on DerivationPath::from_str(). Panics on corrupted path.
+  - `wallet.rs:643` — `.expect("Invalid address format")` on UTXO address parsing. Same risk.
+  - `wallet.rs:647` — `.expect("Invalid txid")` on Txid::from_slice(). Panics on corrupted txid.
+  - `wallet.rs:780` — `.expect("Invalid txid bytes")` on transaction txid. Same risk.
+  - `wallet.rs:782` — `.expect("Failed to deserialize transaction")` on raw tx bytes. Panics on corrupt tx data.
+  - `wallet.rs:785` — `.expect("Invalid block hash")` on BlockHash::from_slice(). Panics on corrupt hash data.
+
+  **SAFE calls (justified, no action):**
+  - `wallet.rs:443,779,827,868` — `.expect("Seed hash should be 32 bytes")` on try_into. Stored as 32-byte BLOB in DB, type-guaranteed by schema.
+
+  **P1 — database/contested_names.rs Identifier expects (crash on DB corruption):**
+  - `contested_names.rs:77,211` — `.expect("Expected 32 bytes for awarded_to")` on Identifier::from_bytes(). Panics if stored BLOB is wrong length.
+  - `contested_names.rs:118,252` — `.expect("Expected 32 bytes for identity_id")` on Identifier::from_bytes(). Same risk.
+  - `contested_names.rs:126,260` — `.expect("Expected 32 bytes for document_id")` on Identifier::from_bytes(). Same risk.
+
+  **P2 — database/tokens.rs:**
+  - `tokens.rs:242` — `.expect("Failed to parse token ID")` on Identifier::from_vec(). Panics on corrupted token ID data.
+
+  **ALREADY FIXED by prior tasks:**
+  - `initialization.rs` migration panic — Fixed by task 2.1a
+  - `wallet.rs:684-698` asset lock loading panics — Fixed by task 2.1b
+
+- [ ] **2.3a Fix context.rs initialization expects** (P1)
+  In `src/context.rs:136-205`, replace 9 `.expect()` calls in `AppContext::new()` with error handling that returns `None` (the function already returns `Option<Self>`). For each:
+  - Lines 136,138: SpvProvider/RpcProvider initialization → log error, return None
+  - Lines 151,155,159,163,167: System data contract loads → log error, return None
+  - Line 174: Cookie path → log error, return None
+  - Line 194: CoreClient creation → log error, return None
+  - Lines 198,205: Database wallet queries → log error, return None
+
+- [ ] **2.3b Fix context.rs asset lock processing expects** (P2)
+  In `src/context.rs:1641,1644`, replace `.expect()` on credit output access and address derivation with `?` error propagation. The enclosing function `received_asset_lock_finality()` already returns `Result<(), String>`.
+
+- [ ] **2.3c Fix database/wallet.rs data loading expects** (P1)
+  In `src/database/wallet.rs`, replace ~10 `.expect()` calls in query_map closures with `map_err` to rusqlite errors. Affected lines: 144, 440, 457, 551, 556, 643, 647, 780, 782, 785. These are all inside closures that return `rusqlite::Result`, so convert with `map_err(|e| rusqlite::Error::InvalidParameterName(format!(...)))`.
+
+- [ ] **2.3d Fix database/contested_names.rs Identifier expects** (P1)
+  In `src/database/contested_names.rs`, replace 6 `.expect()` on `Identifier::from_bytes()` with `map_err` in the query_map closures at lines 77, 118, 126, 211, 252, 260. These are inside closures returning `rusqlite::Result`, so convert to `Err(rusqlite::Error::InvalidParameterName(...))`.
+
+- [ ] **2.3e Fix database/tokens.rs token ID expect** (P2)
+  In `src/database/tokens.rs:242`, replace `.expect("Failed to parse token ID")` on `Identifier::from_vec()` with `map_err` to rusqlite error.
 
 - [ ] **2.4 [META] Validate critical issue file claims** (P0)
   Read and verify these specific high-severity issue reports against actual code:
@@ -770,7 +839,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 15 | 11 |
+| 2. Stability | 20 | 12 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

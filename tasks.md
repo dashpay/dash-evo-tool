@@ -379,7 +379,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **2.1a Fix DB migration failure panic** (P1)
   In `src/database/initialization.rs:41-44`, replace `panic!` on migration failure with proper error propagation. The function already returns `rusqlite::Result<()>`, so convert the panic to a `Err(rusqlite::Error::QueryReturnedNoRows)` or a custom error message that includes the version info. The caller in `app.rs` already handles this via `?`.
 
-- [ ] **2.1b Fix asset lock loading panics in database/wallet.rs** (P1)
+- [x] **2.1b Fix asset lock loading panics in database/wallet.rs** (P1)
   In `src/database/wallet.rs:676-698`, replace 4 panicking calls inside the `query_map` closure with proper error handling:
   - Line 684: `expect("Seed should be 64 bytes")` → `map_err` to rusqlite error
   - Line 685: `expect("Failed to deserialize transaction")` → `map_err`
@@ -702,7 +702,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 10 | 2 |
+| 2. Stability | 10 | 3 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

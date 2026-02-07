@@ -238,3 +238,8 @@
 **Task:** 2.1a Fix DB migration failure panic
 **What was done:** Replaced `panic!` on database migration failure in `initialization.rs:41-44` with proper error propagation. The `initialize()` method already returns `rusqlite::Result<()>`, so converted the panic to `Err(rusqlite::Error::InvalidParameterName(...))` with a descriptive message including the original version, target version, current version after failure, and the error details. Changed `db_schema_version()?` to `db_schema_version().unwrap_or(0)` in the error path to avoid masking the migration error if the version check itself fails. The caller in `app.rs` already handles this via `?` propagation.
 **Files changed:** src/database/initialization.rs
+
+## Run 33 — 2026-02-07
+**Task:** 2.1b Fix asset lock loading panics in database/wallet.rs
+**What was done:** Replaced 6 panicking calls inside the `query_map` closure for asset lock transaction loading with proper error propagation using `rusqlite::Error::InvalidParameterName`. The 6 fixes: (1) `expect("Seed should be 64 bytes")` → `map_err` on try_into, (2) `expect("Failed to deserialize transaction")` → `map_err` on deserialize, (3) `panic!("Expected AssetLockPayloadType")` → `return Err(...)`, (4) `expect("Expected at least one credit output")` → `ok_or(...)`, (5) `expect("expected an address")` → `map_err` on Address::from_script, (6) `expect("Failed to deserialize InstantLock")` → `map_err` on deserialize. Previously, corrupt or unexpected data in the asset_lock_transaction DB table would crash the app at startup during wallet loading. Now these produce rusqlite errors that propagate to the caller.
+**Files changed:** src/database/wallet.rs

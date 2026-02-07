@@ -680,30 +680,49 @@ impl Database {
             let islock_data: Option<Vec<u8>> = row.get(3)?;
             let chain_locked_height: Option<CoreBlockHeight> = row.get(4)?;
 
-            let wallet_seed_hash_array: [u8; 32] =
-                wallet_seed.try_into().expect("Seed should be 64 bytes");
-            let tx: Transaction = deserialize(&tx_data).expect("Failed to deserialize transaction");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Wallet seed should be 32 bytes".to_string())
+            })?;
+            let tx: Transaction = deserialize(&tx_data).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to deserialize asset lock transaction: {}",
+                    e
+                ))
+            })?;
 
             // Ensure the transaction payload is AssetLockPayloadType
             let Some(TransactionPayload::AssetLockPayloadType(payload)) =
                 &tx.special_transaction_payload
             else {
-                panic!("Expected AssetLockPayloadType in special_transaction_payload");
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Expected AssetLockPayloadType in special_transaction_payload".to_string(),
+                ));
             };
 
             // Get the first credit output
-            let first = payload
-                .credit_outputs
-                .first()
-                .expect("Expected at least one credit output");
+            let first =
+                payload
+                    .credit_outputs
+                    .first()
+                    .ok_or(rusqlite::Error::InvalidParameterName(
+                        "Expected at least one credit output in asset lock".to_string(),
+                    ))?;
 
-            let address =
-                Address::from_script(&first.script_pubkey, *network).expect("expected an address");
+            let address = Address::from_script(&first.script_pubkey, *network).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to derive address from credit output: {}",
+                    e
+                ))
+            })?;
 
             let (islock, proof) = if let Some(islock_bytes) = islock_data {
                 // Deserialize the InstantLock
-                let is_lock: InstantLock =
-                    deserialize(&islock_bytes).expect("Failed to deserialize InstantLock");
+                let is_lock: InstantLock = deserialize(&islock_bytes).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Failed to deserialize InstantLock: {}",
+                        e
+                    ))
+                })?;
                 (
                     Some(is_lock.clone()),
                     Some(AssetLockProof::Instant(InstantAssetLockProof::new(

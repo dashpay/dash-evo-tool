@@ -162,3 +162,8 @@
 **Task:** 1.3d Fix context-008/context-010: Cookie parsing safety
 **What was done:** Fixed two cookie parsing issues in `context_provider.rs:30-46`. (1) Replaced `.expect()` on `core_cookie_path()` with `.map_err()?` to return an error instead of panicking if the cookie path can't be determined. (2) Trimmed the cookie string after reading to remove trailing newlines that were being included in the RPC password, causing authentication failures (context-010). (3) Replaced unchecked `cookie_parts[0]`/`cookie_parts[1]` indexing with `split_once(':')` which safely returns `Option<(&str, &str)>` and returns a descriptive error for malformed cookie files (context-008). Using `split_once` also correctly handles passwords that contain colons.
 **Files changed:** src/context_provider.rs
+
+## Run 23 — 2026-02-07
+**Task:** 1.3e Fix core-016: Safe config save with atomic write
+**What was done:** Changed the `Config::save()` method to use atomic write: writes to a temporary file (`.env.tmp`) in the same directory first, flushes to disk, then renames it to `.env`. Previously, `File::create()` truncated the `.env` file immediately, so a partial write failure (disk full, permission change, process crash) would leave a corrupted config with no recovery. The rename operation is atomic on all target platforms (POSIX guarantees on macOS/Linux, and Windows provides atomic rename for same-volume operations). On rename failure, the temp file is cleaned up.
+**Files changed:** src/config.rs

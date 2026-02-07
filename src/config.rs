@@ -63,13 +63,19 @@ impl Config {
 
     /// Write the current configuration back to the `.env` file so that
     /// subsequent calls to `Config::load()` will reflect changes.
+    ///
+    /// Uses atomic write (write to temp file, then rename) to prevent
+    /// config corruption if a write fails partway through.
     pub fn save(&self) -> Result<(), ConfigError> {
         let env_file_path =
             app_user_data_file_path(".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        // Create / truncate the `.env` file
+        // Write to a temporary file in the same directory first, then rename
+        // atomically. This prevents corruption if the write fails partway through.
+        let tmp_file_path = env_file_path.with_extension("env.tmp");
+
         let mut env_file =
-            File::create(&env_file_path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            File::create(&tmp_file_path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
         // Helper function to write a single network config to the `.env` file
         let mut write_network_config = |prefix: &str, config: &NetworkConfig| {
@@ -165,6 +171,18 @@ impl Config {
             writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
         }
+
+        // Flush all buffered data to disk before renaming
+        env_file
+            .flush()
+            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+        // Atomically replace the old config with the new one
+        std::fs::rename(&tmp_file_path, &env_file_path).map_err(|e| {
+            // Clean up the temp file on rename failure
+            let _ = std::fs::remove_file(&tmp_file_path);
+            ConfigError::LoadError(format!("Failed to rename temp config file: {}", e))
+        })?;
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
         Ok(())

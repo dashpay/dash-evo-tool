@@ -269,7 +269,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (2) Check that split(':') produces exactly 2 parts before indexing (context-008)
   Return an error instead of panicking on malformed cookie files.
 
-- [ ] **1.3e Fix core-016: Safe config save with atomic write** (P2)
+- [x] **1.3e Fix core-016: Safe config save with atomic write** (P2)
   In `src/config.rs` `save()` method, write to a temporary file first, then rename/move to the target path. This prevents config corruption if a write fails partway through (currently `File::create()` truncates immediately).
 
 - [ ] **1.3f Fix core-014: Logging initialization should not panic** (P2)
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 22 |
+| 1. Bug Triage | 27 | 23 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

@@ -55,7 +55,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.1b Fix GH#476: Hardcoded fee strategy in platform address funding** (P0)
   In `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs:174`, replace the hardcoded `ReduceOutput(0)` with conditional logic: use `ReduceOutput(0)` when `fee_deduct_from_output` is true, use a non-reducing strategy when false (fees were already added to the asset lock amount at lines 30-39).
 
-- [ ] **1.1c Fix GH#478: Wallet balance top-up max button doesn't reserve fees** (P1)
+- [x] **1.1c Fix GH#478: Wallet balance top-up max button doesn't reserve fees** (P1)
   In `src/ui/identities/top_up_identity_screen/mod.rs:374-381`, the "UseWalletBalance" max amount calculation should subtract estimated fees (similar to how `by_platform_address.rs:104-105` does it). Currently sets max to raw `total_balance_duffs * 1000` with no fee buffer.
 
 - [ ] **1.1d Fix GH#85: Funding address reuse across identities** (P1)
@@ -418,7 +418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 3 |
+| 1. Bug Triage | 11 | 4 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

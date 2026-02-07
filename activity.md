@@ -28,3 +28,8 @@
 **Task:** 1.1b Fix GH#476: Hardcoded fee strategy in platform address funding
 **What was done:** Fixed the platform fee strategy in `fund_platform_address_from_wallet_utxos()` to respect the `fee_deduct_from_output` flag. When the user selects "deduct from input" (fee_deduct_from_output=false), the code now creates two outputs: the destination with an explicit `Some(amount_credits)` for the exact requested amount, and a change address (derived from the asset lock one-time key) as the `None` remainder recipient. The fee is deducted from the change output via `ReduceOutput(change_index)`, so the destination receives the exact amount. Previously, the fee was always hardcoded as `ReduceOutput(0)` against a single `None` output, causing the destination to always receive less than requested regardless of the fee strategy setting.
 **Files changed:** src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs
+
+## Run 4 — 2026-02-07
+**Task:** 1.1c Fix GH#478: Wallet balance top-up max button doesn't reserve fees
+**What was done:** In `top_up_funding_amount_input()` in `mod.rs`, the "UseWalletBalance" max amount calculation now subtracts the estimated identity top-up fee before setting the max. Previously, the max was set to `total_balance_duffs * 1000` (raw credits) with no fee buffer, causing the top-up to fail with "Insufficient combined address balances" when the user clicked Max. Now uses `fee_estimator.estimate_identity_topup()` to reserve fees, matching the pattern already used by `by_platform_address.rs`. Also added a `set_max_exceeded_hint` showing the reserved fee amount.
+**Files changed:** src/ui/identities/top_up_identity_screen/mod.rs

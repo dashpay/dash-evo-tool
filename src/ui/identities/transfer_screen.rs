@@ -501,14 +501,18 @@ impl ScreenLike for TransferScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
+        let identities = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap()
-            .into_iter()
+            .unwrap_or_default();
+        if let Some(refreshed) = identities
+            .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        {
+            self.identity = refreshed.clone();
+            self.max_amount = self.identity.identity.balance();
+        }
+        self.known_identities = identities;
     }
 
     /// Renders the UI components for the withdrawal screen

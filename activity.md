@@ -96,3 +96,8 @@
 **Task:** 1.2d Fix ui-tokens-010: Replace expect on signing key in token screens
 **What was done:** Replaced `.expect("No key selected")` with proper validation guards in all 8 token action screens. Each screen now checks `self.selected_key.is_none()` before constructing the backend task, and returns an error message to the user instead of panicking. The affected screens are: transfer_tokens_screen, freeze_tokens_screen, unfreeze_tokens_screen, destroy_frozen_funds_screen, mint_tokens_screen, claim_tokens_screen, pause_tokens_screen, and resume_tokens_screen. Previously, if a user somehow triggered submission without selecting a signing key, the application would crash with a panic.
 **Files changed:** src/ui/tokens/transfer_tokens_screen.rs, src/ui/tokens/freeze_tokens_screen.rs, src/ui/tokens/unfreeze_tokens_screen.rs, src/ui/tokens/destroy_frozen_funds_screen.rs, src/ui/tokens/mint_tokens_screen.rs, src/ui/tokens/claim_tokens_screen.rs, src/ui/tokens/pause_tokens_screen.rs, src/ui/tokens/resume_tokens_screen.rs
+
+## Run 14 — 2026-02-07
+**Task:** 1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh
+**What was done:** Replaced `.unwrap()` chains in `refresh()` methods of both `transfer_screen.rs` and `withdraw_screen.rs` with graceful handling. Now uses `.unwrap_or_default()` on `load_local_qualified_identities()` (instead of panicking on DB error) and `if let Some(...)` on `.find()` (instead of panicking when identity is not found). If the identity was deleted during refresh, the screen keeps its current identity data instead of crashing. Transfer screen also refreshes `known_identities` list during refresh.
+**Files changed:** src/ui/identities/transfer_screen.rs, src/ui/identities/withdraw_screen.rs

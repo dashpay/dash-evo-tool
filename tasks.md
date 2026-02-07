@@ -152,7 +152,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2d Fix ui-tokens-010: Replace expect on signing key in token screens** (P1)
   Replace `.expect("No key selected")` with proper validation/error handling in 8+ token action screens: transfer_tokens_screen.rs, freeze_tokens_screen.rs, unfreeze_tokens_screen.rs, mint_tokens_screen.rs, destroy_frozen_funds_screen.rs, claim_tokens_screen.rs, pause_tokens_screen.rs, resume_tokens_screen.rs.
 
-- [ ] **1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh** (P1)
+- [x] **1.2e Fix ui-identity-001: Handle deleted identity in transfer/withdraw refresh** (P1)
   In `src/ui/identities/transfer_screen.rs:504-511` and `src/ui/identities/withdraw_screen.rs:320-329`, replace `.unwrap()` after `.find()` with graceful handling (e.g., show error message if identity not found instead of panicking).
 
 - [ ] **1.2f Fix identity-007: Log silenced wallet update errors in identity registration** (P2)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 13 |
+| 1. Bug Triage | 19 | 14 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

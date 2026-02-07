@@ -728,7 +728,7 @@ impl SetTokenPriceScreen {
         // Set waiting state
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.status = SetTokenPriceStatus::WaitingForResult(now);
 
@@ -1143,7 +1143,7 @@ impl ScreenLike for SetTokenPriceScreen {
                     SetTokenPriceStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Setting price... elapsed: {} seconds", elapsed));

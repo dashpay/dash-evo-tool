@@ -273,7 +273,7 @@ impl FreezeTokensScreen {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.status = FreezeTokensStatus::WaitingForResult(now);
 
@@ -619,7 +619,7 @@ impl ScreenLike for FreezeTokensScreen {
                     FreezeTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Freezing... elapsed: {}s", elapsed));

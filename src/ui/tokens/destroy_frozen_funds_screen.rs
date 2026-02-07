@@ -282,7 +282,7 @@ impl DestroyFrozenFundsScreen {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
 
@@ -621,7 +621,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     DestroyFrozenFundsStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!(

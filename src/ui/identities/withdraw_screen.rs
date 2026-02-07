@@ -258,7 +258,7 @@ impl WithdrawalScreen {
                 self.confirmation_dialog = None;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.withdraw_from_identity_status =
                     WithdrawFromIdentityStatus::WaitingForResult(now);
@@ -597,7 +597,7 @@ impl ScreenLike for WithdrawalScreen {
                     WithdrawFromIdentityStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed_seconds = now - start_time;
 

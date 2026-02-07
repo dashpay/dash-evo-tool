@@ -211,7 +211,7 @@ impl DocumentQueryScreen {
                         // Set the status to waiting and capture the current time
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(now);
                         self.current_page = 1; // Reset to first page
@@ -346,7 +346,7 @@ impl DocumentQueryScreen {
                     DocumentQueryStatus::WaitingForResult(start_time) => {
                         let time_elapsed = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs()
                             - start_time;
                         ui.horizontal(|ui| {
@@ -390,7 +390,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         self.current_page -= 1;
@@ -403,7 +403,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         self.current_page = 1;
@@ -424,7 +424,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         if self.current_page > 1 {

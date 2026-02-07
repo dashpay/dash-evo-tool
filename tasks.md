@@ -574,7 +574,7 @@ These META tasks validate reported bugs against the current codebase before any 
   **Implementation: Option B chosen and already applied codebase-wide.**
   Created `src/lock_helper.rs` with extension traits `MutexExt` (providing `lock_or_recover()`) and `RwLockExt` (providing `read_or_recover()` and `write_or_recover()`). These use `unwrap_or_else(|poisoned| poisoned.into_inner())` with `tracing::warn!` logging. All ~80+ production lock access sites across 71 files have been migrated to use these helpers. Zero `.lock().unwrap()`, `.read().unwrap()`, or `.write().unwrap()` calls remain in production code (18 remaining instances are exclusively in `#[test]` functions where panicking is acceptable).
 
-- [ ] **2.6 Fix SystemTime expect panics** (P1)
+- [x] **2.6 Fix SystemTime expect panics** (P1)
   Replace `SystemTime::now().duration_since(UNIX_EPOCH).expect(...)` with `.unwrap_or_default()` across the codebase.
   Reference: `issues/core-010-unix-timestamp-unwrap.md`, `issues/ui-tokens-006-expect-on-time-operations.md`.
 
@@ -852,7 +852,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 20 | 19 |
+| 2. Stability | 20 | 20 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

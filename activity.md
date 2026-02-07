@@ -343,3 +343,8 @@
 **Task:** 2.5 Design and implement lock poisoning recovery strategy
 **What was done:** Verified that this task was already completed by prior work. The chosen strategy is Option B: a helper module (`src/lock_helper.rs`) providing `MutexExt` and `RwLockExt` extension traits with `lock_or_recover()`, `read_or_recover()`, and `write_or_recover()` methods. These use `unwrap_or_else(|poisoned| poisoned.into_inner())` with `tracing::warn!` logging on recovery. All ~80+ production lock access sites across 71 files have been migrated. Zero `.lock().unwrap()`, `.read().unwrap()`, or `.write().unwrap()` calls remain in production code — only 18 instances remain, all exclusively in `#[test]` functions. Confirmed all checks pass (fmt, build, clippy, test).
 **Files changed:** tasks.md, activity.md
+
+## Run 50 — 2026-02-07
+**Task:** 2.6 Fix SystemTime expect panics
+**What was done:** Replaced all 70 instances of `.duration_since(UNIX_EPOCH).expect("Time went backwards")` and `.duration_since(UNIX_EPOCH).unwrap()` with `.duration_since(UNIX_EPOCH).unwrap_or_default()` across 26 files. This eliminates theoretical panics if system clock is before Unix epoch, gracefully defaulting to zero duration instead.
+**Files changed:** 26 files across src/ui/ (tokens, identities, contracts_documents, wallets, tools, network_chooser) and src/backend_task/dashpay/payments.rs

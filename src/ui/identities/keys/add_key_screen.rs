@@ -644,7 +644,7 @@ impl ScreenLike for AddKeyScreen {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.add_key_status = AddKeyStatus::WaitingForResult(now);
                 inner_action |= self.validate_and_add_key();
@@ -658,7 +658,7 @@ impl ScreenLike for AddKeyScreen {
                 AddKeyStatus::WaitingForResult(start_time) => {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
+                        .unwrap_or_default()
                         .as_secs();
                     let elapsed_seconds = now - start_time;
 

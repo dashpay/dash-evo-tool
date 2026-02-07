@@ -296,7 +296,7 @@ pub async fn send_payment_to_contact_impl(
             "{}_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis(),
             to_contact_id.to_string(Encoding::Base58)
         ),
@@ -309,7 +309,7 @@ pub async fn send_payment_to_contact_impl(
         memo: memo.clone(),
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs(),
         status: PaymentStatus::Broadcast,
         address_index,

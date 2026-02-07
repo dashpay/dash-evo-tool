@@ -182,3 +182,24 @@
 **Task:** 1.3h Fix infra-012: Replace expect() calls on document property access in platform_info.rs
 **What was done:** Replaced all 27 `expect()` calls in `platform_info.rs` with proper error handling using `map_err()?` and `ok_or()?`. Changed `format_withdrawal_documents_with_daily_limit()` and `format_withdrawal_documents_to_bare_info()` from returning `String` to `Result<String, String>`. Converted iterator `.map()` closures that used `expect()` into closures returning `Result`, collected via `.collect::<Result<Vec<_>, String>>()?`. Replaced `load_system_data_contract().expect()` with `.map_err()?` at both call sites. Replaced inline `expect()` chains in the `RecentlyCompletedWithdrawals` handler with the same `Result`-based pattern. Also removed the now-unused `itertools::Itertools` import. Previously, malformed or schema-changed Platform documents would crash the backend task thread; now they produce descriptive error messages.
 **Files changed:** src/backend_task/platform_info.rs
+
+## Run 27 — 2026-02-07
+**Task:** 1.4 [META] Triage UI/UX bugs
+**What was done:** Triaged 3 GitHub issues (GH#482, GH#147, GH#170) and 17 auto-generated issue files (ui-core-001 through ui-core-014, ui-contracts-017, ui-contracts-018, ui-dpns-019) against current codebase. Verified each claim by reading relevant source code. Created 3 specific sub-tasks for confirmed bugs.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 3 (1.4a through 1.4c)
+
+**Summary of findings:**
+- GH#482 CONFIRMED: Error/warning messages overflow horizontally due to missing .wrap() in 6+ UI locations
+- GH#147 CONFIRMED: UX confusion between Withdraw/Transfer — deferred to task 4.1 (UX triage)
+- GH#170 CANNOT REPRODUCE: Version displays correctly via env!("CARGO_PKG_VERSION"); double folder likely legacy
+- ui-core-001 CONFIRMED: Lock unwraps, deferred to task 2.5
+- ui-core-002 CONFIRMED but LOW RISK: unreachable!() guards on never-constructed screen types
+- ui-core-005 FALSE POSITIVE: No unwraps at cited lines
+- ui-core-007 FALSE POSITIVE: Theme detection already has proper error handling
+- ui-core-010 FALSE POSITIVE: egui is single-threaded, no race condition
+- ui-core-012 CONFIRMED: Password not zeroized on all exit paths (security issue)
+- ui-core-014 FALSE POSITIVE: Referenced screen type doesn't exist
+- ui-contracts-017/018: Partially confirmed, covered by tasks 2.2 and 2.6
+- ui-dpns-019: Confirmed, deferred to task 2.5 (lock poisoning)
+- 5 issues classified as LOW PRIORITY

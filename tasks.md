@@ -281,7 +281,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.3h Fix infra-012: Replace expect() calls on document property access in platform_info.rs** (P2)
   In `src/backend_task/platform_info.rs`, replace 29+ `expect()` calls on document property accessors with proper error handling. Platform data may be malformed or have schema changes; these should produce errors, not panics.
 
-- [ ] **1.4 [META] Triage UI/UX bugs** (P1)
+- [x] **1.4 [META] Triage UI/UX bugs** (P1)
   Review:
   - GH#482 (Warning message does not fit the screen)
   - GH#147 (Confusing Withdraw vs Transfer naming)
@@ -290,6 +290,52 @@ These META tasks validate reported bugs against the current codebase before any 
   - `issues/ui-contracts-*.md` files
   - `issues/ui-dpns-*.md` files
   Same process: validate, root-cause, create fix tasks.
+
+  **Triage Results:**
+
+  **GitHub Issues:**
+  - **GH#482 — CONFIRMED.** Warning/error messages overflow horizontally on smaller screens. Root cause: inconsistent use of text wrapping. The main wallets screen message display (`wallets_screen/mod.rs:3237-3266`) uses `.wrap()` correctly, but many other error display locations use `ui.colored_label()` or `ui.label()` without wrapping: `wallets_screen/mod.rs:3541` (SK unlock error), `import_mnemonic_screen.rs:479,609`, `add_new_wallet_screen.rs:901`, `send_screen.rs:1066`, `create_asset_lock_screen.rs:618`, `single_key_send_screen.rs:381,805`. Fix: add `.wrap()` to all error/warning label displays.
+  - **GH#147 — CONFIRMED (UX issue).** The Withdraw vs Transfer naming is confusing to users. Problem 1: Withdrawal payout address shown only after pressing Withdraw button. Problem 2: Transfer from identity balance vs Transfer from wallet balance are on different screens with no clear distinction. Problem 3: User reported pending withdrawal that never arrived. This is primarily a UX/design issue requiring coordinated UI changes — deferring to task 4.1 (UX feature requests triage).
+  - **GH#170 — CANNOT REPRODUCE.** The version is set via `env!("CARGO_PKG_VERSION")` in `lib.rs:19` and displayed in `main.rs:54` as `format!("Dash Evo Tool v{}", VERSION)`. The Cargo.toml version is `1.0.0-dev`. This should display correctly. The "double folder" issue on Windows under Roaming is likely due to the `directories` crate behavior or a legacy directory from a previous version — cannot reproduce on macOS. Deferring.
+
+  **Issue Files (ui-core-001 through ui-core-014):**
+  - **ui-core-001 (unwrap on wallet RwLock)** — CONFIRMED but deferred to task 2.5 (lock poisoning strategy). Multiple `.read().unwrap()` and `.write().unwrap()` on wallet RwLock in create_asset_lock_screen.rs and wallet_unlock.rs.
+  - **ui-core-002 (unreachable! in screen creation)** — CONFIRMED but LOW RISK. Three `unreachable!()` in `ScreenType::create_screen()` at `ui/mod.rs:476,596,599`. NetworkChooser is pre-instantiated (never goes through `create_screen()`). ClaimTokensScreen and ViewTokenClaimsScreen have enum variants but no factory methods. These are guards against invalid code paths, not user-reachable crashes. LOW PRIORITY.
+  - **ui-core-003 (ScreenType equality ignores Arc)** — LOW PRIORITY. Structural equality check; functional for current use.
+  - **ui-core-004 (unwrap on settings access)** — PARTIALLY CONFIRMED. Wrong line numbers cited, but `network_chooser_screen.rs` has multiple `.expect("Expected to save db settings")` calls (lines 755, 775, 825) and `.unwrap()` on app_context (lines 172, 175, 178). The settings save expects are P2 — save failure shouldn't crash the app. The app_context unwraps are guarded by tab selection logic.
+  - **ui-core-005 (screen_type unwrap)** — FALSE POSITIVE. Lines 943, 946 contain only match arm braces, no unwrap/expect calls.
+  - **ui-core-006 (large screen match methods)** — LOW PRIORITY. Code duplication in match arms, belongs in Section 3 refactoring.
+  - **ui-core-007 (theme detection error)** — FALSE POSITIVE. `detect_system_theme()` already returns `Result` and `resolve_theme_mode()` uses `.unwrap_or(ThemeMode::Light)` with error logging.
+  - **ui-core-008 (state reset on network switch)** — PARTIALLY CONFIRMED but LOW RISK. Network switch updates context on all screens. Most screens re-fetch data on context change. MasternodeListDiffScreen explicitly clears state. Stale data in other screens is transient.
+  - **ui-core-009 (filter_headers_stage_start never reset)** — LOW PRIORITY. SPV-specific internal state, doesn't affect user experience.
+  - **ui-core-010 (AmountInput changed flag race)** — LOW PRIORITY. egui is single-threaded; no actual race condition possible.
+  - **ui-core-011 (core_client RwLock expect)** — CONFIRMED but deferred to task 2.5. Three `.expect("Core client lock was poisoned")` in `create_asset_lock_screen.rs:118,132,140`.
+  - **ui-core-012 (password not zeroized)** — CONFIRMED (Security). Password field is only zeroized in the `attempt_unlock` path. If user navigates away, switches screens, or closes dialog without unlocking, the password string remains in memory unzeroized. No `Drop` implementation wipes the password buffer. Fix: ensure zeroization on all exit paths.
+  - **ui-core-013 (AmountInput unit mutation)** — LOW PRIORITY. Unit name could theoretically mismatch, but all callers use consistent units.
+  - **ui-core-014 (KeyExchangeConfirmationScreen)** — FALSE POSITIVE. This screen type does not exist in the codebase.
+
+  **Issue Files (ui-contracts-017, ui-contracts-018):**
+  - **ui-contracts-017 (unwrap chain in document actions)** — PARTIALLY CONFIRMED. Unwraps on `Option<T>` fields (selected_contract, selected_identity, selected_key) in `document_action_screen.rs`. These are guarded by `can_broadcast()` check before the methods are called. MEDIUM risk — could panic if call paths change. Covered by task 2.2 audit.
+  - **ui-contracts-018 (unwrap in register contract)** — PARTIALLY CONFIRMED. Mix of SystemTime unwraps (safe, covered by task 2.6) and field unwraps (lines 259-260) with "unwrap should be safe here" comments. LOW-MEDIUM risk.
+
+  **Issue Files (ui-dpns-019):**
+  - **ui-dpns-019 (Mutex unwrap in DPNS screen)** — CONFIRMED but deferred to task 2.5. 11 instances of `.lock().unwrap()` in `dpns_contested_names_screen.rs` on three Mutex fields. Same lock poisoning pattern.
+
+- [ ] **1.4a Fix GH#482: Add text wrapping to error/warning message displays** (P1)
+  Add `.wrap()` to all error/warning message labels that currently overflow horizontally. Affected locations:
+  - `src/ui/wallets/wallets_screen/mod.rs:~3541` (SK unlock error)
+  - `src/ui/wallets/import_mnemonic_screen.rs:479,609`
+  - `src/ui/wallets/add_new_wallet_screen.rs:901`
+  - `src/ui/wallets/send_screen.rs:1066`
+  - `src/ui/wallets/create_asset_lock_screen.rs:618`
+  - `src/ui/wallets/single_key_send_screen.rs:381,805`
+  Replace `ui.colored_label(color, msg)` with `ui.add(egui::Label::new(egui::RichText::new(msg).color(color)).wrap())` pattern.
+
+- [ ] **1.4b Fix ui-core-012: Ensure wallet password zeroization on all exit paths** (P1)
+  In `src/ui/wallets/wallet_unlock.rs`, ensure the password field is zeroized not just on unlock attempt, but also when the dialog is dismissed, the screen is navigated away from, or the component is dropped. Consider implementing `Drop` for the containing struct or adding zeroization in all non-unlock exit paths.
+
+- [ ] **1.4c Fix ui-core-004: Replace expect() on settings save in network chooser** (P2)
+  In `src/ui/network_chooser_screen.rs`, replace `.expect("Expected to save db settings")` calls (lines ~755, ~775, ~825) with `if let Err(e)` + `tracing::warn!`. Settings save failure shouldn't crash the application.
 
 ---
 
@@ -603,7 +649,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 26 |
+| 1. Bug Triage | 30 | 27 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

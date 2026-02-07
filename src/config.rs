@@ -296,14 +296,20 @@ impl NetworkConfig {
     }
 
     /// List of DAPI addresses
-    pub fn dapi_address_list(&self) -> AddressList {
-        AddressList::from_str(&self.dapi_addresses).expect("Could not parse DAPI addresses")
+    pub fn dapi_address_list(&self) -> Result<AddressList, String> {
+        AddressList::from_str(&self.dapi_addresses).map_err(|e| {
+            format!(
+                "Could not parse DAPI addresses '{}': {}",
+                self.dapi_addresses, e
+            )
+        })
     }
 
     /// Insight API URI
     #[allow(dead_code)] // May be used for insight API access
-    pub fn insight_api_uri(&self) -> Uri {
-        Uri::from_str(&self.insight_api_url).expect("invalid insight API URL")
+    pub fn insight_api_uri(&self) -> Result<Uri, String> {
+        Uri::from_str(&self.insight_api_url)
+            .map_err(|e| format!("Invalid insight API URL '{}': {}", self.insight_api_url, e))
     }
 
     /// Update just the `core_rpc_password` in a builder-like manner.

@@ -138,7 +138,13 @@ impl AppContext {
             .expect("Failed to initialize RPC provider");
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = initialize_sdk(&network_config, network, spv_provider.clone());
+        let sdk = match initialize_sdk(&network_config, network, spv_provider.clone()) {
+            Ok(sdk) => sdk,
+            Err(e) => {
+                tracing::error!("Failed to initialize SDK: {e}");
+                return None;
+            }
+        };
         let platform_version = sdk.version();
 
         let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
@@ -1044,7 +1050,7 @@ impl AppContext {
                     .read()
                     .map_err(|_| "SPV provider lock poisoned".to_string())?
                     .clone();
-                initialize_sdk(&cfg, self.network, provider)
+                initialize_sdk(&cfg, self.network, provider)?
             }
             CoreBackendMode::Rpc => {
                 // Create a fresh RPC provider with the new config
@@ -1058,7 +1064,7 @@ impl AppContext {
                         .map_err(|_| "RPC provider lock poisoned".to_string())?;
                     *guard = rpc_provider.clone();
                 }
-                initialize_sdk(&cfg, self.network, rpc_provider)
+                initialize_sdk(&cfg, self.network, rpc_provider)?
             }
         };
 

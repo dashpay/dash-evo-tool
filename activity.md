@@ -142,3 +142,8 @@
 - infra-021 FALSE POSITIVE: lines 70,73 don't have the claimed unwraps
 - 20+ issues deferred to existing tasks (2.5 lock poisoning, 2.6 SystemTime, 3.x refactoring, 6.3 println)
 - 15+ issues classified as LOW PRIORITY
+
+## Run 19 — 2026-02-07
+**Task:** 1.3a Fix core-005: Replace expect() on config address parsing
+**What was done:** Changed `dapi_address_list()` and `insight_api_uri()` in `config.rs` from panicking with `expect()` to returning `Result<_, String>` with descriptive error messages including the invalid input value. Updated `initialize_sdk()` in `sdk_wrapper.rs` to return `Result<Sdk, String>` (also converting the SDK builder's `.expect()` to `.map_err()?`). Updated all 3 call sites in `context.rs`: the initial SDK creation in `AppContext::new()` logs the error and returns `None`, while the two calls in `reinit_core_client_and_sdk()` propagate via `?` since that function already returns `Result<(), String>`. Invalid user-edited config values now produce error messages instead of crashing the app.
+**Files changed:** src/config.rs, src/sdk_wrapper.rs, src/context.rs

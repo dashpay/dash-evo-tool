@@ -251,7 +251,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - **infra-026/027 (task manager shutdown)** — LOW PRIORITY. Shutdown edge cases.
   - **infra-028 (SPV stop race)** — LOW PRIORITY. Unlikely to cause issues.
 
-- [ ] **1.3a Fix core-005: Replace expect() on config address parsing** (P1)
+- [x] **1.3a Fix core-005: Replace expect() on config address parsing** (P1)
   In `src/config.rs:300,306`, replace `expect()` calls in `dapi_address_list()` and `insight_api_uri()` with `Result` returns, so invalid user-edited config values produce error messages instead of panics.
 
 - [ ] **1.3b Fix core-006: Replace expect() on ZMQ listener creation** (P1)
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 18 |
+| 1. Bug Triage | 27 | 19 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

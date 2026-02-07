@@ -143,7 +143,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2a Fix identity-001: Replace panic on unsupported key types** (P0)
   In `src/backend_task/identity/mod.rs:167,193`, replace `panic!("need a ECDSA Key for now")` with proper error return (e.g., `return Err(format!("Unsupported key type: {:?}", key_type))`). Two locations in `to_public_keys_map()`.
 
-- [ ] **1.2b Fix ui-tokens-021: Uncomment reorder assignment** (P1)
+- [x] **1.2b Fix ui-tokens-021: Uncomment reorder assignment** (P1)
   In `src/ui/tokens/tokens_screen/mod.rs`, the `reorder_vec_to()` function builds a reordered map but the assignment `self.my_tokens = reordered` is commented out (~line 1799). Uncomment or properly implement the assignment so token reordering works.
 
 - [ ] **1.2c Fix ui-tokens-022: Wrong field checks in build_distribution_rules** (P1)
@@ -497,7 +497,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 10 |
+| 1. Bug Triage | 19 | 11 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

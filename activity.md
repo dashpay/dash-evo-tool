@@ -81,3 +81,8 @@
 **Task:** 1.2a Fix identity-001: Replace panic on unsupported key types
 **What was done:** Changed `to_public_keys_map()` in `src/backend_task/identity/mod.rs` to return `Result<BTreeMap<KeyID, IdentityPublicKey>, String>` instead of panicking on unsupported key types. Replaced both `panic!("need a ECDSA Key for now")` calls (lines 167, 193) with descriptive error returns. Converted the inner `.map()` closure to a `for` loop to enable early `return Err(...)`. Updated both callers in `register_identity.rs` (lines 365, 720) to propagate the error with `?`.
 **Files changed:** src/backend_task/identity/mod.rs, src/backend_task/identity/register_identity.rs
+
+## Run 11 — 2026-02-07
+**Task:** 1.2b Fix ui-tokens-021: Uncomment reorder assignment
+**What was done:** Uncommented `self.my_tokens = reordered;` in `reorder_vec_to()` at `src/ui/tokens/tokens_screen/mod.rs:1799` so token reordering actually takes effect. Also added a safety loop to append any tokens not present in the saved order (e.g., newly added tokens since the last save) to the end, preventing data loss. Previously, the function built the reordered map but never assigned it, making the drag-to-reorder and saved-order features completely non-functional.
+**Files changed:** src/ui/tokens/tokens_screen/mod.rs

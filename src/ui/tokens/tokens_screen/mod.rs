@@ -1795,8 +1795,15 @@ impl TokensScreen {
             }
         }
 
+        // Append any tokens not present in the saved order (e.g., newly added tokens)
+        for (key, value) in &self.my_tokens {
+            if !reordered.contains_key(key) {
+                reordered.insert(*key, value.clone());
+            }
+        }
+
         // Replace the original with the reordered map
-        //self.my_tokens = reordered;
+        self.my_tokens = reordered;
     }
 
     /// Save the current map's order of token IDs to the DB

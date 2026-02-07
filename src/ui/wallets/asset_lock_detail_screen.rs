@@ -14,6 +14,7 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroize;
 
 pub struct AssetLockDetailScreen {
     pub wallet_seed_hash: [u8; 32],
@@ -272,6 +273,12 @@ impl AssetLockDetailScreen {
                 self.message = None;
             }
         }
+    }
+}
+
+impl Drop for AssetLockDetailScreen {
+    fn drop(&mut self) {
+        self.wallet_password.zeroize();
     }
 }
 

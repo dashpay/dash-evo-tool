@@ -22,6 +22,7 @@ use eframe::egui::{self, Context, Ui};
 use egui::{Button, RichText, Vec2};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroize;
 
 const MAX_IDENTITY_INDEX: u32 = 30;
 
@@ -260,6 +261,12 @@ impl CreateAssetLockScreen {
         });
 
         action
+    }
+}
+
+impl Drop for CreateAssetLockScreen {
+    fn drop(&mut self) {
+        self.wallet_password.zeroize();
     }
 }
 

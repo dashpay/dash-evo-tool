@@ -253,6 +253,12 @@ impl WalletUnlockPopup {
     }
 }
 
+impl Drop for WalletUnlockPopup {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
 /// Helper function to check if a wallet needs unlocking
 pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
     let wallet_guard = wallet.read().unwrap();

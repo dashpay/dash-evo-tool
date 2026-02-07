@@ -331,7 +331,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `src/ui/wallets/single_key_send_screen.rs:381,805`
   Replace `ui.colored_label(color, msg)` with `ui.add(egui::Label::new(egui::RichText::new(msg).color(color)).wrap())` pattern.
 
-- [ ] **1.4b Fix ui-core-012: Ensure wallet password zeroization on all exit paths** (P1)
+- [x] **1.4b Fix ui-core-012: Ensure wallet password zeroization on all exit paths** (P1)
   In `src/ui/wallets/wallet_unlock.rs`, ensure the password field is zeroized not just on unlock attempt, but also when the dialog is dismissed, the screen is navigated away from, or the component is dropped. Consider implementing `Drop` for the containing struct or adding zeroization in all non-unlock exit paths.
 
 - [ ] **1.4c Fix ui-core-004: Replace expect() on settings save in network chooser** (P2)
@@ -649,7 +649,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 30 | 28 |
+| 1. Bug Triage | 30 | 29 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

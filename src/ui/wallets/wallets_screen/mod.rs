@@ -32,6 +32,7 @@ use egui::load::SizedTexture;
 use egui::{Color32, Frame, Margin, RichText, TextureOptions};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroize;
 
 use crate::model::wallet::single_key::SingleKeyWallet;
 
@@ -3167,6 +3168,12 @@ impl WalletsBalancesScreen {
     }
 }
 
+impl Drop for WalletsBalancesScreen {
+    fn drop(&mut self) {
+        self.sk_wallet_password.zeroize();
+    }
+}
+
 impl ScreenLike for WalletsBalancesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         self.check_message_expiration();
@@ -3524,7 +3531,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     }
                                 }
                             }
-                            self.sk_wallet_password.clear();
+                            self.sk_wallet_password.zeroize();
                         }
 
                         // Display error message if the password was incorrect
@@ -3551,7 +3558,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
-                self.sk_wallet_password.clear();
+                self.sk_wallet_password.zeroize();
                 self.sk_error_message = None;
 
                 // Check if we were trying to refresh the SK wallet

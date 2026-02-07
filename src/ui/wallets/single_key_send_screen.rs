@@ -16,6 +16,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroize;
 
 /// A single recipient entry with address and amount
 #[derive(Debug, Clone)]
@@ -789,7 +790,7 @@ impl SingleKeyWalletSendScreen {
                                 match wallet_guard.open(&self.wallet_password) {
                                     Ok(_) => {
                                         self.error_message = None;
-                                        self.wallet_password.clear();
+                                        self.wallet_password.zeroize();
                                     }
                                     Err(e) => {
                                         self.error_message =
@@ -866,6 +867,12 @@ impl SingleKeyWalletSendScreen {
 
     fn dismiss_message(&mut self) {
         self.message = None;
+    }
+}
+
+impl Drop for SingleKeyWalletSendScreen {
+    fn drop(&mut self) {
+        self.wallet_password.zeroize();
     }
 }
 

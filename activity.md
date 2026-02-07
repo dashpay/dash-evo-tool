@@ -157,3 +157,8 @@
 **Task:** 1.3c Fix core-019/context-013/infra-001: Replace unimplemented!/todo! macros
 **What was done:** Replaced panic-inducing macros with proper error handling in 3 locations: (1) `app_dir.rs:61` — changed `unimplemented!()` in `core_cookie_path()` to return `Err(io::Error)` for unsupported networks, restructuring the closure from `.map()` to `.and_then()` to allow error propagation. (2) `app.rs:706` — changed `todo!()` in `current_app_context()` to `unreachable!()` with a descriptive message, since this function returns `&Arc<AppContext>` and the UI only allows selecting known networks. (3) `core_p2p_handler.rs:54` — changed `panic!("Unsupported network type")` to `return Err(format!(...))` since the function already returns `Result<_, String>`.
 **Files changed:** src/app_dir.rs, src/app.rs, src/components/core_p2p_handler.rs
+
+## Run 22 — 2026-02-07
+**Task:** 1.3d Fix context-008/context-010: Cookie parsing safety
+**What was done:** Fixed two cookie parsing issues in `context_provider.rs:30-46`. (1) Replaced `.expect()` on `core_cookie_path()` with `.map_err()?` to return an error instead of panicking if the cookie path can't be determined. (2) Trimmed the cookie string after reading to remove trailing newlines that were being included in the RPC password, causing authentication failures (context-010). (3) Replaced unchecked `cookie_parts[0]`/`cookie_parts[1]` indexing with `split_once(':')` which safely returns `Option<(&str, &str)>` and returns a descriptive error for malformed cookie files (context-008). Using `split_once` also correctly handles passwords that contain colons.
+**Files changed:** src/context_provider.rs

@@ -263,7 +263,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `src/app.rs:682` — `todo!()` for unknown network in current_app_context
   - `src/components/core_p2p_handler.rs:54` — panic on unsupported network
 
-- [ ] **1.3d Fix context-008/context-010: Cookie parsing safety** (P1)
+- [x] **1.3d Fix context-008/context-010: Cookie parsing safety** (P1)
   In `src/context_provider.rs:34-40`:
   (1) Trim the cookie string after reading to remove trailing newlines (context-010)
   (2) Check that split(':') produces exactly 2 parts before indexing (context-008)
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 21 |
+| 1. Bug Triage | 27 | 22 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

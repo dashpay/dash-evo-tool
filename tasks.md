@@ -582,10 +582,67 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Section 3: Code Structure Refactoring [Week 3-6]
 
-- [ ] **3.1 [META] Review masternode_list_diff_screen.rs (4406 lines)** (P2)
+- [x] **3.1 [META] Review masternode_list_diff_screen.rs (4406 lines)** (P2)
   Note: PR#520 already refactors this. First review PR#520 (`gh pr view 520`, `gh pr diff 520`).
   Then identify remaining work after that PR: further split points, extracted components, shared utilities.
   Create sub-tasks for remaining refactoring only.
+
+  **Review Results:**
+
+  **PR#520 Status:** Open, targets `v1.0-dev`, +850/-799 lines. Reorganizes the 30 flat fields into 7 focused sub-structs (`InputState`, `UiState`, `TaskState`, `MnListData`, `CacheState`, `SelectionState`, `IncomingState`). Extracts 3 small helpers (`render_message_banner`, `render_error_banner`, `render_pending_status`). Good state organization work but does NOT reduce the file's line count (still ~4400 lines after PR#520).
+
+  **Current file analysis (4392 lines, 69 functions):**
+  - 13 functions over 100 lines, largest is `fetch_single_dml()` at 239 lines
+  - 126 lines of commented-out dead code (`fetch_range_dml`, lines 971-1096)
+  - 11 selection state fields with reset logic duplicated across 9+ locations
+  - 5 cache structures for height/hash lookups (~9 functions, ~300 lines total)
+  - Detail renderers share common layout patterns (collapsible sections, key-value grids) but aren't abstracted
+  - `display_task_result()` is 197 lines of match arms handling 4+ backend result variants
+  - File I/O (`FileDialog`) mixed into `render_qr_info()` rendering function
+
+  **Remaining refactoring after PR#520 (sub-tasks below):**
+  PR#520 handles the state decomposition well. The remaining work is extracting **rendering logic** and **data-layer functions** into separate files/modules, plus dead code cleanup.
+
+- [ ] **3.1a Remove commented-out `fetch_range_dml` dead code** (P2)
+  Delete 126 lines of commented-out code at lines 971-1096. This is an abandoned function with no callers. If it's ever needed again, it exists in git history.
+
+- [ ] **3.1b Extract height/hash resolution and caching into a helper module** (P2)
+  Extract these 9 functions (~300 lines) into a new `masternode_list_diff_screen/cache_helpers.rs` module (or similar):
+  - `get_height()`, `get_height_or_error_as_string()`, `get_height_and_cache()`, `get_height_and_cache_or_error_as_string()`
+  - `get_block_hash()`, `get_block_hash_and_cache()`
+  - `get_chain_lock_sig()`, `get_chain_lock_sig_and_cache()`
+  - `feed_qr_info_block_heights()`, `feed_mn_list_diff_heights()`, `feed_quorum_entry_height()`
+  These all operate on the cache fields (`block_height_cache`, `block_hash_cache`, `chain_lock_sig_cache`, etc.) and can be grouped as methods on a `CacheState` struct (building on PR#520's struct).
+
+- [ ] **3.1c Extract QR info rendering into a separate file** (P2)
+  Move these QR-info-related rendering functions (~400 lines) into `masternode_list_diff_screen/qr_info_tab.rs`:
+  - `render_qr_info()` (167 lines, includes FileDialog I/O)
+  - `render_quorum_snapshots()` (38 lines)
+  - `render_mn_list_diffs()` (86 lines)
+  - `render_last_commitments()` (54 lines)
+  - `render_quorum_snapshot_list()` (15 lines)
+  - `render_mn_list_diff_list()` (15 lines)
+  - `show_mn_list_diff_heights_as_string()` (37 lines)
+
+- [ ] **3.1d Extract quorum viewer rendering into a separate file** (P2)
+  Move quorum-viewer-related functions (~550 lines) into `masternode_list_diff_screen/quorum_viewer_tab.rs`:
+  - `render_quorums()` (151 lines)
+  - `render_quorum_details()` (201 lines)
+  - `render_selected_quorum_entry()` (180 lines, static)
+  - `required_cl_sig_heights()` (16 lines)
+
+- [ ] **3.1e Extract core items / chain-lock / instant-send rendering** (P2)
+  Move these functions (~400 lines) into `masternode_list_diff_screen/core_items_tab.rs`:
+  - `render_core_items()` (94 lines)
+  - `render_chain_lock_details()` (85 lines)
+  - `render_instant_send_details()` (105 lines)
+  - `render_selected_item_details()` (9 lines)
+  - `attempt_verify_chain_lock()` (7 lines)
+  - `attempt_verify_transaction_lock()` (7 lines)
+  - `received_new_block()` (47 lines)
+
+- [ ] **3.1f Split display_task_result into per-variant handlers** (P3)
+  In `display_task_result()` (197 lines, line 4074), each match arm handles a different `BackendTaskSuccessResult` variant with 20-50 lines of inline logic. Extract each arm into a named method (e.g., `handle_mn_list_diff_result()`, `handle_qr_info_result()`, etc.) to improve readability.
 
 - [ ] **3.2 [META] Review wallets_screen/mod.rs (3813 lines)** (P2)
   Identify logical split points in this file. Look for:
@@ -853,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 7 | 0 |
+| 3. Refactoring | 13 | 1 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

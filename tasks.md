@@ -464,7 +464,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `src/backend_task/identity/register_identity.rs:695` — `.expect("expected to make transition")`
   - `src/backend_task/identity/top_up_identity.rs:532` — `.expect("expected to make transition")`
 
-- [ ] **2.2d Fix token configuration expect() in contract.rs** (P1)
+- [x] **2.2d Fix token configuration expect() in contract.rs** (P1)
   In `src/backend_task/contract.rs:105`, replace `.expect("Expected to get token configuration")` with `?` error propagation. If a token position exists in `contract.tokens()` but has no matching configuration, log a warning and skip that token instead of panicking.
 
 - [ ] **2.2e Fix Identifier::from_bytes unwrap in contacts.rs** (P2)
@@ -770,7 +770,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 15 | 9 |
+| 2. Stability | 15 | 10 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

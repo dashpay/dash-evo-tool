@@ -283,3 +283,8 @@
 **Task:** 2.2c Fix identity/top-up transition expect() calls
 **What was done:** Replaced 3 `.expect()` calls with proper error handling in identity registration and top-up flows. (1) In `register_identity.rs:403-406`, replaced `Identity::new_with_id_and_keys().expect()` inside `unwrap_or_else` with a `match` + `map_err()?` pattern that propagates the error instead of panicking. (2) In `register_identity.rs:685-695`, replaced `IdentityCreateTransition::try_from_identity_with_signer().expect()` inside a `.map_err()` closure with a `match` that includes the transition creation error in the error message instead of panicking. (3) In `top_up_identity.rs:523-532`, same pattern as #2 for `IdentityTopUpTransition::try_from_identity().expect()`. Previously, if identity/transition construction failed (e.g., due to SDK version mismatch or invalid keys), the backend task would panic. Now these produce descriptive error messages.
 **Files changed:** src/backend_task/identity/register_identity.rs, src/backend_task/identity/top_up_identity.rs
+
+## Run 40 — 2026-02-07
+**Task:** 2.2d Fix token configuration expect() in contract.rs
+**What was done:** Replaced `.expect("Expected to get token configuration")` on `expected_token_configuration()` in `contract.rs:104-105` with a `match` that logs a warning via `tracing::warn!` and `continue`s to skip that token if the configuration is missing. Previously, if a token position existed in `contract.tokens()` but had no matching configuration (e.g., due to contract data inconsistency), the backend task would panic. Now it logs the error with the token position and contract ID, and skips that token while still processing the rest.
+**Files changed:** src/backend_task/contract.rs

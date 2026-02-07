@@ -631,7 +631,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `render_selected_quorum_entry()` (180 lines, static)
   - `required_cl_sig_heights()` (16 lines)
 
-- [ ] **3.1e Extract core items / chain-lock / instant-send rendering** (P2)
+- [x] **3.1e Extract core items / chain-lock / instant-send rendering** (P2)
   Move these functions (~400 lines) into `masternode_list_diff_screen/core_items_tab.rs`:
   - `render_core_items()` (94 lines)
   - `render_chain_lock_details()` (85 lines)
@@ -910,7 +910,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 13 | 5 |
+| 3. Refactoring | 13 | 6 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

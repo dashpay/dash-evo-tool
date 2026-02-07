@@ -403,15 +403,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Dash,
-                    &mainnet_core_zmq_endpoint,
-                    core_message_sender.clone(), // Clone the sender for each listener
-                    Some(mainnet_app_context.sx_zmq_status.clone()),
-                )
-                .expect("Failed to create mainnet InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Dash,
+                &mainnet_core_zmq_endpoint,
+                core_message_sender.clone(),
+                Some(mainnet_app_context.sx_zmq_status.clone()),
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create mainnet ZMQ listener: {}. ZMQ features will be unavailable for mainnet.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -430,15 +436,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let testnet_core_zmq_listener = if !testnet_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Testnet,
-                    &testnet_core_zmq_endpoint,
-                    core_message_sender.clone(), // Use the original sender or create a new one if needed
-                    testnet_tx_zmq_status_option,
-                )
-                .expect("Failed to create testnet InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Testnet,
+                &testnet_core_zmq_endpoint,
+                core_message_sender.clone(),
+                testnet_tx_zmq_status_option,
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create testnet ZMQ listener: {}. ZMQ features will be unavailable for testnet.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -457,15 +469,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let devnet_core_zmq_listener = if !devnet_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Devnet,
-                    &devnet_core_zmq_endpoint,
-                    core_message_sender.clone(),
-                    devnet_tx_zmq_status_option,
-                )
-                .expect("Failed to create devnet InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Devnet,
+                &devnet_core_zmq_endpoint,
+                core_message_sender.clone(),
+                devnet_tx_zmq_status_option,
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create devnet ZMQ listener: {}. ZMQ features will be unavailable for devnet.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -484,15 +502,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let local_core_zmq_listener = if !local_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Regtest,
-                    &local_core_zmq_endpoint,
-                    core_message_sender,
-                    local_tx_zmq_status_option,
-                )
-                .expect("Failed to create local InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Regtest,
+                &local_core_zmq_endpoint,
+                core_message_sender,
+                local_tx_zmq_status_option,
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create local ZMQ listener: {}. ZMQ features will be unavailable for local/regtest.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };

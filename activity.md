@@ -147,3 +147,8 @@
 **Task:** 1.3a Fix core-005: Replace expect() on config address parsing
 **What was done:** Changed `dapi_address_list()` and `insight_api_uri()` in `config.rs` from panicking with `expect()` to returning `Result<_, String>` with descriptive error messages including the invalid input value. Updated `initialize_sdk()` in `sdk_wrapper.rs` to return `Result<Sdk, String>` (also converting the SDK builder's `.expect()` to `.map_err()?`). Updated all 3 call sites in `context.rs`: the initial SDK creation in `AppContext::new()` logs the error and returns `None`, while the two calls in `reinit_core_client_and_sdk()` propagate via `?` since that function already returns `Result<(), String>`. Invalid user-edited config values now produce error messages instead of crashing the app.
 **Files changed:** src/config.rs, src/sdk_wrapper.rs, src/context.rs
+
+## Run 20 — 2026-02-07
+**Task:** 1.3b Fix core-006: Replace expect() on ZMQ listener creation
+**What was done:** Replaced `.expect()` on `CoreZMQListener::spawn_listener()` with `match` blocks that log the error via `tracing::error!` and return `None` instead of panicking, for all 4 network listeners (mainnet, testnet, devnet, local/regtest) in `app.rs`. If a ZMQ endpoint is unreachable or the port is in use, the app now continues in degraded mode (without ZMQ-based instant notifications for that network) instead of crashing. The fields were already `Option<CoreZMQListener>`, so downstream code already handles `None` gracefully.
+**Files changed:** src/app.rs

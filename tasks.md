@@ -458,7 +458,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Lines 175, 208: Replace `semaphore.acquire_owned().await.unwrap()` with `.map_err()?` or graceful return.
   - Lines 183, 190, 220, 227: Replace `.expect("expected to send ...")` on `sender.send().await` with `if let Err(e)` that logs and returns (receiver may be dropped during shutdown).
 
-- [ ] **2.2c Fix identity/top-up transition expect() calls** (P1)
+- [x] **2.2c Fix identity/top-up transition expect() calls** (P1)
   Replace `.expect()` with `?` error propagation in 3 locations:
   - `src/backend_task/identity/register_identity.rs:405` — `.expect("expected to make identity")`
   - `src/backend_task/identity/register_identity.rs:695` — `.expect("expected to make transition")`
@@ -770,7 +770,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 15 | 8 |
+| 2. Stability | 15 | 9 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

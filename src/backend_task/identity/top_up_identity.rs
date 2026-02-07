@@ -520,20 +520,23 @@ impl AppContext {
                                 );
                             }
 
-                            let identity_create_transition =
-                                IdentityTopUpTransition::try_from_identity(
-                                    &qualified_identity.identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    0,
-                                    self.platform_version(),
-                                    None,
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e, identity_create_transition
-                            )
+                            match IdentityTopUpTransition::try_from_identity(
+                                &qualified_identity.identity,
+                                asset_lock_proof,
+                                asset_lock_proof_private_key.inner.as_ref(),
+                                0,
+                                self.platform_version(),
+                                None,
+                            ) {
+                                Ok(transition) => format!(
+                                    "error: {}, transaction is {:?}",
+                                    e, transition
+                                ),
+                                Err(transition_err) => format!(
+                                    "error: {}, also failed to recreate transition for debugging: {}",
+                                    e, transition_err
+                                ),
+                            }
                         })?
                 } else {
                     return Err(error_string);

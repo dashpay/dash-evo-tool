@@ -164,7 +164,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.2h Fix GH#499b: Add security level validation for ENCRYPTION/DECRYPTION keys** (P2)
   In the Identity Create add_key flow, enforce that ENCRYPTION and DECRYPTION key purposes use SecurityLevel::MEDIUM (as required by Platform). Currently only TRANSFER keys are locked to CRITICAL. Add UI validation or auto-lock for enc/dec keys.
 
-- [ ] **1.3 [META] Triage core/config/infrastructure bugs** (P1)
+- [x] **1.3 [META] Triage core/config/infrastructure bugs** (P1)
   Review:
   - GH#522 (UTXO loading - overlaps with wallet triage, focus on core/config aspects)
   - GH#333 (Inconsistent connection status - note PR#532 may address this)
@@ -174,6 +174,112 @@ These META tasks validate reported bugs against the current codebase before any 
   - `issues/context-001-unwrap-panics-in-new.md` through `issues/context-023-missing-dashpay-in-reinit.md`
   - `issues/infra-*.md` files
   Same process: validate, root-cause, create fix tasks.
+
+  **Triage Results:**
+
+  **GitHub Issues:**
+  - **GH#522 — ALREADY FIXED by task 1.1a.** Auto-refresh UTXOs on startup added.
+  - **GH#333 — ADDRESSED BY PR#532.** PR#532 ("fix: connection status not clear") centralizes connection status monitoring with dynamic tooltips and backend-mode awareness. No additional DET work needed; defer to that PR.
+  - **GH#98 — CONFIRMED.** Core RPC client is created in context.rs (line ~171) and context_provider.rs (line ~49) without any wallet specification (`rpcwallet` parameter). When Core has multiple wallets open, all RPC calls fail with "Wallet file not specified". No `listwallets` check, no wallet selection UI, no helpful error message. Fix: detect multi-wallet scenario and either auto-select or prompt user.
+  - **GH#77 — LIKELY STALE.** Original crash (2023) was "illegal hardware instruction" (SIGILL), likely CPU incompatibility or old deserialization bug. Current ZMQ listener code handles all deserialization errors gracefully with error logging. Load Identity flow doesn't directly interact with ZMQ. CPU compatibility check added in cpu_compatibility.rs. Remaining risk: `.expect()` calls on ZMQ socket setup (covered by infra-002). Not creating a specific fix task; existing expect() calls covered by task 2.2/infra-002 findings.
+
+  **Issue Files (core-001 through core-020):**
+  - **core-001 (panic on DB init)** — CONFIRMED. `app.rs:170-172` has `expect()` on file path creation, `unwrap()` on Database::new and initialize. Fix: propagate errors to show user-friendly startup failure message.
+  - **core-002 (RwLock poison panic)** — CONFIRMED but deferred to task 2.5 (lock poisoning strategy).
+  - **core-003 (Mutex unwrap panic)** — CONFIRMED but deferred to task 2.5.
+  - **core-004 (runtime creation panic)** — LOW PRIORITY. Tokio runtime creation only fails in extreme circumstances (resource exhaustion). The `expect()` is standard practice.
+  - **core-005 (config expect on addresses)** — CONFIRMED. `config.rs:300,306` uses `expect()` on parsing DAPI addresses and Insight API URL. User-edited config with invalid values will panic at runtime. Fix: return Result instead of panicking.
+  - **core-006 (ZMQ listener panic)** — CONFIRMED. `app.rs:413,440,467,494` uses `expect()` on CoreZMQListener::spawn_listener() for all 4 networks. If ZMQ endpoint is unreachable or port is in use, the entire app panics. Fix: handle errors gracefully and show connection error in UI.
+  - **core-007 (network context panic)** — CONFIRMED. `app.rs:679-681` uses `expect()` on network context access. Panics if user switches to an unconfigured network. Fix: return Option or show error instead of panic.
+  - **core-008 (icon load panic)** — LOW RISK. Embedded compile-time image, extremely unlikely to fail.
+  - **core-009 (screen unwrap panic)** — CONFIRMED but LOW PRIORITY. BTreeMap screen access assumes initialization completed; would only fail if init logic changes.
+  - **core-010 (SystemTime unwrap)** — CONFIRMED, deferred to task 2.6.
+  - **core-011 (config load poor error)** — LOW PRIORITY. Confusing conditional logic but functional.
+  - **core-012 (config save no sync)** — LOW PRIORITY. Missing fsync could lose data on crash, but this is a common pattern and low probability.
+  - **core-013 (duplicate screen init)** — CONFIRMED but deferred to task 3.5 (context.rs refactoring) / code duplication.
+  - **core-014 (logging panic on failure)** — CONFIRMED. `logging.rs:17-26` panics if log file creation fails. Fix: fall back to stderr logging.
+  - **core-015 (CPU check dialog unwrap)** — LOW PRIORITY. Dialog `.show()` unwrap only panics in headless environments, which aren't target platforms.
+  - **core-016 (config truncation danger)** — CONFIRMED. `config.rs:71-72` uses `File::create()` which truncates before writing. A partial write failure leaves corrupt config. Fix: write to temp file, then rename.
+  - **core-017 (bundled write race)** — LOW PRIORITY. TOCTOU race on bundled resource files is unlikely in practice.
+  - **core-018 (app dir filename validation)** — LOW PRIORITY. Only accepts filenames from internal code, not user input.
+  - **core-019 (dead code todo/unimplemented)** — CONFIRMED. `app_dir.rs:61` and `app.rs:682` have `unimplemented!()` and `todo!()` macros. Fix: replace with proper error handling for unknown networks.
+  - **core-020 (large update function)** — CONFIRMED but deferred to Section 3 refactoring.
+
+  **Issue Files (context-001 through context-023):**
+  - **context-001 (unwrap panics in new)** — CONFIRMED but deferred to task 2.3 (context.rs/database audit).
+  - **context-002 (cookie path panic)** — CONFIRMED, part of context-001 scope.
+  - **context-003 through context-007 (lock unwraps)** — CONFIRMED but deferred to task 2.5 (lock poisoning strategy).
+  - **context-008 (cookie parsing unchecked indexing)** — CONFIRMED. `context_provider.rs:38-39` indexes cookie_parts[0] and [1] without bounds check. Malformed cookie file panics. Fix: validate split result.
+  - **context-009 (missing DashPay contract check in SPV)** — LOW PRIORITY. Inconsistent but functional.
+  - **context-010 (cookie newline issue)** — CONFIRMED. Cookie read via `read_to_string` with no `.trim()`, trailing newline gets included in password causing auth failures. Fix: trim the cookie string.
+  - **context-011 (dead code)** — LOW PRIORITY. Unused function, possible future feature.
+  - **context-012 (hardcoded platform version)** — LOW PRIORITY. TODO to use sdk.version() but not actionable without SDK support.
+  - **context-013 (unreachable network panic)** — CONFIRMED, same as core-019.
+  - **context-014 through context-015 (lock poisoning/race)** — Deferred to task 2.5.
+  - **context-016 (unused password_info)** — LOW PRIORITY. Dead code with #[allow(dead_code)].
+  - **context-017 (DB errors swallowed in reconcile)** — FALSE POSITIVE. Verified code actually logs errors with tracing::warn and propagates with ?.
+  - **context-018 (very long reconcile function)** — CONFIRMED but deferred to Section 3 refactoring.
+  - **context-019 (clone poisoned lock fallback)** — Deferred to task 2.5.
+  - **context-020 (SDK builder expect)** — CONFIRMED. `sdk_wrapper.rs:31` has `.expect("Failed to build SDK")`. Fix: propagate error.
+  - **context-021 (wallet classification incomplete)** — LOW PRIORITY. Functional for current use cases.
+  - **context-022 (UTXO insert unchecked)** — LOW PRIORITY. All-or-nothing on error is acceptable behavior.
+  - **context-023 (missing dashpay in reinit)** — LOW PRIORITY. Reinit doesn't reload system contracts but this rarely causes issues.
+
+  **Issue Files (infra-001 through infra-028):**
+  - **infra-001 (P2P panic on network)** — CONFIRMED. `core_p2p_handler.rs:54` panics on unsupported network. Same pattern as core-019. Fix: return error.
+  - **infra-002 (ZMQ listener expect panics)** — CONFIRMED. Multiple `expect()` calls in ZMQ background thread. Covered by core-006 fix for setup; runtime expects need separate handling.
+  - **infra-003 (SPV manager expect panic)** — LOW PRIORITY. Tokio runtime creation expect is standard practice.
+  - **infra-004/005 (ZMQ Windows panics)** — LOW PRIORITY. Windows-specific code, and platform targets are limited.
+  - **infra-006 (SPV wallet load busy wait)** — LOW PRIORITY. Inefficient but functional.
+  - **infra-007 (task spawn resource leak)** — LOW PRIORITY. Documented known limitation.
+  - **infra-008 (SPV lock error swallowing)** — Deferred to task 2.5.
+  - **infra-009 (P2P header sync no limit)** — LOW PRIORITY. 1KB scan is bounded.
+  - **infra-010 (unbounded channel)** — LOW PRIORITY. Unlikely to exhaust memory in practice.
+  - **infra-011 (timeout not restored)** — LOW PRIORITY. Non-critical socket timeout.
+  - **infra-012 (platform_info.rs expect panics)** — CONFIRMED. 29+ `expect()` calls on document property accessors. Malformed Platform data will crash the app. Fix: replace with proper error handling.
+  - **infra-013/014 (println not tracing)** — CONFIRMED, deferred to task 6.3.
+  - **infra-015 (SPV storage lock)** — LOW PRIORITY. Unlikely failure mode.
+  - **infra-016 (quorum lookup no timeout)** — LOW PRIORITY. SPV-specific edge case.
+  - **infra-017 (backend task lock unwraps)** — Deferred to task 2.5.
+  - **infra-018 (test unwraps)** — LOW PRIORITY. Test code.
+  - **infra-019/020 (DashPay unwraps)** — LOW PRIORITY. Cryptographic operations with well-formed inputs.
+  - **infra-021 (asset lock unwrap)** — FALSE POSITIVE. Lines 70,73 don't have unwraps on confirmations.
+  - **infra-022 (P2P slice unwrap)** — LOW PRIORITY. Slice sizes are correct in practice.
+  - **infra-023 (mnlist lock unwrap)** — Deferred to task 2.5.
+  - **infra-024 (mnlist unbounded loop)** — LOW PRIORITY. Range calculation is bounded by blockchain height.
+  - **infra-025 (mnlist connection reuse)** — LOW PRIORITY. Single-use P2P connection is acceptable.
+  - **infra-026/027 (task manager shutdown)** — LOW PRIORITY. Shutdown edge cases.
+  - **infra-028 (SPV stop race)** — LOW PRIORITY. Unlikely to cause issues.
+
+- [ ] **1.3a Fix core-005: Replace expect() on config address parsing** (P1)
+  In `src/config.rs:300,306`, replace `expect()` calls in `dapi_address_list()` and `insight_api_uri()` with `Result` returns, so invalid user-edited config values produce error messages instead of panics.
+
+- [ ] **1.3b Fix core-006: Replace expect() on ZMQ listener creation** (P1)
+  In `src/app.rs:413,440,467,494`, replace `expect()` on `CoreZMQListener::spawn_listener()` with error handling that logs the failure and continues without ZMQ (degraded mode) instead of crashing the app. All four network listeners.
+
+- [ ] **1.3c Fix core-019/context-013/infra-001: Replace unimplemented!/todo! macros** (P1)
+  Replace panic-inducing macros with proper error handling:
+  - `src/app_dir.rs:61` — `unimplemented!()` for unknown network
+  - `src/app.rs:682` — `todo!()` for unknown network in current_app_context
+  - `src/components/core_p2p_handler.rs:54` — panic on unsupported network
+
+- [ ] **1.3d Fix context-008/context-010: Cookie parsing safety** (P1)
+  In `src/context_provider.rs:34-40`:
+  (1) Trim the cookie string after reading to remove trailing newlines (context-010)
+  (2) Check that split(':') produces exactly 2 parts before indexing (context-008)
+  Return an error instead of panicking on malformed cookie files.
+
+- [ ] **1.3e Fix core-016: Safe config save with atomic write** (P2)
+  In `src/config.rs` `save()` method, write to a temporary file first, then rename/move to the target path. This prevents config corruption if a write fails partway through (currently `File::create()` truncates immediately).
+
+- [ ] **1.3f Fix core-014: Logging initialization should not panic** (P2)
+  In `src/logging.rs:17-26`, replace `panic!`/`expect()` on log file creation and EnvFilter with fallback to stderr logging, so the app can still run even if log file setup fails.
+
+- [ ] **1.3g Fix core-001: Replace unwrap/expect on database initialization** (P2)
+  In `src/app.rs:170-172`, replace `expect()` and `unwrap()` on database file path creation and initialization with proper error handling that shows a user-friendly error dialog instead of panicking.
+
+- [ ] **1.3h Fix infra-012: Replace expect() calls on document property access in platform_info.rs** (P2)
+  In `src/backend_task/platform_info.rs`, replace 29+ `expect()` calls on document property accessors with proper error handling. Platform data may be malformed or have schema changes; these should produce errors, not panics.
 
 - [ ] **1.4 [META] Triage UI/UX bugs** (P1)
   Review:
@@ -492,12 +598,12 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 57 (24 META + 33 direct)
+**Total tasks:** 65 (24 META + 41 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 19 | 17 |
+| 1. Bug Triage | 27 | 18 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

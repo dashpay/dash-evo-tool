@@ -116,3 +116,29 @@
 **Task:** 1.2h Fix GH#499b: Add security level validation for ENCRYPTION/DECRYPTION keys
 **What was done:** In the Identity Create screen's `render_keys_input()` in `add_new_identity_screen/mod.rs`, added ENCRYPTION and DECRYPTION as selectable purpose options in the purpose combo box, and enforced security level constraints: ENCRYPTION/DECRYPTION keys are locked to SecurityLevel::MEDIUM (matching Platform requirements), TRANSFER remains locked to CRITICAL, and AUTHENTICATION allows CRITICAL/HIGH/MEDIUM. Added auto-set logic that changes security level when purpose is switched. Previously, the purpose selector only offered AUTHENTICATION and TRANSFER, but the default keys included ENCRYPTION/DECRYPTION keys whose security level could be changed to invalid values via the unlocked security level combo box, causing state transitions to fail on Platform.
 **Files changed:** src/ui/identities/add_new_identity_screen/mod.rs
+
+## Run 18 — 2026-02-07
+**Task:** 1.3 [META] Triage core/config/infrastructure bugs
+**What was done:** Triaged 4 GitHub issues (GH#522, GH#333, GH#98, GH#77) and 71 auto-generated issue files (core-001 through core-020, context-001 through context-023, infra-001 through infra-028) against current codebase. Verified each claim by reading relevant source code. Created 8 specific sub-tasks for confirmed bugs.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 8 (1.3a through 1.3h)
+
+**Summary of findings:**
+- GH#522 ALREADY FIXED by task 1.1a
+- GH#333 ADDRESSED BY PR#532 (connection status centralization)
+- GH#98 CONFIRMED: No rpcwallet parameter passed in multi-wallet Core RPC scenarios
+- GH#77 LIKELY STALE: Original SIGILL crash from 2023 not reproducible; ZMQ deserialization now has error handling
+- core-001 CONFIRMED: unwrap/expect on DB init (app.rs:170-172)
+- core-005 CONFIRMED: expect() on config address parsing (config.rs:300,306)
+- core-006 CONFIRMED: expect() on ZMQ listener creation for all 4 networks (app.rs:413-494)
+- core-014 CONFIRMED: Logging init panics on failure (logging.rs:17-26)
+- core-016 CONFIRMED: Config save truncates before writing (config.rs:71-72)
+- core-019/context-013/infra-001 CONFIRMED: unimplemented!/todo! macros for unknown networks
+- context-008 CONFIRMED: Cookie parsing with unchecked indexing (context_provider.rs:38-39)
+- context-010 CONFIRMED: Cookie string not trimmed, newline in password (context_provider.rs:34-40)
+- context-020 CONFIRMED: expect() on SDK builder (sdk_wrapper.rs:31)
+- infra-012 CONFIRMED: 29+ expect() calls on document properties in platform_info.rs
+- context-017 FALSE POSITIVE: errors actually logged with tracing::warn
+- infra-021 FALSE POSITIVE: lines 70,73 don't have the claimed unwraps
+- 20+ issues deferred to existing tasks (2.5 lock poisoning, 2.6 SystemTime, 3.x refactoring, 6.3 println)
+- 15+ issues classified as LOW PRIORITY

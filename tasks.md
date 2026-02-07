@@ -564,12 +564,15 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **No new sub-tasks created.** Both confirmed issues were already fixed by prior tasks. The UTXO race is low risk and deferred.
 
-- [ ] **2.5 Design and implement lock poisoning recovery strategy** (P1)
+- [x] **2.5 Design and implement lock poisoning recovery strategy** (P1)
   Currently the codebase uses `.lock().unwrap()` pervasively. Design a consistent approach:
   - Option A: Use `.lock().unwrap_or_else(|e| e.into_inner())` where safe
   - Option B: Create a helper that logs and recovers
   - Option C: Use parking_lot mutexes (no poisoning)
   Implement the chosen strategy in `src/context.rs` first as a template, then apply elsewhere.
+
+  **Implementation: Option B chosen and already applied codebase-wide.**
+  Created `src/lock_helper.rs` with extension traits `MutexExt` (providing `lock_or_recover()`) and `RwLockExt` (providing `read_or_recover()` and `write_or_recover()`). These use `unwrap_or_else(|poisoned| poisoned.into_inner())` with `tracing::warn!` logging. All ~80+ production lock access sites across 71 files have been migrated to use these helpers. Zero `.lock().unwrap()`, `.read().unwrap()`, or `.write().unwrap()` calls remain in production code (18 remaining instances are exclusively in `#[test]` functions where panicking is acceptable).
 
 - [ ] **2.6 Fix SystemTime expect panics** (P1)
   Replace `SystemTime::now().duration_since(UNIX_EPOCH).expect(...)` with `.unwrap_or_default()` across the codebase.
@@ -849,7 +852,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 20 | 18 |
+| 2. Stability | 20 | 19 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

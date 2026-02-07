@@ -338,3 +338,8 @@
 **What was done:** Read and verified 5 high-severity issue file claims against the actual codebase. wallet-003 (UTXO double-spend race) CONFIRMED but LOW RISK — race window exists but UI serializes user actions, making it theoretical. wallet-008 (infinite loop on proof wait) ALREADY FIXED by task 1.1e. core-016 (config file truncate danger) ALREADY FIXED by task 1.3e. context-014 (lock poisoning cascade) FALSE POSITIVE — Arc refcount drops to 0 on None return, cleaning up all resources. wallet-001 (arithmetic underflow) FALSE POSITIVE — subtraction is guarded by identical fee check at line 107. No new sub-tasks created.
 **Files changed:** tasks.md, activity.md
 **Sub-tasks created:** 0
+
+## Run 49 — 2026-02-07
+**Task:** 2.5 Design and implement lock poisoning recovery strategy
+**What was done:** Verified that this task was already completed by prior work. The chosen strategy is Option B: a helper module (`src/lock_helper.rs`) providing `MutexExt` and `RwLockExt` extension traits with `lock_or_recover()`, `read_or_recover()`, and `write_or_recover()` methods. These use `unwrap_or_else(|poisoned| poisoned.into_inner())` with `tracing::warn!` logging on recovery. All ~80+ production lock access sites across 71 files have been migrated. Zero `.lock().unwrap()`, `.read().unwrap()`, or `.write().unwrap()` calls remain in production code — only 18 instances remain, all exclusively in `#[test]` functions. Confirmed all checks pass (fmt, build, clippy, test).
+**Files changed:** tasks.md, activity.md

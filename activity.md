@@ -23,3 +23,8 @@
 **Task:** 1.1a Fix GH#522: Auto-refresh UTXOs on app startup
 **What was done:** Added automatic UTXO refresh on startup in `bootstrap_loaded_wallets()`. In RPC mode, spawns background tasks to call `refresh_wallet_info` for each HD wallet and `refresh_single_key_wallet_info` for each single-key wallet. SPV mode is unaffected (handles UTXOs via reconciliation). This ensures wallet balances are current without requiring the user to manually click Refresh.
 **Files changed:** src/context.rs
+
+## Run 3 — 2026-02-07
+**Task:** 1.1b Fix GH#476: Hardcoded fee strategy in platform address funding
+**What was done:** Fixed the platform fee strategy in `fund_platform_address_from_wallet_utxos()` to respect the `fee_deduct_from_output` flag. When the user selects "deduct from input" (fee_deduct_from_output=false), the code now creates two outputs: the destination with an explicit `Some(amount_credits)` for the exact requested amount, and a change address (derived from the asset lock one-time key) as the `None` remainder recipient. The fee is deducted from the change output via `ReduceOutput(change_index)`, so the destination receives the exact amount. Previously, the fee was always hardcoded as `ReduceOutput(0)` against a single `None` output, causing the destination to always receive less than requested regardless of the fee strategy setting.
+**Files changed:** src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs

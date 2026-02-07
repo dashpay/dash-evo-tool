@@ -52,7 +52,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.1a Fix GH#522: Auto-refresh UTXOs on app startup** (P0)
   In `src/context.rs` `bootstrap_loaded_wallets()` (or equivalent startup path), trigger a background `reload_utxos()` call for each loaded wallet after initialization, so UTXOs reflect current Core state without manual Refresh.
 
-- [ ] **1.1b Fix GH#476: Hardcoded fee strategy in platform address funding** (P0)
+- [x] **1.1b Fix GH#476: Hardcoded fee strategy in platform address funding** (P0)
   In `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs:174`, replace the hardcoded `ReduceOutput(0)` with conditional logic: use `ReduceOutput(0)` when `fee_deduct_from_output` is true, use a non-reducing strategy when false (fees were already added to the asset lock amount at lines 30-39).
 
 - [ ] **1.1c Fix GH#478: Wallet balance top-up max button doesn't reserve fees** (P1)
@@ -362,14 +362,63 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ---
 
+## Section 9: Upstream PR Submission [When Ready]
+
+> **Goal:** Cherry-pick completed work from `ralph/improvements` into clean branches off `v1.0-dev` and open draft PRs upstream. Limit to 5-10 PRs max. Prioritize changes that are important, easy to review, trivial, and merge cleanly.
+
+- [ ] **9.1 [META] Review all changes on `ralph/improvements` and select PR candidates** (P1)
+  Compare `ralph/improvements` against `v1.0-dev` (`git log --oneline v1.0-dev..ralph/improvements`).
+  For each commit or logical group of commits, evaluate:
+  1. **Importance:** Does it fix a real bug, improve stability, or add clear value?
+  2. **Reviewability:** Is the diff small and self-contained? Can a reviewer understand it quickly?
+  3. **Merge cleanliness:** Does it apply cleanly to `v1.0-dev` HEAD without conflicts?
+  4. **Risk:** Could it introduce regressions? Lower risk = higher priority for PR.
+  Select 5-10 candidates and create a numbered sub-task (9.2, 9.3, ...) for each one below.
+  For each candidate, note: commit hash(es), summary, estimated diff size, and target PR title.
+
+- [ ] **9.2–9.N PR submission tasks** *(created by 9.1)*
+  Each sub-task follows this exact process:
+  1. `git fetch origin && git checkout -b pr/<short-name> origin/v1.0-dev`
+  2. `git cherry-pick <commit-hash>` (resolve conflicts if any; if conflicts are non-trivial, skip this PR and note why)
+  3. **Review the diff carefully** before pushing:
+     - `git diff origin/v1.0-dev..HEAD` — verify only intended changes are included
+     - No task-management files (tasks.md, activity.md, prompt.md, ralph.sh) should be in the diff
+     - No unrelated changes leaked in
+     - Code compiles (`cargo build 2>&1 | tail -5`)
+     - Clippy passes (`cargo clippy --all-features --all-targets -- -D warnings 2>&1 | tail -5`)
+  4. `git push -u origin pr/<short-name>`
+  5. Create draft PR:
+     ```
+     gh pr create --draft --base v1.0-dev \
+       --title "<concise title>" \
+       --body "$(cat <<'EOF'
+     ## Summary
+     <1-3 bullet points describing the change>
+
+     ## Review Notes
+     - Cherry-picked from branch `ralph/improvements` (commit `<hash>`)
+     - This PR was created via an automated process by Claude Code
+     - Please review carefully before merging
+
+     ## Test Plan
+     <How to verify this change>
+
+     🤖 Generated with [Claude Code](https://claude.com/claude-code)
+     EOF
+     )"
+     ```
+  6. Record the PR URL in this file next to the task checkbox.
+
+---
+
 ## Progress Tracking
 
-**Total tasks:** 47 (23 META + 24 direct)
+**Total tasks:** 49 (24 META + 25 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 11 | 2 |
+| 1. Bug Triage | 11 | 3 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
@@ -377,3 +426,4 @@ These META tasks validate reported bugs against the current codebase before any 
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
+| 9. Upstream PRs | 2+ | 0 |

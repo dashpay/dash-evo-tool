@@ -4,6 +4,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,9 +32,11 @@ impl AppContext {
             // Fees deducted from output: use the requested amount, allow core fee to be taken from it
             (amount, true)
         } else {
-            // Fees paid from wallet: add estimated platform fee to asset lock amount
+            // Fees paid from wallet: add estimated platform fee to asset lock amount.
+            // We use 2 outputs: the destination (explicit amount) and a change address
+            // (remainder recipient that absorbs the fee).
             let estimated_platform_fee_duffs =
-                PlatformFeeEstimator::new().estimate_address_funding_from_asset_lock_duffs(1);
+                PlatformFeeEstimator::new().estimate_address_funding_from_asset_lock_duffs(2);
             let asset_lock_amount = amount.saturating_add(estimated_platform_fee_duffs);
             (asset_lock_amount, false)
         };
@@ -169,9 +172,39 @@ impl AppContext {
 
         // Step 8: Fund the destination platform address
         let mut outputs = std::collections::BTreeMap::new();
-        outputs.insert(destination, None); // None means use all available funds
 
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+        let fee_strategy = if fee_deduct_from_output {
+            // Fee deducted from output: destination is the remainder recipient (gets
+            // asset lock value minus fee). ReduceOutput(0) tells Platform to deduct
+            // the fee from the single output.
+            outputs.insert(destination, None);
+            vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
+        } else {
+            // Fee NOT deducted from output: destination receives the exact requested
+            // amount. We use a separate "change" address derived from the asset lock
+            // key as the remainder recipient (absorbs the fee estimate surplus).
+            // The fee is deducted from the change output, not the destination.
+            let amount_credits = amount.saturating_mul(CREDITS_PER_DUFF);
+            let change_address = PlatformAddress::from(&asset_lock_private_key);
+
+            if change_address == destination {
+                // Extremely unlikely: random key collides with destination address.
+                // Fall back to single-output mode with remainder.
+                outputs.insert(destination, None);
+                vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
+            } else {
+                outputs.insert(destination, Some(amount_credits));
+                outputs.insert(change_address, None); // Remainder recipient
+
+                // Determine the BTreeMap index of the change address to target it
+                // with the fee strategy (BTreeMap iterates in key order).
+                let change_index = outputs
+                    .keys()
+                    .position(|k| *k == change_address)
+                    .unwrap_or(0) as u16;
+                vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
+            }
+        };
 
         outputs
             .top_up(

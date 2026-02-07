@@ -685,7 +685,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.2b Extract single-key wallet view into wallets_screen/single_key_view.rs** (P2)
   Move `render_single_key_wallet_view()` (lines 2928-3100, 173 lines) into a new file. This is a self-contained rendering function for single-key wallets with UTXO table and pagination. The `utxo_page` field stays on `WalletsBalancesScreen` but the rendering method moves.
 
-- [ ] **3.2c Extract address table rendering into wallets_screen/address_table.rs** (P2)
+- [x] **3.2c Extract address table rendering into wallets_screen/address_table.rs** (P2)
   Move `render_address_table()` (lines 747-1039, 293 lines) plus sorting helpers `toggle_sort()`, `sort_address_data()`, `categorize_path()` (~40 lines), and the `AddressData` struct + impl into a new file. Also move `SortColumn` and `SortOrder` enums. This is the largest single rendering function.
 
 - [ ] **3.2d Extract inline dialogs from ui() into named methods** (P3)

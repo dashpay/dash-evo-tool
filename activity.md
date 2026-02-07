@@ -400,3 +400,8 @@
 **Task:** 3.2b Extract single-key wallet view into wallets_screen/single_key_view.rs
 **What was done:** Extracted `render_single_key_wallet_view()` (174 lines) from `wallets_screen/mod.rs` into a new `wallets_screen/single_key_view.rs` module. This self-contained function renders the detail view for selected single-key wallets including balance display, Send/Receive action buttons, and paginated UTXO table. The `utxo_page` field remains on `WalletsBalancesScreen`; only the rendering method moved. mod.rs reduced from 2673 to 2499 lines.
 **Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/single_key_view.rs (new)
+
+## Run 61 — 2026-02-07
+**Task:** 3.2c Extract address table rendering into wallets_screen/address_table.rs
+**What was done:** Extracted `render_address_table()` (~293 lines), `toggle_sort()`, `sort_address_data()`, `categorize_path()`, plus `AddressData` struct/impl and `SortColumn`/`SortOrder` enums into a new `wallets_screen/address_table.rs` module. This is the largest single rendering function in the wallets screen, responsible for the sortable address table with balance display, UTXO counts, and private key viewing. Cleaned up unused imports (`Network`, `ChildNumber`, `DerivationPath`, `DerivationPathReference`) from mod.rs. mod.rs reduced from ~2499 to ~2155 lines.
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/address_table.rs (new)

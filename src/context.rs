@@ -1796,6 +1796,6 @@ pub(crate) const fn default_platform_version(network: &Network) -> &'static Plat
         Network::Testnet => &PLATFORM_V11,
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,
-        _ => panic!("unsupported network"),
+        _ => &PLATFORM_V11,
     }
 }

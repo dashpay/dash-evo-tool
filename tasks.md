@@ -393,7 +393,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Or fall back to mainnet context with a warning (less ideal)
   This requires updating all callers of `current_app_context()`.
 
-- [ ] **2.1d Fix remaining low-risk panics (context.rs, update_token_config.rs)** (P2)
+- [x] **2.1d Fix remaining low-risk panics (context.rs, update_token_config.rs)** (P2)
   Two low-risk fixes:
   (1) `src/context.rs:1799` — Replace `panic!("unsupported network")` in `default_platform_version()` with a safe fallback (e.g., return the latest platform version for unknown variants, since this is a const fn).
   (2) `src/ui/tokens/update_token_config.rs:678` — Replace `unimplemented!("marketplace settings")` with `ui.label("Marketplace settings are not yet supported.")` so it shows a message instead of crashing.
@@ -702,7 +702,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 10 | 4 |
+| 2. Stability | 10 | 5 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

@@ -248,3 +248,8 @@
 **Task:** 2.1c Fix network context expect() in app.rs current_app_context
 **What was done:** Replaced three `.expect()` calls in `current_app_context()` (for testnet, devnet, and local/regtest contexts) with graceful fallback to mainnet context when the requested network context is `None`. Each branch now logs a `tracing::warn!` before falling back. Also replaced the `unreachable!()` on unknown network variants with a warning + mainnet fallback. Previously, if a network context failed to initialize (returned `None` from `AppContext::new()`) but the user switched to that network tab, the app would panic. Now it degrades gracefully to mainnet. This matches the pattern already used in the ZMQ message handler (lines 866-893) and `network_chooser_screen.rs::context_for_network()`.
 **Files changed:** src/app.rs
+
+## Run 35 — 2026-02-07
+**Task:** 2.1d Fix remaining low-risk panics (context.rs, update_token_config.rs)
+**What was done:** Fixed two low-risk panics: (1) In `context.rs:1799`, replaced `panic!("unsupported network")` in the `default_platform_version()` const fn with a safe fallback that returns `&PLATFORM_V11` for any unknown `Network` variant. Since all 4 known variants already return `PLATFORM_V11`, this wildcard arm only fires if the external `#[non_exhaustive]` Network enum adds new variants in the future. (2) In `update_token_config.rs:678`, replaced `unimplemented!("marketplace settings not implemented yet")` with `ui.label("Marketplace settings are not yet supported.")` so users see an informational message instead of the app crashing when encountering a `MarketplaceTradeMode` token configuration item.
+**Files changed:** src/context.rs, src/ui/tokens/update_token_config.rs

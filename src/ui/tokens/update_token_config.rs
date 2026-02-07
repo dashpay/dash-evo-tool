@@ -675,7 +675,7 @@ impl UpdateTokenConfigScreen {
                 ui.label("No parameters to edit for this entry.");
             }
             TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
-                unimplemented!("marketplace settings not implemented yet")
+                ui.label("Marketplace settings are not yet supported.");
             }
         }
         });

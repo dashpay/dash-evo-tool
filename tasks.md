@@ -376,7 +376,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `scheduled_votes.rs:158` — On boolean DB column. JUSTIFIED.
   - `ui/mod.rs:476,596,599` — Guards on screen types never constructed via `create_screen()`. JUSTIFIED (LOW RISK).
 
-- [ ] **2.1a Fix DB migration failure panic** (P1)
+- [x] **2.1a Fix DB migration failure panic** (P1)
   In `src/database/initialization.rs:41-44`, replace `panic!` on migration failure with proper error propagation. The function already returns `rusqlite::Result<()>`, so convert the panic to a `Err(rusqlite::Error::QueryReturnedNoRows)` or a custom error message that includes the version info. The caller in `app.rs` already handles this via `?`.
 
 - [ ] **2.1b Fix asset lock loading panics in database/wallet.rs** (P1)
@@ -702,7 +702,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 10 | 1 |
+| 2. Stability | 10 | 2 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

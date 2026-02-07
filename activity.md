@@ -233,3 +233,8 @@
 - 10+ test-only panics: SAFE, no action needed
 - 3 commented-out panics: SAFE
 - 5 unreachable!() calls: All JUSTIFIED (4 known network variants, boolean DB column, never-constructed screen types)
+
+## Run 32 — 2026-02-07
+**Task:** 2.1a Fix DB migration failure panic
+**What was done:** Replaced `panic!` on database migration failure in `initialization.rs:41-44` with proper error propagation. The `initialize()` method already returns `rusqlite::Result<()>`, so converted the panic to `Err(rusqlite::Error::InvalidParameterName(...))` with a descriptive message including the original version, target version, current version after failure, and the error details. Changed `db_schema_version()?` to `db_schema_version().unwrap_or(0)` in the error path to avoid masking the migration error if the version check itself fails. The caller in `app.rs` already handles this via `?` propagation.
+**Files changed:** src/database/initialization.rs

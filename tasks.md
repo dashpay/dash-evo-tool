@@ -278,7 +278,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **1.3g Fix core-001: Replace unwrap/expect on database initialization** (P2)
   In `src/app.rs:170-172`, replace `expect()` and `unwrap()` on database file path creation and initialization with proper error handling that shows a user-friendly error dialog instead of panicking.
 
-- [ ] **1.3h Fix infra-012: Replace expect() calls on document property access in platform_info.rs** (P2)
+- [x] **1.3h Fix infra-012: Replace expect() calls on document property access in platform_info.rs** (P2)
   In `src/backend_task/platform_info.rs`, replace 29+ `expect()` calls on document property accessors with proper error handling. Platform data may be malformed or have schema changes; these should produce errors, not panics.
 
 - [ ] **1.4 [META] Triage UI/UX bugs** (P1)
@@ -603,7 +603,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
-| 1. Bug Triage | 27 | 25 |
+| 1. Bug Triage | 27 | 26 |
 | 2. Stability | 6 | 0 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |

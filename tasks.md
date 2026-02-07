@@ -525,7 +525,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `initialization.rs` migration panic — Fixed by task 2.1a
   - `wallet.rs:684-698` asset lock loading panics — Fixed by task 2.1b
 
-- [ ] **2.3a Fix context.rs initialization expects** (P1)
+- [x] **2.3a Fix context.rs initialization expects** (P1)
   In `src/context.rs:136-205`, replace 9 `.expect()` calls in `AppContext::new()` with error handling that returns `None` (the function already returns `Option<Self>`). For each:
   - Lines 136,138: SpvProvider/RpcProvider initialization → log error, return None
   - Lines 151,155,159,163,167: System data contract loads → log error, return None
@@ -839,7 +839,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 20 | 12 |
+| 2. Stability | 20 | 13 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

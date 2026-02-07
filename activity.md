@@ -307,3 +307,8 @@
 **Task:** 2.2e Fix Identifier::from_bytes unwrap in contacts.rs
 **What was done:** Replaced 2 `.unwrap()` calls on `Identifier::from_bytes()` in `contacts.rs` with graceful error handling. (1) Line 263: `Identifier::from_bytes(to_id_bytes.as_slice()).unwrap()` in the mutual contact matching loop — replaced with `let Ok(to_id) = ... else { continue }` to skip outgoing documents with invalid identifier bytes. (2) Line 307: `Identifier::from_bytes(&decrypted_id).unwrap()` on decrypted contact ID — replaced with `let Ok(contact_id) = ... else { continue }` with a `tracing::warn!` logging the invalid length. The second case is higher risk since decrypted data may have unexpected length if the decryption key is wrong or the encrypted data is corrupted.
 **Files changed:** src/backend_task/dashpay/contacts.rs
+
+## Run 43 — 2026-02-07
+**Task:** 2.3a Fix context.rs initialization expects
+**What was done:** Replaced 9 `.expect()` calls in `AppContext::new()` with `match` blocks that log errors via `tracing::error!` and return `None`. The function already returns `Option<Arc<Self>>`, so this is the natural error path. Affected calls: SpvProvider::new(), RpcProvider::new(), 5x load_system_data_contract() (DPNS, Withdrawals, TokenHistory, KeywordSearch, Dashpay), core_cookie_path(), CoreClient creation (restructured nested match for both cookie and user/pass auth fallback), db.get_wallets(), and db.get_single_key_wallets(). Previously, any startup configuration issue (bad config, missing cookie file, DB corruption, platform version mismatch) would panic the app. Now these produce error logs and the network context gracefully fails to initialize (already handled by callers via `None` checks).
+**Files changed:** src/context.rs

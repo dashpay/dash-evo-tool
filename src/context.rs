@@ -132,10 +132,20 @@ impl AppContext {
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
         // Create both providers; bind to app context later (post construction) due to circularity
-        let spv_provider =
-            SpvProvider::new(db.clone(), network).expect("Failed to initialize SPV provider");
-        let rpc_provider = RpcProvider::new(db.clone(), network, &network_config)
-            .expect("Failed to initialize RPC provider");
+        let spv_provider = match SpvProvider::new(db.clone(), network) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(?network, "Failed to initialize SPV provider: {e}");
+                return None;
+            }
+        };
+        let rpc_provider = match RpcProvider::new(db.clone(), network, &network_config) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(?network, "Failed to initialize RPC provider: {e}");
+                return None;
+            }
+        };
 
         // Default to SPV provider initially; UI can switch backend after
         let sdk = match initialize_sdk(&network_config, network, spv_provider.clone()) {
@@ -147,65 +157,111 @@ impl AppContext {
         };
         let platform_version = sdk.version();
 
-        let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
-            .expect("expected to load dpns contract");
+        let dpns_contract =
+            match load_system_data_contract(SystemDataContract::DPNS, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load DPNS contract: {e}");
+                    return None;
+                }
+            };
 
         let withdrawal_contract =
-            load_system_data_contract(SystemDataContract::Withdrawals, platform_version)
-                .expect("expected to get withdrawal contract");
+            match load_system_data_contract(SystemDataContract::Withdrawals, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load Withdrawals contract: {e}");
+                    return None;
+                }
+            };
 
         let token_history_contract =
-            load_system_data_contract(SystemDataContract::TokenHistory, platform_version)
-                .expect("expected to get token history contract");
+            match load_system_data_contract(SystemDataContract::TokenHistory, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load TokenHistory contract: {e}");
+                    return None;
+                }
+            };
 
         let keyword_search_contract =
-            load_system_data_contract(SystemDataContract::KeywordSearch, platform_version)
-                .expect("expected to get keyword search contract");
+            match load_system_data_contract(SystemDataContract::KeywordSearch, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load KeywordSearch contract: {e}");
+                    return None;
+                }
+            };
 
         let dashpay_contract =
-            load_system_data_contract(SystemDataContract::Dashpay, platform_version)
-                .expect("expected to get dashpay contract");
+            match load_system_data_contract(SystemDataContract::Dashpay, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load Dashpay contract: {e}");
+                    return None;
+                }
+            };
 
         let addr = format!(
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
         );
-        let cookie_path = core_cookie_path(network, &network_config.devnet_name)
-            .expect("expected to get cookie path");
+        let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(?network, "Failed to get core cookie path: {e}");
+                return None;
+            }
+        };
 
-        // Try cookie authentication first
+        // Try cookie authentication first, then user/password
         let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
-            Ok(client) => Ok(client),
+            Ok(client) => client,
             Err(_) => {
-                // If cookie auth fails, try user/password authentication
                 tracing::info!(
                     "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
                     cookie_path,
                 );
-                Client::new(
+                match Client::new(
                     &addr,
                     Auth::UserPass(
                         network_config.core_rpc_user.to_string(),
                         network_config.core_rpc_password.to_string(),
                     ),
-                )
+                ) {
+                    Ok(client) => client,
+                    Err(e) => {
+                        tracing::error!(?network, "Failed to create CoreClient: {e}");
+                        return None;
+                    }
+                }
+            }
+        };
+
+        let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!(?network, "Failed to load wallets from database: {e}");
+                return None;
             }
         }
-        .expect("Failed to create CoreClient");
+        .into_iter()
+        .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
+        .collect();
 
-        let wallets: BTreeMap<_, _> = db
-            .get_wallets(&network)
-            .expect("expected to get wallets")
-            .into_iter()
-            .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
-            .collect();
-
-        let single_key_wallets: BTreeMap<_, _> = db
-            .get_single_key_wallets(network)
-            .expect("expected to get single key wallets")
-            .into_iter()
-            .map(|w| (w.key_hash(), Arc::new(RwLock::new(w))))
-            .collect();
+        let single_key_wallets: BTreeMap<_, _> = match db.get_single_key_wallets(network) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!(
+                    ?network,
+                    "Failed to load single key wallets from database: {e}"
+                );
+                return None;
+            }
+        }
+        .into_iter()
+        .map(|w| (w.key_hash(), Arc::new(RwLock::new(w))))
+        .collect();
 
         let developer_mode_enabled = config.developer_mode.unwrap_or(false);
 

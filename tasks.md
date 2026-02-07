@@ -341,10 +341,62 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Section 2: Stability & Error Handling [Week 2-4]
 
-- [ ] **2.1 [META] Audit all `panic!()` calls in production code** (P0)
+- [x] **2.1 [META] Audit all `panic!()` calls in production code** (P0)
   Run `grep -rn "panic!" src/` and examine every instance. For each:
   (1) determine if it's reachable in production, (2) assess severity, (3) create specific removal/replacement tasks.
   Known instances: `src/backend_task/identity/mod.rs` lines 167, 193 ("need a ECDSA Key for now").
+
+  **Audit Results:**
+
+  **Production `panic!()` — CONFIRMED REACHABLE (fix tasks created):**
+  - **database/initialization.rs:41-44** — `panic!` on DB migration failure. If migration has a bug or DB is corrupt, the app crashes instead of showing an error. The DB was already backed up before migration, so recovery is possible, but user sees a panic instead of a helpful message. Fix: return error instead of panic.
+  - **database/wallet.rs:684,685,691,698** — Four panicking calls in asset lock transaction loading: `expect("Seed should be 64 bytes")`, `expect("Failed to deserialize transaction")`, `panic!("Expected AssetLockPayloadType")`, `expect("Expected at least one credit output")`. All reachable if DB has corrupt data. App crashes at startup when loading wallets. Fix: return Err from the query_map closure.
+  - **app.rs:691-693** — Three `expect()` calls on `as_ref()` for testnet/devnet/local AppContext. If a network context failed to initialize (returned None), selecting that network tab crashes the app. Fix: return a user-friendly error or disable the tab.
+
+  **Production `panic!()` — LOW RISK (sub-task created):**
+  - **context.rs:1799** — `panic!("unsupported network")` in `default_platform_version()`. Matches all 4 known Network variants. Only reachable if the external `Network` enum adds a new variant (it's `#[non_exhaustive]`). Fix: return a compile-safe default or error.
+  - **update_token_config.rs:678** — `unimplemented!("marketplace settings not implemented yet")`. The `MarketplaceTradeMode` variant is not selectable through the UI. Only reachable if future code sets it or if loaded from an external token config. Fix: show "not yet supported" in UI instead of panicking.
+
+  **Production `panic!()` — JUSTIFIED (no fix task):**
+  - **model/qualified_identity/mod.rs:762-765** — Intentional defensive panic for inconsistent wallet index. Comment explicitly states "non-recoverable error... to avoid unexpected behavior and loss of access to private keys." Data integrity guard — appropriate to keep as panic.
+
+  **ALREADY FIXED by prior tasks:**
+  - **backend_task/identity/mod.rs:167,193** — Fixed by task 1.2a (replaced with error return).
+
+  **Test-only `panic!()` — SAFE (no action needed):**
+  - `payments.rs:444,454` — In `#[test]` functions
+  - `tokens_screen/mod.rs:3422,3481,3489,3498,3501,3510,3515,3644,3654,3657` — All in `#[cfg(test)]` module
+  - `add_new_identity_screen/mod.rs:1502,1508,1548,1554` — In `#[cfg(test)]` module
+
+  **Commented-out `panic!()` — SAFE:**
+  - `core_p2p_handler.rs:127,218,237` — All commented out
+
+  **`unreachable!()`/`unimplemented!()` calls:**
+  - `app.rs:694` — After matching all 4 Network variants. JUSTIFIED.
+  - `scheduled_votes.rs:158` — On boolean DB column. JUSTIFIED.
+  - `ui/mod.rs:476,596,599` — Guards on screen types never constructed via `create_screen()`. JUSTIFIED (LOW RISK).
+
+- [ ] **2.1a Fix DB migration failure panic** (P1)
+  In `src/database/initialization.rs:41-44`, replace `panic!` on migration failure with proper error propagation. The function already returns `rusqlite::Result<()>`, so convert the panic to a `Err(rusqlite::Error::QueryReturnedNoRows)` or a custom error message that includes the version info. The caller in `app.rs` already handles this via `?`.
+
+- [ ] **2.1b Fix asset lock loading panics in database/wallet.rs** (P1)
+  In `src/database/wallet.rs:676-698`, replace 4 panicking calls inside the `query_map` closure with proper error handling:
+  - Line 684: `expect("Seed should be 64 bytes")` → `map_err` to rusqlite error
+  - Line 685: `expect("Failed to deserialize transaction")` → `map_err`
+  - Line 691: `panic!("Expected AssetLockPayloadType")` → return Err
+  - Line 698: `expect("Expected at least one credit output")` → return Err
+  These are in a closure returning `rusqlite::Result`, so convert to `Err(rusqlite::Error::InvalidParameterName(...))` or similar.
+
+- [ ] **2.1c Fix network context expect() in app.rs current_app_context** (P1)
+  In `src/app.rs:691-693`, the three `expect()` calls on `as_ref()` for testnet/devnet/local contexts will panic if the context failed to initialize. Options:
+  - Return `Option<&Arc<AppContext>>` or `Result<&Arc<AppContext>, String>` and handle gracefully in callers
+  - Or fall back to mainnet context with a warning (less ideal)
+  This requires updating all callers of `current_app_context()`.
+
+- [ ] **2.1d Fix remaining low-risk panics (context.rs, update_token_config.rs)** (P2)
+  Two low-risk fixes:
+  (1) `src/context.rs:1799` — Replace `panic!("unsupported network")` in `default_platform_version()` with a safe fallback (e.g., return the latest platform version for unknown variants, since this is a const fn).
+  (2) `src/ui/tokens/update_token_config.rs:678` — Replace `unimplemented!("marketplace settings")` with `ui.label("Marketplace settings are not yet supported.")` so it shows a message instead of crashing.
 
 - [ ] **2.2 [META] Audit `unwrap()`/`expect()` in `src/backend_task/`** (P1)
   Categorize every `unwrap()`/`expect()` call in the backend_task directory as:
@@ -650,7 +702,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
-| 2. Stability | 6 | 0 |
+| 2. Stability | 10 | 1 |
 | 3. Refactoring | 7 | 0 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |

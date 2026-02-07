@@ -218,3 +218,18 @@
 **Task:** 1.4c Fix ui-core-004: Replace expect() on settings save in network chooser
 **What was done:** Replaced three `.expect("Expected to save db settings")` calls in `network_chooser_screen.rs` with `if let Err(e)` + `tracing::warn!` (or collapsed `&& let Err(e)` form per clippy). The three locations are: (1) after selecting a valid Dash-Qt executable path, (2) after clearing the Dash-Qt path, and (3) after toggling the "Overwrite dash.conf" checkbox. Previously, a database write failure on any of these settings saves would crash the application. Now they log a warning and continue.
 **Files changed:** src/ui/network_chooser_screen.rs
+
+## Run 31 — 2026-02-07
+**Task:** 2.1 [META] Audit all panic!() calls in production code
+**What was done:** Searched for all `panic!()`, `unimplemented!()`, `todo!()`, and `unreachable!()` macros in `src/`. Found 15 production `panic!`/`expect`-in-panic-context calls, 10+ test-only panics, 3 commented-out panics, and 5 `unreachable!()` calls. Classified each by reachability, severity, and justification. Created 4 specific sub-tasks for confirmed issues.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 4 (2.1a through 2.1d)
+
+**Summary of findings:**
+- 3 CONFIRMED REACHABLE production panics needing fixes: DB migration failure (initialization.rs:41), asset lock loading (wallet.rs:684-698, 4 panics), network context access (app.rs:691-693, 3 expects)
+- 2 LOW RISK panics: unsupported network in const fn (context.rs:1799), unimplemented marketplace settings (update_token_config.rs:678)
+- 1 JUSTIFIED panic: wallet index inconsistency guard (qualified_identity/mod.rs:762) — intentional data integrity protection
+- 1 ALREADY FIXED: identity key type panic (task 1.2a)
+- 10+ test-only panics: SAFE, no action needed
+- 3 commented-out panics: SAFE
+- 5 unreachable!() calls: All JUSTIFIED (4 known network variants, boolean DB column, never-constructed screen types)

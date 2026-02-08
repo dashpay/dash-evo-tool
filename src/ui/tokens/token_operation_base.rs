@@ -115,7 +115,7 @@ impl TokenOperationBase {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
                         error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
+                            "Failed to load token contract: expected a main control group but none was found. The contract may have been modified on Platform."
                                 .to_string(),
                         );
                         None
@@ -128,7 +128,10 @@ impl TokenOperationBase {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                error_message = Some(format!(
+                                    "Failed to load token contract. It may have been modified on Platform. ({})",
+                                    e
+                                ));
                                 None
                             }
                         }
@@ -143,7 +146,10 @@ impl TokenOperationBase {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        error_message = Some(format!(
+                            "Failed to load token contract. It may have been modified on Platform. ({})",
+                            e
+                        ));
                         None
                     }
                 }

@@ -1284,7 +1284,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `src/ui/tokens/tokens_screen/token_creator.rs:1373,1380` — change `"The name in {:?} must be..."` to use Display format
   - `src/ui/wallets/add_new_wallet_screen.rs:494` — change `format!("QR error: {:?}", e)` to `format!("QR code error: {}", e)`
 
-- [ ] **4.3d Improve "Invalid contract" error messages in token screens** (P2)
+- [x] **4.3d Improve "Invalid contract" error messages in token screens** (P2)
   In 7 token screen files (destroy_frozen_funds, freeze, unfreeze, mint, burn, set_price, update_config), replace `format!("Invalid contract: {}", e)` with a user-friendly message like "Failed to load token contract. It may have been modified on Platform." and store the raw DPP error as optional details. These 14 locations share the same pattern and can use the ErrorDisplay component from 4.3a.
 
 - [ ] **4.3e Add recovery suggestions to common error displays** (P3)
@@ -1495,7 +1495,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 20 | 14 |
+| 4. UI/UX | 20 | 15 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

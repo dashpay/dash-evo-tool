@@ -730,7 +730,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for incremental extraction:**
 
-- [ ] **3.3a Extract ChangeControlRulesUI into tokens_screen/control_rules.rs** (P2)
+- [x] **3.3a Extract ChangeControlRulesUI into tokens_screen/control_rules.rs** (P2)
   Move the `ChangeControlRulesUI` struct, its `From` impl, and the entire impl block (lines 225-826, ~600 lines) into a new `control_rules.rs` module. This includes `render_control_change_rules_ui()`, `render_mint_control_change_rules_ui()`, and `extract_change_control_rules()`. Also move `ContractDescriptionInfo` struct (line 131) and the `sub_checkbox()` and `tri_state()` helper functions (lines 137-158) that are used by these render methods.
 
 - [ ] **3.3b Deduplicate render_control_change_rules_ui and render_mint_control_change_rules_ui** (P2)
@@ -1003,7 +1003,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 24 | 12 |
+| 3. Refactoring | 24 | 13 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

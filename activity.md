@@ -429,3 +429,8 @@
 - Distribution-related enums/structs should move to distributions.rs or structs.rs
 - Top-level helper functions can move to their respective modules
 - TokensScreen struct has 235+ fields with no sub-struct grouping (noted but not creating a task — field grouping is best done after the extraction tasks reduce the surface area)
+
+## Run 65 — 2026-02-07
+**Task:** 3.3a Extract ChangeControlRulesUI into tokens_screen/control_rules.rs
+**What was done:** Extracted the `ChangeControlRulesUI` struct, its `From<ChangeControlRulesV0>` impl, and the entire impl block (~600 lines) from `tokens_screen/mod.rs` into a new `control_rules.rs` module. Added `mod control_rules;` declaration and `pub use control_rules::ChangeControlRulesUI;` re-export so all external references continue to work. Cleaned up 5 now-unused imports from mod.rs (ChangeControlRulesV0, GroupContractPosition, TextEdit, ComboBox, RichText).
+**Files changed:** src/ui/tokens/tokens_screen/control_rules.rs (new), src/ui/tokens/tokens_screen/mod.rs, tasks.md, activity.md

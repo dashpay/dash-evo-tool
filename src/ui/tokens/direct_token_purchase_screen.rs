@@ -10,6 +10,7 @@ use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use eframe::egui::{self, Color32, Context, Ui};
 use egui::RichText;
 
+use super::token_operation_base::{OperationStatus, render_operation_status};
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::tokens::{TokenResult, TokenTask};
@@ -38,15 +39,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::IdentityPublicKey;
 
-/// Internal states for the purchase process.
-#[derive(PartialEq)]
-pub enum PurchaseTokensStatus {
-    NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
-    ErrorMessage(String),
-    Complete,
-}
-
 /// A UI Screen for purchasing tokens from an existing token contract
 pub struct PurchaseTokenScreen {
     pub app_context: Arc<AppContext>,
@@ -64,7 +56,7 @@ pub struct PurchaseTokenScreen {
 
     /// Screen stuff
     confirmation_dialog: Option<ConfirmationDialog>,
-    status: PurchaseTokensStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     // Wallet fields
@@ -106,7 +98,7 @@ impl PurchaseTokenScreen {
             fetched_pricing_schedule: None,
             calculated_price_credits: None,
             pricing_fetch_attempted: false,
-            status: PurchaseTokensStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -161,7 +153,7 @@ impl PurchaseTokenScreen {
                     )));
                 } else {
                     self.error_message = Some("Failed to get token ID from contract".to_string());
-                    self.status = PurchaseTokensStatus::ErrorMessage(
+                    self.status = OperationStatus::ErrorMessage(
                         "Failed to get token ID from contract".to_string(),
                     );
                 }
@@ -265,7 +257,7 @@ impl PurchaseTokenScreen {
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let Some(amount) = self.amount_to_purchase_value.as_ref() else {
             self.error_message = Some("Please enter a valid amount.".into());
-            self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
+            self.status = OperationStatus::ErrorMessage("Invalid amount".into());
             self.confirmation_dialog = None;
             return AppAction::None;
         };
@@ -273,7 +265,7 @@ impl PurchaseTokenScreen {
         let Some(total_price_credits) = self.calculated_price_credits else {
             self.error_message =
                 Some("Cannot calculate total price. Please fetch token pricing first.".into());
-            self.status = PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
+            self.status = OperationStatus::ErrorMessage("No pricing fetched".into());
             self.confirmation_dialog = None;
             return AppAction::None;
         };
@@ -289,7 +281,7 @@ impl PurchaseTokenScreen {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                self.status = PurchaseTokensStatus::WaitingForResult(now);
+                self.status = OperationStatus::WaitingForResult(now);
 
                 AppAction::BackendTasks(
                     vec![
@@ -338,10 +330,10 @@ impl ScreenLike for PurchaseTokenScreen {
                 if let Some(schedule) = prices {
                     self.fetched_pricing_schedule = Some(schedule);
                     self.recalculate_price();
-                    self.status = PurchaseTokensStatus::NotStarted;
+                    self.status = OperationStatus::NotStarted;
                 } else {
                     // No pricing schedule found - token is not for sale
-                    self.status = PurchaseTokensStatus::ErrorMessage(
+                    self.status = OperationStatus::ErrorMessage(
                         "This token is not available for direct purchase. No pricing has been set."
                             .to_string(),
                     );
@@ -353,7 +345,7 @@ impl ScreenLike for PurchaseTokenScreen {
             }
             BackendTaskSuccessResult::Token(TokenResult::PurchasedTokens(fee_result)) => {
                 self.completed_fee_result = Some(fee_result);
-                self.status = PurchaseTokensStatus::Complete;
+                self.status = OperationStatus::Complete;
             }
             _ => {}
         }
@@ -361,7 +353,7 @@ impl ScreenLike for PurchaseTokenScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = PurchaseTokensStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -403,7 +395,7 @@ impl ScreenLike for PurchaseTokenScreen {
         island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             // If we are in the "Complete" status, just show success screen
-            if self.status == PurchaseTokensStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
             }
@@ -606,7 +598,7 @@ impl ScreenLike for PurchaseTokenScreen {
                                     .into(),
                             );
                             self.status =
-                                PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
+                                OperationStatus::ErrorMessage("No pricing fetched".into());
                         }
                     }
                 } else {
@@ -631,29 +623,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
 
                 // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    PurchaseTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    PurchaseTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Purchasing... elapsed: {} seconds", elapsed));
-                    }
-                    PurchaseTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
-                    }
-                    PurchaseTokensStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Purchasing");
             }
         });
 

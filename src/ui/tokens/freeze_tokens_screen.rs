@@ -39,16 +39,9 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Internal states for the freeze operation
-#[derive(PartialEq)]
-pub enum FreezeTokensStatus {
-    NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
-    Complete,
-}
+use super::token_operation_base::{OperationStatus, render_operation_status};
 
-/// A UI Screen that allows freezing an identity’s tokens for a particular contract
+/// A UI Screen that allows freezing an identity's tokens for a particular contract
 pub struct FreezeTokensScreen {
     pub identity: QualifiedIdentity,
     pub identity_token_info: IdentityTokenInfo,
@@ -64,7 +57,7 @@ pub struct FreezeTokensScreen {
     /// The identity we want to freeze
     pub freeze_identity_id: String,
 
-    status: FreezeTokensStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     // Basic references
@@ -197,7 +190,7 @@ impl FreezeTokensScreen {
             group_action_id: None,
             public_note: None,
             freeze_identity_id: String::new(),
-            status: FreezeTokensStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -252,7 +245,7 @@ impl FreezeTokensScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         if self.selected_key.is_none() {
             self.error_message = Some("No signing key selected".into());
-            self.status = FreezeTokensStatus::ErrorMessage("No key selected".into());
+            self.status = OperationStatus::ErrorMessage("No key selected".into());
             return AppAction::None;
         }
 
@@ -266,7 +259,7 @@ impl FreezeTokensScreen {
         );
         if parsed.is_err() {
             self.error_message = Some("Please enter a valid identity ID.".into());
-            self.status = FreezeTokensStatus::ErrorMessage("Invalid identity".into());
+            self.status = OperationStatus::ErrorMessage("Invalid identity".into());
             return AppAction::None;
         }
         let freeze_id = parsed.unwrap();
@@ -275,7 +268,7 @@ impl FreezeTokensScreen {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.status = FreezeTokensStatus::WaitingForResult(now);
+        self.status = OperationStatus::WaitingForResult(now);
 
         // Grab the data contract for this token from the app context
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
@@ -329,7 +322,7 @@ impl FreezeTokensScreen {
 impl ScreenLike for FreezeTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = FreezeTokensStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -339,7 +332,7 @@ impl ScreenLike for FreezeTokensScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = FreezeTokensStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -393,7 +386,7 @@ impl ScreenLike for FreezeTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         let central_panel_action = island_central_panel(ctx, |ui| {
-            if self.status == FreezeTokensStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 return self.show_success_screen(ui);
             }
 
@@ -612,44 +605,7 @@ impl ScreenLike for FreezeTokensScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    FreezeTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    FreezeTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Freezing... elapsed: {}s", elapsed));
-                    }
-                    FreezeTokensStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = FreezeTokensStatus::NotStarted;
-                                    }
-                                });
-                            });
-                    }
-                    FreezeTokensStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Freezing");
             }
 
             AppAction::None

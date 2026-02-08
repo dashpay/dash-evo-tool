@@ -40,14 +40,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The states for the unfreeze flow
-#[derive(PartialEq)]
-pub enum UnfreezeTokensStatus {
-    NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
-    Complete,
-}
+use super::token_operation_base::{OperationStatus, render_operation_status};
 
 /// A screen that allows unfreezing a previously frozen identity's tokens for a specific contract
 pub struct UnfreezeTokensScreen {
@@ -68,7 +61,7 @@ pub struct UnfreezeTokensScreen {
     /// The identity we want to freeze
     pub unfreeze_identity_id: String,
 
-    status: UnfreezeTokensStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     // Basic references
@@ -202,7 +195,7 @@ impl UnfreezeTokensScreen {
             group_action_id: None,
             public_note: None,
             unfreeze_identity_id: String::new(),
-            status: UnfreezeTokensStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -254,7 +247,7 @@ impl UnfreezeTokensScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         if self.selected_key.is_none() {
             self.error_message = Some("No signing key selected".into());
-            self.status = UnfreezeTokensStatus::ErrorMessage("No key selected".into());
+            self.status = OperationStatus::ErrorMessage("No key selected".into());
             return AppAction::None;
         }
 
@@ -268,7 +261,7 @@ impl UnfreezeTokensScreen {
         );
         if parsed.is_err() {
             self.error_message = Some("Please enter a valid identity ID.".into());
-            self.status = UnfreezeTokensStatus::ErrorMessage("Invalid identity ID".into());
+            self.status = OperationStatus::ErrorMessage("Invalid identity ID".into());
             return AppAction::None;
         }
         let unfreeze_id = parsed.unwrap();
@@ -277,7 +270,7 @@ impl UnfreezeTokensScreen {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.status = UnfreezeTokensStatus::WaitingForResult(now);
+        self.status = OperationStatus::WaitingForResult(now);
 
         // Grab the data contract for this token from the app context
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
@@ -332,7 +325,7 @@ impl UnfreezeTokensScreen {
 impl ScreenLike for UnfreezeTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = UnfreezeTokensStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -342,7 +335,7 @@ impl ScreenLike for UnfreezeTokensScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = UnfreezeTokensStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -395,7 +388,7 @@ impl ScreenLike for UnfreezeTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            if self.status == UnfreezeTokensStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
             }
@@ -601,44 +594,7 @@ impl ScreenLike for UnfreezeTokensScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    UnfreezeTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    UnfreezeTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Unfreezing... elapsed: {}s", elapsed));
-                    }
-                    UnfreezeTokensStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = UnfreezeTokensStatus::NotStarted;
-                                    }
-                                });
-                            });
-                    }
-                    UnfreezeTokensStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Unfreezing");
             }
         });
 

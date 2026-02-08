@@ -24,7 +24,6 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
@@ -35,15 +34,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::identities::get_selected_wallet;
 
+use super::token_operation_base::{OperationStatus, render_operation_status};
 use super::tokens_screen::IdentityTokenBalance;
-
-#[derive(PartialEq)]
-pub enum TransferTokensStatus {
-    NotStarted,
-    WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
-    Complete,
-}
 
 pub struct TransferTokensScreen {
     pub identity: QualifiedIdentity,
@@ -55,7 +47,7 @@ pub struct TransferTokensScreen {
     pub receiver_identity_id: String,
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
-    transfer_tokens_status: TransferTokensStatus,
+    transfer_tokens_status: OperationStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
@@ -103,7 +95,7 @@ impl TransferTokensScreen {
             receiver_identity_id: String::new(),
             amount,
             amount_input: None,
-            transfer_tokens_status: TransferTokensStatus::NotStarted,
+            transfer_tokens_status: OperationStatus::NotStarted,
             max_amount,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -139,8 +131,8 @@ impl TransferTokensScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_tokens_status {
-            TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => false,
-            TransferTokensStatus::NotStarted | TransferTokensStatus::ErrorMessage(_) => {
+            OperationStatus::WaitingForResult(_) | OperationStatus::Complete => false,
+            OperationStatus::NotStarted | OperationStatus::ErrorMessage(_) => {
                 amount_input.set_max_amount(Some(self.max_amount.value()));
                 true
             }
@@ -195,13 +187,12 @@ impl TransferTokensScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         if self.selected_key.is_none() {
             self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("No signing key selected".into());
+                OperationStatus::ErrorMessage("No signing key selected".into());
             return AppAction::None;
         }
 
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
-            self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("Invalid amount".into());
+            self.transfer_tokens_status = OperationStatus::ErrorMessage("Invalid amount".into());
             return AppAction::None;
         }
 
@@ -214,8 +205,7 @@ impl TransferTokensScreen {
         );
 
         if parsed_receiver_id.is_err() {
-            self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("Invalid receiver".into());
+            self.transfer_tokens_status = OperationStatus::ErrorMessage("Invalid receiver".into());
             return AppAction::None;
         }
 
@@ -224,7 +214,7 @@ impl TransferTokensScreen {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
+        self.transfer_tokens_status = OperationStatus::WaitingForResult(now);
 
         let data_contract = Arc::new(
             self.app_context
@@ -258,7 +248,7 @@ impl TransferTokensScreen {
 impl ScreenLike for TransferTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(message.to_string());
+            self.transfer_tokens_status = OperationStatus::ErrorMessage(message.to_string());
         }
     }
 
@@ -267,7 +257,7 @@ impl ScreenLike for TransferTokensScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.transfer_tokens_status = TransferTokensStatus::Complete;
+            self.transfer_tokens_status = OperationStatus::Complete;
         }
     }
 
@@ -322,7 +312,7 @@ impl ScreenLike for TransferTokensScreen {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
             // Show the success screen if the transfer was successful
-            if self.transfer_tokens_status == TransferTokensStatus::Complete {
+            if self.transfer_tokens_status == OperationStatus::Complete {
                 return self.show_success(ui);
             }
 
@@ -379,7 +369,7 @@ impl ScreenLike for TransferTokensScreen {
             } else {
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(e);
+                        self.transfer_tokens_status = OperationStatus::ErrorMessage(e);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -516,11 +506,11 @@ impl ScreenLike for TransferTokensScreen {
                 {
                     // Use the amount value directly since it's already parsed
                     if self.amount.as_ref().is_some_and(|v| v > &self.max_amount) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
+                        self.transfer_tokens_status = OperationStatus::ErrorMessage(
                             "Amount exceeds available balance".to_string(),
                         );
                     } else if self.amount.as_ref().is_none_or(|a| a.value() == 0) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
+                        self.transfer_tokens_status = OperationStatus::ErrorMessage(
                             "Amount must be greater than zero".to_string(),
                         );
                     } else {
@@ -542,51 +532,7 @@ impl ScreenLike for TransferTokensScreen {
                 }
 
                 // Handle transfer status messages
-                ui.add_space(5.0);
-                match &self.transfer_tokens_status {
-                    TransferTokensStatus::NotStarted => {
-                        // Do nothing
-                    }
-                    TransferTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed_seconds = now - start_time;
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} and {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.label(format!(
-                            "Transferring... Time taken so far: {}",
-                            display_time
-                        ));
-                    }
-                    TransferTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
-                    }
-                    TransferTokensStatus::Complete => {
-                        // Handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.transfer_tokens_status, "Transferring");
             }
 
             AppAction::None

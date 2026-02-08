@@ -37,16 +37,8 @@ use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_w
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use super::token_operation_base::{OperationStatus, render_operation_status};
 use super::tokens_screen::IdentityTokenBasicInfo;
-
-/// States for the claim flow
-#[derive(PartialEq)]
-pub enum ClaimTokensStatus {
-    NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
-    Complete,
-}
 
 pub struct ClaimTokensScreen {
     pub identity: QualifiedIdentity,
@@ -57,7 +49,7 @@ pub struct ClaimTokensScreen {
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
-    status: ClaimTokensStatus,
+    status: OperationStatus,
     error_message: Option<String>,
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
@@ -127,7 +119,7 @@ impl ClaimTokensScreen {
             token_contract,
             token_configuration,
             distribution_type,
-            status: ClaimTokensStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -206,7 +198,7 @@ impl ClaimTokensScreen {
 
                 if self.selected_key.is_none() {
                     self.error_message = Some("No signing key selected".into());
-                    self.status = ClaimTokensStatus::ErrorMessage("No key selected".into());
+                    self.status = OperationStatus::ErrorMessage("No key selected".into());
                     return AppAction::None;
                 }
 
@@ -214,7 +206,7 @@ impl ClaimTokensScreen {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                self.status = ClaimTokensStatus::WaitingForResult(now);
+                self.status = OperationStatus::WaitingForResult(now);
 
                 AppAction::BackendTasks(
                     vec![
@@ -252,7 +244,7 @@ impl ClaimTokensScreen {
 impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -262,7 +254,7 @@ impl ScreenLike for ClaimTokensScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = ClaimTokensStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -302,7 +294,7 @@ impl ScreenLike for ClaimTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            if self.status == ClaimTokensStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
             }
@@ -552,7 +544,7 @@ impl ScreenLike for ClaimTokensScreen {
 
                 if ui.add(button).clicked() {
                     if self.distribution_type.is_none() {
-                        self.status = ClaimTokensStatus::ErrorMessage(
+                        self.status = OperationStatus::ErrorMessage(
                             "Please select a distribution type.".to_string(),
                         );
                         return;
@@ -569,39 +561,7 @@ impl ScreenLike for ClaimTokensScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                ui.add_space(10.0);
-                match &self.status {
-                    ClaimTokensStatus::NotStarted => {}
-                    ClaimTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Claiming... elapsed: {}s", elapsed));
-                    }
-                    ClaimTokensStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = ClaimTokensStatus::NotStarted;
-                                    }
-                                });
-                            });
-                    }
-                    ClaimTokensStatus::Complete => {}
-                }
+                render_operation_status(ui, &mut self.status, "Claiming");
             }
         });
 

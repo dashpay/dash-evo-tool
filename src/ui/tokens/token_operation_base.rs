@@ -357,37 +357,7 @@ impl TokenOperationBase {
 
     /// Render the operation status (waiting, error, etc.).
     pub fn render_status(&mut self, ui: &mut Ui, waiting_message: &str) {
-        ui.add_space(10.0);
-        match &self.status {
-            OperationStatus::NotStarted => {}
-            OperationStatus::WaitingForResult(start_time) => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let elapsed = now - start_time;
-                ui.label(format!("{}... elapsed: {}s", waiting_message, elapsed));
-            }
-            OperationStatus::ErrorMessage(msg) => {
-                let error_color = Color32::from_rgb(255, 100, 100);
-                let msg = msg.clone();
-                Frame::new()
-                    .fill(error_color.gamma_multiply(0.1))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .stroke(egui::Stroke::new(1.0, error_color))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                            ui.add_space(10.0);
-                            if ui.small_button("Dismiss").clicked() {
-                                self.status = OperationStatus::NotStarted;
-                            }
-                        });
-                    });
-            }
-            OperationStatus::Complete => {}
-        }
+        render_operation_status(ui, &mut self.status, waiting_message);
     }
 
     /// Show the wallet unlock popup. Call this after the central panel.
@@ -451,5 +421,41 @@ impl TokenOperationBase {
         {
             self.identity = updated;
         }
+    }
+}
+
+/// Standalone function to render an `OperationStatus` with consistent styling.
+/// Usable by any screen without requiring `TokenOperationBase`.
+pub fn render_operation_status(ui: &mut Ui, status: &mut OperationStatus, waiting_message: &str) {
+    ui.add_space(10.0);
+    match status {
+        OperationStatus::NotStarted => {}
+        OperationStatus::WaitingForResult(start_time) => {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let elapsed = now - *start_time;
+            ui.label(format!("{}... elapsed: {}s", waiting_message, elapsed));
+        }
+        OperationStatus::ErrorMessage(msg) => {
+            let error_color = Color32::from_rgb(255, 100, 100);
+            let msg = msg.clone();
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            *status = OperationStatus::NotStarted;
+                        }
+                    });
+                });
+        }
+        OperationStatus::Complete => {}
     }
 }

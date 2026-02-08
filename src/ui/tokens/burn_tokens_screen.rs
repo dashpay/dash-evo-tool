@@ -42,16 +42,8 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 
+use super::token_operation_base::{OperationStatus, render_operation_status};
 use super::tokens_screen::IdentityTokenInfo;
-
-/// Internal states for the burn process.
-#[derive(PartialEq)]
-pub enum BurnTokensStatus {
-    NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
-    Complete,
-}
 
 pub struct BurnTokensScreen {
     pub identity_token_info: IdentityTokenInfo,
@@ -67,7 +59,7 @@ pub struct BurnTokensScreen {
     pub max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
     pub public_note: Option<String>,
 
-    status: BurnTokensStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     // Basic references
@@ -209,7 +201,7 @@ impl BurnTokensScreen {
             amount_input: None,
             max_amount: token_balance,
             public_note: None,
-            status: BurnTokensStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -245,7 +237,7 @@ impl BurnTokensScreen {
             Some(amount) if amount.value() > 0 => amount,
             _ => {
                 self.error_message = Some("Please enter a valid amount greater than 0.".into());
-                self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
+                self.status = OperationStatus::ErrorMessage("Invalid amount".into());
                 self.confirmation_dialog = None;
                 return AppAction::None;
             }
@@ -266,7 +258,7 @@ impl BurnTokensScreen {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                self.status = BurnTokensStatus::WaitingForResult(now);
+                self.status = OperationStatus::WaitingForResult(now);
 
                 // Grab the data contract for this token from the app context
                 let data_contract =
@@ -334,7 +326,7 @@ impl BurnTokensScreen {
 impl ScreenLike for BurnTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = BurnTokensStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -344,7 +336,7 @@ impl ScreenLike for BurnTokensScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = BurnTokensStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -401,7 +393,7 @@ impl ScreenLike for BurnTokensScreen {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
             // If we are in the "Complete" status, just show success screen
-            if self.status == BurnTokensStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 return self.show_success_screen(ui);
             }
 
@@ -648,30 +640,7 @@ impl ScreenLike for BurnTokensScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    BurnTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    BurnTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Burning... elapsed: {} seconds", elapsed));
-                    }
-                    BurnTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
-                    }
-                    BurnTokensStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Burning");
             }
 
             AppAction::None

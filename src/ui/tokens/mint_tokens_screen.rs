@@ -43,14 +43,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Internal states for the mint process.
-#[derive(PartialEq)]
-pub enum MintTokensStatus {
-    NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
-    ErrorMessage(String),
-    Complete,
-}
+use super::token_operation_base::{OperationStatus, render_operation_status};
 
 /// A UI Screen for minting tokens from an existing token contract
 pub struct MintTokensScreen {
@@ -67,7 +60,7 @@ pub struct MintTokensScreen {
 
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
-    status: MintTokensStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     /// Basic references
@@ -202,7 +195,7 @@ impl MintTokensScreen {
             recipient_identity_id: "".to_string(),
             amount: None,
             amount_input: None,
-            status: MintTokensStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -223,8 +216,8 @@ impl MintTokensScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.status {
-            MintTokensStatus::WaitingForResult(_) | MintTokensStatus::Complete => false,
-            MintTokensStatus::NotStarted | MintTokensStatus::ErrorMessage(_) => true,
+            OperationStatus::WaitingForResult(_) | OperationStatus::Complete => false,
+            OperationStatus::NotStarted | OperationStatus::ErrorMessage(_) => true,
         };
 
         let response = ui.add_enabled_ui(enabled, |ui| amount_input.show(ui)).inner;
@@ -280,12 +273,12 @@ impl MintTokensScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         if self.selected_key.is_none() {
             self.error_message = Some("No signing key selected".into());
-            self.status = MintTokensStatus::ErrorMessage("No key selected".into());
+            self.status = OperationStatus::ErrorMessage("No key selected".into());
             return AppAction::None;
         }
 
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
-            self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
+            self.status = OperationStatus::ErrorMessage("Invalid amount".into());
             self.error_message = Some("Invalid amount".into());
             return AppAction::None;
         }
@@ -299,7 +292,7 @@ impl MintTokensScreen {
         );
 
         if parsed_receiver_id.is_err() {
-            self.status = MintTokensStatus::ErrorMessage("Invalid receiver".into());
+            self.status = OperationStatus::ErrorMessage("Invalid receiver".into());
             self.error_message = Some("Invalid receiver".into());
             return AppAction::None;
         }
@@ -309,7 +302,7 @@ impl MintTokensScreen {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.status = MintTokensStatus::WaitingForResult(now);
+        self.status = OperationStatus::WaitingForResult(now);
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
@@ -361,7 +354,7 @@ impl MintTokensScreen {
 impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = MintTokensStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -371,7 +364,7 @@ impl ScreenLike for MintTokensScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = MintTokensStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -428,7 +421,7 @@ impl ScreenLike for MintTokensScreen {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
             // If we are in the "Complete" status, just show success screen
-            if self.status == MintTokensStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 return self.show_success_screen(ui);
             }
 
@@ -698,30 +691,7 @@ impl ScreenLike for MintTokensScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    MintTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    MintTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Minting... elapsed: {} seconds", elapsed));
-                    }
-                    MintTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
-                    }
-                    MintTokensStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Minting");
             }
 
             AppAction::None

@@ -1,3 +1,4 @@
+use super::token_operation_base::{OperationStatus, render_operation_status};
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::{TokenResult, TokenTask};
@@ -71,15 +72,6 @@ impl From<Option<TokenPricingSchedule>> for PricingType {
     }
 }
 
-/// Internal states for the mint process.
-#[derive(PartialEq)]
-pub enum SetTokenPriceStatus {
-    NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
-    ErrorMessage(String),
-    Complete,
-}
-
 /// A UI Screen for minting tokens from an existing token contract
 pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
@@ -100,7 +92,7 @@ pub struct SetTokenPriceScreen {
 
     // Tiered pricing with AmountInput components
     pub tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
-    status: SetTokenPriceStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     /// Basic references
@@ -276,7 +268,7 @@ impl SetTokenPriceScreen {
             single_price_amount: None,
             single_price_input: None,
             tiered_prices: vec![(None, None)],
-            status: SetTokenPriceStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
@@ -730,7 +722,7 @@ impl SetTokenPriceScreen {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.status = SetTokenPriceStatus::WaitingForResult(now);
+        self.status = OperationStatus::WaitingForResult(now);
 
         // Prepare group info
         let group_info = if self.group_action_id.is_some() {
@@ -777,7 +769,7 @@ impl SetTokenPriceScreen {
     /// Set error state with the given message
     fn set_error_state(&mut self, error: String) {
         self.error_message = Some(error.clone());
-        self.status = SetTokenPriceStatus::ErrorMessage(error);
+        self.status = OperationStatus::ErrorMessage(error);
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -820,7 +812,7 @@ impl SetTokenPriceScreen {
 impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -830,7 +822,7 @@ impl ScreenLike for SetTokenPriceScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = SetTokenPriceStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -886,7 +878,7 @@ impl ScreenLike for SetTokenPriceScreen {
         island_central_panel(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // If we are in the "Complete" status, just show success screen
-                if self.status == SetTokenPriceStatus::Complete {
+                if self.status == OperationStatus::Complete {
                     action |= self.show_success_screen(ui);
                     return;
                 }
@@ -1111,7 +1103,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
-                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
+                let button_active = validation_result.is_ok() && !matches!(self.status, OperationStatus::WaitingForResult(_));
 
                 let button_color = if validation_result.is_ok() {
                     Color32::from_rgb(0, 128, 255)
@@ -1137,41 +1129,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 }
 
                 // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    SetTokenPriceStatus::NotStarted => {
-                        // no-op
-                    }
-                    SetTokenPriceStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
-                    }
-                    SetTokenPriceStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = SetTokenPriceStatus::NotStarted;
-                                    }
-                                });
-                            });
-                    }
-                    SetTokenPriceStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Setting price");
             }
             }); // end of ScrollArea
         });

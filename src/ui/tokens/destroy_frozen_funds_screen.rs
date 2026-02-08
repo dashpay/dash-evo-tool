@@ -39,14 +39,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Represents possible states in the “destroy frozen funds” flow
-#[derive(PartialEq)]
-pub enum DestroyFrozenFundsStatus {
-    NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
-    Complete,
-}
+use super::token_operation_base::{OperationStatus, render_operation_status};
 
 /// A screen for destroying frozen funds of a particular token contract
 pub struct DestroyFrozenFundsScreen {
@@ -75,7 +68,7 @@ pub struct DestroyFrozenFundsScreen {
     /// TODO: We should filter them by frozen status, right now we just show all known identities
     pub frozen_identities: Vec<QualifiedIdentity>,
 
-    status: DestroyFrozenFundsStatus,
+    status: OperationStatus,
     error_message: Option<String>,
 
     /// Basic references
@@ -209,7 +202,7 @@ impl DestroyFrozenFundsScreen {
             is_unilateral_group_member,
             group_action_id: None,
             public_note: None,
-            status: DestroyFrozenFundsStatus::NotStarted,
+            status: OperationStatus::NotStarted,
             error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -262,7 +255,7 @@ impl DestroyFrozenFundsScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         if self.selected_key.is_none() {
             self.error_message = Some("No signing key selected".into());
-            self.status = DestroyFrozenFundsStatus::ErrorMessage("No key selected".into());
+            self.status = OperationStatus::ErrorMessage("No key selected".into());
             return AppAction::None;
         }
 
@@ -275,7 +268,7 @@ impl DestroyFrozenFundsScreen {
         );
         if maybe_frozen_id.is_err() {
             self.error_message = Some("Invalid frozen identity format".into());
-            self.status = DestroyFrozenFundsStatus::ErrorMessage("Invalid identity".into());
+            self.status = OperationStatus::ErrorMessage("Invalid identity".into());
             return AppAction::None;
         }
         let frozen_id = maybe_frozen_id.unwrap();
@@ -284,7 +277,7 @@ impl DestroyFrozenFundsScreen {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
+        self.status = OperationStatus::WaitingForResult(now);
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
@@ -337,7 +330,7 @@ impl DestroyFrozenFundsScreen {
 impl ScreenLike for DestroyFrozenFundsScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = DestroyFrozenFundsStatus::ErrorMessage(message.to_string());
+            self.status = OperationStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
         }
     }
@@ -347,7 +340,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
-            self.status = DestroyFrozenFundsStatus::Complete;
+            self.status = OperationStatus::Complete;
         }
     }
 
@@ -403,7 +396,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
         island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            if self.status == DestroyFrozenFundsStatus::Complete {
+            if self.status == OperationStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
             }
@@ -612,33 +605,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     action |= self.show_confirmation_popup(ui);
                 }
 
-                // Show in-progress or error messages
-                ui.add_space(10.0);
-                match &self.status {
-                    DestroyFrozenFundsStatus::NotStarted => {
-                        // no-op
-                    }
-                    DestroyFrozenFundsStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!(
-                            "Destroying frozen funds... elapsed: {} seconds",
-                            elapsed
-                        ));
-                    }
-                    DestroyFrozenFundsStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
-                    }
-                    DestroyFrozenFundsStatus::Complete => {
-                        // handled above
-                    }
-                }
+                render_operation_status(ui, &mut self.status, "Destroying frozen funds");
             }
         });
 

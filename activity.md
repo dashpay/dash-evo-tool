@@ -1074,3 +1074,20 @@
 **Task:** 7.3c Fix infra-016: Add timeout to quorum public key lookup
 **What was done:** Wrapped the `interface.get_quorum_by_height()` async call in `get_quorum_public_key()` with `tokio::time::timeout(Duration::from_secs(30), ...)`. If the quorum lookup doesn't complete within 30 seconds, the function now returns a descriptive timeout error with quorum type, hash, and height info, and logs a warning. This prevents the calling thread from blocking indefinitely if the SPV client hangs or the network is unreachable.
 **Files changed:** src/spv/manager.rs
+
+## Run 175 — 2026-02-08
+**Task:** 7.4 [META] Review token system for completeness
+**What was done:** Comprehensive review of the token system: 17 backend task files, 16 UI screen files, supporting infrastructure, 19 ui-tokens issue files, and 16 contracts issue files. Validated GH#224 (key visibility) and identified root cause (simple mode uses .find() returning only first key). Discovered critical bug: freeze_tokens_screen Freeze button does nothing (sets confirmation_dialog=None instead of creating one). Confirmed frozen identity filtering is missing in destroy/unfreeze screens. Verified backend task system is complete with all 27 operations fully implemented. Created 6 sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (7.4a through 7.4f)
+
+**Summary of findings:**
+- GH#224 CONFIRMED: Simple mode auto-selects first key via .find() with no UI to change it; advanced mode works correctly
+- Freeze screen CRITICAL BUG: Button click handler resets dialog to None instead of creating one — feature completely non-functional
+- Frozen identity filtering CONFIRMED: destroy_frozen_funds and unfreeze screens show all identities, not just frozen ones
+- token_creator.rs:1607-1608 has .unwrap() on identity/key that can panic if unset
+- query_tokens.rs:31,73 has .expect() that should use ? propagation
+- marketplace_trade_mode always maps to NotTradeable regardless of input (contracts-015)
+- Backend system complete: all 27 TokenTask operations fully implemented
+- 12 of 19 ui-tokens issues already fixed by prior tasks; 5 LOW PRIORITY; 2 confirmed with sub-tasks
+- 9 of 16 contracts issues already fixed or LOW PRIORITY; contracts-007 retry bug already fixed

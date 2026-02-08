@@ -1977,13 +1977,94 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.3c Fix infra-016: Add timeout to quorum public key lookup** (P2)
   In `src/spv/manager.rs:591-617`, wrap the `interface.get_quorum_by_height()` call with `tokio::time::timeout(Duration::from_secs(30), ...)`. Return a descriptive timeout error if the quorum lookup doesn't complete within 30 seconds. This prevents the calling thread from blocking indefinitely.
 
-- [ ] **7.4 [META] Review token system for completeness** (P2)
+- [ ] **7.3d Merge `feat/working-spv` into `ralph/improvements`** (P1)
+  Merge `origin/feat/working-spv` (8 commits, 16 files, +995/-485 lines) into `ralph/improvements` to avoid divergence and conflicts before PR submission. Key overlapping files that will need conflict resolution:
+  - `src/context.rs` — ralph extracted to `context/` modules; feat/working-spv adds SPV asset lock logic to monolithic file
+  - `src/backend_task/identity/register_identity.rs` — ralph extracted broadcast helpers + proof resolution; feat rewrites asset lock flow for SPV/DAPI
+  - `src/backend_task/identity/top_up_identity.rs` — same pattern as register_identity
+  - `src/spv/manager.rs` — ralph added error handling (expect→match, timeout); feat adds broadcast channels + event handling
+  - `src/ui/helpers.rs` — ralph added error translation + recovery suggestions; feat refactors helpers
+  - `Cargo.lock` / `Cargo.toml` — dependency version differences
+  After merge: verify `cargo build`, `cargo clippy --all-features --all-targets -- -D warnings`, and `cargo test --all-features --workspace` all pass. The 7.3 META noted "sub-tasks should be coordinated with PR#525" — this merge accomplishes that coordination.
+
+- [x] **7.4 [META] Review token system for completeness** (P2)
   Check token-related screens and backend for:
   - GH#224 (Token creator key visibility)
   - Frozen identity filtering
   - Token transfer edge cases
   Reference: `issues/ui-tokens-*.md` files, `issues/contracts-*.md` files.
   Create completion tasks.
+
+  **Triage Results:**
+
+  **Reviewed files:** 17 backend task files in `src/backend_task/tokens/`, 16 UI screen files in `src/ui/tokens/`, plus `token_operation_base.rs`, `token_creator.rs`, `distributions.rs`, `my_tokens.rs`, `keyword_search.rs`. Also reviewed 19 `ui-tokens-*.md` issue files and 16 `contracts-*.md` issue files.
+
+  **GH#224 — CONFIRMED (Token creator key visibility). Root cause identified.**
+  The issue reports that users with 7 keys only see key ID 1 in the token creator and keys 0+1 in token operations. Root cause:
+  - **Simple Mode (token_creator.rs:273-283):** Uses `.find()` on `identity_public_keys()` which returns only the FIRST matching key. This is by design for auto-selection but means simple mode offers no way to choose a different key.
+  - **Advanced Mode (helpers.rs:909-953):** Uses a `for` loop iterating ALL keys, so all eligible keys are shown. This works correctly.
+  - **Token operations (token_operation_base.rs:79-88):** Uses `get_first_public_key_matching()` for initial selection, but advanced mode shows all keys via `add_key_chooser()`. This works correctly.
+  - The core issue is that **Simple Mode has no key selection UI** — it auto-selects the first matching key and provides no alternative. Users must enable Advanced Options to see/select other keys. Fix: Add a key selection dropdown in Simple Mode, or at minimum show which key is being used and hint that Advanced Options allows changing it.
+  - **Additionally:** `token_creator.rs:1607-1608` has `.unwrap()` on `selected_identity` and `selected_key` — if neither is set (e.g., identity has no matching keys), this panics. Fix: validate before submission.
+
+  **Freeze Tokens Screen — CRITICAL BUG CONFIRMED.**
+  In `src/ui/tokens/freeze_tokens_screen.rs:603-606`, the Freeze button click handler sets `self.confirmation_dialog = None` (resetting the dialog) instead of creating a new `ConfirmationDialog`. Compare with `burn_tokens_screen.rs:625-651` which correctly does `self.confirmation_dialog = Some(ConfirmationDialog::new(...))`. The `show_confirmation_popup()` method at line 230 uses `get_or_insert_with` which would create a dialog, but it's only called at line 611 when `self.confirmation_dialog.is_some()` — which is always false because the button just set it to None. **Result: The Freeze button does nothing when clicked.** Fix: replicate the `burn_tokens_screen` pattern.
+
+  **Frozen Identity Filtering — CONFIRMED (ui-tokens-023, already tracked).**
+  Two screens show all identities instead of filtering to only frozen ones:
+  - `destroy_frozen_funds_screen.rs:68` — TODO comment acknowledges the issue
+  - `unfreeze_tokens_screen.rs:58,82` — TODO comments in both struct doc and `new()`
+  These load all identities via `app_context.load_local_qualified_identities()` with no filtering. Fix: query Platform for frozen status of each identity for the selected token, or track frozen status locally after freeze operations.
+
+  **Backend Task System — COMPLETE, minor issues only.**
+  All 27 token operations in `TokenTask` enum are fully implemented with no stub functions. Key observations:
+  - All mutation operations have comprehensive result matching for all SDK result variants.
+  - `burn_tokens.rs:125` has a TODO about fee tracking (waiting for SDK support). Known limitation, not incompleteness.
+  - `query_tokens.rs:31,73` has two `.expect("create query")` calls that will panic if `DocumentQuery::new()` fails. Should use `?`.
+  - `query_token_non_claimed_perpetual_distribution_rewards.rs:140` has `.expect()` on epoch u16 conversion — low risk but fragile.
+
+  **Marketplace Trade Mode — CONFIRMED (contracts-015).**
+  In `src/backend_task/tokens/mod.rs:810-812`, the `marketplace_trade_mode` parameter always maps to `NotTradeable` regardless of input value. The parameter is accepted but has no effect.
+
+  **Issue Files — Status Summary:**
+  - **ui-tokens-001 through 004** — LOW PRIORITY. Fragile unwrap patterns covered by task 2.2 audit.
+  - **ui-tokens-005 (mutex lock)** — Fixed by task 2.5.
+  - **ui-tokens-006 (SystemTime)** — Fixed by task 2.6.
+  - **ui-tokens-007 through 009** — LOW PRIORITY.
+  - **ui-tokens-010 (signing key expects)** — Fixed by task 1.2d.
+  - **ui-tokens-011 through 013** — LOW PRIORITY.
+  - **ui-tokens-014 (large function)** — Fixed by task 3.3.
+  - **ui-tokens-015 (duplicate control rules)** — Fixed by task 3.3b.
+  - **ui-tokens-021 (commented-out reorder)** — Fixed by task 1.2b.
+  - **ui-tokens-022 (wrong field checks)** — Fixed by task 1.2c.
+  - **ui-tokens-023 (frozen identity filtering)** — CONFIRMED, sub-task created below.
+  - **ui-tokens-024** — LOW PRIORITY.
+  - **contracts-007 (retry counter bug)** — ALREADY FIXED. Counter now initialized outside loop.
+  - **contracts-009 through 011** — ALREADY FIXED by task 5.4f (sign-and-broadcast helper) or LOW PRIORITY.
+  - **contracts-012 through 014** — LOW PRIORITY.
+  - **contracts-015 (marketplace trade mode)** — CONFIRMED, sub-task created below.
+  - **contracts-016** — LOW PRIORITY.
+
+- [ ] **7.4a Fix freeze_tokens_screen: Create confirmation dialog on button click** (P0)
+  In `src/ui/tokens/freeze_tokens_screen.rs:603-606`, the Freeze button click handler sets `self.confirmation_dialog = None` instead of creating a new `ConfirmationDialog`. Replace with the correct pattern from `burn_tokens_screen.rs:625-651`: validate the freeze identity ID input, then create `Some(ConfirmationDialog::new("Confirm Freeze", message).confirm_text(Some("Confirm")).cancel_text(Some("Cancel")).danger_mode(true))`. The `show_confirmation_popup()` at line 224 already handles dialog rendering and task dispatch — it just never gets called because the dialog is never created. **This is a complete loss-of-function bug — the Freeze feature is non-operational.**
+
+- [ ] **7.4b Fix GH#224: Add key selection in token creator simple mode** (P2)
+  In `src/ui/tokens/tokens_screen/token_creator.rs:273-283`, simple mode uses `.find()` to auto-select the first matching key with no way to change it. Add a key selection dropdown in simple mode (similar to the identity selection ComboBox) that shows all eligible keys (Purpose::AUTHENTICATION, SecurityLevel::CRITICAL or HIGH). Default to the first match but allow the user to select a different one. This resolves GH#224 where users with 7 keys only see key ID 1.
+
+- [ ] **7.4c Fix token_creator.rs unwrap on identity/key submission** (P1)
+  In `src/ui/tokens/tokens_screen/token_creator.rs:1607-1608`, `.unwrap()` on `selected_identity` and `selected_key` will panic if neither is set. Add validation before the submission block: check both are `Some`, and if not, set `self.token_creator_error_message = Some("Please select an identity and signing key.")` and return early.
+
+- [ ] **7.4d Implement frozen identity filtering for destroy/unfreeze screens** (P2)
+  In `src/ui/tokens/destroy_frozen_funds_screen.rs` and `src/ui/tokens/unfreeze_tokens_screen.rs`, the identity lists show all known identities instead of only frozen ones. Options:
+  (a) Query Platform on screen load for frozen status of each identity against the selected token. More accurate but requires network.
+  (b) Track frozen status locally after freeze operations. Faster but may miss external freeze actions.
+  Option (a) recommended. Add a loading indicator while fetching, and cache results to avoid repeated queries.
+
+- [ ] **7.4e Fix query_tokens.rs expect() calls on DocumentQuery creation** (P2)
+  In `src/backend_task/tokens/query_tokens.rs:31,73`, replace `.expect("create query")` and `.expect("create desc query")` with `?` error propagation using `.map_err(|e| format!("Failed to create document query: {}", e))?`.
+
+- [ ] **7.4f Document marketplace trade mode limitation** (P3)
+  In `src/backend_task/tokens/mod.rs:809-813`, the `marketplace_trade_mode` parameter always maps to `NotTradeable`. Add a code comment explaining this is pending SDK marketplace support. In the token creator UI, if marketplace settings are selectable, disable the option with a tooltip "Marketplace trading is not yet supported on Platform" or gate behind developer mode.
 
 - [ ] **7.5 [META] Review database layer** (P3)
   Check `src/database/` for:
@@ -2074,6 +2155,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 19 | 11 |
+| 7. Features | 26 | 12 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

@@ -743,3 +743,8 @@
 **Task:** 4.4a Fix ui-identity-009: Profile bio length guideline mismatch
 **What was done:** Changed PROFILE_GUIDELINES_INFO_TEXT in profile_screen.rs from "Bios are limited to 250 characters" to "Bios are limited to 140 characters" to match the actual code enforcement (140-char limit at line 231, error message at line 61, and character counter at line 804).
 **Files changed:** src/ui/dashpay/profile_screen.rs
+
+## Run 121 — 2026-02-08
+**Task:** 4.4b Fix single_key_send_screen address validation: Add real-time format checking
+**What was done:** Added real-time address validation to the single-key wallet send screen. Created a `validate_recipient_address()` method that runs whenever the address text changes in both simple and advanced modes. Validates three cases: (1) Platform addresses (evo1/tevo1 prefix) are rejected with a message to use a Core address, (2) invalid address format is detected via `Address::from_str()` parse failure, (3) network mismatch is detected via `require_network()` (e.g., testnet address on mainnet). Errors display inline below the address field in red text. The Send button is disabled when any recipient has an address validation error. Previously, the raw address string was passed to the backend with no frontend validation — users got no feedback until the send operation failed.
+**Files changed:** src/ui/wallets/single_key_send_screen.rs

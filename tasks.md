@@ -1334,7 +1334,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.4a Fix ui-identity-009: Profile bio length guideline mismatch** (P2)
   In `src/ui/dashpay/profile_screen.rs:24`, change "Bios are limited to 250 characters" to "Bios are limited to 140 characters" in the `PROFILE_GUIDELINES_INFO_TEXT` constant. The code enforces 140 (line 231) and the error message says 140 (line 61), but the guideline text misleads users by saying 250.
 
-- [ ] **4.4b Fix single_key_send_screen address validation: Add real-time format checking** (P2)
+- [x] **4.4b Fix single_key_send_screen address validation: Add real-time format checking** (P2)
   In `src/ui/wallets/single_key_send_screen.rs`, the recipient address field (lines 280-287) has no frontend validation — the raw String is passed to the backend. Add real-time address validation on change (similar to withdraw_screen.rs pattern) using `Address::from_str()` or `detect_address_type()` from send_utils.rs. Show error text next to each recipient's address field when invalid.
 
 - [ ] **4.4c Fix withdraw_screen address validation timing** (P2)
@@ -1540,7 +1540,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 26 | 17 |
+| 4. UI/UX | 26 | 18 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

@@ -19,6 +19,8 @@ use crate::ui::theme::DashColors;
 use crate::ui::wallets::send_utils::{format_dash, parse_amount_to_duffs};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
@@ -86,6 +88,45 @@ impl SingleKeyWalletSendScreen {
             fee_dialog: FeeConfirmationDialog::default(),
             pending_request: None,
             show_advanced_options: false,
+        }
+    }
+
+    /// Validate a recipient's address and update its error field.
+    /// Called whenever the address text changes.
+    fn validate_recipient_address(&mut self, index: usize) {
+        let trimmed = self.recipients[index].address.trim().to_string();
+        if trimmed.is_empty() {
+            self.recipients[index].error = None;
+            return;
+        }
+
+        // Platform addresses are not supported for single-key wallet sends
+        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+            self.recipients[index].error =
+                Some("Platform addresses are not supported. Enter a Core address.".to_string());
+            return;
+        }
+
+        // Try to parse as a Core address
+        match trimmed.parse::<Address<NetworkUnchecked>>() {
+            Ok(addr) => {
+                // Verify the address matches the current network
+                let network = self.app_context.network;
+                match addr.require_network(network) {
+                    Ok(_) => {
+                        self.recipients[index].error = None;
+                    }
+                    Err(_) => {
+                        self.recipients[index].error = Some(format!(
+                            "Address is not valid for the current network ({:?})",
+                            network
+                        ));
+                    }
+                }
+            }
+            Err(_) => {
+                self.recipients[index].error = Some("Invalid Dash address format".to_string());
+            }
         }
     }
 
@@ -277,7 +318,7 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                         ui.add_space(5.0);
-                        ui.add(
+                        let address_response = ui.add(
                             egui::TextEdit::singleline(&mut self.recipients[i].address)
                                 .hint_text(
                                     RichText::new("Enter Dash address (e.g., y...)")
@@ -285,6 +326,10 @@ impl SingleKeyWalletSendScreen {
                                 )
                                 .desired_width(600.0),
                         );
+
+                        if address_response.changed() {
+                            self.validate_recipient_address(i);
+                        }
 
                         ui.add_space(5.0);
 
@@ -450,12 +495,25 @@ impl SingleKeyWalletSendScreen {
                             .size(14.0),
                     );
                     ui.add_space(5.0);
-                    ui.add(
+                    let address_response = ui.add(
                         egui::TextEdit::singleline(&mut self.recipients[0].address)
                             .hint_text(RichText::new("Enter Dash address").color(Color32::GRAY))
                             .desired_width(500.0),
                     );
+
+                    if address_response.changed() {
+                        self.validate_recipient_address(0);
+                    }
                 });
+
+                // Show address validation error
+                if let Some(error) = &self.recipients[0].error {
+                    ui.add_space(2.0);
+                    ui.add(
+                        egui::Label::new(RichText::new(error).color(DashColors::ERROR).size(12.0))
+                            .wrap(),
+                    );
+                }
 
                 ui.add_space(10.0);
 
@@ -617,20 +675,20 @@ impl SingleKeyWalletSendScreen {
                 .selected_wallet
                 .as_ref()
                 .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
+            let has_address_errors = self.recipients.iter().any(|r| r.error.is_some());
+            let button_enabled = wallet_is_open && !self.sending && !has_address_errors;
 
             let send_button = egui::Button::new(
                 RichText::new(if self.sending { "Sending..." } else { "Send" })
                     .color(Color32::WHITE)
                     .strong(),
             )
-            .fill(if wallet_is_open && !self.sending {
+            .fill(if button_enabled {
                 DashColors::DASH_BLUE
             } else {
                 DashColors::DASH_BLUE.gamma_multiply(0.5)
             })
             .min_size(egui::vec2(120.0, 36.0));
-
-            let button_enabled = wallet_is_open && !self.sending;
             if ui.add_enabled(button_enabled, send_button).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {

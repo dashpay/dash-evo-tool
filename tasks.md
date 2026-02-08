@@ -869,12 +869,124 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.5e Extract settings database facade into context/settings_db.rs** (P3)
   Move ~80 lines of settings management methods (lines 1366-1441) into a new `src/context/settings_db.rs` as a separate `impl AppContext` block. Methods: `update_settings`, `update_main_password`, `update_dash_core_execution_settings`, `update_disable_zmq`, `invalidate_settings_cache`, `get_settings`. Also move the `SettingsCacheGuard` type alias since it's only used by these methods.
 
-- [ ] **3.6 [META] Review BackendTaskSuccessResult enum (60+ variants)** (P2)
+- [x] **3.6 [META] Review BackendTaskSuccessResult enum (60+ variants)** (P2)
   This enum in `src/backend_task/mod.rs` has grown unwieldy. Design a simplification:
   - Group related variants into sub-enums?
   - Use trait objects for result handling?
   - Other approach?
   Create implementation sub-tasks.
+
+  **Review Results:**
+
+  **Current state:** 88 variants in a single flat `BackendTaskSuccessResult` enum (lines 99-270 of `src/backend_task/mod.rs`). The `#[allow(clippy::large_enum_variant)]` annotation is needed due to size. Each `ScreenLike` implementor receives the entire enum and matches only 1-6 variants it cares about, with `_ => {}` catch-all for the rest. The `Screen` enum dispatcher in `ui/mod.rs:1326-1494` (170 lines) blindly forwards results to all 53 screen types.
+
+  **How results flow:**
+  1. Backend tasks produce `Result<BackendTaskSuccessResult, String>`
+  2. Results are boxed into `TaskResult::Success(Box<BackendTaskSuccessResult>)` and sent via channel
+  3. `app.rs:840-888` polls the channel and pre-handles 5 special variants (`None`, `Refresh`, `Message`, `UpdatedThemePreference`, `CastScheduledVote`)
+  4. All other variants are forwarded to `visible_screen_mut().display_task_result()`
+  5. The `Screen` enum dispatches to the concrete screen's `display_task_result()` implementation
+  6. Each screen matches the few variants it cares about and ignores the rest
+
+  **Variant count by domain:**
+  - Tokens: 16 variants (largest group)
+  - DashPay: 14 variants
+  - Contracts: 11 variants
+  - Identity: 8 variants
+  - Documents: 9 variants
+  - Wallet/Core: 9 variants
+  - DPNS/Contests: 5 variants
+  - MnList: 4 variants
+  - General: 4 variants (None, Refresh, Message, UpdatedThemePreference)
+  - ZK/GroveSTARK: 2 variants
+  - Platform info: 1 variant
+  - Broadcast: 1 variant
+  - Misc status: 4 variants (ProofErrorLogged, ContractNotFound, TokenNotFound, SavedContract/SavedToken)
+
+  **Design decision: Group into domain sub-enums**
+
+  The `BackendTask` request enum is already well-organized into 13 sub-enums (`IdentityTask`, `TokenTask`, etc.), but the response side is flat. The simplification mirrors the request structure by introducing sub-enums:
+
+  ```rust
+  pub enum BackendTaskSuccessResult {
+      // General (kept at top level)
+      None,
+      Refresh,
+      Message(String),
+
+      // Domain-specific sub-enums
+      Identity(IdentityResult),
+      Token(TokenResult),
+      Document(DocumentResult),
+      Contract(ContractResult),
+      Wallet(WalletResult),
+      Core(CoreResult),
+      DashPay(DashPayResult),
+      Contest(ContestResult),
+      MnList(MnListResult),
+      Platform(PlatformResult),
+      GroveSTARK(GroveSTARKResult),
+      System(SystemResult),
+  }
+  ```
+
+  **Benefits:**
+  1. **Better type safety** — screens can match on domain sub-enum instead of 88-variant flat enum
+  2. **Smaller enum size** — each sub-enum is smaller, reducing memory per result
+  3. **Better organization** — clear where new variants should go
+  4. **Reduced boilerplate** — screens can early-return on wrong domain before matching variants
+  5. **Mirrors request structure** — `BackendTask::TokenTask(TokenTask)` → `BackendTaskSuccessResult::Token(TokenResult)`
+
+  **Risks and mitigation:**
+  - **Large mechanical change** — Many files touch `BackendTaskSuccessResult`. Split into incremental sub-tasks: one per domain.
+  - **Cross-domain results** — A few results (like `FetchedContractWithTokenPosition`) span domains. Place in the domain that produces them (contracts in this case).
+  - **`app.rs` pre-handling** — The 5 variants handled in app.rs stay at the top level or get special cases.
+
+  **Execution plan:** Extract one domain at a time, starting with the most self-contained (MnList, GroveSTARK) and progressing to the largest (Tokens, DashPay). Each sub-task creates the sub-enum, moves variants, and updates all producers and consumers.
+
+- [ ] **3.6a Extract MnList results into MnListResult sub-enum** (P2)
+  Create `MnListResult` enum with 4 variants: `FetchedDiff`, `FetchedQrInfo`, `ChainLockSigs`, `FetchedDiffs`. Add `MnList(MnListResult)` to `BackendTaskSuccessResult`. Update:
+  - Producer: `src/backend_task/mnlist.rs`
+  - Consumer: `src/ui/tools/masternode_list_diff_screen/mod.rs`
+  Start here because MnList is the most self-contained domain (1 producer, 1 consumer).
+
+- [ ] **3.6b Extract GroveSTARK results into GroveSTARKResult sub-enum** (P2)
+  Create `GroveSTARKResult` enum with 2 variants: `GeneratedProof(ProofDataOutput)`, `VerifiedProof(bool, ProofDataOutput)`. Add `GroveSTARK(GroveSTARKResult)` to `BackendTaskSuccessResult`. Update:
+  - Producer: `src/backend_task/grovestark.rs`
+  - Consumers: `src/ui/tools/grovestark_screen.rs`, `proof_log_screen.rs`, `proof_visualizer_screen.rs`
+
+- [ ] **3.6c Extract Wallet/Core results into WalletResult and CoreResult sub-enums** (P2)
+  Create `WalletResult` with 7 variants: `Payment`, `Refreshed`, `RecoveredAssetLocks`, `GeneratedReceiveAddress`, `PlatformAddressBalances`, `PlatformCreditsTransferred`, `PlatformAddressFunded`, `PlatformAddressWithdrawal`. Create `CoreResult` with 1 variant: `Item(CoreItem)`. Update:
+  - Producers: `src/backend_task/core/`, `src/backend_task/wallet/`
+  - Consumers: `src/ui/wallets/wallets_screen/mod.rs`, `send_screen/`, `single_key_send_screen.rs`, `create_asset_lock_screen.rs`, and `app.rs` ZMQ handler
+
+- [ ] **3.6d Extract Identity results into IdentityResult sub-enum** (P2)
+  Create `IdentityResult` with 8 variants: `Registered`, `ToppedUp`, `Refreshed`, `Loaded`, `AddedKey`, `TransferredCredits`, `Withdrew`, `RegisteredDpnsName`. Update:
+  - Producers: `src/backend_task/identity/` (8 files)
+  - Consumers: `src/ui/identities/` (7 screens)
+
+- [ ] **3.6e Extract Token results into TokenResult sub-enum** (P2)
+  Create `TokenResult` with 16 variants: `Paused`, `Resumed`, `Minted`, `Burned`, `Froze`, `Unfroze`, `Transferred`, `Purchased`, `SetPrice`, `DestroyedFrozenFunds`, `Claimed`, `UpdatedConfig`, `FetchedBalances`, `Saved`, `DescriptionsByKeyword`, `EstimatedDistributionRewards`, `TokenPricing`, `TokenNotFound`. Update:
+  - Producers: `src/backend_task/tokens/` (16 files)
+  - Consumers: `src/ui/tokens/` (15 screens)
+
+- [ ] **3.6f Extract DashPay results into DashPayResult sub-enum** (P2)
+  Create `DashPayResult` with 14 variants: `Profile`, `ContactProfile`, `ProfileSearchResults`, `ContactRequests`, `Contacts`, `ContactsWithInfo`, `PaymentHistory`, `ProfileUpdated`, `ContactRequestSent`, `ContactRequestAccepted`, `ContactRequestRejected`, `ContactAlreadyEstablished`, `ContactInfoUpdated`, `PaymentSent`. Update:
+  - Producers: `src/backend_task/dashpay/` (5 files)
+  - Consumers: `src/ui/dashpay/` (8+ screens)
+
+- [ ] **3.6g Extract Document and Contract results into DocumentResult and ContractResult sub-enums** (P2)
+  Create `DocumentResult` with 8 variants: `Single`, `Multiple`, `Broadcasted`, `Page`, `Deleted`, `Replaced`, `Transferred`, `Purchased`, `SetPrice`. Create `ContractResult` with 11 variants: `Fetched`, `FetchedWithTokenPosition`, `FetchedMultiple`, `WithDescriptions`, `ActiveGroupActions`, `Registered`, `RegisteredToken`, `Saved`, `Updated`, `Removed`, `FetchedNonce`, `NotFound`, `ProofErrorLogged`. Update:
+  - Producers: `src/backend_task/document.rs`, `src/backend_task/contract.rs`, `register_contract.rs`, `update_data_contract.rs`
+  - Consumers: `src/ui/contracts_documents/` (6+ screens), `src/ui/tokens/tokens_screen/mod.rs`
+
+- [ ] **3.6h Extract Contest/DPNS results into ContestResult sub-enum** (P2)
+  Create `ContestResult` with 5 variants: `VoteResults`, `CastScheduledVote`, `ScheduledVotes`, `RefreshedContests`, `RefreshedOwnedNames`, `SuccessfulVotes`. Update `app.rs` to handle `CastScheduledVote` via the sub-enum. Update:
+  - Producers: `src/backend_task/contested_names/`
+  - Consumers: `src/ui/dpns/dpns_contested_names_screen.rs`, `src/ui/dpns/dpns_screen.rs`, `src/app.rs`
+
+- [ ] **3.6i Extract remaining top-level variants into System/Platform sub-enums** (P3)
+  Create `PlatformResult` with 1 variant: `Info(PlatformInfoTaskResult)`. Create `SystemResult` with 1 variant: `UpdatedThemePreference(ThemeMode)`. Move `BroadcastedStateTransition` into either a top-level kept variant or a `BroadcastResult` sub-enum. Clean up the top-level enum to have only: `None`, `Refresh`, `Message(String)`, plus the domain sub-enum wrappers. Update `app.rs` pre-handling for `UpdatedThemePreference` to use `System(SystemResult::UpdatedThemePreference(...))`.
 
 - [ ] **3.7 [META] Identify and catalog code duplication** (P3)
   Systematically identify duplicated code across the codebase. Key known areas:
@@ -1104,14 +1216,14 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 75 (24 META + 51 direct)
+**Total tasks:** 84 (24 META + 60 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 34 | 22 |
+| 3. Refactoring | 43 | 23 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

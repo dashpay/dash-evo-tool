@@ -530,3 +530,9 @@
 **Task:** 3.5e Extract settings database facade into context/settings_db.rs
 **What was done:** Extracted ~80 lines of settings management methods from `src/context/mod.rs` into a new `src/context/settings_db.rs` as a separate `impl AppContext` block. Methods extracted: `update_settings`, `update_main_password`, `update_dash_core_execution_settings`, `update_disable_zmq`, `invalidate_settings_cache`, `get_settings`. Also moved the `SettingsCacheGuard` type alias since it's only used by these methods. Cleaned up 3 now-unused imports from mod.rs (`RwLockWriteGuard`, `RootScreenType`, `RwLockExt`).
 **Files changed:** src/context/mod.rs, src/context/settings_db.rs (new)
+
+## Run 83 — 2026-02-07
+**Task:** 3.6 [META] Review BackendTaskSuccessResult enum (60+ variants)
+**What was done:** Audited the `BackendTaskSuccessResult` enum (88 variants, lines 99-270 of `src/backend_task/mod.rs`). Mapped the entire result flow: production in 13 backend task submodules → channel dispatch in app.rs → routing through Screen enum dispatcher (170 lines in ui/mod.rs) → consumption in 53 screen types. Identified that while the request-side `BackendTask` is well-organized into 13 sub-enums, the response-side is a flat 88-variant enum. Designed a simplification: mirror the request structure by grouping variants into domain-specific sub-enums (MnListResult, GroveSTARKResult, WalletResult, CoreResult, IdentityResult, TokenResult, DashPayResult, DocumentResult, ContractResult, ContestResult, PlatformResult, SystemResult). Created 9 incremental sub-tasks (3.6a through 3.6i) ordered from most self-contained to most impactful.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 9 (3.6a through 3.6i)

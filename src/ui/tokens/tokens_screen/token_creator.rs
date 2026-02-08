@@ -15,7 +15,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
-use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
+use egui::{ColorImage, ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
 use crate::model::amount::Amount;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::theme::DashColors;
@@ -30,7 +30,67 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use crate::ui::tokens::tokens_screen::{TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI, MintExtras};
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
+use egui::{Checkbox, Response};
+use image::ImageReader;
+use crate::ui::tokens::tokens_screen::{TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI, MintExtras, DistributionFunctionUI, PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI};
+
+pub(super) const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
+pub(super) const INV_LOG_FORMULA_PNG: &[u8] =
+    include_bytes!("../../../../assets/inv_log_function.png");
+pub(super) const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/log_function.png");
+pub(super) const LINEAR_FORMULA_PNG: &[u8] =
+    include_bytes!("../../../../assets/linear_function.png");
+pub(super) const POLYNOMIAL_FORMULA_PNG: &[u8] =
+    include_bytes!("../../../../assets/polynomial_function.png");
+
+pub(super) const DEFAULT_DECIMALS: u8 = 8;
+
+pub(super) fn load_formula_image(bytes: &[u8]) -> ColorImage {
+    let image = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .expect("Failed to guess image format")
+        .decode()
+        .expect("Failed to decode image")
+        .to_rgba8();
+
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = image.as_flat_samples();
+
+    ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
+}
+
+pub(super) fn sanitize_i64(input: &mut String) {
+    input.retain(|c| c.is_ascii_digit() || c == '-' || c == '+');
+}
+
+pub(super) fn sanitize_u64(input: &mut String) {
+    input.retain(|c| c.is_ascii_digit());
+}
+
+/* helper: tiny checkbox with no extra spacing */
+fn sub_checkbox(ui: &mut egui::Ui, flag: &mut bool, label: &str) {
+    ui.horizontal(|ui| {
+        ui.checkbox(flag, label);
+    });
+}
+
+/// helper: draw a tri-state parent checkbox backed by `Option<bool>`
+fn tri_state(ui: &mut egui::Ui, state: &mut Option<bool>, label: &str) -> Response {
+    // temporary bool just for the click interaction
+    let mut tmp = state.unwrap_or(false);
+
+    let resp = ui.add(Checkbox::new(&mut tmp, label).indeterminate(state.is_none()));
+
+    if resp.clicked() {
+        *state = match *state {
+            Some(false) => Some(true),
+            Some(true) => Some(false),
+            None => Some(true),
+        };
+    }
+    resp
+}
 
 #[derive(Clone, Debug)]
 /// All arguments needed by `build_data_contract_v1_with_one_token`.
@@ -1814,5 +1874,232 @@ impl TokensScreen {
 
         let response = input.show(ui);
         response.inner.update(&mut self.max_supply_amount);
+    }
+
+    pub(super) fn history_row(&mut self, ui: &mut Ui) {
+        // --- 1.  pull or create the rules object --------------------------------
+        let rules = self.token_advanced_keeps_history;
+
+        let TokenKeepsHistoryRulesV0 {
+            keeps_transfer_history,
+            keeps_freezing_history,
+            keeps_minting_history,
+            keeps_burning_history,
+            keeps_direct_pricing_history,
+            keeps_direct_purchase_history,
+        } = rules;
+
+        let flags = [
+            keeps_transfer_history,
+            keeps_freezing_history,
+            keeps_minting_history,
+            keeps_burning_history,
+            keeps_direct_pricing_history,
+            keeps_direct_purchase_history,
+        ];
+
+        let all_on = flags.iter().all(|b| *b);
+        let none_on = flags.iter().all(|b| !*b);
+
+        // --- 2.  parent tri-state checkbox --------------------------------------
+        let mut parent_state: Option<bool> = if all_on {
+            Some(true)
+        } else if none_on {
+            Some(false)
+        } else {
+            None // ⇒ indeterminate
+        };
+
+        //--------------------------------------------------------------
+        // 2. parent tri-state + "Advanced" button in **one** cell
+        //--------------------------------------------------------------
+        ui.horizontal(|ui| {
+            // tri-state checkbox
+            let response = tri_state(ui, &mut parent_state, "Keep history");
+
+            // propagate changes from parent to all children
+            if response.clicked()
+                && let Some(val) = parent_state
+            {
+                self.token_advanced_keeps_history.keeps_transfer_history = val;
+                self.token_advanced_keeps_history.keeps_freezing_history = val;
+                self.token_advanced_keeps_history.keeps_minting_history = val;
+                self.token_advanced_keeps_history.keeps_burning_history = val;
+                self.token_advanced_keeps_history
+                    .keeps_direct_pricing_history = val;
+                self.token_advanced_keeps_history
+                    .keeps_direct_purchase_history = val;
+            }
+
+            ui.add_space(8.0);
+            let arrow = if self.show_advanced_keeps_history {
+                "[-]"
+            } else {
+                "[+]"
+            };
+            if ui
+                .small_button(format!("Advanced {arrow}"))
+                .on_hover_text("Configure individual history ledgers")
+                .clicked()
+            {
+                self.show_advanced_keeps_history = !self.show_advanced_keeps_history;
+            }
+        });
+
+        // --- 4.  indented sub-checkboxes when advanced is open ------------------
+        if self.show_advanced_keeps_history {
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_transfer_history,
+                "Transfers",
+            );
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_freezing_history,
+                "Freezes / unfreezes",
+            );
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_minting_history,
+                "Mints",
+            );
+            sub_checkbox(
+                ui,
+                &mut self.token_advanced_keeps_history.keeps_burning_history,
+                "Burns",
+            );
+            sub_checkbox(
+                ui,
+                &mut self
+                    .token_advanced_keeps_history
+                    .keeps_direct_pricing_history,
+                "Direct-pricing changes",
+            );
+            sub_checkbox(
+                ui,
+                &mut self
+                    .token_advanced_keeps_history
+                    .keeps_direct_purchase_history,
+                "Direct purchases",
+            );
+        }
+    }
+
+    pub(super) fn reset_token_creator(&mut self) {
+        self.identity_id_string = String::new();
+        self.selected_identity = None;
+        self.selected_key = None;
+        self.token_creator_status = TokenCreatorStatus::NotStarted;
+        self.token_names_input = vec![(
+            String::new(),
+            String::new(),
+            TokenNameLanguage::English,
+            true,
+        )];
+        self.contract_keywords_input = "".to_string();
+        self.token_description_input = "".to_string();
+        self.decimals_input = DEFAULT_DECIMALS.to_string(); //
+        self.base_supply_input = None;
+        self.base_supply_amount = None;
+        self.max_supply_input = None;
+        self.max_supply_amount = None;
+        self.start_as_paused_input = false;
+        self.should_capitalize_input = true;
+        self.token_advanced_keeps_history =
+            TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
+        self.show_advanced_keeps_history = false;
+        self.manual_minting_rules = ChangeControlRulesUI::default();
+        self.manual_burning_rules = ChangeControlRulesUI::default();
+        self.freeze_rules = ChangeControlRulesUI::default();
+        self.unfreeze_rules = ChangeControlRulesUI::default();
+        self.destroy_frozen_funds_rules = ChangeControlRulesUI::default();
+        self.emergency_action_rules = ChangeControlRulesUI::default();
+        self.max_supply_change_rules = ChangeControlRulesUI::default();
+        self.conventions_change_rules = ChangeControlRulesUI::default();
+        self.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
+        self.main_control_group_change_authorized_identity = None;
+        self.main_control_group_change_authorized_group = None;
+        self.marketplace_trade_mode = 0;
+        self.marketplace_rules = ChangeControlRulesUI::default();
+        self.change_direct_purchase_pricing_rules = ChangeControlRulesUI::default();
+        self.main_control_group_input = "".to_string();
+        self.groups_ui = vec![];
+
+        self.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
+        self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
+        self.perpetual_dist_interval_input = "".to_string();
+        self.fixed_amount_input = "".to_string();
+        // self.random_min_input = "".to_string();
+        // self.random_max_input = "".to_string();
+        self.step_count_input = "".to_string();
+        self.decrease_per_interval_numerator_input = "".to_string();
+        self.decrease_per_interval_denominator_input = "".to_string();
+        self.step_decreasing_start_period_offset_input = "".to_string();
+        self.step_decreasing_initial_emission_input = "".to_string();
+        self.step_decreasing_min_value_input = "".to_string();
+        self.step_decreasing_max_interval_count_input = "".to_string();
+        self.step_decreasing_trailing_distribution_interval_amount_input = "".to_string();
+        self.stepwise_steps = vec![(String::new(), String::new())];
+        self.linear_int_a_input = "".to_string();
+        self.linear_int_d_input = "".to_string();
+        self.linear_int_start_step_input = "".to_string();
+        self.linear_int_starting_amount_input = "".to_string();
+        self.linear_int_min_value_input = "".to_string();
+        self.linear_int_max_value_input = "".to_string();
+        self.poly_int_a_input = "".to_string();
+        self.poly_int_m_input = "".to_string();
+        self.poly_int_n_input = "".to_string();
+        self.poly_int_d_input = "".to_string();
+        self.poly_int_s_input = "".to_string();
+        self.poly_int_o_input = "".to_string();
+        self.poly_int_b_input = "".to_string();
+        self.poly_int_min_value_input = "".to_string();
+        self.poly_int_max_value_input = "".to_string();
+        self.exp_a_input = "".to_string();
+        self.exp_m_input = "".to_string();
+        self.exp_n_input = "".to_string();
+        self.exp_d_input = "".to_string();
+        self.exp_s_input = "".to_string();
+        self.exp_o_input = "".to_string();
+        self.exp_b_input = "".to_string();
+        self.exp_min_value_input = "".to_string();
+        self.exp_max_value_input = "".to_string();
+        self.log_a_input = "".to_string();
+        self.log_d_input = "".to_string();
+        self.log_m_input = "".to_string();
+        self.log_n_input = "".to_string();
+        self.log_s_input = "".to_string();
+        self.log_o_input = "".to_string();
+        self.log_b_input = "".to_string();
+        self.log_min_value_input = "".to_string();
+        self.log_max_value_input = "".to_string();
+        self.inv_log_a_input = "".to_string();
+        self.inv_log_d_input = "".to_string();
+        self.inv_log_m_input = "".to_string();
+        self.inv_log_n_input = "".to_string();
+        self.inv_log_s_input = "".to_string();
+        self.inv_log_o_input = "".to_string();
+        self.inv_log_b_input = "".to_string();
+        self.inv_log_min_value_input = "".to_string();
+        self.inv_log_max_value_input = "".to_string();
+        self.perpetual_dist_recipient = TokenDistributionRecipientUI::ContractOwner;
+        self.perpetual_dist_recipient_identity_input = None;
+        self.enable_perpetual_distribution = false;
+        self.perpetual_distribution_rules = ChangeControlRulesUI::default();
+        self.enable_pre_programmed_distribution = false;
+        self.pre_programmed_distributions = Vec::new();
+        self.new_tokens_destination_other_identity_enabled = false;
+        self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
+        self.new_tokens_destination_other_identity = "".to_string();
+        self.minting_allow_choosing_destination = false;
+        self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
+
+        self.show_token_creator_confirmation_popup = false;
+        self.token_creator_error_message = None;
+
+        // Reset document schemas
+        self.document_schemas_input = String::new();
+        self.parsed_document_schemas = None;
+        self.document_schemas_error = None;
     }
 }

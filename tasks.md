@@ -742,7 +742,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.3d Move TokenBuildArgs and estimate_registration_cost to token_creator.rs** (P2)
   Move the `TokenBuildArgs` struct (lines 1121-1157) and `estimate_registration_cost()` method (lines 1971-2013) to the existing `token_creator.rs` module, which already contains all the token creator rendering logic. Also move `render_base_supply_input()` (line 2689) and `render_max_supply_input()` (line 2705) since they are only used by the token creator.
 
-- [ ] **3.3e Move history_row() and reset_token_creator() to token_creator.rs** (P3)
+- [x] **3.3e Move history_row() and reset_token_creator() to token_creator.rs** (P3)
   Move `history_row()` (lines 1862-1969, 108 lines) and `reset_token_creator()` (lines 2378-2494, 117 lines) to `token_creator.rs`. Both are exclusively used by the token creator subscreen. Also move `load_formula_image()` (line 83), `sanitize_i64()` (line 160), `sanitize_u64()` (line 164) helper functions and the formula PNG constants (lines 75-79) since they are only used by token creator/distributions code.
 
 - [ ] **3.3f Move validate_perpetual_distribution_recipient to distributions.rs** (P3)

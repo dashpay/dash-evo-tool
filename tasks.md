@@ -1899,7 +1899,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (4) For `account_label` decryption (lines 900, 951), use the existing `encryption::decrypt_data()` with the identity's encryption key to decrypt the account label field from the contact request document.
   This makes incoming requests show "alice.dash sent you a contact request" instead of "2fG7x9... sent you a contact request".
 
-- [ ] **7.2b Connect ContactDetailsScreen to backend data flow** (P2)
+- [x] **7.2b Connect ContactDetailsScreen to backend data flow** (P2)
   In `src/ui/dashpay/contact_details.rs`:
   (1) Implement `refresh()` to load contact info from local DB via `db.get_dashpay_contact()` and trigger a `DashPayTask::FetchContacts` or `FetchContactProfile` for fresh Platform data.
   (2) Implement `save_contact_info()` to trigger `DashPayTask::UpdateContactInfo` with the edited nickname, note, and hidden status, instead of only updating the local struct.

@@ -1337,7 +1337,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.4b Fix single_key_send_screen address validation: Add real-time format checking** (P2)
   In `src/ui/wallets/single_key_send_screen.rs`, the recipient address field (lines 280-287) has no frontend validation — the raw String is passed to the backend. Add real-time address validation on change (similar to withdraw_screen.rs pattern) using `Address::from_str()` or `detect_address_type()` from send_utils.rs. Show error text next to each recipient's address field when invalid.
 
-- [ ] **4.4c Fix withdraw_screen address validation timing** (P2)
+- [x] **4.4c Fix withdraw_screen address validation timing** (P2)
   In `src/ui/identities/withdraw_screen.rs`, the confirmation dialog (show_confirmation_popup, line 203) re-validates the address and dismisses itself if invalid (lines 209-214). Prevent the confirmation dialog from opening when `withdrawal_address_error` is already set. Add a network mismatch check in the on-change validation (line 152-165) using `require_network()`.
 
 - [ ] **4.4d Fix f64 precision in transfer/withdraw max amount calculations** (P2)
@@ -1540,7 +1540,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 26 | 18 |
+| 4. UI/UX | 26 | 19 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

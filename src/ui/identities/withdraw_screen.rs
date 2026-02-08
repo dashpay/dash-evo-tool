@@ -20,6 +20,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, recovery_suggestion};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -29,7 +30,6 @@ use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, Frame, Margin, Ui};
 use egui::{Color32, RichText};
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -153,12 +153,24 @@ impl WithdrawalScreen {
                     if self.withdrawal_address.is_empty() {
                         self.withdrawal_address_error = None;
                     } else {
-                        match Address::from_str(&self.withdrawal_address) {
-                            Ok(_) => {
-                                self.withdrawal_address_error = None;
+                        match self.withdrawal_address.parse::<Address<NetworkUnchecked>>() {
+                            Ok(addr) => {
+                                let network = self.app_context.network;
+                                match addr.require_network(network) {
+                                    Ok(_) => {
+                                        self.withdrawal_address_error = None;
+                                    }
+                                    Err(_) => {
+                                        self.withdrawal_address_error = Some(format!(
+                                            "Address is not valid for the current network ({:?})",
+                                            network
+                                        ));
+                                    }
+                                }
                             }
                             Err(_) => {
-                                self.withdrawal_address_error = Some("Invalid address".to_string());
+                                self.withdrawal_address_error =
+                                    Some("Invalid address format".to_string());
                             }
                         }
                     }
@@ -201,14 +213,24 @@ impl WithdrawalScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        // Don't open the dialog if there's already an address validation error
+        if self.withdrawal_address_error.is_some() {
+            self.confirmation_dialog = None;
+            return AppAction::None;
+        }
+
         let address = if self.withdrawal_address.is_empty() {
             None
         } else {
-            match Address::from_str(&self.withdrawal_address) {
-                Ok(address) => Some(address.assume_checked()),
-                Err(_) => {
-                    // Error is already shown next to the input field
-                    self.withdrawal_address_error = Some("Invalid address".to_string());
+            let parsed = self
+                .withdrawal_address
+                .parse::<Address<NetworkUnchecked>>()
+                .ok()
+                .and_then(|addr| addr.require_network(self.app_context.network).ok());
+            match parsed {
+                Some(address) => Some(address),
+                None => {
+                    self.withdrawal_address_error = Some("Invalid address format".to_string());
                     self.confirmation_dialog = None;
                     return AppAction::None;
                 }

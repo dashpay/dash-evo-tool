@@ -748,3 +748,8 @@
 **Task:** 4.4b Fix single_key_send_screen address validation: Add real-time format checking
 **What was done:** Added real-time address validation to the single-key wallet send screen. Created a `validate_recipient_address()` method that runs whenever the address text changes in both simple and advanced modes. Validates three cases: (1) Platform addresses (evo1/tevo1 prefix) are rejected with a message to use a Core address, (2) invalid address format is detected via `Address::from_str()` parse failure, (3) network mismatch is detected via `require_network()` (e.g., testnet address on mainnet). Errors display inline below the address field in red text. The Send button is disabled when any recipient has an address validation error. Previously, the raw address string was passed to the backend with no frontend validation — users got no feedback until the send operation failed.
 **Files changed:** src/ui/wallets/single_key_send_screen.rs
+
+## Run 122 — 2026-02-08
+**Task:** 4.4c Fix withdraw_screen address validation timing
+**What was done:** Improved address validation in the withdrawal screen with two changes: (1) Added network mismatch detection to the on-change validation by switching from `Address::from_str()` to parsing as `Address<NetworkUnchecked>` and then calling `require_network()`. Users now see "Address is not valid for the current network" if they enter e.g. a testnet address while on mainnet. (2) Added an early guard in `show_confirmation_popup()` that prevents the dialog from opening when `withdrawal_address_error` is already set. The confirmation popup's address re-validation was also updated to use `require_network()` for consistency.
+**Files changed:** src/ui/identities/withdraw_screen.rs

@@ -1029,3 +1029,9 @@
 **What was done:** Added `created_at: Option<i64>` field to the `Contact` struct in contacts_list.rs. When loading contacts from the database, the field is populated from `StoredContact.created_at` (the DB already had this column with `DEFAULT (unixepoch())`). Implemented the `SearchFilter::Recent` filter to show only contacts added within the last 7 days by comparing `created_at` against the current time minus 7 days. Implemented `SortOrder::DateAdded` to sort contacts by `created_at` descending (newest first), with contacts lacking timestamps sorted last. Contacts loaded fresh from Platform get `created_at: None` since the timestamp is assigned by the DB on save.
 **Files changed:** src/ui/dashpay/contacts_list.rs
 **Sub-tasks created:** 0
+
+## Run 169 — 2026-02-08
+**Task:** 7.2f Remove stale autoAcceptProof TODO and fix tracing log levels in DashPay backend
+**What was done:** Removed stale TODO comment about autoAcceptProof processing in contact_requests.rs (the functionality is fully implemented in auto_accept_handler.rs). Fixed tracing log levels in auto_accept_handler.rs: changed "Found contact request with autoAcceptProof" and "Valid autoAcceptProof! Auto-accepting" from error to info level, and changed "Invalid or expired autoAcceptProof" and "Failed to verify autoAcceptProof" from error to warn level. In payments.rs, changed the placeholder "Would update payment" message from error to debug level.
+**Files changed:** src/backend_task/dashpay/contact_requests.rs, src/backend_task/dashpay/auto_accept_handler.rs, src/backend_task/dashpay/payments.rs
+**Sub-tasks created:** 0

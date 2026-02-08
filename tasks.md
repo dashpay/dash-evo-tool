@@ -1927,7 +1927,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (3) Implement `SearchFilter::Recent` (line 577-580): filter to contacts with `created_at` within the last 7 days (or configurable).
   (4) Implement `SortOrder::DateAdded` (line 672-676): sort by `created_at` descending instead of identity ID.
 
-- [ ] **7.2f Remove stale autoAcceptProof TODO and fix tracing log levels in DashPay backend** (P3)
+- [x] **7.2f Remove stale autoAcceptProof TODO and fix tracing log levels in DashPay backend** (P3)
   (1) In `src/backend_task/dashpay/contact_requests.rs:96-100`, remove or update the stale TODO comment — auto-accept processing is fully implemented in `auto_accept_handler.rs`.
   (2) In `src/backend_task/dashpay/auto_accept_handler.rs`, replace `tracing::error!` calls at lines 58, 83, 103 with appropriate levels (`tracing::info!` for proof found/accepted, `tracing::warn!` for invalid proof). These are informational messages incorrectly logged at error level.
   (3) In `src/backend_task/dashpay/payments.rs:363,380`, replace `tracing::error!` with `tracing::debug!` or `tracing::info!` — these are "would do X" placeholder messages, not actual errors.

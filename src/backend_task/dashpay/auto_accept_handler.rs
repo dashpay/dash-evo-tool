@@ -55,8 +55,8 @@ pub async fn process_auto_accept_requests(
 
             // Check if this request has an autoAcceptProof
             if let Some(Value::Bytes(proof_data)) = props.get("autoAcceptProof") {
-                eprintln!(
-                    "DEBUG: Found contact request with autoAcceptProof from {}",
+                tracing::info!(
+                    "Found contact request with autoAcceptProof from {}",
                     from_id.to_string(Encoding::Base58)
                 );
 
@@ -79,8 +79,8 @@ pub async fn process_auto_accept_requests(
                     account_reference,
                 ) {
                     Ok(true) => {
-                        eprintln!(
-                            "DEBUG: Valid autoAcceptProof! Auto-accepting contact request from {}",
+                        tracing::info!(
+                            "Valid autoAcceptProof! Auto-accepting contact request from {}",
                             from_id.to_string(Encoding::Base58)
                         );
 
@@ -94,19 +94,19 @@ pub async fn process_auto_accept_requests(
                                 // Stateless: no persistence required
                             }
                             Err(e) => {
-                                eprintln!("ERROR: Failed to auto-accept contact request: {}", e);
+                                tracing::error!("Failed to auto-accept contact request: {}", e);
                                 auto_accepted_requests.push((from_id, false));
                             }
                         }
                     }
                     Ok(false) => {
-                        eprintln!(
-                            "DEBUG: Invalid or expired autoAcceptProof from {}",
+                        tracing::warn!(
+                            "Invalid or expired autoAcceptProof from {}",
                             from_id.to_string(Encoding::Base58)
                         );
                     }
                     Err(e) => {
-                        eprintln!("ERROR: Failed to verify autoAcceptProof: {}", e);
+                        tracing::warn!("Failed to verify autoAcceptProof: {}", e);
                     }
                 }
             }

@@ -414,7 +414,7 @@ pub async fn update_payment_status(
     tx_id: Option<String>,
 ) -> Result<(), String> {
     // TODO: Update payment record in database
-    tracing::error!(
+    tracing::debug!(
         "Would update payment {} status to {:?} with tx_id {:?}",
         payment_id,
         status,

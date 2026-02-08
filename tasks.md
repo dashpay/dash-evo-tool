@@ -2131,7 +2131,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.5b Wrap insert_token() in a transaction** (P2)
   In `src/database/tokens.rs:98-137`, wrap the token insert and identity balance inserts in a transaction. The token insert (line 111-129) and the loop inserting identity token balances (lines 131-135) should both be inside a single `conn.transaction()` block so that either all succeed or all roll back.
 
-- [ ] **7.5c Fix silent error masking in contacts.rs load_contact_private_info** (P2)
+- [x] **7.5c Fix silent error masking in contacts.rs load_contact_private_info** (P2)
   In `src/database/contacts.rs:76-79`, replace `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` (or simply `row.get(0)?`). The closure returns `rusqlite::Result`, so `?` properly propagates SQL type errors instead of silently converting them to empty strings. The `unwrap_or_default()` should only handle SQL NULL values (which are distinct from type errors). Same fix for lines 78 and 79.
 
 - [ ] **7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback** (P2)
@@ -2174,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 20 |
+| 7. Features | 33 | 21 |
 | 8. Security | 2 | 0 |

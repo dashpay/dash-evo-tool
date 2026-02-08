@@ -74,9 +74,9 @@ impl crate::database::Database {
             ],
             |row| {
                 Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                    row.get::<_, i32>(2).unwrap_or(0) != 0,
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<i32>>(2)?.unwrap_or(0) != 0,
                 ))
             },
         );

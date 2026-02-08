@@ -1142,3 +1142,8 @@
 **Task:** 7.5b Wrap insert_token() in a transaction
 **What was done:** Wrapped the token insert and identity balance inserts in `insert_token()` inside a single database transaction. Previously, the token row was inserted first via `self.execute()`, then each identity token balance was inserted in a separate `self.execute()` call in a loop — if any balance insert failed, the token row would remain without its balances. Now, identities are fetched first (releasing the connection lock), then a transaction is opened and both the token upsert and all identity balance upserts execute atomically. Either all succeed or all roll back.
 **Files changed:** src/database/tokens.rs
+
+## Run 186 — 2026-02-08
+**Task:** 7.5c Fix silent error masking in contacts.rs load_contact_private_info
+**What was done:** In `load_contact_private_info()`, replaced `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` for both nickname and notes fields, and `row.get::<_, i32>(2).unwrap_or(0)` with `row.get::<_, Option<i32>>(2)?.unwrap_or(0)` for is_hidden. Previously, SQL type conversion errors (e.g., from database corruption where a non-TEXT value is stored in a TEXT column) were silently masked as empty strings or zero. Now, type errors are properly propagated via `?` while SQL NULL values are still handled gracefully via `unwrap_or_default()`.
+**Files changed:** src/database/contacts.rs

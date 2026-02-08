@@ -29,8 +29,8 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
-use egui::ahash::HashMap;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::{Arc, RwLock};
 

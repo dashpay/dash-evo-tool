@@ -810,3 +810,8 @@
 **Task:** 5.4d Replace egui::Color32 in model with framework-agnostic type
 **What was done:** Removed the `impl From<IdentityStatus> for Color32` trait implementation and the `use egui::Color32` import from `src/model/qualified_identity/mod.rs`, eliminating the egui dependency from the model layer. Replaced it with a `status_color_rgb(&self) -> (u8, u8, u8)` method on `IdentityStatus` that returns raw RGB values. Updated the single UI consumer in `identities_screen.rs:589` to call `status.status_color_rgb()` and construct `Color32::from_rgb(r, g, b)` locally. This was the only `egui` import in the entire `src/model/` directory.
 **Files changed:** src/model/qualified_identity/mod.rs, src/ui/identities/identities_screen.rs
+
+## Run 134 — 2026-02-08
+**Task:** 5.4e Replace egui::ahash::HashMap with std HashMap in backend_task
+**What was done:** Replaced `use egui::ahash::HashMap` with `use std::collections::HashMap` in `src/backend_task/identity/load_identity.rs:32`. The `HashMap` was used for two local lookup tables (`public_key_lookup` and `public_key_hash_lookup`) in the `load_identity()` method. The backend layer should not depend on egui types. Using `std::collections::HashMap` is functionally equivalent — the ahash hasher provides slightly faster hashing but is unnecessary for these small maps used only during identity key matching.
+**Files changed:** src/backend_task/identity/load_identity.rs

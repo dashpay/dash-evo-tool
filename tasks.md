@@ -1544,7 +1544,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (b) a custom `IdentityColor` enum with `to_color32()` in UI.
   This removes the `egui` dependency from the model layer.
 
-- [ ] **5.4e Replace egui::ahash::HashMap with std HashMap in backend_task** (P3)
+- [x] **5.4e Replace egui::ahash::HashMap with std HashMap in backend_task** (P3)
   In `src/backend_task/identity/load_identity.rs:32`, replace `egui::ahash::HashMap` import with `std::collections::HashMap` (or `ahash::HashMap` with a direct dependency if performance is needed). The backend layer should not depend on egui types.
 
 - [ ] **5.4f Extract state transition sign-and-broadcast helper** (P2)

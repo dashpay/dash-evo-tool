@@ -763,3 +763,8 @@
 **Task:** 4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens
 **What was done:** Added wallet alias trimming and 64-character length limit to all three alias usage sites: add_new_wallet_screen.rs (HD wallet creation), import_mnemonic_screen.rs (single-key import and HD wallet import). Previously, whitespace-only strings like "   " would trigger auto-naming correctly, but strings like "  My Wallet  " kept leading/trailing whitespace. The raw un-trimmed value was used at submission time. Now aliases are trimmed before use and capped at 64 characters (using char-count, not byte-count, for multi-byte safety). Character count feedback (N/64) appears in the UI when the alias exceeds 50 characters.
 **Files changed:** src/ui/wallets/add_new_wallet_screen.rs, src/ui/wallets/import_mnemonic_screen.rs
+
+## Run 125 — 2026-02-08
+**Task:** 4.4f Add basic format validation to address_balance_screen
+**What was done:** Added address prefix validation to the Platform Address Balance Lookup screen. The address input now validates in real-time that the entered address starts with "evo1" (mainnet) or "tevo1" (testnet/devnet). An inline error message appears below the input field when the prefix is invalid, and the "Fetch Balance" button is disabled until the prefix is correct. The validation also runs at submit time as an additional guard. Previously, any non-empty string was accepted, with the error only surfacing after the backend attempted to parse the address.
+**Files changed:** src/ui/tools/address_balance_screen.rs

@@ -1346,7 +1346,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens** (P3)
   In `src/ui/wallets/add_new_wallet_screen.rs:234-243` and `src/ui/wallets/import_mnemonic_screen.rs` (alias usage), trim the alias before use and add a reasonable length limit (e.g., 64 characters). Currently whitespace-only strings pass through without triggering the empty fallback (since `.trim().is_empty()` check is only for auto-naming but the raw un-trimmed value is used at line 243).
 
-- [ ] **4.4f Add basic format validation to address_balance_screen** (P3)
+- [x] **4.4f Add basic format validation to address_balance_screen** (P3)
   In `src/ui/tools/address_balance_screen.rs:42-54`, add a prefix check before submitting: address should start with "evo1" or "tevo1" (matching the hint text at line 64). Currently accepts any non-empty string.
 
 ---

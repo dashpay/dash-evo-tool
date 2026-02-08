@@ -16,6 +16,7 @@ use std::sync::Arc;
 pub struct AddressBalanceScreen {
     pub(crate) app_context: Arc<AppContext>,
     address_input: String,
+    address_validation_error: Option<String>,
     is_loading: bool,
     result: Option<AddressBalanceResult>,
     error_message: Option<String>,
@@ -33,16 +34,35 @@ impl AddressBalanceScreen {
         Self {
             app_context: app_context.clone(),
             address_input: String::new(),
+            address_validation_error: None,
             is_loading: false,
             result: None,
             error_message: None,
         }
     }
 
+    fn validate_address(address: &str) -> Option<String> {
+        if address.is_empty() {
+            return None; // No error shown for empty input
+        }
+        if !address.starts_with("evo1") && !address.starts_with("tevo1") {
+            return Some(
+                "Address must start with \"evo1\" (mainnet) or \"tevo1\" (testnet/devnet)"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
     fn trigger_fetch(&mut self) -> AppAction {
         let address = self.address_input.trim().to_string();
         if address.is_empty() {
             self.error_message = Some("Please enter an address".to_string());
+            return AppAction::None;
+        }
+
+        if let Some(validation_error) = Self::validate_address(&address) {
+            self.error_message = Some(validation_error);
             return AppAction::None;
         }
 
@@ -70,6 +90,21 @@ impl AddressBalanceScreen {
 
         let response = ui.add(text_edit);
 
+        // Validate on change
+        if response.changed() {
+            self.address_validation_error = Self::validate_address(self.address_input.trim());
+        }
+
+        // Show inline validation error
+        if let Some(ref validation_error) = self.address_validation_error {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(validation_error)
+                    .color(DashColors::ERROR)
+                    .small(),
+            );
+        }
+
         // Submit on Enter key
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             action = self.trigger_fetch();
@@ -78,7 +113,9 @@ impl AddressBalanceScreen {
         ui.add_space(10.0);
 
         let button = ui.add_enabled(
-            !self.is_loading && !self.address_input.trim().is_empty(),
+            !self.is_loading
+                && !self.address_input.trim().is_empty()
+                && self.address_validation_error.is_none(),
             egui::Button::new(if self.is_loading {
                 "Loading..."
             } else {

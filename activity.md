@@ -894,3 +894,9 @@
 **What was done:** Replaced the 2 production println!/eprintln! calls in src/ with tracing macros. In main.rs, moved `initialize_logger()` to run earlier (right after data dir creation) and replaced `println!` startup message with `tracing::info!` with structured version and data_dir fields. In logging.rs, replaced `eprintln!` (log file creation failure fallback) with `tracing::warn!` since the stderr subscriber is already active at that point. All remaining println!/eprintln! calls in src/ are in test code (#[test] / #[cfg(test)]) or commented out — these were left as-is.
 **Files changed:** src/main.rs, src/logging.rs
 **Sub-tasks created:** 0
+
+## Run 149 — 2026-02-08
+**Task:** 6.4 [META] Review and triage all TODO/FIXME comments
+**What was done:** Found and triaged 47 TODO/FIXME comments across src/. Categorized into 7 groups: SPV developer mode gates (7 instances, deferred to task 7.3), DashPay feature stubs (19 instances, deferred to task 7.2), token screen filtering (3 instances, already tracked as ui-tokens-023), actionable code improvements (8 instances, 6 new sub-tasks created), known limitations (5 instances, no action needed), DB migration discussion (1 instance, informational), and SPV activation height (1 instance, deferred to 7.3). No stale/done TODOs found — all are still relevant.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (6.4a through 6.4f)

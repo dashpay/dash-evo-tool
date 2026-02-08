@@ -1680,12 +1680,76 @@ These META tasks validate reported bugs against the current codebase before any 
   Find all `println!` and `eprintln!` in `src/` and replace with appropriate `tracing::info!`, `tracing::warn!`, `tracing::error!`, etc.
   Reference: `issues/core-014-logging-panic-on-failure.md`.
 
-- [ ] **6.4 [META] Review and triage all TODO/FIXME comments** (P2)
+- [x] **6.4 [META] Review and triage all TODO/FIXME comments** (P2)
   Find all TODO/FIXME comments in the codebase (approximately 51). For each:
   - If it's still relevant: create a task
   - If it's stale or done: remove the comment
   - If it's a known limitation: document it
   Update this file with new tasks.
+
+  **Triage Results (47 TODO/FIXME comments found in src/):**
+
+  **Category 1: SPV Developer Mode Gates (7 instances) — DEFERRED to task 7.3**
+  - `app.rs:655,1141` — SPV auto-start gated behind developer mode
+  - `network_chooser_screen.rs:217,560,883,1035,1214` — SPV UI/controls hidden behind developer mode
+  These are intentional gates while SPV is in development. PR#525 is active SPV work. Task 7.3 will review SPV production readiness; these TODOs should be removed when SPV is promoted to production.
+
+  **Category 2: DashPay Feature Stubs (19 instances) — DEFERRED to task 7.2**
+  - `contact_requests.rs:96` — Process autoAcceptProof for incoming requests
+  - `contact_requests.rs:782` — Cancel outgoing contact request
+  - `contact_requests.rs:897,898,900,951` — Resolve username, fetch profile, decrypt account_label
+  - `contacts.rs:512,526` — Add contact by username, remove contact (full stub implementations)
+  - `contact_details.rs:93,107,371,379` — Fetch contact info, save via backend, remove/block contact
+  - `contacts_list.rs:37,46,578,673` — Recent/DateAdded sorting needs database timestamps
+  - `send_payment.rs:81,829,862` — Load contact info, include timestamps in PaymentRecord
+  - `payments.rs:360,379,394` — Query/update payment records, check address usage
+  - `dashpay.rs:190` — Payment history loading per DIP-0015
+  Task 7.2 (Review DashPay subsystem completeness) already covers these. No new sub-tasks needed.
+
+  **Category 3: Token Screen Filtering (3 instances) — ALREADY TRACKED**
+  - `destroy_frozen_funds_screen.rs:68` — Filter by frozen status
+  - `unfreeze_tokens_screen.rs:58,82` — Filter to frozen identities only
+  Already tracked as ui-tokens-023 in task 1.2 triage. No new sub-task needed.
+
+  **Category 4: Actionable Code Improvements (8 instances) — NEW SUB-TASKS CREATED**
+  - `context/mod.rs:659` — Hardcoded PLATFORM_V11 should use sdk.version()
+  - `profile_screen.rs:949` — Missing confirmation dialog for unsaved profile changes
+  - `register_dpns_name.rs:168` — Use proof to detect contested name status
+  - `register_identity.rs:131,286` — UTXO removal timing (remove AFTER confirmation, not before)
+  - `network_chooser_screen.rs:192` — Local network settings (password) not saved
+  - `add_new_identity_screen/mod.rs:409` — Unreliable next_identity_id() function
+
+  **Category 5: Known Limitations (5 instances) — NO ACTION NEEDED**
+  - `encryption_tests.rs:144` — Incomplete ECDH test, needs proper mock (test code)
+  - `start_dash_qt.rs:138` — Windows graceful termination not supported (platform limitation)
+  - `burn_tokens.rs:125` — Fee tracking placeholder until SDK provides info
+  - `contract_chooser_panel.rs:514` — Right-click support for custom header (nice-to-have)
+  - `identity_selector.rs:178` — FIXME vertical alignment workaround (cosmetic)
+
+  **Category 6: DB Migration Discussion (1 instance) — INFORMATIONAL**
+  - `database/initialization.rs:497` — Team discussion needed on migration approach
+  Not actionable as a code task; requires team decision.
+
+  **Category 7: SPV Activation Height (1 instance) — DEFERRED to task 7.3**
+  - `context_provider_spv.rs:119` — Hardcoded activation height needs real value
+
+- [ ] **6.4a Fix TODO: Use SDK version instead of hardcoded PLATFORM_V11** (P2)
+  In `src/context/mod.rs:659`, replace hardcoded `PLATFORM_V11` with dynamic `self.sdk.read().unwrap().version()` call. Verify SDK exposes this method and that the version is available at the point of use.
+
+- [ ] **6.4b Fix TODO: Add confirmation dialog for unsaved profile changes** (P2)
+  In `src/ui/dashpay/profile_screen.rs:949`, add a confirmation dialog when the user cancels profile editing with unsaved changes, similar to the existing `ConfirmationDialog` pattern used elsewhere in the codebase.
+
+- [ ] **6.4c Fix TODO: Use proof response to detect contested DPNS names** (P3)
+  In `src/backend_task/identity/register_dpns_name.rs:168`, use the proof returned in the document submission response to determine if the registered name is contested, and update the UI accordingly.
+
+- [ ] **6.4d Fix TODO: UTXO removal timing in identity registration** (P1)
+  In `src/backend_task/identity/register_identity.rs:131,286`, UTXOs are removed from wallet BEFORE asset lock confirmation. Move UTXO removal to AFTER successful confirmation to prevent balance loss on failure. Two locations: FundWithWallet and FundWithPlatformAddress cases.
+
+- [ ] **6.4e Fix TODO: Save local network settings including password** (P2)
+  In `src/ui/network_chooser_screen.rs:192`, the local network configuration save doesn't persist password and other local-only settings. Add persistence for these fields.
+
+- [ ] **6.4f Fix TODO: Make next_identity_id() reliable** (P2)
+  In `src/ui/identities/add_new_identity_screen/mod.rs:409`, the `next_identity_id()` function is unreliable because it relies on the wallet's identities map which may be out of sync with Platform. Consider querying Platform directly or using a different approach.
 
 - [ ] **6.5 Add config save/load roundtrip tests** (P2)
   Write tests that verify configuration can be saved and loaded without data loss.
@@ -1814,7 +1878,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 160 (24 META + 136 direct)
+**Total tasks:** 166 (24 META + 142 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1824,7 +1888,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 13 | 8 |
+| 6. Testing | 19 | 9 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

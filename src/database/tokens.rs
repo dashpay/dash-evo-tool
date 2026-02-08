@@ -10,10 +10,11 @@ use rusqlite::OptionalExtension;
 use rusqlite::params;
 
 use super::Database;
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
+use crate::context::AppContext;
+use crate::lock_helper::{MutexExt, RwLockExt};
+use crate::model::tokens::{
+    IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
-use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
 impl Database {
     pub fn initialize_token_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
@@ -47,7 +48,7 @@ impl Database {
         let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT token_config
              FROM token
@@ -77,7 +78,7 @@ impl Database {
         let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT data_contract_id
              FROM token
@@ -111,7 +112,14 @@ impl Database {
         let token_id_bytes = token_id.to_vec();
         let data_contract_bytes = data_contract_id.to_vec();
 
-        self.execute(
+        // Collect identities before acquiring the connection lock for the transaction
+        let wallets = app_context.wallets.read_or_recover();
+        let identities = self.get_local_qualified_identities(app_context, &wallets)?;
+
+        let mut conn = self.conn.lock_or_recover();
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "INSERT INTO token
               (id, token_alias, token_config, data_contract_id, token_position, network)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -132,10 +140,19 @@ impl Database {
         )?;
 
         // Insert an identity token balance of 0 for each identity for this token
-        let wallets = app_context.wallets.read().unwrap();
-        for identity in self.get_local_qualified_identities(app_context, &wallets)? {
-            self.insert_identity_token_balance(token_id, &identity.identity.id(), 0, app_context)?;
+        for identity in &identities {
+            let identity_id_bytes = identity.identity.id().to_vec();
+            tx.execute(
+                "INSERT INTO identity_token_balances
+                  (token_id, identity_id, balance, network)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
+                  balance = excluded.balance",
+                params![token_id_bytes, identity_id_bytes, 0u64, network],
+            )?;
         }
+
+        tx.commit()?;
 
         Ok(())
     }
@@ -205,7 +222,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfoWithDataContract>> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare(
             "SELECT
@@ -242,12 +259,16 @@ impl Database {
                 app_context.platform_version(),
             )
             .map_err(|e| {
-                eprintln!("Failed to deserialize DataContract: {}", e);
+                tracing::error!("Failed to deserialize DataContract: {}", e);
                 rusqlite::Error::ToSqlConversionFailure(Box::new(e))
             })?;
 
+            let token_id = Identifier::from_vec(row.get(0)?).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse token ID: {}", e))
+            })?;
+
             Ok((
-                Identifier::from_vec(row.get(0)?).expect("Failed to parse token ID"),
+                token_id,
                 row.get::<_, String>(1)?,
                 token_cfg,
                 data_contract,
@@ -284,7 +305,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfo>> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // -- 1.  query id / alias / config / contract / position ────────────────
         let mut stmt = conn.prepare(
@@ -320,8 +341,12 @@ impl Database {
         for row in rows {
             let (token_id_res, token_alias, token_cfg, contract_id_res, pos) = row?;
 
-            let token_id = token_id_res.expect("Failed to parse token ID");
-            let data_contract_id = contract_id_res.expect("Failed to parse contract ID");
+            let token_id = token_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse token ID: {}", e))
+            })?;
+            let data_contract_id = contract_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse contract ID: {}", e))
+            })?;
 
             result.insert(
                 token_id,
@@ -346,7 +371,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         let rows_data = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock_or_recover();
             let mut stmt = conn.prepare(
                 "SELECT b.token_id, t.token_alias, t.token_config, b.identity_id, b.balance, t.data_contract_id, t.token_position
              FROM identity_token_balances AS b
@@ -388,10 +413,24 @@ impl Database {
             token_position,
         ) in rows_data
         {
-            let token_id = token_id_res.expect("Failed to parse token_identifier");
-            let token_config = token_config.expect("Missing token_config").0;
-            let identity_id = identity_id_res.expect("Failed to parse identity_id");
-            let data_contract_id = data_contract_id_res.expect("Failed to parse data_contract_id");
+            let token_id = token_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to parse token_identifier: {}",
+                    e
+                ))
+            })?;
+            let token_config = token_config.map(|(cfg, _)| cfg).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Missing token_config: {}", e))
+            })?;
+            let identity_id = identity_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Failed to parse identity_id: {}", e))
+            })?;
+            let data_contract_id = data_contract_id_res.map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to parse data_contract_id: {}",
+                    e
+                ))
+            })?;
 
             let identity_token_balance = IdentityTokenBalance {
                 token_id,
@@ -488,7 +527,7 @@ impl Database {
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
     pub fn save_token_order(&self, all_ids: Vec<(Identifier, Identifier)>) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let tx = conn.unchecked_transaction()?;
 
         // Clear existing rows
@@ -512,7 +551,7 @@ impl Database {
     /// Loads the custom identity order from the DB, returning a list of Identifiers in the stored order.
     /// If there's no data, returns an empty Vec.
     pub fn load_token_order(&self) -> rusqlite::Result<Vec<(Identifier, Identifier)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Read all rows sorted by pos
         let mut stmt = conn.prepare(
@@ -564,11 +603,152 @@ impl Database {
         }
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Delete tokens and cascade deletions in related tables due to foreign keys
         conn.execute("DELETE FROM token WHERE network = ?", params![network])?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::platform::Identifier;
+
+    fn insert_test_contract(db: &crate::database::Database, id: &Identifier) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'testnet')",
+            rusqlite::params![id.to_vec(), vec![0u8; 16]],
+        ).unwrap();
+    }
+
+    fn insert_test_token(
+        db: &crate::database::Database,
+        token_id: &Identifier,
+        contract_id: &Identifier,
+    ) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network) VALUES (?, 'Test Token', ?, ?, 0, 'testnet')",
+            rusqlite::params![token_id.to_vec(), vec![0u8; 32], contract_id.to_vec()],
+        ).unwrap();
+    }
+
+    fn insert_test_identity(db: &crate::database::Database, id: &Identifier) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+            rusqlite::params![id.to_vec()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_save_and_load_token_order() {
+        let db = create_test_database().unwrap();
+
+        let contract_id = Identifier::random();
+        insert_test_contract(&db, &contract_id);
+
+        let token1 = Identifier::random();
+        let token2 = Identifier::random();
+        let id1 = Identifier::random();
+        let id2 = Identifier::random();
+
+        insert_test_token(&db, &token1, &contract_id);
+        insert_test_token(&db, &token2, &contract_id);
+        insert_test_identity(&db, &id1);
+        insert_test_identity(&db, &id2);
+
+        let order = vec![(token1, id1), (token2, id2)];
+        db.save_token_order(order.clone()).unwrap();
+
+        let loaded = db.load_token_order().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], order[0]);
+        assert_eq!(loaded[1], order[1]);
+    }
+
+    #[test]
+    fn test_save_token_order_replaces_previous() {
+        let db = create_test_database().unwrap();
+
+        let contract_id = Identifier::random();
+        insert_test_contract(&db, &contract_id);
+
+        let t1 = Identifier::random();
+        let t2 = Identifier::random();
+        let i1 = Identifier::random();
+        let i2 = Identifier::random();
+
+        insert_test_token(&db, &t1, &contract_id);
+        insert_test_token(&db, &t2, &contract_id);
+        insert_test_identity(&db, &i1);
+        insert_test_identity(&db, &i2);
+
+        db.save_token_order(vec![(t1, i1), (t2, i2)]).unwrap();
+        db.save_token_order(vec![(t2, i2)]).unwrap();
+
+        let loaded = db.load_token_order().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], (t2, i2));
+    }
+
+    #[test]
+    fn test_load_empty_token_order() {
+        let db = create_test_database().unwrap();
+        let loaded = db.load_token_order().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_all_tokens_in_devnets_and_regtest() {
+        let db = create_test_database().unwrap();
+
+        let testnet_contract = Identifier::random();
+        let devnet_contract = Identifier::random();
+        let testnet_token = Identifier::random();
+        let devnet_token = Identifier::random();
+
+        // Insert contracts for different networks
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'testnet')",
+                rusqlite::params![testnet_contract.to_vec(), vec![0u8; 16]],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'devnet-test')",
+                rusqlite::params![devnet_contract.to_vec(), vec![0u8; 16]],
+            ).unwrap();
+        }
+
+        // Insert tokens for different networks
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network) VALUES (?, 'T1', ?, ?, 0, 'testnet')",
+                rusqlite::params![testnet_token.to_vec(), vec![0u8; 16], testnet_contract.to_vec()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network) VALUES (?, 'T2', ?, ?, 0, 'devnet-test')",
+                rusqlite::params![devnet_token.to_vec(), vec![0u8; 16], devnet_contract.to_vec()],
+            ).unwrap();
+        }
+
+        {
+            let conn = db.conn.lock().unwrap();
+            db.delete_all_local_tokens_in_all_devnets_and_regtest(&conn)
+                .unwrap();
+        }
+
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM token", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1); // Only testnet token remains
     }
 }

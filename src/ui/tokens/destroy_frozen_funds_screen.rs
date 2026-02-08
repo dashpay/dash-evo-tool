@@ -64,9 +64,13 @@ pub struct DestroyFrozenFundsScreen {
     /// Typically some Identity that has been frozen by the system or a group
     pub frozen_identity_id: String,
 
-    /// All frozen identities that can be selected
-    /// TODO: We should filter them by frozen status, right now we just show all known identities
+    /// Identities filtered to only those frozen for this token
     pub frozen_identities: Vec<QualifiedIdentity>,
+
+    /// Whether we are still loading frozen identity status from Platform
+    loading_frozen_identities: bool,
+    /// Whether the frozen identity query has been dispatched
+    frozen_query_dispatched: bool,
 
     status: OperationStatus,
     error_message: Option<String>,
@@ -195,12 +199,14 @@ impl DestroyFrozenFundsScreen {
 
         let all_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .unwrap_or_default();
 
         Self {
             identity: identity_token_info.identity.clone(),
             frozen_identity_id: String::new(),
             frozen_identities: all_identities,
+            loading_frozen_identities: true,
+            frozen_query_dispatched: false,
             identity_token_info,
             selected_key: possible_key,
             show_advanced_options: false,
@@ -336,17 +342,30 @@ impl DestroyFrozenFundsScreen {
 impl ScreenLike for DestroyFrozenFundsScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
-            self.status = OperationStatus::ErrorMessage(message.to_string());
+            // If we get an error while loading frozen identities, stop loading
+            // and show all identities as fallback
+            if self.loading_frozen_identities {
+                self.loading_frozen_identities = false;
+            } else {
+                self.status = OperationStatus::ErrorMessage(message.to_string());
+            }
             self.error_message = Some(message.to_string());
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::Token(TokenResult::DestroyedFrozenFunds(fee_result)) =
-            backend_task_success_result
-        {
-            self.completed_fee_result = Some(fee_result);
-            self.status = OperationStatus::Complete;
+        match backend_task_success_result {
+            BackendTaskSuccessResult::Token(TokenResult::DestroyedFrozenFunds(fee_result)) => {
+                self.completed_fee_result = Some(fee_result);
+                self.status = OperationStatus::Complete;
+            }
+            BackendTaskSuccessResult::Token(TokenResult::FrozenIdentities(frozen_ids)) => {
+                self.loading_frozen_identities = false;
+                let frozen_set: HashSet<Identifier> = frozen_ids.into_iter().collect();
+                self.frozen_identities
+                    .retain(|qi| frozen_set.contains(&qi.identity.id()));
+            }
+            _ => {}
         }
     }
 
@@ -362,11 +381,31 @@ impl ScreenLike for DestroyFrozenFundsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action;
+        let mut action = AppAction::None;
+
+        // Dispatch frozen identity query on first frame
+        if !self.frozen_query_dispatched {
+            self.frozen_query_dispatched = true;
+            let identity_ids: Vec<Identifier> = self
+                .frozen_identities
+                .iter()
+                .map(|qi| qi.identity.id())
+                .collect();
+            if !identity_ids.is_empty() {
+                action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                    TokenTask::QueryFrozenIdentities {
+                        token_id: self.identity_token_info.token_id,
+                        identity_ids,
+                    },
+                )));
+            } else {
+                self.loading_frozen_identities = false;
+            }
+        }
 
         // Build a top panel
         if self.group_action_id.is_some() {
-            action = add_top_panel(
+            action |= add_top_panel(
                 ctx,
                 &self.app_context,
                 vec![
@@ -377,7 +416,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                 vec![],
             );
         } else {
-            action = add_top_panel(
+            action |= add_top_panel(
                 ctx,
                 &self.app_context,
                 vec![
@@ -514,7 +553,15 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     );
                     ui.add_space(5.0);
                     ui.label(format!("Identity: {}", self.frozen_identity_id));
+                } else if self.loading_frozen_identities {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading frozen identities from Platform...");
+                    });
                 } else {
+                    if self.frozen_identities.is_empty() {
+                        ui.label("No frozen identities found for this token.");
+                    }
                     self.render_frozen_identity_input(ui);
                 }
 

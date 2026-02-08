@@ -77,6 +77,8 @@ pub enum TokenResult {
     },
     RegisteredTokenContract,
     TokenNotFound,
+    /// List of identity IDs that are frozen for a given token
+    FrozenIdentities(Vec<Identifier>),
 }
 
 mod burn_tokens;
@@ -86,6 +88,7 @@ mod freeze_tokens;
 mod mint_tokens;
 mod pause_tokens;
 mod purchase_tokens;
+mod query_frozen_identities;
 mod query_my_token_balances;
 mod query_token_non_claimed_perpetual_distribution_rewards;
 mod query_token_pricing;
@@ -135,6 +138,11 @@ pub enum TokenTask {
     },
     QueryMyTokenBalances,
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
+    /// Query Platform for which identities are frozen for a given token
+    QueryFrozenIdentities {
+        token_id: Identifier,
+        identity_ids: Vec<Identifier>,
+    },
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
     FetchTokenByTokenId(Identifier),
@@ -550,6 +558,13 @@ impl AppContext {
                 )
                 .await
                 .map_err(|e| format!("Failed to fetch token balance: {e}")),
+            TokenTask::QueryFrozenIdentities {
+                token_id,
+                identity_ids,
+            } => {
+                self.query_frozen_identities(sdk, *token_id, identity_ids.clone())
+                    .await
+            }
             TokenTask::FetchTokenByContractId(contract_id) => {
                 match DataContract::fetch_by_identifier(sdk, *contract_id).await {
                     Ok(Some(data_contract)) => Ok(BackendTaskSuccessResult::Contract(

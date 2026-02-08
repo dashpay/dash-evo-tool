@@ -2054,7 +2054,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.4c Fix token_creator.rs unwrap on identity/key submission** (P1)
   In `src/ui/tokens/tokens_screen/token_creator.rs:1607-1608`, `.unwrap()` on `selected_identity` and `selected_key` will panic if neither is set. Add validation before the submission block: check both are `Some`, and if not, set `self.token_creator_error_message = Some("Please select an identity and signing key.")` and return early.
 
-- [ ] **7.4d Implement frozen identity filtering for destroy/unfreeze screens** (P2)
+- [x] **7.4d Implement frozen identity filtering for destroy/unfreeze screens** (P2)
   In `src/ui/tokens/destroy_frozen_funds_screen.rs` and `src/ui/tokens/unfreeze_tokens_screen.rs`, the identity lists show all known identities instead of only frozen ones. Options:
   (a) Query Platform on screen load for frozen status of each identity against the selected token. More accurate but requires network.
   (b) Track frozen status locally after freeze operations. Faster but may miss external freeze actions.
@@ -2089,5 +2089,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 26 | 14 |
+| 7. Features | 26 | 15 |
 | 8. Security | 2 | 0 |

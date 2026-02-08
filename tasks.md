@@ -1045,7 +1045,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.7d Deduplicate estimate_p2pkh_tx_size** (P3)
   Move `estimate_p2pkh_tx_size()` to a shared location (e.g., `src/model/fee_estimation.rs` as a standalone function). Remove the duplicate in `single_key_send_screen.rs:104-119` and update calls in both `backend_task/core/mod.rs` and `single_key_send_screen.rs` to use the shared version.
 
-- [ ] **3.7e Consolidate credits-to-DASH formatting** (P3)
+- [x] **3.7e Consolidate credits-to-DASH formatting** (P3)
   Replace the duplicate `credits as f64 / 1000.0 / 100_000_000.0` in `send_utils.rs:34` and `by_platform_address.rs:238` with the existing `fee_estimation::format_credits_as_dash()`. If the function signatures differ, adapt the callers. Also consider extracting a `CREDITS_PER_DASH` constant to a shared location.
 
 - [ ] **3.7f Extract 20% safety buffer into helper function** (P3)

@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::lock_helper::RwLockExt;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{CREDITS_PER_DASH, format_credits_as_dash};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
@@ -9,9 +9,6 @@ use crate::ui::identities::add_new_identity_screen::{
 };
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use egui::{Color32, ComboBox, RichText, Ui};
-
-/// Constants for credit/DASH conversion
-const CREDITS_PER_DUFF: u64 = 1000;
 
 impl AddNewIdentityScreen {
     fn show_platform_address_balance(&self, ui: &mut egui::Ui) {
@@ -24,12 +21,10 @@ impl AddNewIdentityScreen {
                 .map(|info| info.balance)
                 .sum();
 
-            let dash_balance = total_platform_balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Total Platform Address Balance: {:.8} DASH",
-                    dash_balance
+                    "Total Platform Address Balance: {}",
+                    format_credits_as_dash(total_platform_balance)
                 ));
             });
         } else {
@@ -107,7 +102,7 @@ impl AddNewIdentityScreen {
             .selected_text(selected_addr_display)
             .show_ui(ui, |ui| {
                 for (bech32_addr_str, platform_addr, balance) in &platform_addresses {
-                    let dash_balance = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                    let dash_balance = *balance as f64 / CREDITS_PER_DASH as f64;
                     // Truncate Bech32m address for display in dropdown
                     let addr_display = if bech32_addr_str.len() > 20 {
                         format!(
@@ -202,8 +197,7 @@ impl AddNewIdentityScreen {
 
         // Show selected amount info
         if let Some((_, amount)) = &self.selected_platform_address_for_funding {
-            let dash_amount = *amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-            ui.label(format!("Will use: {:.8} DASH", dash_amount));
+            ui.label(format!("Will use: {}", format_credits_as_dash(*amount)));
         }
 
         ui.add_space(20.0);

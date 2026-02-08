@@ -1,4 +1,5 @@
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::format_credits_as_dash;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::balances::credits::Credits;
@@ -31,8 +32,7 @@ pub fn parse_amount_to_credits(input: &str) -> Result<Credits, String> {
 
 /// Format platform credits as a human-readable DASH string
 pub fn format_credits(credits: Credits) -> String {
-    let dash = credits as f64 / 1000.0 / 100_000_000.0;
-    format!("{:.8} DASH", dash)
+    format_credits_as_dash(credits)
 }
 
 /// Detect address type from the address string

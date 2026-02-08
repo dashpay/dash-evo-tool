@@ -24,7 +24,6 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -108,9 +107,6 @@ pub struct SetTokenPriceScreen {
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
 }
-
-/// 1 Dash = 100,000,000,000 credits
-pub const CREDITS_PER_DASH: Credits = 100_000_000_000;
 
 impl SetTokenPriceScreen {
     fn token_decimal_divisor(&self) -> u64 {

@@ -75,7 +75,7 @@ impl TopUpIdentityScreen {
                     let addr_display = platform_addr.to_bech32m_string(network);
                     let response = ui.selectable_label(
                         is_selected,
-                        format!("{} - {}", addr_display, Self::format_credits(*balance)),
+                        format!("{} - {}", addr_display, format_credits_as_dash(*balance)),
                     );
 
                     if response.clicked() {
@@ -133,9 +133,12 @@ impl TopUpIdentityScreen {
                     if let Some((_, _, balance)) = &self.selected_platform_address {
                         ui.add_space(10.0);
                         ui.label(
-                            RichText::new(format!("Available: {}", Self::format_credits(*balance)))
-                                .color(DashColors::text_secondary(dark_mode))
-                                .size(12.0),
+                            RichText::new(format!(
+                                "Available: {}",
+                                format_credits_as_dash(*balance)
+                            ))
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0),
                         );
                     }
                 });
@@ -233,12 +236,6 @@ impl TopUpIdentityScreen {
             .collect()
     }
 
-    /// Format credits as DASH equivalent
-    fn format_credits(credits: Credits) -> String {
-        let dash_equivalent = credits as f64 / 1000.0 / 100_000_000.0;
-        format!("{:.8} DASH", dash_equivalent)
-    }
-
     /// Validate and create the top-up task
     fn validate_and_top_up_from_platform(&mut self) -> Result<AppAction, String> {
         let (_, platform_addr, available_balance) = self
@@ -259,8 +256,8 @@ impl TopUpIdentityScreen {
         if amount > available_balance {
             return Err(format!(
                 "Insufficient balance. Available: {}, Requested: {}",
-                Self::format_credits(available_balance),
-                Self::format_credits(amount)
+                format_credits_as_dash(available_balance),
+                format_credits_as_dash(amount)
             ));
         }
 

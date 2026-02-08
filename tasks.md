@@ -1055,7 +1055,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Section 4: UI/UX Improvements [Week 3-6]
 
-- [ ] **4.1 [META] Triage UX feature requests from GitHub** (P2)
+- [x] **4.1 [META] Triage UX feature requests from GitHub** (P2)
   Review and assess feasibility of:
   - GH#471 (Hide zero balances)
   - GH#473 (Display pending funds on wallet page)
@@ -1066,6 +1066,88 @@ These META tasks validate reported bugs against the current codebase before any 
   - GH#368 (Create Wallet suggestions)
   - GH#367 (Wallet UX & documentation issues)
   For each: validate relevance, assess effort, create implementation tasks for approved ones.
+
+  **Triage Results:**
+
+  **GH#471 — CONFIRMED (Hide zero balances). Effort: LOW.**
+  Request: Add a "hide zero balances" checkbox to wallet address lists, checked by default. Also consider hiding columns like "Total Received" that aren't useful for regular users.
+  The address table is rendered in `wallets_screen/address_table.rs` via `render_address_table()`. The `AddressData` struct already contains a `balance` field. An existing filtering pattern (`.retain()` for account selection at line 194) can be extended. Implementation: add a `hide_zero_balances: bool` field to `WalletsBalancesScreen`, add checkbox UI near the account filter, add `.retain(|data| data.balance > 0)` after account filtering. The column hiding request (Total Received, etc.) can be a separate enhancement with a column visibility toggle. Fix: create sub-task for checkbox + optional column toggle.
+
+  **GH#473 — CONFIRMED (Display pending funds). Effort: LOW.**
+  Request: Show pending funds (e.g., "+3.00 pending" in gray) near actual balance when funds are in transit.
+  Infrastructure fully exists: `Wallet` struct has `confirmed_balance`, `unconfirmed_balance`, `total_balance` fields (model/wallet/mod.rs:321-323). Methods `confirmed_balance_duffs()`, `unconfirmed_balance_duffs()`, `total_balance_duffs()` are available. DB schema stores both confirmed and unconfirmed. Currently `render_wallet_overview()` in wallets_screen/mod.rs only displays `total_balance_duffs()` without breakdown. Fix: modify `render_wallet_overview()` to show confirmed balance prominently and pending balance in gray when non-zero. Also update `render_wallet_selection()` sidebar. `SingleKeyWallet` also has separate confirmed/unconfirmed fields.
+
+  **GH#474 — CONFIRMED (Add identity to send sources). Effort: MEDIUM.**
+  Request: On wallet send page, allow identity as a "send from" source (currently only Core Wallet and Platform Address).
+  The send screen (`send_screen/mod.rs`) has `SourceSelection` enum with `CoreWallet` and `PlatformAddresses`. Identity withdrawal already exists via `IdentityTask::WithdrawFromIdentity` (backend_task/identity/withdraw_from_identity.rs) and a dedicated withdraw_screen.rs. Adding identity as a source requires: (1) extend `SourceSelection` with `Identity(QualifiedIdentity)` variant, (2) add identity list/selection UI, (3) add key selection for signing (identities require explicit key selection), (4) route `Identity + CoreAddress` to existing withdrawal backend task. Phase 1 (identity → Core withdrawal) is moderate; Phase 2 (identity → identity transfer) is more complex. Fix: create phased sub-tasks.
+
+  **GH#482 — ALREADY FIXED by task 1.4a.** Text wrapping added to error/warning message displays across all affected locations.
+
+  **GH#333 — ADDRESSED BY PR#532.** PR#532 ("fix: connection status not clear") is open and centralizes connection-status monitoring with dynamic tooltips and backend-mode awareness. It adds tri-state status (disconnected/syncing/synced) with color coding. No additional DET work needed; defer to that PR. Creating no sub-tasks.
+
+  **GH#369 — PARTIALLY CONFIRMED (Import Wallet suggestions). Effort: LOW-MEDIUM.**
+  Two suggestions: (1) Default word count mismatch — Import defaults to 12 words while Create defaults to 24. Should be consistent. Currently import_mnemonic_screen.rs initializes with 12-word default (line 77) while add_new_wallet_screen.rs defaults to 24 (line 54). Fix: align defaults (suggest both default to 24, matching the more secure creation default). (2) Validation feedback — Import screen already has good validation: `Mnemonic::parse_normalized()` catches invalid phrases and shows "Invalid seed phrase" error message. However, it doesn't distinguish between invalid words vs. checksum failure. The `bip39` crate's error type includes `MnemonicParseError::InvalidWord` and `MnemonicParseError::InvalidChecksum` that could be pattern-matched for more specific feedback. Fix: create sub-task for specific validation error messages.
+
+  **GH#368 — PARTIALLY CONFIRMED (Create Wallet suggestions). Effort: LOW-MEDIUM.**
+  Seven suggestions triaged:
+  (1) 12-word phrase option — ALREADY SUPPORTED. ComboBox offers 12/15/18/21/24. Default is 24.
+  (2) Seed phrase box overflow — CONFIRMED. Seed phrase display uses a fixed-size frame. On small windows, words overflow and are hidden. Fix: make responsive or use wrapping layout.
+  (3) Password masking — Currently shows password in plain text by default with a show/hide toggle. Standard practice is to mask by default. Fix: swap default to masked.
+  (4) User number display — The "user number" is auto-generated wallet naming (`Wallet N`). No action needed beyond possibly adding a tooltip explaining it can be changed.
+  (5) Wallet name editability note — Suggestion to add text "This can be edited later." Fix: add clarifying text.
+  (6) Randomness squares continue changing after generation — CONFIRMED. Entropy animation continues after mnemonic is generated. Fix: stop animation after generation.
+  (7) Password strength pill overflow — CONFIRMED. The colored pill for strength description (e.g., "Very Strong") overflows on resize. Fix: ensure minimum pill size covers longest text; consider shorter labels.
+
+  **GH#367 — PARTIALLY CONFIRMED (Wallet UX & documentation issues). Effort: MEDIUM.**
+  Four items triaged:
+  (1) "Empty wallet" documentation confusion — Documentation issue, not a code change. Deferring.
+  (2) Balance not showing from Core wallet — This is by design: DET creates its own wallet addresses and doesn't automatically import Core wallet balances. The confusion stems from users expecting DET to read their existing Core wallet. A clarifying message in the UI would help. Fix: add explanatory text about DET wallet independence from Core wallet.
+  (3) General wallet purpose confusion — UX documentation issue. Suggestion to add a brief description of what the DET wallet is for. Fix: add intro text on wallet creation screen.
+  (4) Multi-wallet error — ALREADY FIXED by GH#98 awareness and improved error messages. The multi-wallet detection was addressed.
+
+  **Sub-tasks created for implementation:**
+
+- [ ] **4.1a Add "hide zero balances" checkbox to wallet address table** (P2)
+  In `src/ui/wallets/wallets_screen/address_table.rs`:
+  (1) Add `hide_zero_balances: bool` field to `WalletsBalancesScreen` (default `true`).
+  (2) Add checkbox UI near the account filter/sorting controls in `render_address_table()`.
+  (3) After existing account filtering (line ~194), add `.retain(|data| !self.hide_zero_balances || data.balance > 0 || data.platform_credits > 0)`.
+  (4) Optionally: add a column visibility toggle to hide "Total Received", "UTXOs", "Full Path" columns for a cleaner default view.
+
+- [ ] **4.1b Display pending/unconfirmed balance on wallet page** (P2)
+  In `src/ui/wallets/wallets_screen/mod.rs`:
+  (1) Modify `render_wallet_overview()` (~line 844) to show confirmed and unconfirmed balances separately. When `unconfirmed_balance_duffs() > 0`, display it in gray text (e.g., "+0.5 DASH pending") next to the confirmed balance.
+  (2) Update `render_wallet_selection()` sidebar to show pending indicator next to wallet balance when unconfirmed > 0.
+  (3) For `SingleKeyWallet`, apply same pattern using its `confirmed_balance`/`unconfirmed_balance` fields.
+
+- [ ] **4.1c Add identity as "send from" source (Phase 1: withdrawal)** (P2)
+  In `src/ui/wallets/send_screen/mod.rs`:
+  (1) Add `Identity(QualifiedIdentity)` variant to `SourceSelection` enum.
+  (2) Add identity list loading from `app_context.load_local_qualified_identities()`.
+  (3) Add identity selection ComboBox in the source selection area (similar to platform address selection).
+  (4) Add key selection UI when identity source is selected (required for signing withdrawal).
+  (5) Route `Identity + CoreAddress` to existing `IdentityTask::WithdrawFromIdentity` backend task.
+  (6) Show identity balance in credits and estimated DASH equivalent.
+  Note: Identity-to-identity transfers (Phase 2) deferred to task 7.1 feature triage.
+
+- [ ] **4.1d Improve import wallet validation feedback** (P2)
+  In `src/ui/wallets/import_mnemonic_screen.rs`:
+  (1) Change default word count from 12 to 24 to match wallet creation default (~line 77).
+  (2) Pattern-match on `Mnemonic::parse_normalized()` error type to show specific messages: "Word N is not a valid BIP39 word" for invalid words, "Checksum verification failed — please check all words" for checksum errors, instead of the generic "Invalid seed phrase" message.
+
+- [ ] **4.1e Wallet creation UX polish** (P3)
+  In `src/ui/wallets/add_new_wallet_screen.rs`:
+  (1) Default password field to masked (show dots), with toggle to reveal. Currently shows plain text by default.
+  (2) Stop entropy animation after mnemonic is generated — set a flag in the generation callback to freeze the randomness grid.
+  (3) Ensure password strength pill has minimum width to accommodate "Very Strong" text without overflow. Consider shortening "less than a second" to "<1 second".
+  (4) Add clarifying text below wallet name: "This can be edited later and is not recorded publicly."
+  (5) Make seed phrase display responsive to window size — use wrapping layout instead of fixed-width frame.
+
+- [ ] **4.1f Add wallet purpose explanation to creation flow** (P3)
+  In `src/ui/wallets/add_new_wallet_screen.rs` (or a shared intro component):
+  (1) Add brief explanatory text at the top of the wallet creation screen explaining what the DET wallet is for: "Dash Evo Tool creates its own wallet for managing identities, usernames, and Platform operations. This wallet is separate from your Dash Core wallet."
+  (2) Add note about Dash Core requirement: "Requires Dash Core running with a single wallet loaded. DET will add watching-only addresses to Core for monitoring."
+  This addresses GH#367 items 1-3 about user confusion regarding the wallet's purpose and relationship to Core.
 
 - [ ] **4.2 [META] Audit UI screens for component design pattern compliance** (P3)
   Reference: `doc/COMPONENT_DESIGN_PATTERN.md`. Check all screens in `src/ui/` for:
@@ -1271,15 +1353,15 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 84 (24 META + 60 direct)
+**Total tasks:** 128 (24 META + 104 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 49 | 33 |
-| 4. UI/UX | 4 | 0 |
+| 3. Refactoring | 49 | 49 |
+| 4. UI/UX | 10 | 1 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

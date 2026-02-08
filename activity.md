@@ -615,3 +615,19 @@
 **Task:** 3.7f Extract 20% safety buffer into helper function
 **What was done:** Created `apply_fee_safety_margin(fee: u64, percent: u64) -> u64` public function in `src/model/fee_estimation.rs` that applies a percentage-based safety margin using saturating arithmetic. Replaced 3 inline instances of `total.saturating_add(total / 5)` with calls to `apply_fee_safety_margin(total, 20)`: two in fee_estimation.rs (in `estimate_identity_registration_from_addresses()` and `estimate_identity_topup_from_addresses()`) and one in platform_address_allocation.rs (in `estimate_platform_fee()`).
 **Files changed:** src/model/fee_estimation.rs, src/model/platform_address_allocation.rs
+
+## Run 100 — 2026-02-08
+**Task:** 4.1 [META] Triage UX feature requests from GitHub
+**What was done:** Triaged 8 GitHub issues (GH#471, GH#473, GH#474, GH#482, GH#333, GH#369, GH#368, GH#367) against current codebase. Assessed feasibility by examining relevant source code for each feature request. Created 6 specific sub-tasks for approved implementations.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (4.1a through 4.1f)
+
+**Summary of findings:**
+- GH#471 CONFIRMED: Hide zero balances — LOW effort, address_table.rs already has filtering pattern
+- GH#473 CONFIRMED: Display pending funds — LOW effort, Wallet model already tracks confirmed/unconfirmed separately, only UI display missing
+- GH#474 CONFIRMED: Add identity to send sources — MEDIUM effort, existing withdrawal backend task can be reused, needs source selection UI extension
+- GH#482 ALREADY FIXED by task 1.4a (text wrapping on error messages)
+- GH#333 ADDRESSED BY PR#532 (connection status centralization with tri-state display)
+- GH#369 PARTIALLY CONFIRMED: Import wallet defaults to 12 words vs creation's 24; validation feedback could be more specific
+- GH#368 PARTIALLY CONFIRMED: 7 suggestions triaged — seed phrase length already supported, but password masking default, entropy animation, and pill overflow need fixes
+- GH#367 PARTIALLY CONFIRMED: Wallet purpose confusion — needs explanatory text in UI; multi-wallet error already addressed

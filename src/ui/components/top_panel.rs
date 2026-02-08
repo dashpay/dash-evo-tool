@@ -5,8 +5,7 @@ use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::context::AppContext;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
-use dash_sdk::dashcore_rpc::dashcore::Network;
-use egui::{Color32, Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
+use egui::{Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 
@@ -187,43 +186,7 @@ pub fn add_top_panel(
 ) -> AppAction {
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
-    let network_accent = match app_context.network {
-        Network::Dash => {
-            if dark_mode {
-                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode (20% darker)
-            } else {
-                DashColors::DASH_BLUE // Original: rgb(0, 141, 228)
-            }
-        }
-        Network::Testnet => {
-            if dark_mode {
-                Color32::from_rgb(204, 132, 0) // Muted orange for dark mode
-            } else {
-                Color32::from_rgb(255, 165, 0) // Original bright orange for light mode
-            }
-        }
-        Network::Devnet => {
-            if dark_mode {
-                Color32::from_rgb(111, 0, 0) // Muted dark red for dark mode (20% darker)
-            } else {
-                Color32::DARK_RED // Original: rgb(139, 0, 0)
-            }
-        }
-        Network::Regtest => {
-            if dark_mode {
-                Color32::from_rgb(111, 55, 15) // Muted brown for dark mode (20% darker)
-            } else {
-                Color32::from_rgb(139, 69, 19) // Original brown
-            }
-        }
-        _ => {
-            if dark_mode {
-                Color32::from_rgb(0, 113, 182) // Muted blue for dark mode
-            } else {
-                DashColors::DASH_BLUE
-            }
-        }
-    };
+    let network_accent = DashColors::network_accent(app_context.network, dark_mode);
 
     TopBottomPanel::top("top_panel")
         .frame(
@@ -299,7 +262,7 @@ pub fn add_top_panel(
 
                                     // give it the same style as your other buttons
                                     let docs_btn = egui::Button::new(
-                                        RichText::new("Documents").color(Color32::WHITE),
+                                        RichText::new("Documents").color(DashColors::WHITE),
                                     )
                                     .fill(network_accent)
                                     .frame(true)
@@ -321,11 +284,10 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode {
-                                        Color32::from_rgb(40, 40, 40)
-                                    } else {
-                                        Color32::WHITE
-                                    }))
+                                    .frame(
+                                        egui::Frame::popup(ui.style())
+                                            .fill(DashColors::popup_fill(dark_mode)),
+                                    )
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, da) in doc_actions {
@@ -348,7 +310,7 @@ pub fn add_top_panel(
                                     ui.add_space(3.0);
 
                                     let contracts_btn = egui::Button::new(
-                                        RichText::new("Contracts").color(Color32::WHITE),
+                                        RichText::new("Contracts").color(DashColors::WHITE),
                                     )
                                     .fill(network_accent)
                                     .frame(true)
@@ -370,11 +332,10 @@ pub fn add_top_panel(
                                         resp.clicked().then_some(egui::SetOpenCommand::Toggle),
                                     )
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                    .frame(egui::Frame::popup(ui.style()).fill(if dark_mode {
-                                        Color32::from_rgb(40, 40, 40)
-                                    } else {
-                                        Color32::WHITE
-                                    }))
+                                    .frame(
+                                        egui::Frame::popup(ui.style())
+                                            .fill(DashColors::popup_fill(dark_mode)),
+                                    )
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, ca) in contract_actions {
@@ -401,14 +362,14 @@ pub fn add_top_panel(
                                             f.layout_no_wrap(
                                                 text.to_string(),
                                                 font.clone(),
-                                                Color32::WHITE,
+                                                DashColors::WHITE,
                                             )
                                         })
                                         .size();
                                     let width = text_size.x + 12.0;
 
                                     let button = egui::Button::new(
-                                        RichText::new(text).color(Color32::WHITE),
+                                        RichText::new(text).color(DashColors::WHITE),
                                     )
                                     .fill(network_accent)
                                     .frame(true)

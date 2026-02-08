@@ -5,7 +5,7 @@ use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Color32, Context, Frame, ImageButton, RichText, SidePanel, TextureHandle};
+use egui::{Context, Frame, ImageButton, RichText, SidePanel, TextureHandle};
 use egui_extras::{Size, StripBuilder};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -240,13 +240,7 @@ pub fn add_left_panel(
                                                     _ => selected_screen == *screen_type,
                                                 };
 
-                                                let button_color = if is_selected {
-                                                    Color32::WHITE
-                                                } else if dark_mode {
-                                                    Color32::from_rgb(180, 180, 180)
-                                                } else {
-                                                    Color32::from_rgb(160, 160, 160)
-                                                };
+                                                let button_color = DashColors::icon_tint(is_selected, dark_mode);
 
                                                 if let Some(ref texture) = texture {
                                                     let button = ImageButton::new(texture)
@@ -342,15 +336,15 @@ pub fn add_left_panel(
                                             let (network_name, network_color) = match app_context.network {
                                                 Network::Testnet => (
                                                     "Testnet",
-                                                    Color32::from_rgb(255, 165, 0),
+                                                    DashColors::TESTNET_ORANGE,
                                                 ),
                                                 Network::Devnet => (
                                                     "Devnet",
-                                                    Color32::DARK_RED,
+                                                    DashColors::DEVNET_RED,
                                                 ),
                                                 Network::Regtest => (
                                                     "Local Network",
-                                                    Color32::from_rgb(139, 69, 19),
+                                                    DashColors::REGTEST_BROWN,
                                                 ),
                                                 _ => ("Unknown", DashColors::DASH_BLUE),
                                             };

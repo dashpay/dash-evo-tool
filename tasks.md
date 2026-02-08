@@ -1202,7 +1202,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.2a Make ContractChooserState fields private** (P3)
   In `src/ui/components/contract_chooser_panel.rs:22-30`, make all 8 public fields private. Add accessor methods as needed. This is the only component struct violating the private-fields requirement. Check all callers in `src/ui/contracts_documents/` to update field access to use new methods.
 
-- [ ] **4.2b Centralize inline colors in component files to DashColors** (P3)
+- [x] **4.2b Centralize inline colors in component files to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in the 7 component files (`top_panel.rs`, `left_panel.rs`, `left_wallet_panel.rs`, `styled.rs`, `entropy_grid.rs`, `wallet_unlock.rs`, `wallet_unlock_popup.rs`, `confirmation_dialog.rs`, `info_popup.rs`) with `DashColors` constants. Total ~40 instances. These are the shared components that set the example for the rest of the codebase. Add any missing semantic colors to `DashColors` as needed (e.g., `LINK_BLUE`, `DARK_GRAY_TEXT`).
 
 - [ ] **4.2c Centralize inline colors in identity screens to DashColors** (P3)
@@ -1418,7 +1418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 15 | 8 |
+| 4. UI/UX | 15 | 9 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

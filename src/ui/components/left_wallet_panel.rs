@@ -1,7 +1,8 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
-use eframe::epaint::{Color32, Margin};
+use crate::ui::theme::DashColors;
+use eframe::epaint::Margin;
 use egui::{Context, Frame, ImageButton, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -85,9 +86,9 @@ pub fn add_left_panel(
                     let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                     let is_selected = selected_screen == *screen_type;
                     let button_color = if is_selected {
-                        Color32::from_rgb(100, 149, 237) // Highlighted blue color for selected
+                        DashColors::ICON_SELECTED_BLUE
                     } else {
-                        Color32::from_rgb(169, 169, 169) // Default gray color for unselected
+                        DashColors::ICON_UNSELECTED
                     };
 
                     // Add icon-based button if texture is loaded

@@ -61,6 +61,40 @@ impl DashColors {
     pub const WARNING_ORANGE: Color32 = Color32::from_rgb(200, 150, 50);
     pub const ERROR: Color32 = Color32::from_rgb(235, 87, 87);
     pub const INFO: Color32 = Color32::from_rgb(52, 152, 219);
+    /// Darker red for danger button hover state
+    pub const DANGER_HOVER: Color32 = Color32::from_rgb(200, 0, 0);
+
+    // Network accent colors
+    /// Muted Dash blue for dark mode (20% darker)
+    pub const DASH_BLUE_DARK: Color32 = Color32::from_rgb(0, 113, 182);
+    /// Testnet orange for light mode
+    pub const TESTNET_ORANGE: Color32 = Color32::from_rgb(255, 165, 0);
+    /// Muted testnet orange for dark mode
+    pub const TESTNET_ORANGE_DARK: Color32 = Color32::from_rgb(204, 132, 0);
+    /// Devnet dark red for light mode (matches Color32::DARK_RED)
+    pub const DEVNET_RED: Color32 = Color32::from_rgb(139, 0, 0);
+    /// Muted devnet red for dark mode
+    pub const DEVNET_RED_DARK: Color32 = Color32::from_rgb(111, 0, 0);
+    /// Regtest brown for light mode
+    pub const REGTEST_BROWN: Color32 = Color32::from_rgb(139, 69, 19);
+    /// Muted regtest brown for dark mode
+    pub const REGTEST_BROWN_DARK: Color32 = Color32::from_rgb(111, 55, 15);
+
+    // Icon tint colors for nav panels
+    /// Icon tint when selected/active
+    pub const ICON_SELECTED: Color32 = Color32::WHITE;
+    /// Cornflower blue tint for selected wallet panel icons
+    pub const ICON_SELECTED_BLUE: Color32 = Color32::from_rgb(100, 149, 237);
+    /// Gray tint for unselected icons in dark mode
+    pub const ICON_UNSELECTED_DARK: Color32 = Color32::from_rgb(180, 180, 180);
+    /// Gray tint for unselected icons in light mode
+    pub const ICON_UNSELECTED_LIGHT: Color32 = Color32::from_rgb(160, 160, 160);
+    /// Gray tint for unselected wallet panel icons
+    pub const ICON_UNSELECTED: Color32 = Color32::from_rgb(169, 169, 169);
+
+    // Entropy grid colors
+    /// Off squares in entropy grid (dark mode)
+    pub const ENTROPY_OFF_DARK: Color32 = Color32::from_rgb(80, 80, 80);
 
     // UI Colors - Light mode
     pub const BACKGROUND: Color32 = Color32::from_rgb(240, 242, 247);
@@ -277,6 +311,99 @@ impl DashColors {
             Color32::from_rgb(150, 150, 150) // Lighter gray for dark mode
         } else {
             Color32::GRAY
+        }
+    }
+
+    // Modal/popup overlay colors
+
+    /// Semi-transparent black overlay behind modals/popups
+    pub fn modal_overlay() -> Color32 {
+        Color32::from_rgba_unmultiplied(0, 0, 0, 120)
+    }
+
+    /// Shadow color for popup/dialog frames
+    pub fn popup_shadow() -> Color32 {
+        Color32::from_rgba_unmultiplied(0, 0, 0, 100)
+    }
+
+    /// Subtle border glow for popup/dialog windows
+    pub fn popup_border_glow() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+    }
+
+    /// Popup fill color adapting to dark/light mode
+    pub fn popup_fill(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_INPUT_BACKGROUND // rgb(40, 40, 40)
+        } else {
+            Self::WHITE
+        }
+    }
+
+    // Network accent color helpers
+
+    /// Returns the accent color for a given network, adapting to dark/light mode
+    pub fn network_accent(
+        network: dash_sdk::dashcore_rpc::dashcore::Network,
+        dark_mode: bool,
+    ) -> Color32 {
+        match network {
+            dash_sdk::dashcore_rpc::dashcore::Network::Dash => {
+                if dark_mode {
+                    Self::DASH_BLUE_DARK
+                } else {
+                    Self::DASH_BLUE
+                }
+            }
+            dash_sdk::dashcore_rpc::dashcore::Network::Testnet => {
+                if dark_mode {
+                    Self::TESTNET_ORANGE_DARK
+                } else {
+                    Self::TESTNET_ORANGE
+                }
+            }
+            dash_sdk::dashcore_rpc::dashcore::Network::Devnet => {
+                if dark_mode {
+                    Self::DEVNET_RED_DARK
+                } else {
+                    Self::DEVNET_RED
+                }
+            }
+            dash_sdk::dashcore_rpc::dashcore::Network::Regtest => {
+                if dark_mode {
+                    Self::REGTEST_BROWN_DARK
+                } else {
+                    Self::REGTEST_BROWN
+                }
+            }
+            _ => {
+                if dark_mode {
+                    Self::DASH_BLUE_DARK
+                } else {
+                    Self::DASH_BLUE
+                }
+            }
+        }
+    }
+
+    /// Returns the network label color (used in left panel, always light-mode tones)
+    pub fn network_label_color(network: dash_sdk::dashcore_rpc::dashcore::Network) -> Color32 {
+        match network {
+            dash_sdk::dashcore_rpc::dashcore::Network::Testnet => Self::TESTNET_ORANGE,
+            dash_sdk::dashcore_rpc::dashcore::Network::Devnet => Self::DEVNET_RED,
+            dash_sdk::dashcore_rpc::dashcore::Network::Regtest => Self::REGTEST_BROWN,
+            _ => Self::DASH_BLUE,
+        }
+    }
+
+    /// Icon tint color based on selection state and dark mode
+    pub fn icon_tint(selected: bool, dark_mode: bool) -> Color32 {
+        if selected {
+            Self::ICON_SELECTED
+        } else if dark_mode {
+            Self::ICON_UNSELECTED_DARK
+        } else {
+            Self::ICON_UNSELECTED_LIGHT
         }
     }
 }

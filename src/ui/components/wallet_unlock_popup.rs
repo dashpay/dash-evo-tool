@@ -139,11 +139,7 @@ impl WalletUnlockPopup {
             egui::Order::Background,
             egui::Id::new("wallet_unlock_popup_overlay"),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
         let mut result = WalletUnlockResult::Pending;
 
@@ -162,13 +158,10 @@ impl WalletUnlockPopup {
                     offset: [0, 8],
                     blur: 16,
                     spread: 0,
-                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                    color: DashColors::popup_shadow(),
                 },
                 fill: ctx.style().visuals.window_fill,
-                stroke: egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                ),
+                stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
             })
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
@@ -216,7 +209,7 @@ impl WalletUnlockPopup {
                 // Error message
                 if let Some(error) = &self.error_message {
                     ui.add_space(8.0);
-                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), error);
+                    ui.colored_label(DashColors::ERROR, error);
                 }
 
                 ui.add_space(16.0);

@@ -75,12 +75,12 @@ impl StyledButton {
             ButtonVariant::Danger => (
                 DashColors::WHITE,
                 DashColors::ERROR,
-                Color32::from_rgb(200, 0, 0),
+                DashColors::DANGER_HOVER,
                 None,
             ),
             ButtonVariant::Ghost => (
                 DashColors::text_primary(dark_mode),
-                Color32::TRANSPARENT,
+                egui::Color32::TRANSPARENT,
                 DashColors::glass_white(dark_mode),
                 None,
             ),

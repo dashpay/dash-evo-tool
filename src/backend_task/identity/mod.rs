@@ -1,4 +1,5 @@
 mod add_key_to_identity;
+mod disable_keys;
 mod discover_identities;
 mod load_identity;
 mod load_identity_by_dpns_name;
@@ -47,6 +48,7 @@ pub enum IdentityResult {
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
     AddedKeyToIdentity(FeeResult),
+    DisabledKeys(QualifiedIdentity, FeeResult),
     TransferredCredits(FeeResult),
     WithdrewFromIdentity(FeeResult),
     RegisteredDpnsName {
@@ -318,6 +320,7 @@ pub enum IdentityTask {
         wallet_seed_hash: WalletSeedHash,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
+    DisableKeys(QualifiedIdentity, Vec<KeyID>),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -604,6 +607,10 @@ impl AppContext {
             }
             IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
+                    .await
+            }
+            IdentityTask::DisableKeys(qualified_identity, key_ids) => {
+                self.disable_identity_keys(sdk, qualified_identity, key_ids)
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {

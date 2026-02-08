@@ -1,4 +1,6 @@
 use crate::app::AppAction;
+use crate::backend_task::identity::{IdentityResult, IdentityTask};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -6,7 +8,6 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
-use crate::ui::ScreenLike;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -15,6 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, ScreenLike};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
@@ -23,11 +25,12 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
-use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
@@ -52,6 +55,9 @@ pub struct KeyInfoScreen {
     view_private_key_even_if_encrypted_or_in_wallet: bool,
     show_pop_up_info: Option<String>,
     show_confirm_remove_private_key: bool,
+    show_confirm_disable_key: bool,
+    disable_key_submitted: bool,
+    success_message: Option<String>,
 }
 
 // /// The prefix for signed messages using Dash's message signing protocol.
@@ -68,6 +74,37 @@ pub struct KeyInfoScreen {
 
 impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
+
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match message_type {
+            MessageType::Error => {
+                self.error_message = Some(message.to_string());
+                self.disable_key_submitted = false;
+            }
+            MessageType::Success => {
+                self.success_message = Some(message.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::Identity(IdentityResult::DisabledKeys(
+            updated_identity,
+            _fee_result,
+        )) = backend_task_success_result
+        {
+            // Update the local identity and key state
+            self.identity = updated_identity;
+            // Refresh the key from the updated identity
+            let key_id = self.key.id();
+            if let Some(updated_key) = self.identity.identity.public_keys().get(&key_id) {
+                self.key = IdentityPublicKey::clone(updated_key);
+            }
+            self.disable_key_submitted = false;
+            self.success_message = Some("Key has been disabled on Platform.".to_string());
+        }
+    }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -87,7 +124,7 @@ impl ScreenLike for KeyInfoScreen {
         );
 
         action |= island_central_panel(ctx, |ui| {
-            let inner_action = AppAction::None;
+            let mut inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
                 let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
@@ -555,6 +592,56 @@ impl ScreenLike for KeyInfoScreen {
                     self.render_remove_private_key_confirm(ui);
                 }
 
+                // Show success message
+                if let Some(success_msg) = self.success_message.clone() {
+                    ui.add_space(10.0);
+                    let success_color = DashColors::SUCCESS;
+                    Frame::new()
+                        .fill(success_color.gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, success_color))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&success_msg).color(success_color));
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.success_message = None;
+                                }
+                            });
+                        });
+                }
+
+                // Disable Key on Platform section
+                // Only show for non-master, non-disabled keys that we can sign for
+                if !self.key.is_disabled()
+                    && self.key.security_level() != SecurityLevel::MASTER
+                    && self.identity.can_sign_with_master_key().is_some()
+                {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.heading(RichText::new("Key Management").color(text_primary));
+                    ui.add_space(5.0);
+
+                    if self.disable_key_submitted {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new("Disabling key on Platform...").color(text_primary),
+                            );
+                        });
+                    } else if ui.button("Disable Key on Platform").clicked() {
+                        self.show_confirm_disable_key = true;
+                    }
+                }
+
+                // Show the disable key confirmation popup
+                if self.show_confirm_disable_key {
+                    inner_action |= self.render_disable_key_confirm(ui);
+                }
+
                 ui.add_space(10.0);
             });
 
@@ -623,6 +710,9 @@ impl KeyInfoScreen {
             view_private_key_even_if_encrypted_or_in_wallet: false,
             show_pop_up_info: None,
             show_confirm_remove_private_key: false,
+            show_confirm_disable_key: false,
+            disable_key_submitted: false,
+            success_message: None,
         }
     }
 
@@ -787,6 +877,53 @@ impl KeyInfoScreen {
         } else {
             self.sign_error_message = Some("Private key is not available.".to_string());
         }
+    }
+
+    fn render_disable_key_confirm(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+        egui::Window::new("Disable Key on Platform")
+            .collapsible(false)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    RichText::new(
+                        "Are you sure you want to disable this key on Platform?\n\n\
+                         This action is irreversible. The key will be permanently \
+                         disabled and can no longer be used for signing transactions.",
+                    )
+                    .color(text_primary),
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Key ID: {}\nPurpose: {:?}\nSecurity Level: {:?}",
+                        self.key.id(),
+                        self.key.purpose(),
+                        self.key.security_level()
+                    ))
+                    .color(text_primary),
+                );
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.show_confirm_disable_key = false;
+                    }
+                    ui.add_space(3.0);
+                    if ui
+                        .button(RichText::new("Disable Key").color(DashColors::ERROR))
+                        .clicked()
+                    {
+                        self.show_confirm_disable_key = false;
+                        self.disable_key_submitted = true;
+                        action = AppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::DisableKeys(self.identity.clone(), vec![self.key.id()]),
+                        ));
+                    }
+                });
+            });
+        action
     }
 
     fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {

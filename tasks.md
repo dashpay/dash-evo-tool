@@ -1798,7 +1798,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for implementation:**
 
-- [ ] **7.1a Implement GH#497: Disable identity keys** (P2)
+- [x] **7.1a Implement GH#497: Disable identity keys** (P2)
   Create `src/backend_task/identity/disable_keys.rs` (~80-100 lines) that accepts a `QualifiedIdentity` and a `Vec<KeyID>` of keys to disable. Use the existing `IdentityUpdateTransition::try_from_identity_with_signer()` pattern from `add_key_to_identity.rs`, passing the key IDs in the `keys_to_disable` parameter (currently `vec![]`). Add `DisableKeysFromIdentity(QualifiedIdentity, Vec<KeyID>)` to `IdentityTask` enum. Add `DisabledKeys(QualifiedIdentity)` to `IdentityResult`. In the UI, add a "Disable Key" button to `key_info_screen.rs` (shown only for non-disabled, non-master keys) with a confirmation dialog. After success, refresh the identity.
 
 - [ ] **7.1b Implement GH#498: Replace master key** (P2)
@@ -1923,6 +1923,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 9 | 1 |
+| 7. Features | 9 | 2 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

@@ -962,3 +962,8 @@
 - GH#468 (Mobile Dashpay import) CONFIRMED: MEDIUM feasibility — likely derivation path mismatch, needs mobile team coordination
 - GH#283 (Proof verification bypass) DEFERRED: dash-sdk doesn't expose proof skip option, requires upstream SDK change
 - GH#491 (Contract wrapper) CONFIRMED: HIGH feasibility — auto-wrapping dashpay.io schemas with metadata
+
+## Run 159 — 2026-02-08
+**Task:** 7.1a Implement GH#497: Disable identity keys
+**What was done:** Implemented the ability to disable identity keys on Platform. Created `disable_keys.rs` backend task that uses `IdentityUpdateTransition::try_from_identity_with_signer()` with the target key IDs in the `keys_to_disable` parameter (empty `keys_to_add`). Added `DisableKeys(QualifiedIdentity, Vec<KeyID>)` variant to `IdentityTask` enum and `DisabledKeys(QualifiedIdentity, FeeResult)` variant to `IdentityResult` enum. In the UI, added a "Disable Key on Platform" button to `key_info_screen.rs` that appears only for non-master, non-disabled keys when the identity has a master key available for signing. Added a confirmation dialog warning that the action is irreversible. After success, the key status updates to show "Disabled" and a success message is displayed.
+**Files changed:** src/backend_task/identity/disable_keys.rs (new), src/backend_task/identity/mod.rs, src/ui/identities/keys/key_info_screen.rs

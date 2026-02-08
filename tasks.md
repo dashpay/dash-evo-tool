@@ -866,7 +866,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.5d Extract transaction/asset lock processing into context/transaction_processing.rs** (P2)
   Move ~190 lines of transaction and asset lock event handling (lines 1529-1718) into a new `src/context/transaction_processing.rs` as a separate `impl AppContext` block. Methods: `received_transaction_finality`, `received_asset_lock_finality`. Also move the standalone `DapiTransactionInfo` struct and `get_transaction_info_via_dapi()` async function (lines 1820-1851) since they are transaction-related utilities.
 
-- [ ] **3.5e Extract settings database facade into context/settings_db.rs** (P3)
+- [x] **3.5e Extract settings database facade into context/settings_db.rs** (P3)
   Move ~80 lines of settings management methods (lines 1366-1441) into a new `src/context/settings_db.rs` as a separate `impl AppContext` block. Methods: `update_settings`, `update_main_password`, `update_dash_core_execution_settings`, `update_disable_zmq`, `invalidate_settings_cache`, `get_settings`. Also move the `SettingsCacheGuard` type alias since it's only used by these methods.
 
 - [ ] **3.6 [META] Review BackendTaskSuccessResult enum (60+ variants)** (P2)

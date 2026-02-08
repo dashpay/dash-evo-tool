@@ -525,3 +525,8 @@
 **Task:** 3.5d Extract transaction/asset lock processing into context/transaction_processing.rs
 **What was done:** Extracted ~190 lines of transaction and asset lock event handling from `src/context/mod.rs` into a new `src/context/transaction_processing.rs` as a separate `impl AppContext` block. Methods extracted: `received_transaction_finality`, `received_asset_lock_finality`. Also moved the standalone `DapiTransactionInfo` struct and `get_transaction_info_via_dapi()` async function since they are transaction-related utilities. Re-exported `get_transaction_info_via_dapi` from the context module for external callers. Cleaned up 7 now-unused imports from mod.rs (`InstantLock`, `Transaction`, `Hash`, `AssetLockPayloadType`, `Address`, `OutPoint`, `TxOut`, `InstantAssetLockProof`, `ChainAssetLockProof`, `CoreBlockHeight`, `HashMap`, `MutexExt`). This reduces context/mod.rs by ~25%.
 **Files changed:** src/context/mod.rs, src/context/transaction_processing.rs (new)
+
+## Run 82 — 2026-02-07
+**Task:** 3.5e Extract settings database facade into context/settings_db.rs
+**What was done:** Extracted ~80 lines of settings management methods from `src/context/mod.rs` into a new `src/context/settings_db.rs` as a separate `impl AppContext` block. Methods extracted: `update_settings`, `update_main_password`, `update_dash_core_execution_settings`, `update_disable_zmq`, `invalidate_settings_cache`, `get_settings`. Also moved the `SettingsCacheGuard` type alias since it's only used by these methods. Cleaned up 3 now-unused imports from mod.rs (`RwLockWriteGuard`, `RootScreenType`, `RwLockExt`).
+**Files changed:** src/context/mod.rs, src/context/settings_db.rs (new)

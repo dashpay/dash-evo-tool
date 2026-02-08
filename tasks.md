@@ -1766,7 +1766,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Section 7: Feature Completion [Week 4-8]
 
-- [ ] **7.1 [META] Triage feature requests** (P2)
+- [x] **7.1 [META] Triage feature requests** (P2)
   Review and assess:
   - GH#498 (Replace master key)
   - GH#497 (Disable keys)
@@ -1775,6 +1775,40 @@ These META tasks validate reported bugs against the current codebase before any 
   - GH#283 (Optional proof verification bypass mode)
   - GH#491 (Wrapper around dashpay.io contracts for Register Contract screen)
   For each: assess feasibility, complexity, and user impact. Create implementation tasks for approved features.
+
+  **Triage Results:**
+
+  **GH#497 — CONFIRMED (Disable keys). Effort: LOW. Feasibility: HIGH.**
+  Platform supports `DisableKeys` via `IdentityUpdateTransition`. The existing `add_key_to_identity.rs` already uses `IdentityUpdateTransition::try_from_identity_with_signer()` which accepts a `keys_to_disable: Vec<KeyID>` parameter (currently passed as empty `vec![]`). The UI already detects and displays disabled key status in `key_info_screen.rs:146-150` via `key.is_disabled()` and `key.disabled_at()`. Implementation: (1) create `disable_keys.rs` backend task (~80-100 lines, adapting add_key_to_identity.rs pattern), (2) add `DisableKeysFromIdentity` task variant to `IdentityTask`, (3) add "Disable" button to `key_info_screen.rs` with confirmation dialog, (4) add result variant to `IdentityResult`. Fix: create sub-task.
+
+  **GH#498 — CONFIRMED (Replace master key). Effort: MEDIUM. Feasibility: HIGH.**
+  Platform allows adding a new master key while disabling the existing one in a single state transition. The `IdentityUpdateTransition::try_from_identity_with_signer()` accepts both `keys_to_add` and `keys_to_disable` vectors simultaneously. Implementation builds on GH#497 (disable keys): (1) create `replace_master_key.rs` backend task (~120-150 lines) that passes both the new key and old key ID in one transition, (2) create `replace_master_key_screen.rs` UI (~500-600 lines) with key type selection, security level validation, and confirmation, (3) add routing from key_info_screen when viewing a master key. The new master key must be generated and added before the old one is disabled, so signing uses the NEW key. Fix: create sub-task (depends on 7.1a).
+
+  **GH#88 — ALREADY IMPLEMENTED (Export private key). No action needed.**
+  Private key export already exists in `wallets_screen/dialogs.rs`. The `render_private_key_dialog()` method (lines 763-874) displays the private key in WIF format with show/hide toggle and copy-to-clipboard. Users access it from the address table in `address_table.rs:386-392` via a "Show Key" button on each address row. The `derive_private_key_wif()` method handles wallet unlock and BIP44 derivation. Works for both Core and Platform addresses. The issue may stem from discoverability — the feature exists but users may not find it. No code changes needed. Consider adding a tooltip or menu item pointing to this feature.
+
+  **GH#468 — CONFIRMED (Mobile Dashpay wallet import). Effort: MEDIUM. Feasibility: MEDIUM.**
+  The core issue is likely a derivation path mismatch. DET uses standard BIP44 paths (`m/44'/coin_type'/account'/change/index`) for identity discovery in `discover_identities.rs`. Mobile Dashpay wallets may use different derivation schemes for identity keys. The discovery mechanism (`discover_identities.rs:32-81`) loops through identity indices 0..max and derives authentication keys using BIP44 paths, then queries Platform for each public key. If mobile wallets derive identity keys differently (e.g., different account index, different key purpose path, or DIP-14 256-bit derivation), the keys won't match. DIP-14 derivation code exists in `dip14_derivation.rs` but isn't used in identity discovery. Fix: (1) investigate actual mobile Dashpay derivation paths for identities, (2) extend `discover_identities.rs` to check alternative derivation paths, (3) add a "custom derivation path" option to identity import. Requires coordination with mobile team to confirm exact paths.
+
+  **GH#283 — DEFERRED (Proof verification bypass). Effort: HIGH. Feasibility: LOW-MEDIUM.**
+  The dash-sdk does not currently expose a configuration option to skip proof verification in its `SdkBuilder`. SDK is initialized in `sdk_wrapper.rs` with `SdkBuilder::new(address_list).with_version().with_network().with_context_provider().with_settings().build()` — no proof bypass option available. Developer mode already exists (`config.rs:18`, `context/mod.rs:46`) and gates signing options, but proof verification happens inside the SDK layer, not in DET code. Implementation would require: (1) upstream SDK change to add proof skip option, or (2) patching/forking the SDK to add this capability. The proof verification errors are already caught and logged in `context/mod.rs:488-492` via `DriveProofError` handling. Without SDK support, this cannot be implemented in DET alone. Recommend: file an upstream feature request with dash-sdk team. Not creating a sub-task since it depends on external changes.
+
+  **GH#491 — CONFIRMED (Contract wrapper for dashpay.io). Effort: MEDIUM. Feasibility: HIGH.**
+  The Register Contract screen (`register_contract_screen.rs`) currently accepts raw JSON input and already links to dashpay.io (line 549-557). The screen parses contracts via `DataContract::from_json()` and overwrites the owner ID with the selected identity. The issue is that dashpay.io outputs contract schemas without the required metadata fields (format_version, owner_id, etc.) that Platform requires. Implementation: (1) add a "Load from dashpay.io" button that fetches contract definitions from the dashpay.io API, (2) create a wrapper that adds required metadata (owner_id from selected identity, format_version from platform_version), (3) auto-populate the JSON editor with the wrapped contract. The existing `DataContract::from_json()` parsing and owner_id injection (line 141-143) already handle most of the wrapping. Fix: create sub-task.
+
+  **Sub-tasks created for implementation:**
+
+- [ ] **7.1a Implement GH#497: Disable identity keys** (P2)
+  Create `src/backend_task/identity/disable_keys.rs` (~80-100 lines) that accepts a `QualifiedIdentity` and a `Vec<KeyID>` of keys to disable. Use the existing `IdentityUpdateTransition::try_from_identity_with_signer()` pattern from `add_key_to_identity.rs`, passing the key IDs in the `keys_to_disable` parameter (currently `vec![]`). Add `DisableKeysFromIdentity(QualifiedIdentity, Vec<KeyID>)` to `IdentityTask` enum. Add `DisabledKeys(QualifiedIdentity)` to `IdentityResult`. In the UI, add a "Disable Key" button to `key_info_screen.rs` (shown only for non-disabled, non-master keys) with a confirmation dialog. After success, refresh the identity.
+
+- [ ] **7.1b Implement GH#498: Replace master key** (P2)
+  Depends on 7.1a (disable keys infrastructure). Create `src/backend_task/identity/replace_master_key.rs` (~120-150 lines) that generates a new master key and disables the old one in a single `IdentityUpdateTransition`. The transition must pass both `vec![new_master_key]` and `vec![old_master_key_id]`. Create `src/ui/identities/keys/replace_master_key_screen.rs` (~500-600 lines) with: key type selection (ECDSA_SECP256K1 default), random key generation, confirmation dialog showing old→new key details. Add `ReplaceMasterKey(QualifiedIdentity, QualifiedIdentityPublicKey)` task variant and corresponding result variant. Add navigation from `key_info_screen.rs` when viewing a master key.
+
+- [ ] **7.1c Investigate GH#468: Mobile Dashpay wallet identity derivation paths** (P2)
+  Research the actual derivation paths used by mobile Dashpay (Android/iOS) for identity keys. Check the mobile wallet source code (github.com/dashpay/dashwallet-ios and dashwallet-android) for identity key derivation. Compare with DET's discovery paths in `discover_identities.rs`. Document findings and, if different paths are confirmed, extend `discover_identities.rs` to check alternative derivation paths during wallet import. Also consider adding a "scan depth" option to the import screen for configuring how many identity indices to check.
+
+- [ ] **7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration** (P3)
+  In `src/ui/contracts_documents/register_contract_screen.rs`, enhance the contract input flow to handle raw dashpay.io schema output. When the user pastes a contract JSON that lacks required metadata fields (no `$format_version`, no `ownerId`), automatically wrap it: inject `$format_version` from current platform version, set `ownerId` from selected identity, add `$id` if missing. Show a notification that metadata was auto-populated. This builds on the existing owner_id injection at line 141-143 and `DataContract::from_json()` parsing.
 
 - [ ] **7.2 [META] Review DashPay subsystem completeness** (P2)
   Check `src/ui/dashpay/` for unfinished features. Known TODOs:
@@ -1878,7 +1912,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 166 (24 META + 142 direct)
+**Total tasks:** 170 (24 META + 146 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1889,6 +1923,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 5 | 0 |
+| 7. Features | 9 | 1 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

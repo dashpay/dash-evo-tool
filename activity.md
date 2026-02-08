@@ -948,3 +948,17 @@
 **What was done:** Added 25 unit tests for wallet payment construction logic in `send_single_key_wallet_payment.rs`. Extracted three pure helper functions from the monolithic `send_single_key_wallet_payment_via_rpc` method: `select_utxos_for_payment()` (greedy descending-value UTXO selection with dynamic fee recalculation), `calculate_change()` (change amount computation with fee-from-amount support), and `should_include_change()` (dust threshold check at 546 duffs). Tests cover: UTXO selection (8 tests: single/multiple UTXOs, largest-first ordering, insufficient funds, empty wallet, exact amount, dynamic fee, multiple recipients), change calculation (7 tests: normal change, zero change, subtract-fee-from-amount, output too small for fee, multiple outputs), dust threshold (3 tests: above/at/below 546 duffs), integrated payment flow (4 tests: normal flow, fee subtraction, dust change dropped, just-above-dust), and amount validation (3 tests: zero amount, fee exceeds balance, many small UTXOs). The refactored `send_single_key_wallet_payment_via_rpc` now delegates to these helpers, keeping the same behavior.
 **Files changed:** src/backend_task/core/send_single_key_wallet_payment.rs
 **Sub-tasks created:** 0
+
+## Run 158 — 2026-02-08
+**Task:** 7.1 [META] Triage feature requests
+**What was done:** Triaged 6 GitHub feature request issues against the current codebase. Read each issue via `gh issue view`, then explored relevant source code to assess feasibility, complexity, and implementation approach. Created 4 specific sub-tasks for approved features.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 4 (7.1a through 7.1d)
+
+**Summary of findings:**
+- GH#497 (Disable keys) CONFIRMED: HIGH feasibility — `IdentityUpdateTransition` already supports keys_to_disable parameter, UI already detects disabled status
+- GH#498 (Replace master key) CONFIRMED: HIGH feasibility — single transition can add new + disable old master key, depends on GH#497
+- GH#88 (Export private key) ALREADY IMPLEMENTED: `render_private_key_dialog()` in wallets_screen/dialogs.rs with WIF export, show/hide, copy-to-clipboard
+- GH#468 (Mobile Dashpay import) CONFIRMED: MEDIUM feasibility — likely derivation path mismatch, needs mobile team coordination
+- GH#283 (Proof verification bypass) DEFERRED: dash-sdk doesn't expose proof skip option, requires upstream SDK change
+- GH#491 (Contract wrapper) CONFIRMED: HIGH feasibility — auto-wrapping dashpay.io schemas with metadata

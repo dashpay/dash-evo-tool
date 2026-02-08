@@ -27,17 +27,22 @@ impl Provider {
         network: Network,
         config: &NetworkConfig,
     ) -> Result<Self, String> {
-        let cookie_path =
-            core_cookie_path(network, &config.devnet_name).expect("Failed to get core cookie path");
+        let cookie_path = core_cookie_path(network, &config.devnet_name)
+            .map_err(|e| format!("Failed to get core cookie path: {}", e))?;
 
         // Read the cookie from disk
         let cookie = std::fs::read_to_string(cookie_path);
         let (user, pass) = if let Ok(cookie) = cookie {
+            let cookie = cookie.trim();
             // split the cookie at ":", first part is user (__cookie__), second part is password
-            let cookie_parts: Vec<&str> = cookie.split(':').collect();
-            let user = cookie_parts[0];
-            let password = cookie_parts[1];
-            (user.to_string(), password.to_string())
+            if let Some((user, password)) = cookie.split_once(':') {
+                (user.to_string(), password.to_string())
+            } else {
+                return Err(format!(
+                    "Malformed cookie file: expected 'user:password' format, got '{}'",
+                    cookie
+                ));
+            }
         } else {
             // Fall back to the pre-set user / pass if needed
             (

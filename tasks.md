@@ -1649,7 +1649,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Insufficient balance handling
   - Platform address with zero balance
 
-- [ ] **6.1e Add fee_estimation.rs edge case tests** (P2)
+- [x] **6.1e Add fee_estimation.rs edge case tests** (P2)
   Expand existing 7 tests in `src/model/fee_estimation.rs` with:
   - `apply_fee_safety_margin()` — test 20% margin calculation, overflow protection
   - `estimate_p2pkh_tx_size()` — test with various input/output counts, verify against known tx sizes
@@ -1823,7 +1823,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 13 | 1 |
+| 6. Testing | 13 | 6 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

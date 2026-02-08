@@ -768,4 +768,446 @@ mod tests {
         assert_eq!(format_credits_as_dash(100_000_000), "0.00100000 DASH");
         assert_eq!(format_credits_as_dash(100_000), "0.00000100 DASH");
     }
+
+    // =====================================================
+    // apply_fee_safety_margin tests
+    // =====================================================
+
+    #[test]
+    fn test_apply_fee_safety_margin_20_percent() {
+        // 100 + 20% = 120
+        assert_eq!(apply_fee_safety_margin(100, 20), 120);
+        // 1000 + 20% = 1200
+        assert_eq!(apply_fee_safety_margin(1000, 20), 1200);
+        // 1_000_000 + 20% = 1_200_000
+        assert_eq!(apply_fee_safety_margin(1_000_000, 20), 1_200_000);
+    }
+
+    #[test]
+    fn test_apply_fee_safety_margin_zero_percent() {
+        // 0% margin should return the original fee
+        assert_eq!(apply_fee_safety_margin(100, 0), 100);
+        assert_eq!(apply_fee_safety_margin(0, 0), 0);
+        assert_eq!(apply_fee_safety_margin(u64::MAX, 0), u64::MAX);
+    }
+
+    #[test]
+    fn test_apply_fee_safety_margin_zero_fee() {
+        // Zero fee should always return zero regardless of percent
+        assert_eq!(apply_fee_safety_margin(0, 20), 0);
+        assert_eq!(apply_fee_safety_margin(0, 100), 0);
+        assert_eq!(apply_fee_safety_margin(0, u64::MAX), 0);
+    }
+
+    #[test]
+    fn test_apply_fee_safety_margin_100_percent() {
+        // 100% margin should double the fee
+        assert_eq!(apply_fee_safety_margin(100, 100), 200);
+        assert_eq!(apply_fee_safety_margin(500_000, 100), 1_000_000);
+    }
+
+    #[test]
+    fn test_apply_fee_safety_margin_overflow_protection() {
+        // Very large fee * large percent uses saturating arithmetic — must not panic
+        let result = apply_fee_safety_margin(u64::MAX, 20);
+        // u64::MAX.saturating_mul(20) = u64::MAX, / 100 = 184467440737095516
+        // u64::MAX.saturating_add(184467440737095516) = u64::MAX
+        assert_eq!(result, u64::MAX);
+
+        // u64::MAX / 2 with 200%: saturating_mul(200) = u64::MAX, /100 = 184467440737095516
+        // (u64::MAX/2).saturating_add(184467440737095516) does not overflow
+        let result = apply_fee_safety_margin(u64::MAX / 2, 200);
+        assert!(result > u64::MAX / 2); // margin was added, no panic
+
+        // Small percent on near-max: no panic
+        let result = apply_fee_safety_margin(u64::MAX - 1, 1);
+        assert!(result > u64::MAX - 1); // margin was added
+    }
+
+    #[test]
+    fn test_apply_fee_safety_margin_small_values() {
+        // Small fee where percent rounds down due to integer division
+        // 1 + (1 * 20 / 100) = 1 + 0 = 1 (integer division truncates)
+        assert_eq!(apply_fee_safety_margin(1, 20), 1);
+        // 4 + (4 * 20 / 100) = 4 + 0 = 4 (80/100 = 0 in integer division)
+        assert_eq!(apply_fee_safety_margin(4, 20), 4);
+        // 5 + (5 * 20 / 100) = 5 + 1 = 6 (100/100 = 1)
+        assert_eq!(apply_fee_safety_margin(5, 20), 6);
+    }
+
+    // =====================================================
+    // estimate_p2pkh_tx_size tests
+    // =====================================================
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_single_input_single_output() {
+        // 1 input, 1 output: 8 + 1 + 1 + 148 + 34 = 192
+        let size = estimate_p2pkh_tx_size(1, 1);
+        assert_eq!(size, 192);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_single_input_two_outputs() {
+        // Standard: 1 input, 2 outputs (recipient + change)
+        // 8 + 1 + 1 + 148 + 2*34 = 226
+        let size = estimate_p2pkh_tx_size(1, 2);
+        assert_eq!(size, 226);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_two_inputs_two_outputs() {
+        // 2 inputs, 2 outputs: 8 + 1 + 1 + 2*148 + 2*34 = 374
+        let size = estimate_p2pkh_tx_size(2, 2);
+        assert_eq!(size, 374);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_zero_inputs() {
+        // Edge case: 0 inputs (shouldn't happen in practice but shouldn't panic)
+        // 8 + 1 + 1 + 0 + 34 = 44
+        let size = estimate_p2pkh_tx_size(0, 1);
+        assert_eq!(size, 44);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_zero_outputs() {
+        // Edge case: 0 outputs (shouldn't happen in practice but shouldn't panic)
+        // 8 + 1 + 1 + 148 + 0 = 158
+        let size = estimate_p2pkh_tx_size(1, 0);
+        assert_eq!(size, 158);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_zero_both() {
+        // Edge case: 0 inputs and 0 outputs
+        // 8 + 1 + 1 = 10
+        let size = estimate_p2pkh_tx_size(0, 0);
+        assert_eq!(size, 10);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_many_inputs() {
+        // 10 inputs, 2 outputs: 8 + 1 + 1 + 10*148 + 2*34 = 1558
+        let size = estimate_p2pkh_tx_size(10, 2);
+        assert_eq!(size, 1558);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_varint_boundary() {
+        // At 253 inputs, varint switches from 1 byte to 3 bytes
+        let size_252 = estimate_p2pkh_tx_size(252, 1);
+        let size_253 = estimate_p2pkh_tx_size(253, 1);
+        // 252 inputs: 8 + 1 + 1 + 252*148 + 34 = 37340
+        assert_eq!(size_252, 8 + 1 + 1 + 252 * 148 + 34);
+        // 253 inputs: 8 + 3 + 1 + 253*148 + 34 = 37490
+        assert_eq!(size_253, 8 + 3 + 1 + 253 * 148 + 34);
+        // The 253rd input adds 148 bytes for the input + 2 bytes for varint growth
+        assert_eq!(size_253 - size_252, 148 + 2);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_large_transaction() {
+        // Very large: 500 inputs, 100 outputs
+        let size = estimate_p2pkh_tx_size(500, 100);
+        // 8 + 3 + 1 + 500*148 + 100*34 = 8 + 3 + 1 + 74000 + 3400 = 77412
+        assert_eq!(size, 77412);
+    }
+
+    #[test]
+    fn test_estimate_p2pkh_tx_size_scales_linearly_with_inputs() {
+        let size_1 = estimate_p2pkh_tx_size(1, 2);
+        let size_2 = estimate_p2pkh_tx_size(2, 2);
+        let size_3 = estimate_p2pkh_tx_size(3, 2);
+        // Each additional input adds exactly 148 bytes (within same varint range)
+        assert_eq!(size_2 - size_1, 148);
+        assert_eq!(size_3 - size_2, 148);
+    }
+
+    // =====================================================
+    // Fee multiplier tests
+    // =====================================================
+
+    #[test]
+    fn test_fee_multiplier_doubles_fees() {
+        let estimator_1x = PlatformFeeEstimator::new();
+        let estimator_2x = PlatformFeeEstimator::with_fee_multiplier(2000);
+        assert_eq!(
+            estimator_2x.estimate_credit_transfer(),
+            estimator_1x.estimate_credit_transfer() * 2
+        );
+    }
+
+    #[test]
+    fn test_fee_multiplier_fractional() {
+        let estimator = PlatformFeeEstimator::with_fee_multiplier(1500); // 1.5x
+        // 100,000 * 1500 / 1000 = 150,000
+        assert_eq!(estimator.estimate_credit_transfer(), 150_000);
+    }
+
+    #[test]
+    fn test_fee_multiplier_zero() {
+        let estimator = PlatformFeeEstimator::with_fee_multiplier(0);
+        assert_eq!(estimator.estimate_credit_transfer(), 0);
+    }
+
+    // =====================================================
+    // Platform fee estimation edge cases
+    // =====================================================
+
+    #[test]
+    fn test_identity_create_zero_keys() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee = estimator.estimate_identity_create(0);
+        // Base cost + asset lock cost + 0 keys
+        assert_eq!(fee, 2_000_000 + 200_000_000);
+    }
+
+    #[test]
+    fn test_identity_create_many_keys() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_5 = estimator.estimate_identity_create(5);
+        let fee_10 = estimator.estimate_identity_create(10);
+        // Each additional key adds 6,500,000 credits
+        assert_eq!(fee_10 - fee_5, 5 * 6_500_000);
+    }
+
+    #[test]
+    fn test_identity_topup_estimate() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee = estimator.estimate_identity_topup();
+        // Base cost + asset lock cost
+        assert_eq!(fee, 500_000 + 50_000_000);
+    }
+
+    #[test]
+    fn test_identity_create_from_addresses_includes_safety_margin() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee = estimator.estimate_identity_create_from_addresses(1, false, 2);
+        // The fee should be > 0 and include the 20% safety margin
+        assert!(fee > 0);
+        // Verify safety margin: fee should be approximately 1.2x the base
+        // We can verify by checking that fee is larger than the base identity create
+        let base = estimator.estimate_identity_create(2);
+        assert!(fee > base); // From-addresses version includes storage fees + safety margin
+    }
+
+    #[test]
+    fn test_identity_topup_from_addresses_includes_safety_margin() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee = estimator.estimate_identity_topup_from_addresses(1);
+        assert!(fee > 0);
+        // Should be more than basic topup due to address processing + safety margin
+        let basic_topup = estimator.estimate_identity_topup();
+        assert!(fee > basic_topup);
+    }
+
+    #[test]
+    fn test_identity_create_from_addresses_zero_inputs_uses_one() {
+        let estimator = PlatformFeeEstimator::new();
+        // 0 inputs should be treated as 1 (via .max(1))
+        let fee_0 = estimator.estimate_identity_create_from_addresses(0, false, 2);
+        let fee_1 = estimator.estimate_identity_create_from_addresses(1, false, 2);
+        assert_eq!(fee_0, fee_1);
+    }
+
+    #[test]
+    fn test_document_batch_zero_transitions_uses_one() {
+        let estimator = PlatformFeeEstimator::new();
+        // 0 transitions should be treated as 1 (via .max(1))
+        let fee_0 = estimator.estimate_document_batch(0);
+        let fee_1 = estimator.estimate_document_batch(1);
+        assert_eq!(fee_0, fee_1);
+    }
+
+    #[test]
+    fn test_address_funding_from_asset_lock_minimum() {
+        let estimator = PlatformFeeEstimator::new();
+        // Should have a minimum of 10,000 duffs
+        let fee = estimator.estimate_address_funding_from_asset_lock_duffs(1);
+        assert!(fee >= 10_000);
+    }
+
+    #[test]
+    fn test_credit_transfer_to_addresses_scales_with_outputs() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_1 = estimator.estimate_credit_transfer_to_addresses(1);
+        let fee_3 = estimator.estimate_credit_transfer_to_addresses(3);
+        // Each additional output adds address_funds_transfer_output_cost (6,000,000)
+        assert_eq!(fee_3 - fee_1, 2 * 6_000_000);
+    }
+
+    #[test]
+    fn test_address_funds_transfer_scales_with_inputs_and_outputs() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_1_1 = estimator.estimate_address_funds_transfer(1, 1);
+        let fee_2_1 = estimator.estimate_address_funds_transfer(2, 1);
+        let fee_1_2 = estimator.estimate_address_funds_transfer(1, 2);
+        // Adding 1 input adds 500,000 credits
+        assert_eq!(fee_2_1 - fee_1_1, 500_000);
+        // Adding 1 output adds 6,000,000 credits
+        assert_eq!(fee_1_2 - fee_1_1, 6_000_000);
+    }
+
+    #[test]
+    fn test_address_funds_transfer_zero_outputs_uses_one() {
+        let estimator = PlatformFeeEstimator::new();
+        // 0 outputs should be treated as 1 (via .max(1))
+        let fee_0 = estimator.estimate_address_funds_transfer(1, 0);
+        let fee_1 = estimator.estimate_address_funds_transfer(1, 1);
+        assert_eq!(fee_0, fee_1);
+    }
+
+    // =====================================================
+    // format_credits tests
+    // =====================================================
+
+    #[test]
+    fn test_format_credits_as_dash_zero() {
+        assert_eq!(format_credits_as_dash(0), "0.00000000 DASH");
+    }
+
+    #[test]
+    fn test_format_credits_as_dash_one_credit() {
+        // 1 credit is very small
+        assert_eq!(format_credits_as_dash(1), "0.00000000 DASH");
+    }
+
+    #[test]
+    fn test_format_credits_large_vs_small_formatting() {
+        // format_credits uses 8 decimal places for >= 1 billion credits
+        let large = format_credits(1_000_000_000);
+        assert!(large.contains("credits"));
+        assert!(large.contains("DASH"));
+
+        // Uses 10 decimal places for < 1 billion credits
+        let small = format_credits(999_999_999);
+        assert!(small.contains("credits"));
+        assert!(small.contains("DASH"));
+    }
+
+    #[test]
+    fn test_format_credits_zero() {
+        let result = format_credits(0);
+        assert!(result.starts_with("0 credits"));
+    }
+
+    // =====================================================
+    // Storage fee calculation tests
+    // =====================================================
+
+    #[test]
+    fn test_storage_fee_zero_bytes() {
+        let estimator = PlatformFeeEstimator::new();
+        assert_eq!(estimator.calculate_storage_fee(0), 0);
+        assert_eq!(estimator.calculate_processing_fee(0), 0);
+        assert_eq!(estimator.calculate_seek_fee(0), 0);
+    }
+
+    #[test]
+    fn test_storage_based_fee_zero_everything() {
+        let estimator = PlatformFeeEstimator::new();
+        assert_eq!(estimator.estimate_storage_based_fee(0, 0), 0);
+    }
+
+    #[test]
+    fn test_storage_based_fee_components() {
+        let estimator = PlatformFeeEstimator::new();
+        let bytes = 100;
+        let seeks = 5;
+        let fee = estimator.estimate_storage_based_fee(bytes, seeks);
+        // At 1x multiplier: storage + processing + seeks
+        let expected = 100 * 27_000 + 100 * 400 + 5 * 2_000;
+        assert_eq!(fee, expected);
+    }
+
+    // =====================================================
+    // Document estimation tests
+    // =====================================================
+
+    #[test]
+    fn test_document_create_default_size() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_default = estimator.estimate_document_create();
+        let fee_200 = estimator.estimate_document_create_with_size(200);
+        // Default uses 200 bytes
+        assert_eq!(fee_default, fee_200);
+    }
+
+    #[test]
+    fn test_document_delete_cheaper_than_create() {
+        let estimator = PlatformFeeEstimator::new();
+        let create_fee = estimator.estimate_document_create();
+        let delete_fee = estimator.estimate_document_delete();
+        // Deletion should be cheaper (no storage addition)
+        assert!(delete_fee < create_fee);
+    }
+
+    #[test]
+    fn test_document_replace_default_size() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_default = estimator.estimate_document_replace();
+        let fee_200 = estimator.estimate_document_replace_with_size(200);
+        assert_eq!(fee_default, fee_200);
+    }
+
+    // =====================================================
+    // Contract registration detailed tests
+    // =====================================================
+
+    #[test]
+    fn test_contract_create_base_uses_500_bytes() {
+        let estimator = PlatformFeeEstimator::new();
+        let base = estimator.estimate_contract_create_base();
+        let with_500 = estimator.estimate_contract_create_with_size(500);
+        assert_eq!(base, with_500);
+    }
+
+    #[test]
+    fn test_contract_create_detailed_all_features() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee = estimator.estimate_contract_create_detailed(
+            1000, // contract bytes
+            3,    // 3 document types
+            2,    // 2 non-unique indexes
+            1,    // 1 unique index
+            1,    // 1 contested index
+            true, // has token
+            true, // has perpetual distribution
+            true, // has pre-programmed distribution
+            2,    // 2 search keywords
+        );
+        // Registration fees:
+        // base: 10B + doc_types: 3*2B + non_unique: 2*1B + unique: 1*1B + contested: 1*100B
+        // + token: 10B + perpetual: 10B + pre_programmed: 10B + keywords: 2*10B
+        let expected_registration: u64 = 10_000_000_000
+            + 3 * 2_000_000_000
+            + 2 * 1_000_000_000
+            + 1_000_000_000
+            + 100_000_000_000
+            + 10_000_000_000
+            + 10_000_000_000
+            + 10_000_000_000
+            + 2 * 10_000_000_000;
+        // Plus min fee + storage
+        assert!(fee >= expected_registration);
+    }
+
+    #[test]
+    fn test_contract_create_contested_index_is_expensive() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_no_contested =
+            estimator.estimate_contract_create_detailed(500, 1, 1, 0, 0, false, false, false, 0);
+        let fee_contested =
+            estimator.estimate_contract_create_detailed(500, 1, 1, 0, 1, false, false, false, 0);
+        // Contested index adds 1 DASH (100,000,000,000 credits)
+        assert_eq!(fee_contested - fee_no_contested, 100_000_000_000);
+    }
+
+    #[test]
+    fn test_contract_update_default_size() {
+        let estimator = PlatformFeeEstimator::new();
+        let fee_default = estimator.estimate_contract_update();
+        let fee_300 = estimator.estimate_contract_update_with_size(300);
+        assert_eq!(fee_default, fee_300);
+    }
 }

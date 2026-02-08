@@ -1913,7 +1913,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (2) Implement `load_payment_history()` to query the `dashpay_payments` table using `db.get_dashpay_payments()`. The DB schema already stores payment records including tx_id, amount, memo, status, and timestamps.
   Note: Full blockchain-based payment history (scanning DIP-15 addresses via SPV) remains deferred until SPV support is available.
 
-- [ ] **7.2d Fix misleading "Cancel" button on outgoing contact requests** (P2)
+- [x] **7.2d Fix misleading "Cancel" button on outgoing contact requests** (P2)
   In `src/ui/dashpay/contact_requests.rs:781-787`:
   Replace the non-functional "Cancel" button with either:
   (a) Remove the button and add a small info label: "Contact requests cannot be cancelled once sent" (simpler, more honest), or
@@ -2040,6 +2040,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 16 | 5 |
+| 7. Features | 16 | 6 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

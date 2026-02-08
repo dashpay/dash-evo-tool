@@ -1018,3 +1018,8 @@
 **What was done:** (1) Replaced mock `self.to_contact_name = Some("alice.dash".to_string())` in `send_payment.rs:load_contact_info()` with actual DB lookup using `db.load_dashpay_contacts()` to find the contact's username or display name. (2) Implemented `load_payment_history()` in `payments.rs` to query the `dashpay_payments` table via `db.load_payment_history()`, with optional contact_id filtering and proper status mapping. (3) Updated the `DashPayTask::LoadPaymentHistory` handler in `dashpay.rs` to query the DB and resolve contact names from the contacts table, instead of returning an empty result.
 **Files changed:** src/ui/dashpay/send_payment.rs, src/backend_task/dashpay/payments.rs, src/backend_task/dashpay.rs
 **Sub-tasks created:** 0
+## Run 167 — 2026-02-08
+**Task:** 7.2d Fix misleading "Cancel" button on outgoing contact requests
+**What was done:** Replaced the non-functional "Cancel" button on outgoing contact requests with an informational label "Cannot be cancelled once sent". The previous button showed "Request cancelled" via `display_message()` but performed no actual cancellation on Platform — contact requests are immutable once submitted. The new italic info label is styled with `DashColors::text_secondary` to indicate it's informational rather than actionable.
+**Files changed:** src/ui/dashpay/contact_requests.rs
+**Sub-tasks created:** 0

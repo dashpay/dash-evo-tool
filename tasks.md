@@ -696,7 +696,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Custom action dispatch (lines 3587-3636, ~50 lines) → extract to `handle_custom_actions(&mut self, action: &mut AppAction)`
   This should reduce `ui()` from ~460 lines to ~150 lines of orchestration.
 
-- [ ] **3.2e Extract asset lock rendering into wallets_screen/asset_locks.rs** (P3)
+- [x] **3.2e Extract asset lock rendering into wallets_screen/asset_locks.rs** (P3)
   Move `render_wallet_asset_locks()` (lines 1168-1321, 154 lines) into a new file. This is a self-contained table rendering function for asset lock transactions with its own status display, action buttons, and pagination.
 
 - [ ] **3.3 [META] Review tokens_screen/mod.rs (3707 lines)** (P2)
@@ -958,7 +958,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 18 | 10 |
+| 3. Refactoring | 18 | 11 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

@@ -410,3 +410,8 @@
 **Task:** 3.2d Extract inline dialogs from ui() into named methods
 **What was done:** Extracted 4 inline code blocks from the 460-line `ui()` method into named methods on `WalletsBalancesScreen`: `render_rename_dialog()` (~68 lines, wallet rename dialog), `handle_hd_unlock_result()` (~72 lines, HD wallet unlock popup result handling), `render_sk_unlock_dialog()` (~115 lines, single-key wallet unlock dialog), and `handle_custom_actions()` (~50 lines, custom refresh/search action dispatch). The `ui()` method is now ~155 lines of orchestration code. No behavior changes.
 **Files changed:** src/ui/wallets/wallets_screen/mod.rs
+
+## Run 63 — 2026-02-07
+**Task:** 3.2e Extract asset lock rendering into wallets_screen/asset_locks.rs
+**What was done:** Extracted `render_wallet_asset_locks()` (154 lines) from `wallets_screen/mod.rs` into a new `wallets_screen/asset_locks.rs` module (167 lines with imports). This self-contained function renders the asset locks table for HD wallets, including the "Create Asset Lock" and "Search for Unused" buttons, the asset lock table with transaction ID, address, amount, InstantLock/usable status, and View/Fund action buttons. Also handles opening the fund platform dialog. Cleaned up unused `DerivationPathHelpers` import from mod.rs. mod.rs reduced from ~2142 to ~1988 lines.
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/asset_locks.rs (new)

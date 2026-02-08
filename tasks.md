@@ -1804,11 +1804,44 @@ These META tasks validate reported bugs against the current codebase before any 
      ## Test Plan
      <How to verify this change>
 
+<<<<<<< HEAD
      🤖 Generated with [Claude Code](https://claude.com/claude-code)
      EOF
      )"
      ```
   6. Record the PR URL in this file next to the task checkbox.
+=======
+- [x] **7.5b Wrap insert_token() in a transaction** (P2)
+  In `src/database/tokens.rs:98-137`, wrap the token insert and identity balance inserts in a transaction. The token insert (line 111-129) and the loop inserting identity token balances (lines 131-135) should both be inside a single `conn.transaction()` block so that either all succeed or all roll back.
+
+- [x] **7.5c Fix silent error masking in contacts.rs load_contact_private_info** (P2)
+  In `src/database/contacts.rs:76-79`, replace `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` (or simply `row.get(0)?`). The closure returns `rusqlite::Result`, so `?` properly propagates SQL type errors instead of silently converting them to empty strings. The `unwrap_or_default()` should only handle SQL NULL values (which are distinct from type errors). Same fix for lines 78 and 79.
+
+- [x] **7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback** (P2)
+  In `src/database/scheduled_votes.rs:159`, replace `_ => unreachable!()` with `_ => false` (treating any unexpected value as not-executed). Add a `tracing::warn!` for unexpected values. Database corruption or manual editing could trigger the unreachable and panic the app.
+
+- [x] **7.5e Optimize identity loading N+1 query with JOIN** (P3)
+  In `src/database/identities.rs:166-204`, replace the per-identity `top_up_stmt.query()` pattern with a single query using a LEFT JOIN:
+  ```sql
+  SELECT i.data, i.alias, i.wallet_index, i.status, t.top_up_index, t.amount
+  FROM identity i
+  LEFT JOIN top_up t ON i.id = t.identity_id
+  WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL
+  ```
+  Then group the results by identity in Rust code. This reduces O(n) queries to O(1). Apply the same pattern to `get_local_qualified_identities_in_wallets()` (lines 226-260) and `get_identity_by_id()` (lines 282-316).
+
+- [x] **7.5f Optimize load_identity_order N+1 existence check** (P3)
+  In `src/database/identities.rs:517-526`, replace the per-row `SELECT EXISTS(...)` check with a single JOIN query:
+  ```sql
+  SELECT io.identity_id FROM identity_order io
+  INNER JOIN identity i ON io.identity_id = i.id
+  ORDER BY io.pos ASC
+  ```
+  This returns only valid identity IDs (those that still exist in the identity table) in a single query instead of O(n) queries. Handle dangling cleanup afterward.
+
+- [x] **7.5g Log parse failures in load_token_order instead of silently skipping** (P3)
+  In `src/database/tokens.rs:545-553`, replace the empty `else` blocks with `tracing::warn!("Failed to parse token/identity ID from token_order table, skipping")` to aid debugging of data integrity issues.
+>>>>>>> cebd5604 (Log parse failures in load_token_order instead of silently skipping)
 
 ---
 
@@ -1824,7 +1857,12 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
+<<<<<<< HEAD
 | 6. Testing | 13 | 8 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |
+=======
+| 6. Testing | 19 | 15 |
+| 7. Features | 33 | 25 |
+>>>>>>> cebd5604 (Log parse failures in load_token_order instead of silently skipping)

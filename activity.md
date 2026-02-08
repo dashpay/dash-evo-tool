@@ -894,3 +894,279 @@
 **What was done:** Replaced the 2 production println!/eprintln! calls in src/ with tracing macros. In main.rs, moved `initialize_logger()` to run earlier (right after data dir creation) and replaced `println!` startup message with `tracing::info!` with structured version and data_dir fields. In logging.rs, replaced `eprintln!` (log file creation failure fallback) with `tracing::warn!` since the stderr subscriber is already active at that point. All remaining println!/eprintln! calls in src/ are in test code (#[test] / #[cfg(test)]) or commented out — these were left as-is.
 **Files changed:** src/main.rs, src/logging.rs
 **Sub-tasks created:** 0
+<<<<<<< HEAD
+=======
+
+## Run 149 — 2026-02-08
+**Task:** 6.4 [META] Review and triage all TODO/FIXME comments
+**What was done:** Found and triaged 47 TODO/FIXME comments across src/. Categorized into 7 groups: SPV developer mode gates (7 instances, deferred to task 7.3), DashPay feature stubs (19 instances, deferred to task 7.2), token screen filtering (3 instances, already tracked as ui-tokens-023), actionable code improvements (8 instances, 6 new sub-tasks created), known limitations (5 instances, no action needed), DB migration discussion (1 instance, informational), and SPV activation height (1 instance, deferred to 7.3). No stale/done TODOs found — all are still relevant.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (6.4a through 6.4f)
+
+## Run 150 — 2026-02-08
+**Task:** 6.4a Fix TODO: Use SDK version instead of hardcoded PLATFORM_V11
+**What was done:** Changed `AppContext::platform_version()` to dynamically read the version from the SDK instance via `self.sdk.read_or_recover().version()` instead of calling the static `default_platform_version()` helper. This ensures that if the SDK version is ever updated at runtime (e.g., after a network upgrade), the method reflects the actual version. The standalone `default_platform_version()` function is retained for use during SDK initialization (before an SDK instance exists, i.e., in `sdk_wrapper.rs`). Removed the TODO comment and added a doc comment explaining when to use each function. Added `RwLockExt` import for poison-recovery lock access.
+**Files changed:** src/context/mod.rs
+**Sub-tasks created:** 0
+
+## Run 151 — 2026-02-08
+**Task:** 6.4b Fix TODO: Add confirmation dialog for unsaved profile changes
+**What was done:** Added a confirmation dialog to the profile screen's Cancel button when there are unsaved changes. When the user clicks Cancel with `has_unsaved_changes` true, a `ConfirmationDialog` with "Discard Changes?" title and danger mode is shown, giving options to "Discard" (confirms cancel) or "Keep Editing" (returns to editing). Uses the existing `ConfirmationDialog` component pattern with `Option<ConfirmationDialog>` field, matching the approach used in token screens like `destroy_frozen_funds_screen.rs`.
+**Files changed:** src/ui/dashpay/profile_screen.rs
+**Sub-tasks created:** 0
+
+## Run 152 — 2026-02-08
+**Task:** 6.4c Fix TODO: Use proof response to detect contested DPNS names
+**What was done:** Captured the domain document response from `put_to_platform_and_wait_for_response()` instead of discarding it with `let _ =`. Added contested name detection after the domain document submission using DPNS rules (names < 20 chars with no digits or only 0/1 are contested). Added `contested: bool` field to the `IdentityResult::RegisteredDpnsName` enum variant so the UI can display contested status. Updated the register DPNS name success screen to show "DPNS Name Submitted (Contested)" title with an explanatory info section about the voting period when the name is contested, versus the normal "DPNS Name Registered!" for non-contested names. Added tracing::info log when a contested name is submitted. Removed the TODO comment.
+**Files changed:** src/backend_task/identity/mod.rs, src/backend_task/identity/register_dpns_name.rs, src/ui/identities/register_dpns_name_screen.rs
+**Sub-tasks created:** 0
+
+## Run 153 — 2026-02-08
+**Task:** 6.4d Fix TODO: UTXO removal timing in identity registration
+**What was done:** Moved UTXO removal from BEFORE asset lock proof confirmation to AFTER in both the `FundWithWallet` and `FundWithUtxo` cases in `register_identity.rs`. Previously, spent UTXOs were removed from wallet tracking immediately after broadcasting the transaction but before waiting for the asset lock proof. If the proof timed out (transaction not confirmed), the UTXOs would be "lost" from wallet tracking even though they weren't actually spent. Now UTXOs are only removed after the proof is successfully received, confirming the transaction was accepted. On timeout, the error message advises the user to refresh their wallet to update UTXO state. Removed both TODO comments.
+**Files changed:** src/backend_task/identity/register_identity.rs
+**Sub-tasks created:** 0
+
+## Run 154 — 2026-02-08
+**Task:** 6.4e Fix TODO: Save local network settings including password
+**What was done:** Updated the `save()` method in `NetworkChooserScreen` to also persist the local network (Regtest) RPC password to the `.env` config file. Previously, `save()` only saved DB-backed settings (custom_dash_qt_path and overwrite_dash_conf) but did not persist the local network password, which was only saved through its own separate "Save" button. Now any call to `save()` also writes the local password to the config file if it is non-empty, using the same `Config::load()` → `update_core_rpc_password()` → `Config::save()` pattern already used by the password's dedicated Save button. Removed the TODO comment.
+**Files changed:** src/ui/network_chooser_screen.rs
+**Sub-tasks created:** 0
+
+## Run 155 — 2026-02-08
+**Task:** 6.4f Fix TODO: Make next_identity_id() reliable
+**What was done:** Made `next_identity_id()` more reliable by consulting both the wallet's in-memory identities map AND the database's identity table. Added `used_identity_indices_for_wallet()` method to `Database` that queries the identity table for all `wallet_index` values associated with a given wallet seed hash and network. Updated `next_identity_id()` in `add_new_identity_screen/mod.rs` to take the maximum of both sources (wallet map and DB) before adding 1. Also updated `render_identity_index_input()` to merge used indices from both sources when displaying the "(used)" indicator in the identity index selector. Previously, both functions relied solely on the wallet's in-memory `identities` map, which could be stale or incomplete if identities were registered from another device, if the wallet map hadn't been refreshed, or if DB entries existed that weren't yet loaded into memory. Removed the TODO comment.
+**Files changed:** src/database/identities.rs, src/ui/identities/add_new_identity_screen/mod.rs
+**Sub-tasks created:** 0
+
+## Run 156 — 2026-02-08
+**Task:** 6.5 Add config save/load roundtrip tests
+**What was done:** Added 7 config save/load roundtrip tests to `src/config.rs`. Extracted the core serialization logic from `save()` into a new `write_to<W: Write>()` method to enable testing without filesystem dependency on `app_user_data_file_path()`. Tests cover: (1) full roundtrip with all 4 networks and all fields, (2) single network roundtrip, (3) empty config, (4) file I/O roundtrip via tempfile, (5) optional fields present roundtrip, (6) optional fields absent roundtrip, (7) special characters in values. Each test writes a Config to a buffer or file, parses back via `envy::prefixed().from_iter()`, and verifies all fields are preserved exactly. The `save()` method now delegates to `write_to()` for the actual serialization.
+**Files changed:** src/config.rs
+**Sub-tasks created:** 0
+
+## Run 157 — 2026-02-08
+**Task:** 6.6 Add basic wallet payment flow tests
+**What was done:** Added 25 unit tests for wallet payment construction logic in `send_single_key_wallet_payment.rs`. Extracted three pure helper functions from the monolithic `send_single_key_wallet_payment_via_rpc` method: `select_utxos_for_payment()` (greedy descending-value UTXO selection with dynamic fee recalculation), `calculate_change()` (change amount computation with fee-from-amount support), and `should_include_change()` (dust threshold check at 546 duffs). Tests cover: UTXO selection (8 tests: single/multiple UTXOs, largest-first ordering, insufficient funds, empty wallet, exact amount, dynamic fee, multiple recipients), change calculation (7 tests: normal change, zero change, subtract-fee-from-amount, output too small for fee, multiple outputs), dust threshold (3 tests: above/at/below 546 duffs), integrated payment flow (4 tests: normal flow, fee subtraction, dust change dropped, just-above-dust), and amount validation (3 tests: zero amount, fee exceeds balance, many small UTXOs). The refactored `send_single_key_wallet_payment_via_rpc` now delegates to these helpers, keeping the same behavior.
+**Files changed:** src/backend_task/core/send_single_key_wallet_payment.rs
+**Sub-tasks created:** 0
+
+## Run 158 — 2026-02-08
+**Task:** 7.1 [META] Triage feature requests
+**What was done:** Triaged 6 GitHub feature request issues against the current codebase. Read each issue via `gh issue view`, then explored relevant source code to assess feasibility, complexity, and implementation approach. Created 4 specific sub-tasks for approved features.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 4 (7.1a through 7.1d)
+
+**Summary of findings:**
+- GH#497 (Disable keys) CONFIRMED: HIGH feasibility — `IdentityUpdateTransition` already supports keys_to_disable parameter, UI already detects disabled status
+- GH#498 (Replace master key) CONFIRMED: HIGH feasibility — single transition can add new + disable old master key, depends on GH#497
+- GH#88 (Export private key) ALREADY IMPLEMENTED: `render_private_key_dialog()` in wallets_screen/dialogs.rs with WIF export, show/hide, copy-to-clipboard
+- GH#468 (Mobile Dashpay import) CONFIRMED: MEDIUM feasibility — likely derivation path mismatch, needs mobile team coordination
+- GH#283 (Proof verification bypass) DEFERRED: dash-sdk doesn't expose proof skip option, requires upstream SDK change
+- GH#491 (Contract wrapper) CONFIRMED: HIGH feasibility — auto-wrapping dashpay.io schemas with metadata
+
+## Run 159 — 2026-02-08
+**Task:** 7.1a Implement GH#497: Disable identity keys
+**What was done:** Implemented the ability to disable identity keys on Platform. Created `disable_keys.rs` backend task that uses `IdentityUpdateTransition::try_from_identity_with_signer()` with the target key IDs in the `keys_to_disable` parameter (empty `keys_to_add`). Added `DisableKeys(QualifiedIdentity, Vec<KeyID>)` variant to `IdentityTask` enum and `DisabledKeys(QualifiedIdentity, FeeResult)` variant to `IdentityResult` enum. In the UI, added a "Disable Key on Platform" button to `key_info_screen.rs` that appears only for non-master, non-disabled keys when the identity has a master key available for signing. Added a confirmation dialog warning that the action is irreversible. After success, the key status updates to show "Disabled" and a success message is displayed.
+**Files changed:** src/backend_task/identity/disable_keys.rs (new), src/backend_task/identity/mod.rs, src/ui/identities/keys/key_info_screen.rs
+
+## Run 160 — 2026-02-08
+**Task:** 7.1b Implement GH#498: Replace master key
+**What was done:** Implemented the ability to replace the master key on Platform. Created `replace_key.rs` backend task that uses `IdentityUpdateTransition::try_from_identity_with_signer()` with both `keys_to_add` (new master key) and `keys_to_disable` (old master key ID) in a single atomic transition. Added `ReplaceKey(QualifiedIdentity, KeyID, QualifiedIdentityPublicKey, [u8; 32])` variant to `IdentityTask` enum and `ReplacedKey(QualifiedIdentity, FeeResult)` variant to `IdentityResult` enum. In the UI, added a "Replace Master Key" button to `key_info_screen.rs` that appears only when viewing a master key that is not disabled and the identity can sign with it. The confirmation dialog allows selecting the new key type (ECDSA_SECP256K1 default, BLS12_381, ECDSA_HASH160, EDDSA_25519_HASH160), displays the generated private key (hex) for the user to save, and supports regeneration. After success, the old key shows as disabled and a success message is displayed.
+**Files changed:** src/backend_task/identity/replace_key.rs (new), src/backend_task/identity/mod.rs, src/ui/identities/keys/key_info_screen.rs
+
+## Run 161 — 2026-02-08
+**Task:** 7.1c Investigate GH#468: Mobile Dashpay wallet identity derivation paths
+**What was done:** Comprehensive investigation of identity key derivation paths across all Dash wallet implementations. Reviewed DIP-13 specification, rust-dashcore key-wallet crate, dashsync-iOS, dashj (Android), wallet-lib (JS SDK), and Swift SDK FFI. All implementations use identical paths: `m/9'/coin_type'/5'/0'/0'/{identity_index}'/{key_index}'`. The root cause of GH#468 is NOT a derivation path mismatch — it's likely the default scan depth being too shallow (was 5, many mobile identities may be at higher indices). Improved discovery defaults: increased scan depth from 5 to 10 on both the import screen and "Find Identity by Wallet" screen, increased max range from 20 to 50, added helpful hint about mobile wallet imports, removed artificial "max 29" label.
+**Files changed:** src/ui/wallets/import_mnemonic_screen.rs, src/ui/identities/add_existing_identity_screen.rs
+
+## Run 162 — 2026-02-08
+**Task:** 7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration
+**What was done:** Enhanced the Register Contract screen to auto-detect and wrap raw document schemas (e.g. dashpay.io output) into a full contract JSON. When the user pastes JSON that lacks contract metadata fields (`$format_version`, `id`, `version`, `documentSchemas`) but contains entries that look like document schemas, the code automatically wraps them with `$format_version: "0"`, a random placeholder `id`, the selected identity's `ownerId`, default config, and `version: 1`. A green notification banner informs the user that metadata was auto-populated. The detection logic checks for absence of contract-level keys and presence of schema-like entries (with `type`, `properties`, or `indices` fields).
+**Files changed:** src/ui/contracts_documents/register_contract_screen.rs
+
+## Run 163 — 2026-02-08
+**Task:** 7.2 [META] Review DashPay subsystem completeness
+**What was done:** Comprehensive review of the DashPay subsystem (33 files, ~17,550 lines across UI, backend, and database layers). Cataloged ~20 TODO comments across 8 files and verified 14 issue files (dashpay-001 through dashpay-014). Identified 7 categories of unfinished work: (1) contact requests show identity IDs instead of usernames/display names (4 TODOs), (2) ContactDetailsScreen is disconnected from backend (3 TODOs), (3) payment history depends on SPV and is not implemented (5 TODOs), (4) cancel outgoing request button is non-functional (1 TODO), (5) contacts list sorting/filtering by date lacks timestamp data (4 TODOs), (6) stale TODO about auto-accept which is already implemented, (7) sequential contact loading causes poor performance. Of 14 issue files: 4 already fixed by prior tasks (001, 005, 008), 4 rejected as false positives (003, 004, 006, 012), 5 low priority (002, 007, 010, 013, 014), and 1 confirmed (009 — sequential loading). Created 7 sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 7 (7.2a through 7.2g)
+
+**Summary of findings:**
+- Core DashPay functionality works: profiles, contact requests with QR auto-accept, contacts list, basic payment sending
+- Contact requests show raw identity IDs — need username/profile resolution (P2)
+- ContactDetailsScreen UI shell disconnected from backend data flow (P2)
+- Payment history fully depends on SPV (PR#525) — partial fix possible for local DB records (P2)
+- "Cancel" button on outgoing requests is misleading — Platform doesn't support request deletion (P2)
+- Contacts list has "Recent" and "DateAdded" sort/filter stubs — DB already has timestamps, needs wiring (P2)
+- autoAcceptProof fully implemented in auto_accept_handler.rs — stale TODO in contact_requests.rs (P3)
+- Sequential contact profile loading confirmed as performance issue — needs parallelization (P3)
+- dashpay-001 ALREADY FIXED, dashpay-005 ALREADY FIXED, dashpay-008 ALREADY FIXED
+- dashpay-003, 004, 006, 012 REJECTED as false positives
+- dashpay-002, 007, 010, 011, 013, 014 LOW PRIORITY
+
+## Run 164 — 2026-02-08
+**Task:** 7.2a Resolve usernames/profiles for contact request display
+**What was done:** Added username and display name resolution for contact request display. Extended ContactRequest struct with `to_username` and `to_display_name` fields for outgoing requests. Added `resolve_names_from_local_cache()` method that looks up identity profiles and contact data from the local SQLite DB (dashpay_profiles and dashpay_contacts tables). For cache misses, triggers `DashPayTask::FetchContactProfile` backend tasks to fetch profiles from Platform. Added `update_names_from_profile()` to update request names when profile data arrives and cache it locally. Updated outgoing request display to show resolved display names/usernames instead of truncated identity IDs. Incoming requests already had the display logic but now get populated names from DB cache.
+**Files changed:** src/ui/dashpay/contact_requests.rs
+**Sub-tasks created:** 0
+
+## Run 165 — 2026-02-08
+**Task:** 7.2b Connect ContactDetailsScreen to backend data flow
+**What was done:** Connected the ContactDetailsScreen to the backend data layer. Replaced the stub `refresh()` with `load_from_database()` that loads contact public info from `dashpay_contacts`, profile data (bio, display_name) from `dashpay_profiles`, and private info (nickname, note, hidden) from `contact_private_info` tables. Added `trigger_backend_fetch()` to dispatch `DashPayTask::FetchContactProfile` for fresh Platform data. Updated `save_contact_info()` to save locally to DB immediately and dispatch `DashPayTask::UpdateContactInfo` to persist encrypted contact info to Platform. Added `display_task_result()` handler for `ContactProfile`, `ContactInfoUpdated`, and `ContactsWithInfo` results. Replaced non-functional "Remove Contact" and "Block Contact" stub buttons with informational text explaining these features aren't yet available. Added `refresh_on_arrival()` to auto-fetch from Platform when navigating to the screen. Also replaced inline `Color32` constants with `DashColors` semantic colors (SUCCESS, ERROR, INFO, WARNING_ORANGE).
+**Files changed:** src/ui/dashpay/contact_details.rs
+**Sub-tasks created:** 0
+## Run 166 — 2026-02-08
+**Task:** 7.2c Fix send_payment.rs contact name loading and local payment history query
+**What was done:** (1) Replaced mock `self.to_contact_name = Some("alice.dash".to_string())` in `send_payment.rs:load_contact_info()` with actual DB lookup using `db.load_dashpay_contacts()` to find the contact's username or display name. (2) Implemented `load_payment_history()` in `payments.rs` to query the `dashpay_payments` table via `db.load_payment_history()`, with optional contact_id filtering and proper status mapping. (3) Updated the `DashPayTask::LoadPaymentHistory` handler in `dashpay.rs` to query the DB and resolve contact names from the contacts table, instead of returning an empty result.
+**Files changed:** src/ui/dashpay/send_payment.rs, src/backend_task/dashpay/payments.rs, src/backend_task/dashpay.rs
+**Sub-tasks created:** 0
+## Run 167 — 2026-02-08
+**Task:** 7.2d Fix misleading "Cancel" button on outgoing contact requests
+**What was done:** Replaced the non-functional "Cancel" button on outgoing contact requests with an informational label "Cannot be cancelled once sent". The previous button showed "Request cancelled" via `display_message()` but performed no actual cancellation on Platform — contact requests are immutable once submitted. The new italic info label is styled with `DashColors::text_secondary` to indicate it's informational rather than actionable.
+**Files changed:** src/ui/dashpay/contact_requests.rs
+**Sub-tasks created:** 0
+
+## Run 168 — 2026-02-08
+**Task:** 7.2e Add timestamp data to contacts list for Recent filter and DateAdded sort
+**What was done:** Added `created_at: Option<i64>` field to the `Contact` struct in contacts_list.rs. When loading contacts from the database, the field is populated from `StoredContact.created_at` (the DB already had this column with `DEFAULT (unixepoch())`). Implemented the `SearchFilter::Recent` filter to show only contacts added within the last 7 days by comparing `created_at` against the current time minus 7 days. Implemented `SortOrder::DateAdded` to sort contacts by `created_at` descending (newest first), with contacts lacking timestamps sorted last. Contacts loaded fresh from Platform get `created_at: None` since the timestamp is assigned by the DB on save.
+**Files changed:** src/ui/dashpay/contacts_list.rs
+**Sub-tasks created:** 0
+
+## Run 169 — 2026-02-08
+**Task:** 7.2f Remove stale autoAcceptProof TODO and fix tracing log levels in DashPay backend
+**What was done:** Removed stale TODO comment about autoAcceptProof processing in contact_requests.rs (the functionality is fully implemented in auto_accept_handler.rs). Fixed tracing log levels in auto_accept_handler.rs: changed "Found contact request with autoAcceptProof" and "Valid autoAcceptProof! Auto-accepting" from error to info level, and changed "Invalid or expired autoAcceptProof" and "Failed to verify autoAcceptProof" from error to warn level. In payments.rs, changed the placeholder "Would update payment" message from error to debug level.
+**Files changed:** src/backend_task/dashpay/contact_requests.rs, src/backend_task/dashpay/auto_accept_handler.rs, src/backend_task/dashpay/payments.rs
+**Sub-tasks created:** 0
+
+## Run 170 — 2026-02-08
+**Task:** 7.2g Parallelize contact loading for performance
+**What was done:** Refactored the sequential contact profile/username fetching loop in `load_contacts()` to use `futures::future::join_all` with chunked concurrency (10 contacts per batch). Previously, each contact's DashPay profile and DPNS username were fetched one at a time in a sequential loop — with N contacts, this meant 2N sequential network round-trips. Now contacts are processed in chunks of 10, with all fetches within a chunk running concurrently via `join_all`. This reduces total fetch time from O(2N) sequential round-trips to O(2*ceil(N/10)) batched round-trips, roughly a 10x improvement for large contact lists.
+**Files changed:** src/backend_task/dashpay/contacts.rs
+**Sub-tasks created:** 0
+
+## Run 171 — 2026-02-08
+**Task:** 7.3 [META] Review SPV manager for production readiness
+**What was done:** Reviewed all SPV-related code: `src/spv/manager.rs` (1124 lines), `src/spv/error.rs`, `src/context_provider_spv.rs`, SPV transaction building in `backend_task/core/mod.rs`, address generation in `generate_receive_address.rs`, and reconciliation in `wallet_lifecycle.rs`. Verified 8 auto-generated issue files (infra-003, infra-006, infra-008, infra-015, infra-016, infra-028, wallet-013, wallet-016) against current codebase. Also checked PR#525 scope to avoid overlap. Created 3 specific sub-tasks for confirmed issues.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 3 (7.3a through 7.3c)
+
+**Summary of findings:**
+- infra-003 CONFIRMED: expect() on SPV runtime creation in background thread (P1)
+- wallet-013 CONFIRMED: Unbounded fee calculation loop with no iteration limit (P2)
+- infra-016 CONFIRMED: Quorum lookup with no timeout can block indefinitely (P2)
+
+## Run 172 — 2026-02-08
+**Task:** 7.3a Fix infra-003: Replace expect() on SPV runtime creation
+**What was done:** Replaced `.expect("Failed to create SPV runtime")` in `src/spv/manager.rs` with a `match` that logs the error via `tracing::error!`, writes it to `last_error`, sets `SpvStatus::Error`, and returns from the thread closure. Previously, if the tokio runtime failed to build (e.g., due to resource limits), the background thread would panic. Now it gracefully reports the error and exits cleanly.
+**Files changed:** src/spv/manager.rs
+- wallet-016 FALSE POSITIVE: Error IS propagated via `?`, only bool return discarded
+- infra-006 FALSE POSITIVE: Cited busy-wait pattern doesn't exist in current code
+- infra-008 CONFIRMED but LOW PRIORITY: Silent lock error fallback in status methods (acceptable for high-frequency UI queries)
+- infra-028 CONFIRMED but LOW PRIORITY: Harmless TOCTOU race in stop() (CancellationToken::cancel is idempotent)
+- infra-015 CONFIRMED but deferred to task 2.5 (lock poisoning strategy)
+- SPV lock helper methods (lines 148-246) are well-designed with SpvResult returns
+- PR#525 actively modifies spv/manager.rs — sub-tasks should be coordinated with that PR
+
+## Run 173 — 2026-02-08
+**Task:** 7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop
+**What was done:** Added `MAX_FEE_ITERATIONS` constant (50) to `build_spv_unsigned_transaction_multi()` in `src/backend_task/core/mod.rs` and converted the infinite `loop` to a bounded `for _ in 0..MAX_FEE_ITERATIONS`. After exhausting iterations, the function returns a descriptive error instead of potentially looping indefinitely. All existing early-return paths (successful build, convergence check, non-InsufficientFunds errors) remain unchanged.
+**Files changed:** src/backend_task/core/mod.rs
+
+## Run 174 — 2026-02-08
+**Task:** 7.3c Fix infra-016: Add timeout to quorum public key lookup
+**What was done:** Wrapped the `interface.get_quorum_by_height()` async call in `get_quorum_public_key()` with `tokio::time::timeout(Duration::from_secs(30), ...)`. If the quorum lookup doesn't complete within 30 seconds, the function now returns a descriptive timeout error with quorum type, hash, and height info, and logs a warning. This prevents the calling thread from blocking indefinitely if the SPV client hangs or the network is unreachable.
+**Files changed:** src/spv/manager.rs
+
+## Run 175 — 2026-02-08
+**Task:** 7.4 [META] Review token system for completeness
+**What was done:** Comprehensive review of the token system: 17 backend task files, 16 UI screen files, supporting infrastructure, 19 ui-tokens issue files, and 16 contracts issue files. Validated GH#224 (key visibility) and identified root cause (simple mode uses .find() returning only first key). Discovered critical bug: freeze_tokens_screen Freeze button does nothing (sets confirmation_dialog=None instead of creating one). Confirmed frozen identity filtering is missing in destroy/unfreeze screens. Verified backend task system is complete with all 27 operations fully implemented. Created 6 sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (7.4a through 7.4f)
+
+**Summary of findings:**
+- GH#224 CONFIRMED: Simple mode auto-selects first key via .find() with no UI to change it; advanced mode works correctly
+- Freeze screen CRITICAL BUG: Button click handler resets dialog to None instead of creating one — feature completely non-functional
+- Frozen identity filtering CONFIRMED: destroy_frozen_funds and unfreeze screens show all identities, not just frozen ones
+- token_creator.rs:1607-1608 has .unwrap() on identity/key that can panic if unset
+- query_tokens.rs:31,73 has .expect() that should use ? propagation
+- marketplace_trade_mode always maps to NotTradeable regardless of input (contracts-015)
+- Backend system complete: all 27 TokenTask operations fully implemented
+- 12 of 19 ui-tokens issues already fixed by prior tasks; 5 LOW PRIORITY; 2 confirmed with sub-tasks
+- 9 of 16 contracts issues already fixed or LOW PRIORITY; contracts-007 retry bug already fixed
+
+## Run 176 — 2026-02-08
+**Task:** 7.3d Merge `feat/working-spv` into `ralph/improvements`
+**What was done:** Merged `origin/feat/working-spv` (8 commits, 16 files) into `ralph/improvements`. Resolved 6 merge conflicts: (1) `create_asset_lock.rs` — switched to `broadcast_raw_transaction()` for SPV/RPC abstraction; (2) `register_identity.rs` — integrated SPV-aware timeouts, CoreBackendMode branching for UTXO reload, and broadcast abstraction while keeping ralph's `lock_or_recover()` safety; (3) `top_up_identity.rs` — same pattern as register_identity; (4) `context.rs` modify/delete — kept ralph's split modules (`context/`), ported feat's new `broadcast_raw_transaction()`, `spv_setup_finality_listener()`, `handle_spv_finality_event()`, updated `start_spv()` with expected_wallets counting, balance accessor updates, and UTXO handling improvements into `wallet_lifecycle.rs` and `mod.rs`; (5) `helpers.rs` — kept both ralph's `render_wallet_locked_overlay` and feat's helper functions; (6) `wallets_screen/mod.rs` — kept ralph's refactored modular structure. All four verification checks pass (fmt, build, clippy, test).
+**Files changed:** Cargo.lock, Cargo.toml, src/backend_task/core/create_asset_lock.rs, src/backend_task/core/mod.rs, src/backend_task/dashpay/incoming_payments.rs, src/backend_task/identity/register_identity.rs, src/backend_task/identity/top_up_identity.rs, src/context/mod.rs, src/context/wallet_lifecycle.rs, src/model/qualified_identity/encrypted_key_storage.rs, src/model/qualified_identity/mod.rs, src/model/wallet/mod.rs, src/spv/manager.rs, src/spv/mod.rs, src/ui/helpers.rs, src/ui/wallets/account_summary.rs
+
+## Run 177 — 2026-02-08
+**Task:** 7.4a Fix freeze_tokens_screen: Create confirmation dialog on button click
+**What was done:** Fixed the Freeze button click handler in `freeze_tokens_screen.rs` which was setting `self.confirmation_dialog = None` (clearing the dialog) instead of creating a new `ConfirmationDialog`. This was a complete loss-of-function bug — the Freeze feature was non-operational because the confirmation dialog was never created, so `show_confirmation_popup()` was never invoked, and the backend task was never dispatched. The fix creates a `Some(ConfirmationDialog::new(...))` on click (with input validation for empty identity ID), following the same pattern as `burn_tokens_screen.rs`.
+**Files changed:** src/ui/tokens/freeze_tokens_screen.rs
+
+## Run 178 — 2026-02-08
+**Task:** 7.4b Fix GH#224: Add key selection in token creator simple mode
+**What was done:** Added a key selection dropdown (ComboBox) in the token creator's simple mode. Previously, simple mode used `.find()` to auto-select the first eligible key (Authentication purpose, Critical or High security level) with no way to change it, meaning users with multiple keys could only use key ID 1. Now, when multiple eligible keys exist, a "Signing key:" ComboBox appears below the identity selector showing all eligible keys. The first eligible key is still auto-selected by default, but users can switch to any other eligible key. When only one eligible key exists, the ComboBox is hidden (same behavior as before). Imported `format_key_label` from helpers for consistent key display formatting.
+**Files changed:** src/ui/tokens/tokens_screen/token_creator.rs
+
+## Run 179 — 2026-02-08
+**Task:** 7.4c Fix token_creator.rs unwrap on identity/key submission
+**What was done:** Replaced two `.unwrap()` calls on `self.selected_identity` and `self.selected_key` in the token creator confirmation handler with a `match` that validates both are `Some` before proceeding. If either is `None`, sets an error message ("Please select an identity and signing key.") and closes the confirmation popup instead of panicking. Previously, if a user somehow reached the confirmation dialog without having selected an identity or signing key, the app would crash.
+**Files changed:** src/ui/tokens/tokens_screen/token_creator.rs
+
+## Run 180 — 2026-02-08
+**Task:** 7.4d Implement frozen identity filtering for destroy/unfreeze screens
+**What was done:** Added Platform-based frozen identity filtering to the destroy_frozen_funds_screen and unfreeze_tokens_screen. Previously, both screens showed all locally-known identities in their identity selector dropdown (with TODO comments acknowledging this). Now, on screen load, a `QueryFrozenIdentities` backend task is dispatched that queries Platform using the SDK's `IdentitiesTokenInfosQuery` + `IdentityTokenInfo::fetch_many()` to check which identities are actually frozen for the specific token. The identity dropdown is then filtered to only show frozen identities. A loading spinner is shown while the query is in progress. On query failure, all identities are shown as a fallback. Created new backend task file `query_frozen_identities.rs`, added `QueryFrozenIdentities` variant to `TokenTask` enum, and `FrozenIdentities(Vec<Identifier>)` variant to `TokenResult` enum.
+**Files changed:** src/backend_task/tokens/mod.rs, src/backend_task/tokens/query_frozen_identities.rs (new), src/ui/tokens/destroy_frozen_funds_screen.rs, src/ui/tokens/unfreeze_tokens_screen.rs
+
+## Run 181 — 2026-02-08
+**Task:** 7.4e Fix query_tokens.rs expect() calls on DocumentQuery creation
+**What was done:** Replaced 2 `.expect()` calls on `DocumentQuery::new()` in `query_tokens.rs` with `.map_err(|e| format!("Failed to create document query: {}", e))?`. The first at line 31 creates a query for "contractKeywords" documents, and the second at line 73 creates a query for "shortDescription" documents. Previously, if the keyword search contract's document type schema was missing or invalid, the backend task would panic. Now these produce descriptive error messages that propagate to the caller.
+**Files changed:** src/backend_task/tokens/query_tokens.rs
+
+## Run 182 — 2026-02-08
+**Task:** 7.4f Document marketplace trade mode limitation
+**What was done:** Documented the marketplace trade mode limitation in two locations. (1) In `backend_task/tokens/mod.rs`, replaced the terse inline comment on the match statement with a multi-line comment explaining that marketplace trading is not yet supported on Dash Platform, the parameter is kept for forward compatibility, and when SDK support is added the match and UI selector should be extended. (2) In the token creator UI (`token_creator.rs`), disabled the Marketplace Trade Mode ComboBox using `ui.add_enabled_ui(false, ...)` so users can see it's locked to "Not Tradeable", and updated the info tooltip text to lead with "Marketplace trading is not yet supported on Dash Platform." The `update_token_config.rs` already had the correct message ("Marketplace settings are not yet supported.") so no changes needed there.
+**Files changed:** src/backend_task/tokens/mod.rs, src/ui/tokens/tokens_screen/token_creator.rs
+
+## Run 184 — 2026-02-08
+**Task:** 7.5a Add missing network indexes to high-traffic tables
+**What was done:** Added database migration version 27 that creates network indexes on 5 frequently queried tables: `wallet`, `token`, `identity_token_balances`, `scheduled_votes`, and `asset_lock_transaction`. All had `WHERE network = ?` queries but no index to optimize them. Bumped `DEFAULT_DB_VERSION` from 26 to 27. Also added the same indexes to the `create_tables()` fresh-install path (in `initialization.rs`) and to the `initialize_*` helper functions (in `tokens.rs` and `scheduled_votes.rs`) so both fresh installs and migrations get the indexes.
+**Files changed:** src/database/initialization.rs, src/database/tokens.rs, src/database/scheduled_votes.rs
+
+## Run 183 — 2026-02-08
+**Task:** 7.5 [META] Review database layer
+**What was done:** Reviewed all 17 database files (~8,785 lines) and 16 db-*.md issue files. Validated migration strategy (solid, version-based with per-version transactions and backup). Checked all 16 issue file claims against actual code: 5 already fixed by prior tasks (db-001/002/003/011 by tasks 2.5/2.3c/2.1a/6.3), 4 false positive or not confirmed (db-004/008/009/015), 5 confirmed and actionable (db-006/010/012/014/016), 2 confirmed but acceptable (db-007/013). Found 2 additional issues from direct inspection: N+1 query patterns in identity/top-up loading and identity order loading, plus silent parse failure logging gap in token order loading. Created 7 specific sub-tasks (7.5a through 7.5g).
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 7 (7.5a through 7.5g)
+
+## Run 185 — 2026-02-08
+**Task:** 7.5b Wrap insert_token() in a transaction
+**What was done:** Wrapped the token insert and identity balance inserts in `insert_token()` inside a single database transaction. Previously, the token row was inserted first via `self.execute()`, then each identity token balance was inserted in a separate `self.execute()` call in a loop — if any balance insert failed, the token row would remain without its balances. Now, identities are fetched first (releasing the connection lock), then a transaction is opened and both the token upsert and all identity balance upserts execute atomically. Either all succeed or all roll back.
+**Files changed:** src/database/tokens.rs
+
+## Run 186 — 2026-02-08
+**Task:** 7.5c Fix silent error masking in contacts.rs load_contact_private_info
+**What was done:** In `load_contact_private_info()`, replaced `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` for both nickname and notes fields, and `row.get::<_, i32>(2).unwrap_or(0)` with `row.get::<_, Option<i32>>(2)?.unwrap_or(0)` for is_hidden. Previously, SQL type conversion errors (e.g., from database corruption where a non-TEXT value is stored in a TEXT column) were silently masked as empty strings or zero. Now, type errors are properly propagated via `?` while SQL NULL values are still handled gracefully via `unwrap_or_default()`.
+**Files changed:** src/database/contacts.rs
+
+## Run 187 — 2026-02-08
+**Task:** 7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback
+**What was done:** Replaced `_ => unreachable!()` in `get_scheduled_votes()` at `scheduled_votes.rs:163` with a safe fallback that treats unexpected `executed` column values as `false` (not executed) and logs a `tracing::warn!` with the unexpected value and contested name for debugging. The `executed` column is an INTEGER constrained to 0/1 by INSERT logic, but database corruption or manual editing could produce other values. Previously this would panic the app; now it degrades gracefully.
+**Files changed:** src/database/scheduled_votes.rs
+
+## Run 188 — 2026-02-08
+**Task:** 7.5e Optimize identity loading N+1 query with JOIN
+**What was done:** Replaced the N+1 query pattern in three identity loading functions in `identities.rs` with single LEFT JOIN queries. Previously, `get_local_qualified_identities()`, `get_local_qualified_identities_in_wallets()`, and `get_identity_by_id()` each prepared a separate `top_up_stmt` and executed it per identity inside the `query_map` closure, resulting in O(n) additional queries for n identities. Now each function uses a single `SELECT ... FROM identity i LEFT JOIN top_up t ON i.id = t.identity_id` query and groups results by identity ID in Rust code. For identities with no top-ups, the LEFT JOIN produces NULL values which are handled gracefully. This reduces database round-trips from O(n+1) to O(1) per call.
+**Files changed:** src/database/identities.rs
+
+## Run 189 — 2026-02-08
+**Task:** 7.5f Optimize load_identity_order N+1 existence check
+**What was done:** Replaced the per-row `SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)` pattern in `load_identity_order()` with a single LEFT JOIN query: `SELECT io.identity_id, i.id IS NOT NULL AS exists_in_identity FROM identity_order io LEFT JOIN identity i ON io.identity_id = i.id ORDER BY io.pos ASC`. Previously, the function executed one additional query per identity in the order list to check if it still exists in the identity table, resulting in O(n) queries. Now it uses a single query that returns both the identity ID and its existence status, reducing database round-trips from O(n+1) to O(1).
+**Files changed:** src/database/identities.rs
+
+## Run 190 — 2026-02-08
+**Task:** 7.5g Log parse failures in load_token_order instead of silently skipping
+**What was done:** Replaced the two empty `else` blocks in `load_token_order()` in `src/database/tokens.rs` with `warn!()` calls that log when token_id or identity_id bytes fail to parse from the token_order table. Added `use tracing::warn;` import. Previously, parse failures were silently skipped, making data integrity issues invisible.
+**Files changed:** src/database/tokens.rs
+>>>>>>> cebd5604 (Log parse failures in load_token_order instead of silently skipping)

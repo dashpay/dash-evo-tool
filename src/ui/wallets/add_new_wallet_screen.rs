@@ -474,11 +474,7 @@ impl AddNewWalletScreen {
             egui::Order::Background,
             egui::Id::new("receive_funds_overlay"),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
         // Generate QR code if needed
         let mut qr_error: Option<String> = None;
@@ -639,7 +635,7 @@ impl AddNewWalletScreen {
                         .color(Color32::WHITE),
                 )
                 .min_size(Vec2::new(100.0, 20.0))
-                .fill(Color32::from_rgb(0, 128, 255)) // Blue background
+                .fill(DashColors::ACTION_BUTTON_BLUE)
                 .corner_radius(5.0);
 
                 if ui.add(generate_button).clicked() {
@@ -860,10 +856,10 @@ impl ScreenLike for AddNewWalletScreen {
                         // Since score ranges from 0 to 4, adjust percentage accordingly
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
                         let fill_color = match self.password_strength as i32 {
-                            0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
-                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
-                            51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
-                            _ => Color32::from_rgb(90, 200, 90),           // Medium green
+                            0..=25 => DashColors::STRENGTH_WEAK,
+                            26..=50 => DashColors::STRENGTH_FAIR,
+                            51..=75 => DashColors::STRENGTH_GOOD,
+                            _ => DashColors::STRENGTH_STRONG,
                         };
                         let strength_label = match self.password_strength as i32 {
                             0 => "None",
@@ -906,7 +902,7 @@ impl ScreenLike for AddNewWalletScreen {
                     let save_button = egui::Button::new(
                         RichText::new("Save Wallet").color(Color32::WHITE),
                     )
-                        .fill(Color32::from_rgb(0, 128, 255))
+                        .fill(DashColors::ACTION_BUTTON_BLUE)
                         .frame(true)
                         .corner_radius(3.0);
 

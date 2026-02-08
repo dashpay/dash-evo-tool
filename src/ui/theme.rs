@@ -69,6 +69,20 @@ impl DashColors {
     pub const BUTTON_DISABLED: Color32 = Color32::from_rgb(100, 100, 100);
     /// Salmon/orange for input validation warnings
     pub const VALIDATION_WARNING: Color32 = Color32::from_rgb(255, 150, 100);
+    /// Bright orange for important warnings (e.g., private key exposure, missing identities)
+    pub const WARNING_BRIGHT: Color32 = Color32::from_rgb(255, 152, 0);
+    /// Purple for Platform address type indicators
+    pub const PLATFORM_PURPLE: Color32 = Color32::from_rgb(130, 80, 220);
+    /// Blue for primary action buttons (Generate, Save, Import)
+    pub const ACTION_BUTTON_BLUE: Color32 = Color32::from_rgb(0, 128, 255);
+    /// Light pink for very weak password strength
+    pub const STRENGTH_WEAK: Color32 = Color32::from_rgb(255, 182, 193);
+    /// Light yellow for fair password strength
+    pub const STRENGTH_FAIR: Color32 = Color32::from_rgb(255, 224, 130);
+    /// Light green for good password strength
+    pub const STRENGTH_GOOD: Color32 = Color32::from_rgb(144, 238, 144);
+    /// Medium green for strong password strength
+    pub const STRENGTH_STRONG: Color32 = Color32::from_rgb(90, 200, 90);
 
     // Network accent colors
     /// Muted Dash blue for dark mode (20% darker)

@@ -450,7 +450,7 @@ impl ScreenLike for CreateAssetLockScreen {
                             if identities.is_empty() {
                                 ui.label(
                                     RichText::new("No identities found. Please create an identity first.")
-                                        .color(egui::Color32::from_rgb(255, 152, 0))
+                                        .color(DashColors::WARNING_BRIGHT)
                                 );
                                 return;
                             }

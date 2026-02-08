@@ -1208,7 +1208,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.2c Centralize inline colors in identity screens to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in `src/ui/identities/` files (~35 instances across identities_screen.rs, add_existing_identity_screen.rs, add_new_identity_screen/mod.rs, transfer_screen.rs, withdraw_screen.rs, register_dpns_name_screen.rs, top_up_identity_screen/mod.rs, keys/add_key_screen.rs, keys/key_info_screen.rs, funding_common.rs). Map common patterns: error reds → `DashColors::ERROR`, success greens → `DashColors::SUCCESS`, warning oranges → `DashColors::WARNING_ORANGE`.
 
-- [ ] **4.2d Centralize inline colors in wallet screens to DashColors** (P3)
+- [x] **4.2d Centralize inline colors in wallet screens to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in `src/ui/wallets/` files (~35 instances across wallets_screen/mod.rs, wallets_screen/dialogs.rs, send_screen/mod.rs, send_screen/advanced.rs, single_key_send_screen.rs, import_mnemonic_screen.rs, add_new_wallet_screen.rs, create_asset_lock_screen.rs, asset_lock_detail_screen.rs). Same color mapping approach.
 
 - [ ] **4.2e Centralize inline colors in token, dashpay, dpns, contracts, and tools screens to DashColors** (P3)
@@ -1418,7 +1418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 15 | 9 |
+| 4. UI/UX | 15 | 10 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

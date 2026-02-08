@@ -549,7 +549,7 @@ impl WalletSendScreen {
                                 let (type_text, type_color) = match addr_type {
                                     AddressType::Core => ("Core", DashColors::DASH_BLUE),
                                     AddressType::Platform => {
-                                        ("Platform", Color32::from_rgb(130, 80, 220))
+                                        ("Platform", DashColors::PLATFORM_PURPLE)
                                     }
                                     AddressType::Unknown => ("", Color32::GRAY),
                                 };

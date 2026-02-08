@@ -7,6 +7,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use eframe::egui::Context;
 
@@ -469,7 +470,7 @@ impl ImportMnemonicScreen {
                 ui.label(
                     RichText::new(wallet.address.to_string())
                         .monospace()
-                        .color(Color32::from_rgb(100, 200, 100)),
+                        .color(DashColors::SUCCESS),
                 );
             });
         }
@@ -478,10 +479,7 @@ impl ImportMnemonicScreen {
         if let Some(ref err) = self.error {
             ui.add_space(5.0);
             ui.add(
-                egui::Label::new(
-                    egui::RichText::new(err.as_str()).color(Color32::from_rgb(255, 100, 100)),
-                )
-                .wrap(),
+                egui::Label::new(egui::RichText::new(err.as_str()).color(DashColors::ERROR)).wrap(),
             );
         }
     }
@@ -628,7 +626,7 @@ impl ScreenLike for ImportMnemonicScreen {
                             if let Some(ref error_msg) = self.error
                                 && error_msg.starts_with("Seed phrase error") {
                                     ui.add_space(10.0);
-                                    ui.add(egui::Label::new(egui::RichText::new(error_msg.as_str()).color(Color32::from_rgb(255, 100, 100))).wrap());
+                                    ui.add(egui::Label::new(egui::RichText::new(error_msg.as_str()).color(DashColors::ERROR)).wrap());
                                 }
 
                             if self.seed_phrase.is_none() {
@@ -699,10 +697,10 @@ impl ScreenLike for ImportMnemonicScreen {
                         // Since score ranges from 0 to 4, adjust percentage accordingly
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
                         let fill_color = match self.password_strength as i32 {
-                            0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
-                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
-                            51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
-                            _ => Color32::from_rgb(90, 200, 90),           // Medium green
+                            0..=25 => DashColors::STRENGTH_WEAK,
+                            26..=50 => DashColors::STRENGTH_FAIR,
+                            51..=75 => DashColors::STRENGTH_GOOD,
+                            _ => DashColors::STRENGTH_STRONG,
                         };
                         ui.add(
                             egui::ProgressBar::new(strength_percentage as f32)
@@ -755,7 +753,7 @@ impl ScreenLike for ImportMnemonicScreen {
                     let save_button = egui::Button::new(
                         RichText::new(button_label).color(Color32::WHITE),
                     )
-                        .fill(Color32::from_rgb(0, 128, 255))
+                        .fill(DashColors::ACTION_BUTTON_BLUE)
                         .frame(true)
                         .corner_radius(3.0);
 

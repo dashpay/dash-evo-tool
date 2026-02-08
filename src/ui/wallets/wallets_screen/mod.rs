@@ -1561,7 +1561,7 @@ impl WalletsBalancesScreen {
                     // Display error message if the password was incorrect
                     if let Some(error_message) = self.sk_error_message.clone() {
                         ui.add_space(5.0);
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))
                             .inner_margin(Margin::symmetric(10, 8))
@@ -1738,7 +1738,7 @@ impl ScreenLike for WalletsBalancesScreen {
             let message = self.message.clone();
             if let Some((message, message_type, _timestamp)) = message {
                 let message_color = match message_type {
-                    MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
+                    MessageType::Error => DashColors::ERROR,
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };

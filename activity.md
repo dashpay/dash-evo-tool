@@ -1041,3 +1041,21 @@
 **What was done:** Refactored the sequential contact profile/username fetching loop in `load_contacts()` to use `futures::future::join_all` with chunked concurrency (10 contacts per batch). Previously, each contact's DashPay profile and DPNS username were fetched one at a time in a sequential loop — with N contacts, this meant 2N sequential network round-trips. Now contacts are processed in chunks of 10, with all fetches within a chunk running concurrently via `join_all`. This reduces total fetch time from O(2N) sequential round-trips to O(2*ceil(N/10)) batched round-trips, roughly a 10x improvement for large contact lists.
 **Files changed:** src/backend_task/dashpay/contacts.rs
 **Sub-tasks created:** 0
+
+## Run 171 — 2026-02-08
+**Task:** 7.3 [META] Review SPV manager for production readiness
+**What was done:** Reviewed all SPV-related code: `src/spv/manager.rs` (1124 lines), `src/spv/error.rs`, `src/context_provider_spv.rs`, SPV transaction building in `backend_task/core/mod.rs`, address generation in `generate_receive_address.rs`, and reconciliation in `wallet_lifecycle.rs`. Verified 8 auto-generated issue files (infra-003, infra-006, infra-008, infra-015, infra-016, infra-028, wallet-013, wallet-016) against current codebase. Also checked PR#525 scope to avoid overlap. Created 3 specific sub-tasks for confirmed issues.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 3 (7.3a through 7.3c)
+
+**Summary of findings:**
+- infra-003 CONFIRMED: expect() on SPV runtime creation in background thread (P1)
+- wallet-013 CONFIRMED: Unbounded fee calculation loop with no iteration limit (P2)
+- infra-016 CONFIRMED: Quorum lookup with no timeout can block indefinitely (P2)
+- wallet-016 FALSE POSITIVE: Error IS propagated via `?`, only bool return discarded
+- infra-006 FALSE POSITIVE: Cited busy-wait pattern doesn't exist in current code
+- infra-008 CONFIRMED but LOW PRIORITY: Silent lock error fallback in status methods (acceptable for high-frequency UI queries)
+- infra-028 CONFIRMED but LOW PRIORITY: Harmless TOCTOU race in stop() (CancellationToken::cancel is idempotent)
+- infra-015 CONFIRMED but deferred to task 2.5 (lock poisoning strategy)
+- SPV lock helper methods (lines 148-246) are well-designed with SpvResult returns
+- PR#525 actively modifies spv/manager.rs — sub-tasks should be coordinated with that PR

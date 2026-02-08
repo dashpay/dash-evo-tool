@@ -1935,13 +1935,47 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.2g Parallelize contact loading for performance** (P3)
   In `src/backend_task/dashpay/contacts.rs`, the `load_contacts_with_info()` function (or equivalent) makes sequential network queries for each contact's profile. With 200 contacts, this causes significant delays. Refactor to use `tokio::spawn` with a semaphore (concurrency limit of 10-20) to parallelize profile fetches, similar to the pattern already used in `query_dpns_contested_resources.rs`. Alternatively, batch-query Platform for multiple identities at once if the SDK supports it.
 
-- [ ] **7.3 [META] Review SPV manager for production readiness** (P2)
+- [x] **7.3 [META] Review SPV manager for production readiness** (P2)
   Note: PR#525 is active SPV work. Review current SPV code for:
   - Error handling and recovery
   - Timeout handling
   - Connection management
   Reference: `issues/wallet-013-spv-transaction-build-fee-calculation-loop.md`, `issues/wallet-016-spv-address-registration-error-ignored.md`.
   Create hardening tasks.
+
+  **Triage Results:**
+
+  **Reviewed files:** `src/spv/manager.rs` (1124 lines), `src/spv/error.rs`, `src/context_provider_spv.rs`, `src/backend_task/core/mod.rs` (SPV transaction building), `src/backend_task/wallet/generate_receive_address.rs`, `src/context/wallet_lifecycle.rs` (SPV reconciliation).
+
+  **Issue Files (infra-003, infra-006, infra-008, infra-015, infra-016, infra-028, wallet-013, wallet-016):**
+  - **infra-003 (expect on SPV runtime creation)** — CONFIRMED. `src/spv/manager.rs:389` has `.expect("Failed to create SPV runtime")` in a background thread. Runtime creation can fail under resource constraints. Panic leaves SPV subsystem dead with no error reported to UI.
+  - **wallet-013 (fee calculation loop no iteration limit)** — CONFIRMED. `src/backend_task/core/mod.rs:503-544` `build_spv_unsigned_transaction_multi()` has an unbounded loop. While convergence checks exist (line 535), no hard iteration cap. Also uses u64→f64 conversion (line 506) which loses precision for amounts >2^53 duffs.
+  - **infra-016 (quorum lookup no timeout)** — CONFIRMED. `src/spv/manager.rs:591-617` `get_quorum_public_key()` uses `block_in_place` + `block_on` with no timeout. A hung SPV client blocks the calling thread indefinitely. This method is called from `context_provider_spv.rs:112` for platform proof verification.
+  - **wallet-016 (SPV address registration error ignored)** — FALSE POSITIVE. At `generate_receive_address.rs:28-34`, the `let _ =` discards only the `bool` return value. The `?` at line 34 propagates the error. The `Result` IS handled correctly.
+  - **infra-008 (lock error swallowing in status)** — CONFIRMED but LOW PRIORITY. `manager.rs:300-342` uses `.unwrap_or()` for graceful fallback. These are high-frequency UI status queries; logging on every poisoned access would be noisy. Acceptable pattern for status methods.
+  - **infra-028 (stop race condition)** — CONFIRMED but LOW PRIORITY. `manager.rs:414-423` has a TOCTOU race between lock release and cancel. Harmless because `CancellationToken::cancel()` is idempotent and the worst case is a redundant cancel. Suggested fix to use `guard.take()` is clean but non-urgent.
+  - **infra-006 (wallet load busy-wait)** — FALSE POSITIVE. The cited busy-wait pattern at lines 750-779 does not exist in the current code. Only `wallet_count()` reference is at line 1029 for start height determination.
+  - **infra-015 (storage lock cleanup)** — CONFIRMED but LOW PRIORITY. `if let Ok(...)` pattern at lines 509, 740, 801 silently ignores lock poisoning during cleanup. Deferred to task 2.5 (lock poisoning strategy).
+
+  **Additional findings from direct code inspection:**
+  - SPV manager lock helper methods (lines 148-246) properly return `SpvResult` instead of panicking — good pattern.
+  - `build_client()` (lines 1021-1078) has proper error propagation for all steps — no issues.
+  - `run_sync_and_monitor()` (lines 812-864) correctly uses `tokio::select!` with cancellation — no timeout issues here.
+  - `spawn_request_handler()` (lines 866-923) correctly handles channel closure and cancellation — no issues.
+  - `spawn_progress_handler()` (lines 925-989) has 500ms throttling and proper stage-based status updates — no issues.
+  - `spawn_event_handler()` (lines 991-1019) uses `try_send()` which is correct (non-blocking) — no issues.
+  - Reconciliation in `wallet_lifecycle.rs:381-405` uses proper debouncing (300ms) — no issues.
+  - `context_provider_spv.rs` handles lock poisoning properly and propagates errors — no issues.
+  - PR#525 is actively modifying `spv/manager.rs` (+274/-75 lines) — sub-tasks should be coordinated with that PR.
+
+- [ ] **7.3a Fix infra-003: Replace expect() on SPV runtime creation** (P1)
+  In `src/spv/manager.rs:389`, replace `.expect("Failed to create SPV runtime")` with a `match` that sets `SpvStatus::Error`, writes the error to `last_error`, logs via `tracing::error!`, and returns early. The thread closure needs to propagate this cleanly since it's inside `std::thread::spawn`.
+
+- [ ] **7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop** (P2)
+  In `src/backend_task/core/mod.rs:503-544`, add a `const MAX_FEE_ITERATIONS: usize = 50` (or similar) and convert the infinite `loop` to `for _ in 0..MAX_FEE_ITERATIONS`. After exhausting iterations, return `Err("Could not build transaction after maximum fee adjustment attempts")`. This prevents potential infinite loops if fee estimation is unstable.
+
+- [ ] **7.3c Fix infra-016: Add timeout to quorum public key lookup** (P2)
+  In `src/spv/manager.rs:591-617`, wrap the `interface.get_quorum_by_height()` call with `tokio::time::timeout(Duration::from_secs(30), ...)`. Return a descriptive timeout error if the quorum lookup doesn't complete within 30 seconds. This prevents the calling thread from blocking indefinitely.
 
 - [ ] **7.4 [META] Review token system for completeness** (P2)
   Check token-related screens and backend for:
@@ -2040,6 +2074,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 16 | 7 |
+| 7. Features | 19 | 8 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

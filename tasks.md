@@ -2156,7 +2156,7 @@ These META tasks validate reported bugs against the current codebase before any 
   ```
   This returns only valid identity IDs (those that still exist in the identity table) in a single query instead of O(n) queries. Handle dangling cleanup afterward.
 
-- [ ] **7.5g Log parse failures in load_token_order instead of silently skipping** (P3)
+- [x] **7.5g Log parse failures in load_token_order instead of silently skipping** (P3)
   In `src/database/tokens.rs:545-553`, replace the empty `else` blocks with `tracing::warn!("Failed to parse token/identity ID from token_order table, skipping")` to aid debugging of data integrity issues.
 
 ---
@@ -2174,5 +2174,4 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 24 |
-| 8. Security | 2 | 0 |
+| 7. Features | 33 | 25 |

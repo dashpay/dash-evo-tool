@@ -1162,3 +1162,8 @@
 **Task:** 7.5f Optimize load_identity_order N+1 existence check
 **What was done:** Replaced the per-row `SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)` pattern in `load_identity_order()` with a single LEFT JOIN query: `SELECT io.identity_id, i.id IS NOT NULL AS exists_in_identity FROM identity_order io LEFT JOIN identity i ON io.identity_id = i.id ORDER BY io.pos ASC`. Previously, the function executed one additional query per identity in the order list to check if it still exists in the identity table, resulting in O(n) queries. Now it uses a single query that returns both the identity ID and its existence status, reducing database round-trips from O(n+1) to O(1).
 **Files changed:** src/database/identities.rs
+
+## Run 190 — 2026-02-08
+**Task:** 7.5g Log parse failures in load_token_order instead of silently skipping
+**What was done:** Replaced the two empty `else` blocks in `load_token_order()` in `src/database/tokens.rs` with `warn!()` calls that log when token_id or identity_id bytes fail to parse from the token_order table. Added `use tracing::warn;` import. Previously, parse failures were silently skipped, making data integrity issues invisible.
+**Files changed:** src/database/tokens.rs

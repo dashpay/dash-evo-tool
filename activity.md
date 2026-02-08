@@ -1101,3 +1101,8 @@
 **Task:** 7.4a Fix freeze_tokens_screen: Create confirmation dialog on button click
 **What was done:** Fixed the Freeze button click handler in `freeze_tokens_screen.rs` which was setting `self.confirmation_dialog = None` (clearing the dialog) instead of creating a new `ConfirmationDialog`. This was a complete loss-of-function bug — the Freeze feature was non-operational because the confirmation dialog was never created, so `show_confirmation_popup()` was never invoked, and the backend task was never dispatched. The fix creates a `Some(ConfirmationDialog::new(...))` on click (with input validation for empty identity ID), following the same pattern as `burn_tokens_screen.rs`.
 **Files changed:** src/ui/tokens/freeze_tokens_screen.rs
+
+## Run 178 — 2026-02-08
+**Task:** 7.4b Fix GH#224: Add key selection in token creator simple mode
+**What was done:** Added a key selection dropdown (ComboBox) in the token creator's simple mode. Previously, simple mode used `.find()` to auto-select the first eligible key (Authentication purpose, Critical or High security level) with no way to change it, meaning users with multiple keys could only use key ID 1. Now, when multiple eligible keys exist, a "Signing key:" ComboBox appears below the identity selector showing all eligible keys. The first eligible key is still auto-selected by default, but users can switch to any other eligible key. When only one eligible key exists, the ComboBox is hidden (same behavior as before). Imported `format_key_label` from helpers for consistent key display formatting.
+**Files changed:** src/ui/tokens/tokens_screen/token_creator.rs

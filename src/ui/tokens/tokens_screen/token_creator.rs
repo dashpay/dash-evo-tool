@@ -27,7 +27,7 @@ use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::components::identity_selector::IdentitySelector;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use crate::ui::helpers::{add_identity_key_chooser, format_key_label, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
@@ -257,39 +257,42 @@ impl TokensScreen {
                                 .width(300.0),
                             );
 
-                            // Auto-select the first eligible key when:
-                            // 1. Identity changed, OR
-                            // 2. Identity is selected but no key is selected yet (first load)
-                            let should_auto_select_key = response.changed()
-                                || (self.selected_identity.is_some() && self.selected_key.is_none());
-
-                            if should_auto_select_key {
-                                if response.changed() {
-                                    self.selected_key = None; // Clear previous key only on identity change
-                                }
-                                if let Some(ref identity) = self.selected_identity {
-                                    // Find first eligible key for RegisterContract
-                                    // Requires Authentication purpose with High or Critical security level
-                                    let first_eligible_key = identity
-                                        .private_keys
-                                        .identity_public_keys()
-                                        .iter()
-                                        .find(|key_ref| {
-                                            let key = &key_ref.1.identity_public_key;
-                                            key.purpose() == Purpose::AUTHENTICATION
-                                                && (key.security_level() == SecurityLevel::CRITICAL
-                                                    || key.security_level() == SecurityLevel::HIGH)
-                                        })
-                                        .map(|key_ref| key_ref.1.identity_public_key.clone());
-
-                                    if first_eligible_key.is_some() {
-                                        self.selected_key = first_eligible_key;
-                                    }
-                                }
+                            // Auto-select the first eligible key when identity changes or no key selected yet
+                            if response.changed() {
+                                self.selected_key = None;
                             }
 
-                            // If identity is selected but no eligible key could be found, show warning
-                            if self.selected_identity.is_some() && self.selected_key.is_none() {
+                            if self.selected_identity.is_none() {
+                                return;
+                            }
+
+                            // Collect eligible keys for RegisterContract
+                            let eligible_keys: Vec<_> = if let Some(ref identity) = self.selected_identity {
+                                identity
+                                    .private_keys
+                                    .identity_public_keys()
+                                    .iter()
+                                    .filter(|key_ref| {
+                                        let key = &key_ref.1.identity_public_key;
+                                        key.purpose() == Purpose::AUTHENTICATION
+                                            && (key.security_level() == SecurityLevel::CRITICAL
+                                                || key.security_level() == SecurityLevel::HIGH)
+                                    })
+                                    .map(|key_ref| key_ref.1.identity_public_key.clone())
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+
+                            // Auto-select first eligible key if none selected
+                            if self.selected_key.is_none()
+                                && let Some(first_key) = eligible_keys.first()
+                            {
+                                self.selected_key = Some(first_key.clone());
+                            }
+
+                            // If no eligible keys at all, show warning
+                            if eligible_keys.is_empty() {
                                 ui.add_space(5.0);
                                 ui.colored_label(
                                     DashColors::DANGER_RED,
@@ -298,8 +301,34 @@ impl TokensScreen {
                                 return;
                             }
 
-                            if self.selected_identity.is_none() {
-                                return;
+                            // Show key selector if there are multiple eligible keys
+                            if eligible_keys.len() > 1 {
+                                ui.add_space(5.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Signing key:");
+                                    ComboBox::from_id_salt("simple_key_selector")
+                                        .width(300.0)
+                                        .selected_text(
+                                            self.selected_key
+                                                .as_ref()
+                                                .map(format_key_label)
+                                                .unwrap_or_else(|| "Select Key…".into()),
+                                        )
+                                        .show_ui(ui, |kui| {
+                                            for key in &eligible_keys {
+                                                let label = format_key_label(key);
+                                                if kui
+                                                    .selectable_label(
+                                                        self.selected_key.as_ref() == Some(key),
+                                                        label,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.selected_key = Some(key.clone());
+                                                }
+                                            }
+                                        });
+                                });
                             }
 
                             // Set wallet reference for the auto-selected key

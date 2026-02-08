@@ -1214,9 +1214,86 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.2e Centralize inline colors in token, dashpay, dpns, contracts, and tools screens to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in remaining UI modules (~100 instances across tokens/, dashpay/, dpns/, contracts_documents/, tools/ directories). This is the largest batch but most instances follow the same 4-5 color patterns. Can be done file-by-file with search-and-replace within each file.
 
-- [ ] **4.3 [META] Review error display patterns across all screens** (P2)
+- [x] **4.3 [META] Review error display patterns across all screens** (P2)
   Identify where raw error messages (including Rust debug output) are shown to users.
   Create tasks to add user-friendly error messages with optional "show details" expansion.
+
+  **Audit Results:**
+
+  **Error routing architecture:**
+  All backend task errors flow through `app.rs:888-890`: `TaskResult::Error(message)` → `display_message(&message, MessageType::Error)`. The `message` is a raw `String` produced by backend tasks via `map_err(|e| e.to_string())` or `format!("...: {}", e)`. There are 400+ `.map_err(|e| e.to_string()|format!(...))` calls across 56 backend_task files. These raw SDK/Platform/database error strings pass directly to UI screens.
+
+  **Finding 1: Raw SDK/DPP errors displayed directly (HIGH severity, ~30+ locations)**
+  Backend tasks convert SDK errors via `.map_err(|e| e.to_string())` or `.map_err(|e| format!("...: {}", e))`, and these reach users verbatim. Examples of what users see:
+  - `"Protocol(Generic(\"document type not found\"))"` — from `dash_sdk::dpp` errors
+  - `"Transport(Status { code: Unavailable, message: \"...\" })"` — from gRPC transport errors
+  - `"Error(StateTransition broadcast error: ErrorResult(...))"` — from state transition failures
+  - `"Query(NotFound(\"identity at revision...\"))"` — from Platform query errors
+  The most impactful locations are the `display_message()` implementations in 50+ screen files that store these raw strings in `error_message` fields and display them with `format!("Error: {}", msg)`.
+
+  **Finding 2: Debug format ({:?}) in user-facing error paths (HIGH severity, 2 locations)**
+  - `send_single_key_wallet_payment.rs:180` — `format!("Failed to compute sighash: {:?}", e)` — user sees Rust Debug output of sighash error
+  - `token_creator.rs:1362-1380` — `format!("Duplicate token name language: {:?}", ...)` and `"The name in {:?} must be between 3 and 50 characters"` — user sees Debug-formatted enum variants
+
+  **Finding 3: "Invalid contract" errors from DPP (MEDIUM severity, ~14 locations)**
+  Token screens (destroy_frozen_funds, freeze, unfreeze, mint, burn, set_price, update_config) all have `format!("Invalid contract: {}", e)` where `e` is a DPP `ProtocolError`. These appear in the UI as "Invalid contract: Protocol(Generic(\"...\"))". Affected files: destroy_frozen_funds_screen.rs, freeze_tokens_screen.rs, unfreeze_tokens_screen.rs, mint_tokens_screen.rs, burn_tokens_screen.rs, set_token_price_screen.rs, update_token_config.rs (2 locations each = 14 total).
+
+  **Finding 4: Clipboard/system errors shown raw (LOW severity, 4 locations)**
+  - `top_up_identity_screen/by_wallet_qr_code.rs:86` — `format!("Failed to copy to clipboard: {}", error)`
+  - `add_new_identity_screen/by_wallet_qr_code.rs:110` — same pattern
+  - `wallets_screen/dialogs.rs:372,491` — `format!("Error: {}", err)` for clipboard errors
+  These are platform-specific error strings but generally readable (e.g., "clipboard not available").
+
+  **Finding 5: Address/parse errors shown raw (MEDIUM severity, ~10 locations)**
+  - `send_screen/mod.rs:421,423,499,565,691,694` — `format!("Invalid Core address: {}", e)` where `e` is parse error
+  - `wallets_screen/dialogs.rs:571,942,954` — similar pattern for Bech32m and Platform address parsing
+  - `import_mnemonic_screen.rs:109` — `format!("Invalid private key: {}", e)`
+  These are reasonably user-friendly when the parse error is simple, but can include internal details for complex failures.
+
+  **Finding 6: Error messages lack actionable guidance (MEDIUM severity, 30+ screens)**
+  All 30+ error display locations use the pattern `format!("Error: {}", msg)` with no guidance on what the user should do next. No "Try again", "Check your connection", "Verify the address format", etc. The `OperationStatus::ErrorMessage` display in token screens shows elapsed time but no recovery suggestions.
+
+  **Finding 7: No "show details" expansion pattern exists (DESIGN GAP)**
+  There is no existing component for showing user-friendly summary + expandable technical details. All error displays are flat text. Users with technical knowledge cannot access the full error for debugging, while non-technical users see too much detail.
+
+  **Recommended approach:**
+  1. Create a shared `ErrorDisplay` component with summary + expandable details
+  2. Add a backend error translation layer that maps common SDK error patterns to user-friendly messages
+  3. Replace `{:?}` format in user-facing error paths with `{}` or human-readable messages
+  4. Add recovery suggestions to common error types (connection failures, insufficient funds, etc.)
+
+  **Sub-tasks created (incremental, ordered by impact):**
+
+- [ ] **4.3a Create ErrorDisplay component with expandable details** (P2)
+  Create `src/ui/components/error_display.rs` with an `ErrorDisplay` struct that shows a user-friendly summary message and optionally an expandable "Show details" section for the raw technical error. API: `ErrorDisplay::new(summary: &str, details: Option<&str>)` with `.show(ui)`. Integrate with the existing `DashColors::error_color()` for consistent styling. Add text wrapping (`.wrap()`) by default. This establishes the pattern for all subsequent error display improvements.
+
+- [ ] **4.3b Add backend error translation layer for common SDK errors** (P2)
+  Create `src/ui/helpers/error_translation.rs` (or add to existing helpers) with a `translate_backend_error(raw: &str) -> (String, String)` function that returns `(user_friendly_summary, technical_details)`. Map common patterns:
+  - `"Transport(Status { code: Unavailable"` → "Connection to Platform failed. Check your network connection."
+  - `"Transport(Status { code: DeadlineExceeded"` → "Request timed out. The Platform may be busy."
+  - `"Insufficient"` / `"insufficient"` → "Insufficient funds for this operation."
+  - `"identity at revision"` / `"NotFound"` → "The requested identity was not found on Platform."
+  - `"already exists"` → "This item already exists on Platform."
+  - Default: use the raw message as details with generic "Operation failed" as summary.
+  Update `display_message()` implementations across screens to use this translation before displaying.
+
+- [ ] **4.3c Replace Debug format ({:?}) in user-facing error paths** (P2)
+  Replace `{:?}` format in error strings shown to users:
+  - `src/backend_task/core/send_single_key_wallet_payment.rs:180` — change `format!("Failed to compute sighash: {:?}", e)` to `format!("Failed to compute sighash: {}", e)`
+  - `src/ui/tokens/tokens_screen/token_creator.rs:1362` — change `format!("Duplicate token name language: {:?}", ...)` to use Display format for the language enum (implement Display or use a match to get human-readable name)
+  - `src/ui/tokens/tokens_screen/token_creator.rs:1373,1380` — change `"The name in {:?} must be..."` to use Display format
+  - `src/ui/wallets/add_new_wallet_screen.rs:494` — change `format!("QR error: {:?}", e)` to `format!("QR code error: {}", e)`
+
+- [ ] **4.3d Improve "Invalid contract" error messages in token screens** (P2)
+  In 7 token screen files (destroy_frozen_funds, freeze, unfreeze, mint, burn, set_price, update_config), replace `format!("Invalid contract: {}", e)` with a user-friendly message like "Failed to load token contract. It may have been modified on Platform." and store the raw DPP error as optional details. These 14 locations share the same pattern and can use the ErrorDisplay component from 4.3a.
+
+- [ ] **4.3e Add recovery suggestions to common error displays** (P3)
+  Audit the `OperationStatus::ErrorMessage` display in `token_operation_base.rs:445` and add contextual recovery suggestions based on error content:
+  - Connection errors → "Check your internet connection and try again."
+  - Balance errors → "Verify you have sufficient funds and try again."
+  - Key errors → "Ensure your wallet is unlocked and a valid key is selected."
+  - Timeout errors → "The operation timed out. You can try again."
+  Apply the same pattern to error displays in identity screens (`transfer_screen.rs:801`, `withdraw_screen.rs:639`, `register_dpns_name_screen.rs:601`), wallet screens (`wallets_screen/mod.rs:1574`), and contract screens (`add_contracts_screen.rs:347`).
 
 - [ ] **4.4 [META] Review input validation across all form screens** (P2)
   Check all input fields across the app for missing validation:
@@ -1410,7 +1487,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 133 (24 META + 109 direct)
+**Total tasks:** 138 (24 META + 114 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1418,7 +1495,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 15 | 11 |
+| 4. UI/UX | 20 | 12 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

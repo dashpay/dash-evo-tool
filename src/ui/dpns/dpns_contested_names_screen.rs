@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use tracing::error;
 
 use crate::lock_helper::MutexExt;
 use chrono::{DateTime, LocalResult, TimeZone, Utc};
@@ -1181,7 +1182,7 @@ impl DPNSScreen {
                                         match self.app_context.load_local_voting_identities() {
                                             Ok(ids) => ids,
                                             Err(e) => {
-                                                eprintln!("Error: {}", e);
+                                                error!("{}", e);
                                                 return;
                                             }
                                         };

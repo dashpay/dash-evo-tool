@@ -144,7 +144,7 @@ impl MasternodeListDiffScreen {
         let engine = match app_context.network {
             Network::Dash => {
                 use std::env;
-                println!(
+                tracing::debug!(
                     "Current working directory: {:?}",
                     env::current_dir().unwrap()
                 );
@@ -164,12 +164,12 @@ impl MasternodeListDiffScreen {
                             .expect("expected to start engine")
                         }
                         Err(e) => {
-                            eprintln!("Failed to read MNListDiff file: {}", e);
+                            tracing::error!("Failed to read MNListDiff file: {}", e);
                             MasternodeListEngine::default_for_network(Network::Dash)
                         }
                     }
                 } else {
-                    eprintln!("MNListDiff file not found: {}", file_path);
+                    tracing::error!("MNListDiff file not found: {}", file_path);
                     MasternodeListEngine::default_for_network(Network::Dash)
                 }
             }
@@ -190,12 +190,12 @@ impl MasternodeListDiffScreen {
                             .expect("expected to start engine")
                         }
                         Err(e) => {
-                            eprintln!("Failed to read MNListDiff file: {}", e);
+                            tracing::error!("Failed to read MNListDiff file: {}", e);
                             MasternodeListEngine::default_for_network(Network::Testnet)
                         }
                     }
                 } else {
-                    eprintln!("MNListDiff file not found: {}", file_path);
+                    tracing::error!("MNListDiff file not found: {}", file_path);
                     MasternodeListEngine::default_for_network(Network::Dash)
                 }
             }
@@ -447,7 +447,7 @@ impl MasternodeListDiffScreen {
             .map(|mn_list_diff| mn_list_diff.block_hash)
             .collect();
         known_block_hashes.push(base_block_hash);
-        println!(
+        tracing::debug!(
             "requesting with known_block_hashes {}",
             known_block_hashes
                 .iter()
@@ -1097,12 +1097,12 @@ impl MasternodeListDiffScreen {
                             self.masternode_list_engine = engine;
                         }
                         Err(e) => {
-                            eprintln!("Failed to decode QRInfo: {}", e);
+                            tracing::error!("Failed to decode QRInfo: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to read file: {:?}", e);
+                    tracing::error!("Failed to read file: {:?}", e);
                 }
             }
         }
@@ -1129,7 +1129,7 @@ impl MasternodeListDiffScreen {
             // Attempt to write the serialized data to the selected file
             match fs::write(&path, serialized) {
                 Ok(_) => {
-                    println!("Masternode list engine saved to {:?}", path);
+                    tracing::info!("Masternode list engine saved to {:?}", path);
                 }
                 Err(e) => {
                     self.error = Some(format!("Failed to save file: {}", e));
@@ -1639,7 +1639,7 @@ impl MasternodeListDiffScreen {
                     )
                     .expect("serialize container");
                     if let Err(e) = std::fs::write(&path, serialized_data) {
-                        eprintln!("Failed to write file: {}", e);
+                        tracing::error!("Failed to write file: {}", e);
                     }
                 }
             }
@@ -1699,7 +1699,7 @@ impl MasternodeListDiffScreen {
                         bincode::encode_to_vec(&self.mnlist_diffs, bincode::config::standard())
                             .expect("serialize container");
                     if let Err(e) = std::fs::write(&path, serialized_data) {
-                        eprintln!("Failed to write file: {}", e);
+                        tracing::error!("Failed to write file: {}", e);
                     }
                 }
             }
@@ -1833,7 +1833,7 @@ impl MasternodeListDiffScreen {
             // Attempt to write the serialized data to the selected file
             match fs::write(&path, serialized) {
                 Ok(_) => {
-                    println!("MNListDiff saved to {:?}", path);
+                    tracing::info!("MNListDiff saved to {:?}", path);
                 }
                 Err(e) => {
                     self.error = Some(format!("Failed to save file: {}", e));

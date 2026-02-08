@@ -36,6 +36,7 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use tracing::error;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IdentitiesSortColumn {
@@ -1056,7 +1057,7 @@ impl IdentitiesScreen {
                             .app_context
                             .set_identity_alias(&identity_id, new_alias.as_deref())
                         {
-                            eprintln!("Failed to save alias: {}", e);
+                            error!("Failed to save alias: {}", e);
                         }
 
                         self.editing_alias_identity = None;

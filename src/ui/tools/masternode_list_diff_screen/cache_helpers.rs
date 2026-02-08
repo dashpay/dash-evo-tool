@@ -63,7 +63,7 @@ impl CacheState {
         if let Some(height) = self.block_height_cache.get(block_hash) {
             return Ok(*height);
         }
-        println!(
+        tracing::debug!(
             "Asking core for height no cache {} ({})",
             block_hash,
             block_hash.reverse()
@@ -102,7 +102,7 @@ impl CacheState {
         if let Some(height) = self.block_height_cache.get(block_hash) {
             return Ok(*height);
         }
-        println!(
+        tracing::debug!(
             "Asking core for height {} ({})",
             block_hash,
             block_hash.reverse()
@@ -306,7 +306,7 @@ impl CacheState {
     ) {
         if let Ok(base_height) = self.get_height(&mn_list_diff.base_block_hash, engine, app_context)
         {
-            println!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
+            tracing::debug!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
             engine.feed_block_height(base_height, mn_list_diff.base_block_hash);
         } else {
             *error = Some(format!(
@@ -316,7 +316,7 @@ impl CacheState {
         }
 
         if let Ok(block_height) = self.get_height(&mn_list_diff.block_hash, engine, app_context) {
-            println!("feeding {} {}", block_height, mn_list_diff.block_hash);
+            tracing::debug!("feeding {} {}", block_height, mn_list_diff.block_hash);
             engine.feed_block_height(block_height, mn_list_diff.block_hash);
         } else {
             *error = Some(format!(

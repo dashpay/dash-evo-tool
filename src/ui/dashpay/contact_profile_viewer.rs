@@ -17,6 +17,7 @@ use dash_sdk::platform::Identifier;
 use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::error;
 
 const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
     This is the contact's public DashPay profile.\n\n\
@@ -192,7 +193,7 @@ impl ContactProfileViewerScreen {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to fetch contact avatar image: {}", e);
+                    error!("Failed to fetch contact avatar image: {}", e);
                 }
             }
         });

@@ -8,6 +8,7 @@ use crate::ui::theme::{DashColors, Shadow, Shape};
 use egui::{Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
+use tracing::error;
 
 #[derive(RustEmbed)]
 #[folder = "icons/"]
@@ -38,11 +39,11 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
                     Some(texture)
                 } else {
-                    eprintln!("Failed to load image from embedded data at path: {}", path);
+                    error!("Failed to load image from embedded data at path: {}", path);
                     None
                 }
             } else {
-                eprintln!("Image not found in embedded assets at path: {}", path);
+                error!("Image not found in embedded assets at path: {}", path);
                 None
             }
         })

@@ -21,6 +21,7 @@ pub use groups::*;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
+use tracing::error;
 
 use crate::lock_helper::MutexExt;
 
@@ -953,7 +954,7 @@ impl TokensScreen {
             .db
             .save_token_order(all_ids)
             .map_err(|e| {
-                eprintln!("Error saving token order: {}", e);
+                error!("Error saving token order: {}", e);
                 e
             })
             .ok();
@@ -1223,7 +1224,7 @@ impl ScreenLike for TokensScreen {
                 self.use_custom_order = true;
             }
             Err(e) => {
-                eprintln!("Error loading token order: {}", e);
+                error!("Error loading token order: {}", e);
             }
         }
     }

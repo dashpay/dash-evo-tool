@@ -25,6 +25,7 @@ use egui::load::SizedTexture;
 use egui::{Color32, ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use tracing::error;
 use zxcvbn::zxcvbn;
 
 // Constants for feature purposes and sub-features
@@ -286,7 +287,7 @@ impl AddNewWalletScreen {
                 wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
                 self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
-                eprintln!("Failed to acquire write lock on wallets");
+                error!("Failed to acquire write lock on wallets");
             }
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet

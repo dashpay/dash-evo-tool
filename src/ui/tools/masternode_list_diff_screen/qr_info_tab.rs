@@ -43,14 +43,14 @@ impl MasternodeListDiffScreen {
                                             self.qr_infos.insert(key, qr_info);
                                         }
                                         Err(e) => {
-                                            eprintln!("Failed to decode QRInfo: {}", e);
+                                            tracing::error!("Failed to decode QRInfo: {}", e);
                                         }
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to read file: {}", e);
+                            tracing::error!("Failed to read file: {}", e);
                         }
                     }
                 }
@@ -78,7 +78,7 @@ impl MasternodeListDiffScreen {
                             bincode::encode_to_vec(&selected_qr_info, bincode::config::standard())
                                 .expect("serialize container");
                         if let Err(e) = std::fs::write(&path, serialized_data) {
-                            eprintln!("Failed to write file: {}", e);
+                            tracing::error!("Failed to write file: {}", e);
                         }
                     }
                 }

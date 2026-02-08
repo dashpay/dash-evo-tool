@@ -235,7 +235,7 @@ impl Database {
                 app_context.platform_version(),
             )
             .map_err(|e| {
-                eprintln!("Failed to deserialize DataContract: {}", e);
+                tracing::error!("Failed to deserialize DataContract: {}", e);
                 rusqlite::Error::ToSqlConversionFailure(Box::new(e))
             })?;
 

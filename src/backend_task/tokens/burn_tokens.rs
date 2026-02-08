@@ -62,7 +62,7 @@ impl AppContext {
                     if let Err(e) =
                         self.insert_token_identity_balance(&token_id, &identity_id, amount)
                     {
-                        eprintln!("Failed to update token balance: {}", e);
+                        tracing::error!("Failed to update token balance: {}", e);
                     }
                 }
 
@@ -76,7 +76,7 @@ impl AppContext {
                         && let Err(e) =
                             self.insert_token_identity_balance(&token_id, &owner_id, *amount)
                     {
-                        eprintln!(
+                        tracing::error!(
                             "Failed to update token balance from historical document: {}",
                             e
                         );
@@ -93,7 +93,7 @@ impl AppContext {
                         && let Err(e) =
                             self.insert_token_identity_balance(&token_id, &owner_id, *amount)
                     {
-                        eprintln!(
+                        tracing::error!(
                             "Failed to update token balance from group action document: {}",
                             e
                         );
@@ -107,7 +107,10 @@ impl AppContext {
                         if let Err(e) =
                             self.insert_token_identity_balance(&token_id, &owner_id, amount)
                         {
-                            eprintln!("Failed to update token balance from group action: {}", e);
+                            tracing::error!(
+                                "Failed to update token balance from group action: {}",
+                                e
+                            );
                         }
                     }
                 }

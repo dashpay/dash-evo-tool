@@ -1001,3 +1001,9 @@
 - dashpay-001 ALREADY FIXED, dashpay-005 ALREADY FIXED, dashpay-008 ALREADY FIXED
 - dashpay-003, 004, 006, 012 REJECTED as false positives
 - dashpay-002, 007, 010, 011, 013, 014 LOW PRIORITY
+
+## Run 164 — 2026-02-08
+**Task:** 7.2a Resolve usernames/profiles for contact request display
+**What was done:** Added username and display name resolution for contact request display. Extended ContactRequest struct with `to_username` and `to_display_name` fields for outgoing requests. Added `resolve_names_from_local_cache()` method that looks up identity profiles and contact data from the local SQLite DB (dashpay_profiles and dashpay_contacts tables). For cache misses, triggers `DashPayTask::FetchContactProfile` backend tasks to fetch profiles from Platform. Added `update_names_from_profile()` to update request names when profile data arrives and cache it locally. Updated outgoing request display to show resolved display names/usernames instead of truncated identity IDs. Incoming requests already had the display logic but now get populated names from DB cache.
+**Files changed:** src/ui/dashpay/contact_requests.rs
+**Sub-tasks created:** 0

@@ -1891,7 +1891,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Summary:** Core DashPay functionality works (profiles, contact requests with auto-accept, contact list, basic payments). Main gaps: (1) contact requests show identity IDs not usernames, (2) contact details screen is disconnected from backend, (3) payment history depends on SPV, (4) contact list sorting by date needs DB timestamp integration, (5) sequential contact loading is slow. Issue files are mostly already fixed or low priority.
 
-- [ ] **7.2a Resolve usernames/profiles for contact request display** (P2)
+- [x] **7.2a Resolve usernames/profiles for contact request display** (P2)
   In `src/ui/dashpay/contact_requests.rs`, after loading incoming/outgoing requests, fetch profiles/usernames for each identity:
   (1) Collect unique `from_identity` IDs from incoming requests and `to_identity` IDs from outgoing requests.
   (2) Batch-query the local DB (`db.get_dashpay_profile()`) for cached profiles. For cache misses, trigger a `DashPayTask::SearchProfile` or a new batch profile fetch task.

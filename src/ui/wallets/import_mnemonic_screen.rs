@@ -125,7 +125,8 @@ impl ImportMnemonicScreen {
         };
 
         // Generate default wallet name if none provided
-        let alias = if self.alias_input.trim().is_empty() {
+        let trimmed_alias = self.alias_input.trim();
+        let alias = if trimmed_alias.is_empty() {
             let existing_wallet_count = self
                 .app_context
                 .single_key_wallets
@@ -134,7 +135,7 @@ impl ImportMnemonicScreen {
                 .unwrap_or(0);
             Some(format!("Key {}", existing_wallet_count + 1))
         } else {
-            Some(self.alias_input.clone())
+            Some(trimmed_alias.chars().take(64).collect())
         };
 
         // Try WIF first, then hex
@@ -206,7 +207,8 @@ impl ImportMnemonicScreen {
             let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
             // Generate default wallet name if none provided
-            let wallet_alias = if self.alias_input.trim().is_empty() {
+            let trimmed_alias = self.alias_input.trim();
+            let wallet_alias = if trimmed_alias.is_empty() {
                 let existing_wallet_count = self
                     .app_context
                     .wallets
@@ -215,7 +217,7 @@ impl ImportMnemonicScreen {
                     .unwrap_or(0);
                 format!("Wallet {}", existing_wallet_count + 1)
             } else {
-                self.alias_input.clone()
+                trimmed_alias.chars().take(64).collect()
             };
 
             let wallet = Wallet {
@@ -655,6 +657,17 @@ impl ScreenLike for ImportMnemonicScreen {
                         ui.label("Name:");
                         ui.text_edit_singleline(&mut self.alias_input);
                     });
+                    if self.alias_input.chars().count() > 64 {
+                        self.alias_input = self.alias_input.chars().take(64).collect();
+                    }
+                    let char_count = self.alias_input.trim().chars().count();
+                    if char_count > 50 {
+                        ui.label(
+                            RichText::new(format!("{}/64", char_count))
+                                .weak()
+                                .size(12.0),
+                        );
+                    }
 
                     step += 1;
 

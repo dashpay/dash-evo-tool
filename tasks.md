@@ -1343,7 +1343,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.4d Fix f64 precision in transfer/withdraw max amount calculations** (P2)
   In `src/ui/identities/transfer_screen.rs:138-139` and `src/ui/identities/withdraw_screen.rs:110-111`, replace floating-point arithmetic with integer arithmetic using `saturating_sub`. For transfer: `self.max_amount.saturating_sub(20_000_000)` (0.0002 DASH in credits). For withdraw: `self.max_amount.saturating_sub(500_000_000)` (0.005 DASH in credits). Currently the f64 round-trip (`u64→f64→u64`) can lose 1-2 duffs of precision.
 
-- [ ] **4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens** (P3)
+- [x] **4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens** (P3)
   In `src/ui/wallets/add_new_wallet_screen.rs:234-243` and `src/ui/wallets/import_mnemonic_screen.rs` (alias usage), trim the alias before use and add a reasonable length limit (e.g., 64 characters). Currently whitespace-only strings pass through without triggering the empty fallback (since `.trim().is_empty()` check is only for auto-naming but the raw un-trimmed value is used at line 243).
 
 - [ ] **4.4f Add basic format validation to address_balance_screen** (P3)
@@ -1540,7 +1540,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 26 | 19 |
+| 4. UI/UX | 26 | 20 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

@@ -758,3 +758,8 @@
 **Task:** 4.4d Fix f64 precision in transfer/withdraw max amount calculations
 **What was done:** Replaced floating-point arithmetic with integer arithmetic using `saturating_sub` in both transfer_screen.rs and withdraw_screen.rs for the "Max" button amount calculation. Transfer screen: replaced `(self.max_amount as f64 / 100_000_000_000.0 - 0.0002).max(0.0)` round-trip with `self.max_amount.saturating_sub(20_000_000)` (0.0002 DASH = 20M credits). Withdraw screen: replaced `(self.max_amount as f64 / 100_000_000_000.0 - 0.005).max(0.0)` round-trip with `self.max_amount.saturating_sub(500_000_000)` (0.005 DASH = 500M credits). Previously the u64→f64→u64 conversion could lose 1-2 duffs of precision due to IEEE 754 floating-point representation limits for large credit values.
 **Files changed:** src/ui/identities/transfer_screen.rs, src/ui/identities/withdraw_screen.rs
+
+## Run 124 — 2026-02-08
+**Task:** 4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens
+**What was done:** Added wallet alias trimming and 64-character length limit to all three alias usage sites: add_new_wallet_screen.rs (HD wallet creation), import_mnemonic_screen.rs (single-key import and HD wallet import). Previously, whitespace-only strings like "   " would trigger auto-naming correctly, but strings like "  My Wallet  " kept leading/trailing whitespace. The raw un-trimmed value was used at submission time. Now aliases are trimmed before use and capped at 64 characters (using char-count, not byte-count, for multi-byte safety). Character count feedback (N/64) appears in the UI when the alias exceeds 50 characters.
+**Files changed:** src/ui/wallets/add_new_wallet_screen.rs, src/ui/wallets/import_mnemonic_screen.rs

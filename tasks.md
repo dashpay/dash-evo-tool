@@ -1610,7 +1610,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created by feasibility and risk:**
 
-- [ ] **6.1a Add database tests for untested tables** (P1)
+- [x] **6.1a Add database tests for untested tables** (P1)
   Write tests for the 10 untested database files using the existing `test_helpers::test_db()` infrastructure. Priority order:
   - `identities.rs` — insert, update, load, delete local qualified identities. Verify wallet association and alias handling.
   - `contracts.rs` — insert, get by ID, remove, replace contracts. Test system contract injection in get_contracts.
@@ -1624,7 +1624,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `proof_log.rs` — proof log entry creation and retrieval.
   Each file needs 5-8 tests covering happy path CRUD and edge cases (empty results, duplicate keys, wrong network).
 
-- [ ] **6.1b Add model tests for wallet/mod.rs core operations** (P1)
+- [x] **6.1b Add model tests for wallet/mod.rs core operations** (P1)
   Write tests for `src/model/wallet/mod.rs` (2396 lines, 0 tests). Focus on:
   - `receive_address()` — test skip_known_addresses_with_no_funds=true/false behavior
   - `take_unspent_utxos_for()` — test UTXO selection algorithm, coin selection, amount thresholds

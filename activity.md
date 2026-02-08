@@ -1023,3 +1023,9 @@
 **What was done:** Replaced the non-functional "Cancel" button on outgoing contact requests with an informational label "Cannot be cancelled once sent". The previous button showed "Request cancelled" via `display_message()` but performed no actual cancellation on Platform — contact requests are immutable once submitted. The new italic info label is styled with `DashColors::text_secondary` to indicate it's informational rather than actionable.
 **Files changed:** src/ui/dashpay/contact_requests.rs
 **Sub-tasks created:** 0
+
+## Run 168 — 2026-02-08
+**Task:** 7.2e Add timestamp data to contacts list for Recent filter and DateAdded sort
+**What was done:** Added `created_at: Option<i64>` field to the `Contact` struct in contacts_list.rs. When loading contacts from the database, the field is populated from `StoredContact.created_at` (the DB already had this column with `DEFAULT (unixepoch())`). Implemented the `SearchFilter::Recent` filter to show only contacts added within the last 7 days by comparing `created_at` against the current time minus 7 days. Implemented `SortOrder::DateAdded` to sort contacts by `created_at` descending (newest first), with contacts lacking timestamps sorted last. Contacts loaded fresh from Platform get `created_at: None` since the timestamp is assigned by the DB on save.
+**Files changed:** src/ui/dashpay/contacts_list.rs
+**Sub-tasks created:** 0

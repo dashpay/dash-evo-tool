@@ -1920,7 +1920,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (b) Change to "Hide" button that marks the request as locally hidden in the DB but notes it's still visible to the recipient.
   Option (a) recommended. The current behavior of showing "Request cancelled" with no actual cancellation is misleading.
 
-- [ ] **7.2e Add timestamp data to contacts list for Recent filter and DateAdded sort** (P2)
+- [x] **7.2e Add timestamp data to contacts list for Recent filter and DateAdded sort** (P2)
   In `src/ui/dashpay/contacts_list.rs`:
   (1) Add `created_at: Option<u64>` field to the `Contact` struct (line 20).
   (2) When loading contacts from DB or from `DashPayResult::ContactsWithInfo`, populate `created_at` from the `StoredContact.created_at` field.
@@ -2040,6 +2040,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 16 | 6 |
+| 7. Features | 16 | 7 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

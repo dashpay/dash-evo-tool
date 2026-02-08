@@ -12,6 +12,7 @@ pub use control_rules::{ChangeControlRulesUI, MintExtras};
 pub use distributions::{
     DistributionEntry, DistributionFunctionUI, IntervalTimeUnit,
     PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI,
+    validate_perpetual_distribution_recipient,
 };
 pub use structs::*;
 pub use token_creator::TokenBuildArgs;
@@ -29,7 +30,6 @@ use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -48,7 +48,7 @@ use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::Component;
 use crate::ui::components::amount_input::AmountInput;
@@ -66,39 +66,6 @@ use token_creator::{
     POLYNOMIAL_FORMULA_PNG, load_formula_image,
 };
 use token_creator::{sanitize_i64, sanitize_u64};
-
-pub fn validate_perpetual_distribution_recipient(
-    contract_owner_id: Identifier,
-    recipient: TokenDistributionRecipient,
-    identity: &QualifiedIdentity,
-) -> Result<(), String> {
-    match recipient {
-        TokenDistributionRecipient::ContractOwner => {
-            if contract_owner_id != identity.identity.id() {
-                Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::Identity(identifier) => {
-            if identifier != identity.identity.id() {
-                Err(
-                    "This identity is not a valid distribution recipient for this token"
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::EvonodesByParticipation => {
-            if identity.identity_type != IdentityType::Evonode {
-                Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContractDescriptionInfo {
@@ -1678,6 +1645,7 @@ mod tests {
     use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
     use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
     use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+    use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
     use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
     use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
     use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;

@@ -745,7 +745,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.3e Move history_row() and reset_token_creator() to token_creator.rs** (P3)
   Move `history_row()` (lines 1862-1969, 108 lines) and `reset_token_creator()` (lines 2378-2494, 117 lines) to `token_creator.rs`. Both are exclusively used by the token creator subscreen. Also move `load_formula_image()` (line 83), `sanitize_i64()` (line 160), `sanitize_u64()` (line 164) helper functions and the formula PNG constants (lines 75-79) since they are only used by token creator/distributions code.
 
-- [ ] **3.3f Move validate_perpetual_distribution_recipient to distributions.rs** (P3)
+- [x] **3.3f Move validate_perpetual_distribution_recipient to distributions.rs** (P3)
   Move the top-level `validate_perpetual_distribution_recipient()` function (lines 97-128) to `distributions.rs` where the rest of the distribution logic lives.
 
 - [ ] **3.4 [META] Review send_screen.rs (2744 lines) and single_key_send_screen.rs (1042 lines)** (P2)

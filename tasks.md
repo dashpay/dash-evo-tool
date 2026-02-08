@@ -804,7 +804,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `AdvancedSourceType` enum, `AdvancedOutput` struct, `CoreAddressInput`/`PlatformAddressInput` structs
   This reduces send_screen.rs from ~2750 to ~1950 lines.
 
-- [ ] **3.4d Extract platform fee estimation and address allocation** (P3)
+- [x] **3.4d Extract platform fee estimation and address allocation** (P3)
   Move platform-specific fee estimation and address allocation code from `send_screen.rs` to the existing `src/model/fee_estimation.rs` module (or a new `src/model/platform_address_allocation.rs`):
   - `estimate_platform_fee()` (17 lines, line 50)
   - `estimate_withdrawal_fee_from_transition()` (25 lines, line 69)

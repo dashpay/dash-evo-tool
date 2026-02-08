@@ -3,6 +3,7 @@ pub mod contested_name;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod password_info;
+pub mod platform_address_allocation;
 pub mod proof_log_item;
 pub mod qualified_contract;
 pub mod qualified_identity;

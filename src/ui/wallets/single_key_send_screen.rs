@@ -4,6 +4,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::context::AppContext;
+use crate::model::fee_estimation::estimate_p2pkh_tx_size;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::fee_confirmation_dialog::{
     FeeConfirmationDialog, FeeConfirmationResponse, parse_min_relay_fee_error,
@@ -100,24 +101,6 @@ impl SingleKeyWalletSendScreen {
         }
     }
 
-    /// Estimate transaction size for P2PKH transactions
-    fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
-        fn varint_size(value: usize) -> usize {
-            match value {
-                0..=0xfc => 1,
-                0xfd..=0xffff => 3,
-                0x1_0000..=0xffff_ffff => 5,
-                _ => 9,
-            }
-        }
-        let mut size = 8; // version/type/lock_time
-        size += varint_size(inputs);
-        size += varint_size(outputs);
-        size += inputs * 148; // P2PKH input size
-        size += outputs * 34; // P2PKH output size
-        size
-    }
-
     /// Calculate estimated fee based on UTXO selection for the send amount
     fn estimate_fee(&self) -> Option<(u64, usize, usize)> {
         let wallet = self.selected_wallet.as_ref()?;
@@ -137,7 +120,7 @@ impl SingleKeyWalletSendScreen {
         if total_output == 0 {
             // No valid amounts entered yet, show estimate for minimum tx
             let output_count = self.recipients.len().max(1) + 1;
-            let estimated_size = Self::estimate_p2pkh_tx_size(1, output_count);
+            let estimated_size = estimate_p2pkh_tx_size(1, output_count);
             let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
             return Some((fee, 1, estimated_size));
         }
@@ -157,7 +140,7 @@ impl SingleKeyWalletSendScreen {
             selected_total += value;
 
             // Recalculate fee with current input count
-            let current_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
+            let current_size = estimate_p2pkh_tx_size(selected_count, output_count);
             let current_fee = FeeLevel::Normal.fee_rate().calculate_fee(current_size);
 
             if selected_total >= total_output + current_fee {
@@ -166,7 +149,7 @@ impl SingleKeyWalletSendScreen {
         }
 
         // Not enough funds - show what we'd need with all UTXOs
-        let estimated_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
+        let estimated_size = estimate_p2pkh_tx_size(selected_count, output_count);
         let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
         Some((fee, selected_count, estimated_size))
     }

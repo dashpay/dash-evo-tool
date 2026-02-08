@@ -1042,7 +1042,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (1) Add a `WARNING_ORANGE` constant (or `warning_color()` method) to `DashColors` for the `Color32::from_rgb(200, 150, 50)` used in 31 files. Replace all 32 inline occurrences.
   (2) Extract the "Wallet is locked" overlay into a shared helper function in `src/ui/helpers.rs`: `render_wallet_locked_overlay(ui: &mut Ui, action_description: &str)` that takes the action text (e.g., "to send a payment", "to mint tokens") and renders the standardized overlay with the warning color.
 
-- [ ] **3.7d Deduplicate estimate_p2pkh_tx_size** (P3)
+- [x] **3.7d Deduplicate estimate_p2pkh_tx_size** (P3)
   Move `estimate_p2pkh_tx_size()` to a shared location (e.g., `src/model/fee_estimation.rs` as a standalone function). Remove the duplicate in `single_key_send_screen.rs:104-119` and update calls in both `backend_task/core/mod.rs` and `single_key_send_screen.rs` to use the shared version.
 
 - [ ] **3.7e Consolidate credits-to-DASH formatting** (P3)
@@ -1278,7 +1278,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 49 | 31 |
+| 3. Refactoring | 49 | 32 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

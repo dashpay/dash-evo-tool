@@ -631,6 +631,27 @@ impl PlatformFeeEstimator {
     }
 }
 
+/// Estimate the byte size of a P2PKH transaction given the number of inputs and outputs.
+///
+/// Uses standard sizes: 148 bytes per input, 34 bytes per output, plus overhead.
+pub fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
+    fn varint_size(value: usize) -> usize {
+        match value {
+            0..=0xfc => 1,
+            0xfd..=0xffff => 3,
+            0x1_0000..=0xffff_ffff => 5,
+            _ => 9,
+        }
+    }
+
+    let mut size = 8; // version/type/lock_time
+    size += varint_size(inputs);
+    size += varint_size(outputs);
+    size += inputs * 148; // P2PKH input size
+    size += outputs * 34; // P2PKH output size
+    size
+}
+
 /// Credits per DASH constant
 /// 1 DASH = 100,000,000,000 credits (100 billion)
 pub const CREDITS_PER_DASH: u64 = 100_000_000_000;

@@ -5,6 +5,7 @@ use crate::backend_task::core::WalletPaymentRequest;
 use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
+use crate::model::fee_estimation::estimate_p2pkh_tx_size;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
@@ -64,7 +65,7 @@ impl AppContext {
             // Select UTXOs to cover the amount + estimated fee
             // Start with an estimate assuming ~10 inputs, then refine
             let num_outputs = outputs.len() + 1; // +1 for change
-            let initial_fee_estimate = Self::estimate_p2pkh_tx_size(10, num_outputs);
+            let initial_fee_estimate = estimate_p2pkh_tx_size(10, num_outputs);
             let initial_fee = request.override_fee.unwrap_or_else(|| {
                 FeeLevel::Normal
                     .fee_rate()
@@ -90,7 +91,7 @@ impl AppContext {
                 selected_total += tx_out.value;
 
                 // Recalculate fee with current input count
-                let current_size = Self::estimate_p2pkh_tx_size(selected.len(), num_outputs);
+                let current_size = estimate_p2pkh_tx_size(selected.len(), num_outputs);
                 let current_fee = request
                     .override_fee
                     .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(current_size));
@@ -101,7 +102,7 @@ impl AppContext {
             }
 
             // Final check if we have enough
-            let final_size = Self::estimate_p2pkh_tx_size(selected.len(), num_outputs);
+            let final_size = estimate_p2pkh_tx_size(selected.len(), num_outputs);
             let final_fee = request
                 .override_fee
                 .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(final_size));
@@ -122,8 +123,7 @@ impl AppContext {
 
         // Calculate final fee with selected UTXOs
         let num_outputs_with_change = outputs.len() + 1;
-        let estimated_size =
-            Self::estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
+        let estimated_size = estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
         let fee = request
             .override_fee
             .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(estimated_size));

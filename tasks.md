@@ -1745,7 +1745,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **6.4d Fix TODO: UTXO removal timing in identity registration** (P1)
   In `src/backend_task/identity/register_identity.rs:131,286`, UTXOs are removed from wallet BEFORE asset lock confirmation. Move UTXO removal to AFTER successful confirmation to prevent balance loss on failure. Two locations: FundWithWallet and FundWithUtxo cases.
 
-- [ ] **6.4e Fix TODO: Save local network settings including password** (P2)
+- [x] **6.4e Fix TODO: Save local network settings including password** (P2)
   In `src/ui/network_chooser_screen.rs:192`, the local network configuration save doesn't persist password and other local-only settings. Add persistence for these fields.
 
 - [ ] **6.4f Fix TODO: Make next_identity_id() reliable** (P2)

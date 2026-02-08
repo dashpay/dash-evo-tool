@@ -924,3 +924,9 @@
 **What was done:** Moved UTXO removal from BEFORE asset lock proof confirmation to AFTER in both the `FundWithWallet` and `FundWithUtxo` cases in `register_identity.rs`. Previously, spent UTXOs were removed from wallet tracking immediately after broadcasting the transaction but before waiting for the asset lock proof. If the proof timed out (transaction not confirmed), the UTXOs would be "lost" from wallet tracking even though they weren't actually spent. Now UTXOs are only removed after the proof is successfully received, confirming the transaction was accepted. On timeout, the error message advises the user to refresh their wallet to update UTXO state. Removed both TODO comments.
 **Files changed:** src/backend_task/identity/register_identity.rs
 **Sub-tasks created:** 0
+
+## Run 154 — 2026-02-08
+**Task:** 6.4e Fix TODO: Save local network settings including password
+**What was done:** Updated the `save()` method in `NetworkChooserScreen` to also persist the local network (Regtest) RPC password to the `.env` config file. Previously, `save()` only saved DB-backed settings (custom_dash_qt_path and overwrite_dash_conf) but did not persist the local network password, which was only saved through its own separate "Save" button. Now any call to `save()` also writes the local password to the config file if it is non-empty, using the same `Config::load()` → `update_core_rpc_password()` → `Config::save()` pattern already used by the password's dedicated Save button. Removed the TODO comment.
+**Files changed:** src/ui/network_chooser_screen.rs
+**Sub-tasks created:** 0

@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::error;
 
 #[derive(Debug, Clone)]
 enum SpvClearMessage {
@@ -186,16 +187,30 @@ impl NetworkChooserScreen {
         self.context_for_network(self.current_network)
     }
 
-    /// Save the current settings to the database
-    ///
-    /// TODO: doesn't save local network settings like password yet.
+    /// Save the current settings to the database and config file.
     fn save(&self) -> Result<(), String> {
+        // Save DB-backed settings (dash-qt path, overwrite dash.conf)
         self.current_app_context()
             .update_dash_core_execution_settings(
                 self.custom_dash_qt_path.clone(),
                 self.overwrite_dash_conf,
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        // Also persist local network password to .env config file
+        if !self.local_network_dashmate_password.is_empty()
+            && let Ok(mut config) = Config::load()
+            && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+        {
+            let updated_local_config =
+                local_cfg.update_core_rpc_password(self.local_network_dashmate_password.clone());
+            config.update_config_for_network(Network::Regtest, updated_local_config);
+            if let Err(e) = config.save() {
+                tracing::warn!("Failed to save local network password to .env: {e}");
+            }
+        }
+
+        Ok(())
     }
     /// Render the simplified settings interface
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
@@ -413,7 +428,7 @@ impl NetworkChooserScreen {
                             updated_local_config.clone(),
                         );
                         if let Err(e) = config.save() {
-                            eprintln!("Failed to save config to .env: {e}");
+                            error!("Failed to save config to .env: {e}");
                         }
 
                         // Update our local AppContext in memory
@@ -428,7 +443,7 @@ impl NetworkChooserScreen {
                             if let Err(e) =
                                 Arc::clone(local_app_context).reinit_core_client_and_sdk()
                             {
-                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                                error!("Failed to re-init local RPC client and sdk: {}", e);
                             } else {
                                 // Trigger SwitchNetworks
                                 app_action = AppAction::SwitchNetwork(Network::Regtest);
@@ -875,7 +890,7 @@ impl NetworkChooserScreen {
                         if let Ok(mut config) = Config::load() {
                             config.developer_mode = Some(self.developer_mode);
                             if let Err(e) = config.save() {
-                                eprintln!("Failed to save config: {e}");
+                                error!("Failed to save config: {e}");
                             }
                         }
 

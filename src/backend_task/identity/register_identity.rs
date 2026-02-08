@@ -128,43 +128,9 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
-                // TODO: UTXO removal timing issue - UTXOs are removed here BEFORE the asset
-                // lock proof is confirmed below. If the transaction fails or times out after
-                // this point, the UTXOs will be "lost" from wallet tracking even though they
-                // weren't actually spent. This should be refactored to remove UTXOs only AFTER
-                // successful proof confirmation. See Phase 2.2 in PR review plan.
-                {
-                    let mut wallet = wallet.write_or_recover();
-                    wallet.utxos.retain(|_, utxo_map| {
-                        utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                        !utxo_map.is_empty() // Keep addresses that still have UTXOs
-                    });
-                    for utxo in used_utxos.keys() {
-                        self.db
-                            .drop_utxo(utxo, &self.network.to_string())
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    // Update address_balances for affected addresses
-                    let affected_addresses: std::collections::BTreeSet<_> =
-                        used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-                    for address in affected_addresses {
-                        // Recalculate balance from remaining UTXOs for this address
-                        let new_balance = wallet
-                            .utxos
-                            .get(&address)
-                            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                            .unwrap_or(0);
-                        if let Err(e) = wallet.update_address_balance(&address, new_balance, self) {
-                            tracing::warn!(
-                                "Failed to update address balance in database after identity registration: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-
-                // Wait for asset lock proof with timeout (2 minutes)
+                // Wait for asset lock proof with timeout (2 minutes).
+                // UTXO removal is deferred until after proof confirmation to avoid
+                // "losing" UTXOs from wallet tracking if the proof times out.
                 const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
                 let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
                     loop {
@@ -186,11 +152,43 @@ impl AppContext {
                         proofs.remove(&tx_id);
                         return Err(format!(
                             "Timeout waiting for asset lock proof after {} seconds. \
-                             The transaction may not have been confirmed by the network.",
+                             The transaction may not have been confirmed by the network. \
+                             Refresh your wallet to update UTXO state.",
                             ASSET_LOCK_PROOF_TIMEOUT.as_secs()
                         ));
                     }
                 };
+
+                // Now that the proof is confirmed, remove the spent UTXOs from wallet tracking.
+                {
+                    let mut wallet = wallet.write_or_recover();
+                    wallet.utxos.retain(|_, utxo_map| {
+                        utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
+                        !utxo_map.is_empty()
+                    });
+                    for utxo in used_utxos.keys() {
+                        self.db
+                            .drop_utxo(utxo, &self.network.to_string())
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    // Update address_balances for affected addresses
+                    let affected_addresses: std::collections::BTreeSet<_> =
+                        used_utxos.values().map(|(_, addr)| addr.clone()).collect();
+                    for address in affected_addresses {
+                        let new_balance = wallet
+                            .utxos
+                            .get(&address)
+                            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+                            .unwrap_or(0);
+                        if let Err(e) = wallet.update_address_balance(&address, new_balance, self) {
+                            tracing::warn!(
+                                "Failed to update address balance in database after identity registration: {}",
+                                e
+                            );
+                        }
+                    }
+                }
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -283,7 +281,37 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
-                // TODO: UTXO removal timing issue - see comment above for FundWithWallet case.
+                // Wait for asset lock proof with timeout (2 minutes).
+                // UTXO removal is deferred until after proof confirmation.
+                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
+                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                    loop {
+                        {
+                            let proofs = self.transactions_waiting_for_finality.lock_or_recover();
+                            if let Some(Some(proof)) = proofs.get(&tx_id) {
+                                return proof.clone();
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                })
+                .await
+                {
+                    Ok(proof) => proof,
+                    Err(_) => {
+                        // Clean up on timeout
+                        let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
+                        proofs.remove(&tx_id);
+                        return Err(format!(
+                            "Timeout waiting for asset lock proof after {} seconds. \
+                             The transaction may not have been confirmed by the network. \
+                             Refresh your wallet to update UTXO state.",
+                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                        ));
+                    }
+                };
+
+                // Now that the proof is confirmed, remove the spent UTXO from wallet tracking.
                 {
                     let mut wallet = wallet.write_or_recover();
                     wallet.utxos.retain(|_, utxo_map| {
@@ -308,34 +336,6 @@ impl AppContext {
                         );
                     }
                 }
-
-                // Wait for asset lock proof with timeout (2 minutes)
-                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
-                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock_or_recover();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                return proof.clone();
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                })
-                .await
-                {
-                    Ok(proof) => proof,
-                    Err(_) => {
-                        // Clean up on timeout
-                        let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
-                        proofs.remove(&tx_id);
-                        return Err(format!(
-                            "Timeout waiting for asset lock proof after {} seconds. \
-                             The transaction may not have been confirmed by the network.",
-                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
-                        ));
-                    }
-                };
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }

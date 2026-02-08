@@ -1742,8 +1742,8 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **6.4c Fix TODO: Use proof response to detect contested DPNS names** (P3)
   In `src/backend_task/identity/register_dpns_name.rs:168`, use the proof returned in the document submission response to determine if the registered name is contested, and update the UI accordingly.
 
-- [ ] **6.4d Fix TODO: UTXO removal timing in identity registration** (P1)
-  In `src/backend_task/identity/register_identity.rs:131,286`, UTXOs are removed from wallet BEFORE asset lock confirmation. Move UTXO removal to AFTER successful confirmation to prevent balance loss on failure. Two locations: FundWithWallet and FundWithPlatformAddress cases.
+- [x] **6.4d Fix TODO: UTXO removal timing in identity registration** (P1)
+  In `src/backend_task/identity/register_identity.rs:131,286`, UTXOs are removed from wallet BEFORE asset lock confirmation. Move UTXO removal to AFTER successful confirmation to prevent balance loss on failure. Two locations: FundWithWallet and FundWithUtxo cases.
 
 - [ ] **6.4e Fix TODO: Save local network settings including password** (P2)
   In `src/ui/network_chooser_screen.rs:192`, the local network configuration save doesn't persist password and other local-only settings. Add persistence for these fields.
@@ -1888,7 +1888,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 19 | 12 |
+| 6. Testing | 19 | 13 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

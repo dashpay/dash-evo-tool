@@ -858,3 +858,9 @@
 **What was done:** Added 26 unit tests for `src/config.rs` covering: NetworkConfig validation (is_valid with all combinations of empty/invalid fields), dapi_address_list parsing (single address, multiple addresses, empty/malformed), insight_api_uri parsing (valid URLs, invalid URLs, empty string), update_core_rpc_password builder, Config::config_for_network lookup (single and all networks), Config::update_config_for_network (add new, replace existing, all networks), optional fields (devnet_name, wallet_private_key, core_zmq_endpoint), save format verification, envy parsing roundtrip (using envy::prefixed().from_iter() to test environment variable parsing without touching real env vars), optional field parsing, missing required field detection, invalid port type detection, developer_mode handling, and Config clone correctness.
 **Files changed:** src/config.rs, tasks.md, activity.md
 **Sub-tasks created:** 0
+
+## Run 143 — 2026-02-08
+**Task:** 6.1d Add model/platform_address_allocation.rs tests
+**What was done:** Added 22 unit tests for `allocate_platform_addresses_with_fee()` and `allocate_platform_addresses()`. Tests cover: single recipient with sufficient balance, multiple addresses picking largest first, multiple addresses needed to cover amount, insufficient balance with shortfall reporting, zero amount allocation, destination address filtering, destination filter causing shortfall, empty address list, zero-balance addresses, fee payer index in BTreeMap order, per-input fee convergence, MAX_PLATFORM_INPUTS limit, fee exceeding balance (deficit reporting), very small amounts, amount close to balance minus fee, amount exceeding available balance, sorted addresses in result, and allocate_platform_addresses wrapper with PlatformFeeEstimator (single, multiple, destination filtered, empty).
+**Files changed:** src/model/platform_address_allocation.rs, tasks.md, activity.md
+**Sub-tasks created:** 0

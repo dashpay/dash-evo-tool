@@ -1642,7 +1642,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Default config generation and network-specific settings
   Reference: issues/core-012, core-016 (both fixed, need tests to prevent regression).
 
-- [ ] **6.1d Add model/platform_address_allocation.rs tests** (P2)
+- [x] **6.1d Add model/platform_address_allocation.rs tests** (P2)
   Write tests for `allocate_platform_addresses_with_fee()` and `allocate_platform_addresses()`:
   - Single recipient, multiple recipients
   - Fee estimation edge cases (very small amounts, amounts close to balance)

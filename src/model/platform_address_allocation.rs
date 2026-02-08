@@ -245,3 +245,336 @@ pub fn allocate_platform_addresses(
         estimate_platform_fee(estimator, max_inputs.max(1))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dashcore_rpc::dashcore::Network;
+
+    /// Helper: create a (PlatformAddress, Address, balance) tuple for testing.
+    fn test_addr(id: u8, balance: u64) -> (PlatformAddress, Address, u64) {
+        let mut hash = [0u8; 20];
+        hash[0] = id;
+        let platform_addr = PlatformAddress::P2pkh(hash);
+        let address = platform_addr.to_address_with_network(Network::Testnet);
+        (platform_addr, address, balance)
+    }
+
+    /// Constant fee function for deterministic testing.
+    fn constant_fee(_inputs: &BTreeMap<PlatformAddress, u64>) -> u64 {
+        1_000_000
+    }
+
+    /// Fee function that scales with the number of inputs.
+    fn per_input_fee(inputs: &BTreeMap<PlatformAddress, u64>) -> u64 {
+        let count = inputs.len().max(1) as u64;
+        count * 500_000
+    }
+
+    // ==========================================
+    // allocate_platform_addresses_with_fee tests
+    // ==========================================
+
+    #[test]
+    fn test_single_recipient_sufficient_balance() {
+        let addresses = vec![test_addr(1, 10_000_000)];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 5_000_000, None, constant_fee);
+        assert_eq!(result.shortfall, 0);
+        assert_eq!(result.inputs.len(), 1);
+        assert_eq!(result.estimated_fee, 1_000_000);
+        let allocated: u64 = result.inputs.values().sum();
+        assert_eq!(allocated, 5_000_000);
+    }
+
+    #[test]
+    fn test_multiple_addresses_picks_largest_first() {
+        let addresses = vec![
+            test_addr(1, 2_000_000),
+            test_addr(2, 8_000_000),
+            test_addr(3, 5_000_000),
+        ];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 6_000_000, None, constant_fee);
+        // Sorted by balance desc: addr2(8M), addr3(5M), addr1(2M)
+        // Fee payer is addr2 (highest balance), available = 8M - 1M fee = 7M
+        // 7M >= 6M needed, so only addr2 is used
+        assert_eq!(result.shortfall, 0);
+        assert_eq!(result.inputs.len(), 1);
+        assert_eq!(result.estimated_fee, 1_000_000);
+    }
+
+    #[test]
+    fn test_multiple_addresses_needed() {
+        let addresses = vec![
+            test_addr(1, 3_000_000),
+            test_addr(2, 4_000_000),
+            test_addr(3, 2_000_000),
+        ];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 7_000_000, None, constant_fee);
+        // Sorted: addr2(4M), addr1(3M), addr3(2M)
+        // Fee payer addr2: available = 4M - 1M = 3M, allocate 3M, remaining = 4M
+        // addr1: available = 3M, allocate 3M, remaining = 1M
+        // addr3: available = 2M, allocate 1M, remaining = 0
+        assert_eq!(result.shortfall, 0);
+        assert!(result.inputs.len() >= 2);
+        let allocated: u64 = result.inputs.values().sum();
+        assert_eq!(allocated, 7_000_000);
+    }
+
+    #[test]
+    fn test_insufficient_balance_reports_shortfall() {
+        let addresses = vec![test_addr(1, 1_000_000)];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 5_000_000, None, constant_fee);
+        // Balance = 1M, fee = 1M, available = 0
+        // Fee payer always included, so inputs has addr with 0
+        // Shortfall = 5M (amount) - 0 (allocated) = 5M allocation shortfall
+        // Fee deficit: balance(1M) - contribution(0) = 1M remaining, fee(1M) - 1M = 0 deficit
+        assert!(result.shortfall > 0);
+        assert_eq!(result.shortfall, 5_000_000);
+    }
+
+    #[test]
+    fn test_zero_amount_allocation() {
+        let addresses = vec![test_addr(1, 10_000_000)];
+        let result = allocate_platform_addresses_with_fee(&addresses, 0, None, constant_fee);
+        // When amount is 0, remaining starts at 0 so the inner loop breaks immediately.
+        // No inputs are added, but shortfall is also 0 since nothing was requested.
+        assert_eq!(result.shortfall, 0);
+        assert!(result.inputs.is_empty());
+    }
+
+    #[test]
+    fn test_destination_address_filtered_out() {
+        let addr1 = test_addr(1, 10_000_000);
+        let addr2 = test_addr(2, 5_000_000);
+        let addresses = vec![addr1.clone(), addr2.clone()];
+
+        // Transfer to addr1's platform address — addr1 should be excluded
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            3_000_000,
+            Some(&addr1.0),
+            constant_fee,
+        );
+
+        // addr1 filtered out, only addr2 available
+        assert!(!result.inputs.contains_key(&addr1.0));
+        assert_eq!(result.shortfall, 0);
+    }
+
+    #[test]
+    fn test_destination_filter_causes_shortfall() {
+        let addr1 = test_addr(1, 10_000_000);
+        let addresses = vec![addr1.clone()];
+
+        // Transfer to addr1 — the only address is filtered out
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            5_000_000,
+            Some(&addr1.0),
+            constant_fee,
+        );
+
+        assert_eq!(result.inputs.len(), 0);
+        assert_eq!(result.shortfall, 5_000_000);
+        assert!(result.sorted_addresses.is_empty());
+    }
+
+    #[test]
+    fn test_empty_addresses() {
+        let result = allocate_platform_addresses_with_fee(&[], 5_000_000, None, constant_fee);
+        assert_eq!(result.inputs.len(), 0);
+        assert_eq!(result.shortfall, 5_000_000);
+        assert!(result.sorted_addresses.is_empty());
+    }
+
+    #[test]
+    fn test_zero_balance_addresses() {
+        let addresses = vec![test_addr(1, 0), test_addr(2, 0)];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 1_000_000, None, constant_fee);
+        // No available balance, shortfall should be the full amount
+        assert!(result.shortfall > 0);
+    }
+
+    #[test]
+    fn test_fee_payer_index_in_btreemap_order() {
+        // Create addresses where BTreeMap ordering differs from balance sorting
+        let addresses = vec![
+            test_addr(1, 2_000_000),
+            test_addr(2, 8_000_000),
+            test_addr(3, 5_000_000),
+        ];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 10_000_000, None, constant_fee);
+        // Fee payer is addr2 (highest balance). Its position in the BTreeMap
+        // depends on PlatformAddress's Ord implementation. fee_payer_index should
+        // correctly reflect the BTreeMap iteration order.
+        let fee_payer_platform_addr = test_addr(2, 0).0;
+        let expected_index = result
+            .inputs
+            .keys()
+            .enumerate()
+            .find(|(_, addr)| **addr == fee_payer_platform_addr)
+            .map(|(idx, _)| idx as u16);
+        assert_eq!(Some(result.fee_payer_index), expected_index);
+    }
+
+    #[test]
+    fn test_per_input_fee_converges() {
+        // With per-input fees, the algorithm needs multiple iterations to converge
+        let addresses = vec![
+            test_addr(1, 5_000_000),
+            test_addr(2, 3_000_000),
+            test_addr(3, 2_000_000),
+        ];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 8_000_000, None, per_input_fee);
+        // The fee should reflect the actual number of inputs used
+        let actual_fee = per_input_fee(&result.inputs);
+        assert_eq!(result.estimated_fee, actual_fee);
+    }
+
+    #[test]
+    fn test_max_platform_inputs_respected() {
+        // Create more than MAX_PLATFORM_INPUTS addresses
+        let addresses: Vec<_> = (0..20u8).map(|i| test_addr(i, 1_000_000)).collect();
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 18_000_000, None, constant_fee);
+        assert!(result.inputs.len() <= MAX_PLATFORM_INPUTS);
+    }
+
+    #[test]
+    fn test_fee_payer_included_when_nonzero_amount() {
+        // Fee payer is included as long as a nonzero amount is requested,
+        // even if fee payer's contribution is 0 (fee consumes entire balance).
+        let addresses = vec![
+            test_addr(1, 1_000_000), // balance equals fee, available = 0
+            test_addr(2, 5_000_000),
+        ];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 3_000_000, None, constant_fee);
+        // addr2 is fee payer (higher balance): available = 5M - 1M = 4M, covers 3M
+        assert_eq!(result.shortfall, 0);
+        assert!(!result.inputs.is_empty());
+    }
+
+    #[test]
+    fn test_fee_exceeds_balance_reports_deficit() {
+        // Fee is larger than the fee payer's total balance
+        let addresses = vec![test_addr(1, 500_000)]; // Balance < fee (1M)
+        let result = allocate_platform_addresses_with_fee(&addresses, 0, None, constant_fee);
+        // Fee payer balance = 500K, fee = 1M
+        // Available for allocation = 0 (saturating_sub), contribution = 0
+        // Fee deficit = 1M - (500K - 0) = 500K
+        assert!(result.shortfall > 0);
+    }
+
+    #[test]
+    fn test_very_small_amount() {
+        let addresses = vec![test_addr(1, 10_000_000)];
+        let result = allocate_platform_addresses_with_fee(&addresses, 1, None, constant_fee);
+        assert_eq!(result.shortfall, 0);
+        let allocated: u64 = result.inputs.values().sum();
+        assert_eq!(allocated, 1);
+    }
+
+    #[test]
+    fn test_amount_close_to_balance_minus_fee() {
+        // Amount exactly equals available balance after fee deduction
+        let addresses = vec![test_addr(1, 10_000_000)];
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            9_000_000, // balance(10M) - fee(1M) = 9M
+            None,
+            constant_fee,
+        );
+        assert_eq!(result.shortfall, 0);
+        let allocated: u64 = result.inputs.values().sum();
+        assert_eq!(allocated, 9_000_000);
+    }
+
+    #[test]
+    fn test_amount_exceeds_balance_minus_fee() {
+        // Amount is more than what's available after fee
+        let addresses = vec![test_addr(1, 10_000_000)];
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            9_500_000, // balance(10M) - fee(1M) = 9M available, need 9.5M
+            None,
+            constant_fee,
+        );
+        // Can only allocate 9M, shortfall = 500K
+        assert_eq!(result.shortfall, 500_000);
+    }
+
+    #[test]
+    fn test_sorted_addresses_preserved_in_result() {
+        let addresses = vec![
+            test_addr(1, 2_000_000),
+            test_addr(2, 8_000_000),
+            test_addr(3, 5_000_000),
+        ];
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 1_000_000, None, constant_fee);
+        // sorted_addresses should be in descending balance order
+        let balances: Vec<u64> = result.sorted_addresses.iter().map(|(_, _, b)| *b).collect();
+        for w in balances.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "sorted_addresses should be descending by balance"
+            );
+        }
+    }
+
+    // ====================================
+    // allocate_platform_addresses tests
+    // ====================================
+
+    #[test]
+    fn test_allocate_with_estimator_single_address() {
+        let estimator = PlatformFeeEstimator::default();
+        let addresses = vec![test_addr(1, 100_000_000)];
+        let result = allocate_platform_addresses(&estimator, &addresses, 50_000_000, None);
+        assert_eq!(result.shortfall, 0);
+        assert_eq!(result.inputs.len(), 1);
+        assert!(result.estimated_fee > 0);
+    }
+
+    #[test]
+    fn test_allocate_with_estimator_multiple_addresses() {
+        let estimator = PlatformFeeEstimator::default();
+        let addresses = vec![
+            test_addr(1, 30_000_000),
+            test_addr(2, 40_000_000),
+            test_addr(3, 20_000_000),
+        ];
+        let result = allocate_platform_addresses(&estimator, &addresses, 50_000_000, None);
+        assert_eq!(result.shortfall, 0);
+        assert!(result.estimated_fee > 0);
+    }
+
+    #[test]
+    fn test_allocate_with_estimator_destination_filtered() {
+        let estimator = PlatformFeeEstimator::default();
+        let addr1 = test_addr(1, 100_000_000);
+        let addr2 = test_addr(2, 50_000_000);
+        let addresses = vec![addr1.clone(), addr2.clone()];
+        let result =
+            allocate_platform_addresses(&estimator, &addresses, 30_000_000, Some(&addr1.0));
+        // addr1 filtered out, only addr2 used
+        assert!(!result.inputs.contains_key(&addr1.0));
+        assert_eq!(result.shortfall, 0);
+    }
+
+    #[test]
+    fn test_allocate_with_estimator_empty() {
+        let estimator = PlatformFeeEstimator::default();
+        let result = allocate_platform_addresses(&estimator, &[], 5_000_000, None);
+        assert_eq!(result.inputs.len(), 0);
+        assert_eq!(result.shortfall, 5_000_000);
+    }
+}

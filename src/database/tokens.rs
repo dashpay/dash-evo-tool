@@ -33,6 +33,10 @@ impl Database {
             )",
             [],
         )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -162,6 +166,10 @@ impl Database {
                 FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
                 FOREIGN KEY (token_id) REFERENCES token(id) ON DELETE CASCADE
              )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
             [],
         )?;
         Ok(())

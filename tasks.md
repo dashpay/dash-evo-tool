@@ -2119,7 +2119,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for implementation:**
 
-- [ ] **7.5a Add missing network indexes to high-traffic tables** (P2)
+- [x] **7.5a Add missing network indexes to high-traffic tables** (P2)
   Add database migration (version 27) to create network indexes on frequently queried tables:
   - `CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)` — wallet table queried with `WHERE network = ?` at startup
   - `CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)` — 8 queries filter by network
@@ -2174,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 18 |
+| 7. Features | 33 | 19 |
 | 8. Security | 2 | 0 |

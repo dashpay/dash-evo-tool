@@ -5,7 +5,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 26;
+pub const DEFAULT_DB_VERSION: u16 = 27;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -52,6 +52,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            27 => {
+                self.add_network_indexes(tx)?;
+            }
             26 => {
                 self.add_last_full_sync_balance_column(tx)?;
             }
@@ -314,6 +317,11 @@ impl Database {
             [],
         )?;
 
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
+            [],
+        )?;
+
         // Create wallet addresses
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_addresses (
@@ -393,6 +401,11 @@ impl Database {
                         FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
                         FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
                     )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
             [],
         )?;
 
@@ -818,6 +831,32 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    /// Migration: Add network indexes to high-traffic tables (version 27).
+    /// These tables are frequently queried with WHERE network = ? but lacked indexes.
+    fn add_network_indexes(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
+            [],
+        )?;
         Ok(())
     }
 }

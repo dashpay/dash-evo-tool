@@ -852,3 +852,9 @@
 **What was done:** Added 39 unit tests for wallet model covering: balance calculations (max_balance, confirmed/unconfirmed/total with SPV fallback), UTXO selection (take_unspent_utxos_for with exact/change/insufficient/fee-from-amount scenarios), platform address info management, WalletTransaction methods, WalletSeed open/close, derivation path helpers (BIP44, asset lock, platform payment), DerivationPathReference conversion, network compatibility, address derivation, receive_address with skip behavior, utxos_by_address, WalletArcRef equality, and find_in_arc_rw_lock_slice.
 **Files changed:** src/model/wallet/mod.rs
 **Sub-tasks created:** 0
+
+## Run 142 — 2026-02-08
+**Task:** 6.1c Add config.rs roundtrip and parsing tests
+**What was done:** Added 26 unit tests for `src/config.rs` covering: NetworkConfig validation (is_valid with all combinations of empty/invalid fields), dapi_address_list parsing (single address, multiple addresses, empty/malformed), insight_api_uri parsing (valid URLs, invalid URLs, empty string), update_core_rpc_password builder, Config::config_for_network lookup (single and all networks), Config::update_config_for_network (add new, replace existing, all networks), optional fields (devnet_name, wallet_private_key, core_zmq_endpoint), save format verification, envy parsing roundtrip (using envy::prefixed().from_iter() to test environment variable parsing without touching real env vars), optional field parsing, missing required field detection, invalid port type detection, developer_mode handling, and Config clone correctness.
+**Files changed:** src/config.rs, tasks.md, activity.md
+**Sub-tasks created:** 0

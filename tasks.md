@@ -1633,7 +1633,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Derivation path handling and address generation
   These are pure data structure operations that don't require SDK/network access.
 
-- [ ] **6.1c Add config.rs roundtrip and parsing tests** (P2)
+- [x] **6.1c Add config.rs roundtrip and parsing tests** (P2)
   Write tests for `src/config.rs`:
   - Save/load roundtrip: create config → save → load → verify all fields preserved
   - `dapi_address_list()` parsing: valid addresses, empty list, malformed entries

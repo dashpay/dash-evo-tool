@@ -1120,7 +1120,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (2) Update `render_wallet_selection()` sidebar to show pending indicator next to wallet balance when unconfirmed > 0.
   (3) For `SingleKeyWallet`, apply same pattern using its `confirmed_balance`/`unconfirmed_balance` fields.
 
-- [ ] **4.1c Add identity as "send from" source (Phase 1: withdrawal)** (P2)
+- [x] **4.1c Add identity as "send from" source (Phase 1: withdrawal)** (P2)
   In `src/ui/wallets/send_screen/mod.rs`:
   (1) Add `Identity(QualifiedIdentity)` variant to `SourceSelection` enum.
   (2) Add identity list loading from `app_context.load_local_qualified_identities()`.

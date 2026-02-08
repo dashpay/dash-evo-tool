@@ -7,6 +7,7 @@ use advanced::{
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -16,6 +17,7 @@ use crate::model::platform_address_allocation::{
     estimate_address_funding_fee_from_transition, estimate_platform_fee,
     estimate_withdrawal_fee_from_transition,
 };
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -25,6 +27,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::helpers::TransactionType;
 use crate::ui::theme::DashColors;
 use crate::ui::wallets::send_utils::{
     AddressType, detect_address_type, format_credits, format_dash,
@@ -34,7 +37,10 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
@@ -50,6 +56,8 @@ pub enum SourceSelection {
     CoreWallet,
     /// Use all Platform addresses (stores list of platform address, core address, and balance)
     PlatformAddresses(Vec<(PlatformAddress, Address, u64)>),
+    /// Use an identity's balance (for withdrawals to Core addresses)
+    Identity(Box<QualifiedIdentity>),
 }
 
 /// Status of the send operation
@@ -76,6 +84,10 @@ pub struct WalletSendScreen {
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
 
+    // Identity source fields
+    available_identities: Vec<QualifiedIdentity>,
+    selected_identity_key: Option<IdentityPublicKey>,
+
     // Advanced mode state
     show_advanced_options: bool,
     advanced_source_type: AdvancedSourceType,
@@ -100,6 +112,16 @@ pub struct WalletSendScreen {
 impl WalletSendScreen {
     pub fn new(app_context: &Arc<AppContext>, wallet: Arc<RwLock<Wallet>>) -> Self {
         let seed_hash = wallet.read().ok().map(|w| w.seed_hash());
+
+        // Load identities that have a positive balance and withdrawal keys
+        let available_identities = app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|qi| qi.identity.balance() > 0)
+            .filter(|qi| !qi.available_withdrawal_keys().is_empty())
+            .collect();
+
         Self {
             app_context: app_context.clone(),
             selected_wallet: Some(wallet),
@@ -108,6 +130,8 @@ impl WalletSendScreen {
             destination_address: String::new(),
             amount: None,
             amount_input: None,
+            available_identities,
+            selected_identity_key: None,
             show_advanced_options: false,
             advanced_source_type: AdvancedSourceType::Core,
             core_inputs: Vec::new(),
@@ -173,6 +197,7 @@ impl WalletSendScreen {
         self.amount = None;
         self.amount_input = None;
         self.selected_source = Some(SourceSelection::CoreWallet);
+        self.selected_identity_key = None;
         self.advanced_source_type = AdvancedSourceType::Core;
         self.core_inputs.clear();
         self.platform_inputs.clear();
@@ -315,23 +340,15 @@ impl WalletSendScreen {
                 "Platform Transfer"
             }
             (Some(SourceSelection::PlatformAddresses(_)), AddressType::Core) => "Withdraw to Core",
+            (Some(SourceSelection::Identity(_)), AddressType::Core) => {
+                "Identity Withdrawal to Core"
+            }
             _ => "Send",
         }
     }
 
     /// Validate and execute the send based on detected types
     fn validate_and_send(&mut self) -> Result<AppAction, String> {
-        let wallet = self.selected_wallet.as_ref().ok_or("No wallet selected")?;
-
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-
-        if !wallet_guard.is_open() {
-            return Err("Wallet must be unlocked first".to_string());
-        }
-
-        let seed_hash = wallet_guard.seed_hash();
-        let network = self.app_context.network;
-
         // Validate source
         let source = self
             .selected_source
@@ -356,6 +373,26 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
+        // Identity source doesn't need the wallet to be unlocked
+        if let SourceSelection::Identity(identity) = source {
+            let identity = *identity.clone();
+            return match dest_type {
+                AddressType::Core => self.send_identity_to_core(identity),
+                _ => Err("Identity source can only withdraw to Core addresses".to_string()),
+            };
+        }
+
+        // All other sources require wallet
+        let wallet = self.selected_wallet.as_ref().ok_or("No wallet selected")?;
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+
+        if !wallet_guard.is_open() {
+            return Err("Wallet must be unlocked first".to_string());
+        }
+
+        let seed_hash = wallet_guard.seed_hash();
+        let network = self.app_context.network;
+
         drop(wallet_guard);
 
         // Route to appropriate handler based on source and destination types
@@ -372,6 +409,31 @@ impl WalletSendScreen {
             }
             _ => Err("Invalid source/destination combination".to_string()),
         }
+    }
+
+    /// Send from identity balance to a Core address (withdrawal)
+    fn send_identity_to_core(&mut self, identity: QualifiedIdentity) -> Result<AppAction, String> {
+        let network = self.app_context.network;
+        let address = self
+            .destination_address
+            .trim()
+            .parse::<Address<NetworkUnchecked>>()
+            .map_err(|e| format!("Invalid Core address: {}", e))?
+            .require_network(network)
+            .map_err(|e| format!("Address is not valid for current network: {}", e))?;
+
+        let credits = self
+            .amount
+            .as_ref()
+            .ok_or("Please enter an amount")?
+            .value() as Credits;
+
+        let key_id = self.selected_identity_key.as_ref().map(|k| k.id());
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::WithdrawFromIdentity(identity, Some(address), credits, key_id),
+        )))
     }
 
     fn send_core_to_core(&mut self) -> Result<AppAction, String> {
@@ -840,13 +902,16 @@ impl WalletSendScreen {
 
     fn render_unified_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let is_identity_source = matches!(self.selected_source, Some(SourceSelection::Identity(_)));
 
-        // Wallet info
-        self.render_wallet_info(ui);
+        // Wallet info (skip for identity source)
+        if !is_identity_source {
+            self.render_wallet_info(ui);
 
-        // Wallet unlock if needed
-        if !self.render_unlock_gate(ui) {
-            return AppAction::None;
+            // Wallet unlock if needed
+            if !self.render_unlock_gate(ui) {
+                return AppAction::None;
+            }
         }
 
         ui.add_space(10.0);
@@ -854,12 +919,31 @@ impl WalletSendScreen {
         // Source selection
         self.render_source_selection(ui);
 
+        // Identity key selection (shown below source when identity is selected)
+        if is_identity_source {
+            ui.add_space(8.0);
+            action |= self.render_identity_key_selection(ui);
+        }
+
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
 
         // Destination address
         self.render_destination_input(ui);
+
+        // Show hint when identity is selected and destination is not Core
+        if is_identity_source {
+            let dest_type = detect_address_type(&self.destination_address);
+            if dest_type == AddressType::Platform {
+                ui.add_space(5.0);
+                ui.label(
+                    RichText::new("Identity can only withdraw to Core addresses")
+                        .color(DashColors::WARNING_ORANGE)
+                        .size(12.0),
+                );
+            }
+        }
 
         ui.add_space(10.0);
         ui.separator();
@@ -870,8 +954,10 @@ impl WalletSendScreen {
 
         ui.add_space(10.0);
 
-        // Platform source breakdown (shows which addresses will be used)
-        self.render_platform_source_breakdown(ui);
+        // Platform source breakdown (skip for identity source)
+        if !is_identity_source {
+            self.render_platform_source_breakdown(ui);
+        }
 
         ui.add_space(10.0);
         ui.separator();
@@ -1023,6 +1109,78 @@ impl WalletSendScreen {
                     });
                 });
         }
+
+        // Identity options (one per identity with balance and withdrawal keys)
+        for identity in &self.available_identities {
+            ui.add_space(5.0);
+
+            let identity_balance = identity.identity.balance();
+            let identity_name = identity.display_short_string();
+            let is_this_identity_selected = matches!(
+                &self.selected_source,
+                Some(SourceSelection::Identity(sel)) if sel.identity.id() == identity.identity.id()
+            );
+
+            let identity_clone = identity.clone();
+
+            Frame::group(ui.style())
+                .fill(if is_this_identity_selected {
+                    DashColors::DASH_BLUE.gamma_multiply(0.1)
+                } else {
+                    DashColors::surface(dark_mode)
+                })
+                .stroke(if is_this_identity_selected {
+                    egui::Stroke::new(2.0, DashColors::DASH_BLUE)
+                } else {
+                    egui::Stroke::new(1.0, DashColors::border_light(dark_mode))
+                })
+                .inner_margin(Margin::symmetric(12, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut selected = is_this_identity_selected;
+                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                            // Auto-select first available withdrawal key
+                            let first_key = identity_clone
+                                .available_withdrawal_keys()
+                                .first()
+                                .map(|k| k.identity_public_key.clone());
+                            self.selected_identity_key = first_key;
+                            self.selected_source =
+                                Some(SourceSelection::Identity(Box::new(identity_clone)));
+                        }
+                        ui.label(
+                            RichText::new(format!("Identity: {}", identity_name))
+                                .color(DashColors::text_primary(dark_mode))
+                                .strong(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format_credits(identity_balance))
+                                    .color(DashColors::SUCCESS)
+                                    .strong(),
+                            );
+                        });
+                    });
+                });
+        }
+    }
+
+    /// Render key selection for identity withdrawal source
+    fn render_identity_key_selection(&mut self, ui: &mut Ui) -> AppAction {
+        // Clone the identity out to avoid borrow conflict with &mut self
+        let identity = match &self.selected_source {
+            Some(SourceSelection::Identity(identity)) => (**identity).clone(),
+            _ => return AppAction::None,
+        };
+
+        crate::ui::helpers::add_key_chooser(
+            ui,
+            &self.app_context,
+            &identity,
+            &mut self.selected_identity_key,
+            TransactionType::Withdraw,
+        )
     }
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
@@ -1162,12 +1320,19 @@ impl WalletSendScreen {
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
+            Some(SourceSelection::Identity(identity)) => {
+                let balance = identity.identity.balance();
+                // Identity withdrawals go through Platform, estimate fees accordingly
+                let hint = Some("Identity withdrawal to Core address".to_string());
+                (Some(balance), hint)
+            }
             None => (None, None),
         };
 
         let input_type = match self.selected_source {
             Some(SourceSelection::CoreWallet) => AddressType::Core,
             Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
+            Some(SourceSelection::Identity(_)) => AddressType::Platform,
             None => AddressType::Unknown,
         };
         let output_type = detect_address_type(&self.destination_address);
@@ -1344,18 +1509,27 @@ impl WalletSendScreen {
     fn render_send_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        let wallet_open = self
-            .selected_wallet
-            .as_ref()
-            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
+        let is_identity_source = matches!(self.selected_source, Some(SourceSelection::Identity(_)));
+        let wallet_open = is_identity_source
+            || self
+                .selected_wallet
+                .as_ref()
+                .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
         let dest_type = detect_address_type(&self.destination_address);
         let has_destination = dest_type != AddressType::Unknown;
         let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
+        // Identity source additionally requires a valid destination type
+        let identity_valid = !is_identity_source || dest_type == AddressType::Core;
 
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult(_));
-        let can_send = wallet_open && !is_sending && has_destination && has_amount && has_source;
+        let can_send = wallet_open
+            && !is_sending
+            && has_destination
+            && has_amount
+            && has_source
+            && identity_valid;
 
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
@@ -1526,6 +1700,19 @@ impl ScreenLike for WalletSendScreen {
                 );
                 self.send_status =
                     SendStatus::Complete(format!("Credits transferred successfully!{}", fee_info));
+            }
+            crate::backend_task::BackendTaskSuccessResult::Identity(
+                crate::backend_task::identity::IdentityResult::WithdrewFromIdentity(fee_result),
+            ) => {
+                let fee_info = format!(
+                    "\n\nFee: Estimated {} • Actual {}",
+                    format_credits_as_dash(fee_result.estimated_fee),
+                    format_credits_as_dash(fee_result.actual_fee)
+                );
+                self.send_status = SendStatus::Complete(format!(
+                    "Identity withdrawal initiated successfully!\n\nNote: It may take a few minutes for funds to appear on the Core chain.{}",
+                    fee_info
+                ));
             }
             _ => {
                 // Ignore other results

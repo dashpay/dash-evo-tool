@@ -470,12 +470,7 @@ impl AddNewWalletScreen {
         }
 
         // Draw dark overlay behind the dialog
-        let screen_rect = ctx.screen_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("receive_funds_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        crate::ui::components::modal_overlay::draw_modal_overlay(ctx, "receive_funds_overlay");
 
         // Generate QR code if needed
         let mut qr_error: Option<String> = None;

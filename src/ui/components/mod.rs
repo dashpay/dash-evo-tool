@@ -11,6 +11,7 @@ pub mod identity_selector;
 pub mod info_popup;
 pub mod left_panel;
 pub mod left_wallet_panel;
+pub mod modal_overlay;
 pub mod styled;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;

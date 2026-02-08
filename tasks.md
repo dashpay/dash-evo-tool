@@ -1556,7 +1556,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4h Standardize error display in contract screens** (P3)
   Replace the duplicated `render_error_bubble()` methods in `src/ui/contracts_documents/register_contract_screen.rs` and `src/ui/contracts_documents/update_contract_screen.rs` with the existing `ErrorDisplay` component from `src/ui/components/error_display.rs`. Verify the component supports the same styling (error color, rounded frame, expandable details).
 
-- [ ] **5.4i Centralize modal overlay helper** (P3)
+- [x] **5.4i Centralize modal overlay helper** (P3)
   Move the `draw_modal_overlay()` helper from `src/ui/wallets/wallets_screen/dialogs.rs` to a shared location (e.g., `src/ui/components/modal_overlay.rs` or `src/ui/helpers.rs`). Update the 7+ places that duplicate the `painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay())` pattern to use the shared helper: `confirmation_dialog.rs`, `wallet_unlock_popup.rs`, `info_popup.rs`, `identities_screen.rs`, `add_new_wallet_screen.rs`, `asset_lock_detail_screen.rs`.
 
 ---
@@ -1722,7 +1722,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
-| 5. Architecture | 13 | 12 |
+| 5. Architecture | 13 | 13 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

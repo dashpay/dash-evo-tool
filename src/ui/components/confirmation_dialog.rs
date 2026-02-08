@@ -145,12 +145,7 @@ impl ConfirmationDialog {
         }
 
         // Draw dark overlay behind the dialog for better visibility
-        let screen_rect = ui.ctx().screen_rect();
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("confirmation_dialog_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        super::modal_overlay::draw_modal_overlay(ui.ctx(), "confirmation_dialog_overlay");
 
         let mut final_response = None;
         let window_response = egui::Window::new(self.title.clone())

@@ -134,12 +134,7 @@ impl WalletUnlockPopup {
         }
 
         // Draw dark overlay behind the popup
-        let screen_rect = ctx.screen_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("wallet_unlock_popup_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        super::modal_overlay::draw_modal_overlay(ctx, "wallet_unlock_popup_overlay");
 
         let mut result = WalletUnlockResult::Pending;
 

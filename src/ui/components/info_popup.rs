@@ -56,12 +56,7 @@ impl InfoPopup {
         }
 
         // Draw dark overlay behind the popup for better visibility
-        let screen_rect = ui.ctx().screen_rect();
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("info_popup_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        super::modal_overlay::draw_modal_overlay(ui.ctx(), "info_popup_overlay");
 
         let mut was_closed = false;
         let is_markdown = self.markdown;

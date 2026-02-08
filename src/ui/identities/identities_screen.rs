@@ -845,12 +845,10 @@ impl IdentitiesScreen {
             let action = AppAction::None;
 
             // Draw dark overlay behind the popup
-            let screen_rect = ctx.screen_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("confirm_removal_overlay"),
-            ));
-            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+            crate::ui::components::modal_overlay::draw_modal_overlay(
+                ctx,
+                "confirm_removal_overlay",
+            );
 
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
@@ -969,12 +967,7 @@ impl IdentitiesScreen {
         let identity_id = self.editing_alias_identity.unwrap();
 
         // Draw dark overlay behind the popup
-        let screen_rect = ctx.screen_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("edit_alias_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        crate::ui::components::modal_overlay::draw_modal_overlay(ctx, "edit_alias_overlay");
 
         egui::Window::new("Update Alias")
             .collapsible(false)

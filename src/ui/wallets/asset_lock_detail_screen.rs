@@ -395,12 +395,10 @@ impl ScreenLike for AssetLockDetailScreen {
         // Private key popup
         if self.show_private_key_popup {
             // Draw dark overlay behind the popup
-            let screen_rect = ctx.screen_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("private_key_popup_overlay"),
-            ));
-            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+            crate::ui::components::modal_overlay::draw_modal_overlay(
+                ctx,
+                "private_key_popup_overlay",
+            );
 
             egui::Window::new("Private Key")
                 .collapsible(false)

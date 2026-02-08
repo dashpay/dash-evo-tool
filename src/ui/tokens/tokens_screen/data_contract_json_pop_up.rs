@@ -9,15 +9,9 @@ impl TokensScreen {
             let mut is_open = true;
 
             // Draw dark overlay behind the dialog for better visibility
-            let screen_rect = ui.ctx().screen_rect();
-            let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("json_popup_overlay"),
-            ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                DashColors::modal_overlay(), // Semi-transparent black overlay
+            crate::ui::components::modal_overlay::draw_modal_overlay(
+                ui.ctx(),
+                "json_popup_overlay",
             );
 
             egui::Window::new("Data Contract JSON")

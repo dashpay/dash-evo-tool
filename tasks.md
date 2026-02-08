@@ -1825,7 +1825,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Added helpful hint text for mobile wallet imports: "If importing a wallet from a mobile Dashpay app, increase this value if your identity is not found."
   - Removed artificial "max 29" label from the search screen
 
-- [ ] **7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration** (P3)
+- [x] **7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration** (P3)
   In `src/ui/contracts_documents/register_contract_screen.rs`, enhance the contract input flow to handle raw dashpay.io schema output. When the user pastes a contract JSON that lacks required metadata fields (no `$format_version`, no `ownerId`), automatically wrap it: inject `$format_version` from current platform version, set `ownerId` from selected identity, add `$id` if missing. Show a notification that metadata was auto-populated. This builds on the existing owner_id injection at line 141-143 and `DataContract::from_json()` parsing.
 
 - [ ] **7.2 [META] Review DashPay subsystem completeness** (P2)
@@ -1941,6 +1941,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 9 | 3 |
+| 7. Features | 9 | 4 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

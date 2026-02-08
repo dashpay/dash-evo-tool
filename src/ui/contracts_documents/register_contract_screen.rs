@@ -21,6 +21,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
@@ -58,6 +59,8 @@ pub struct RegisterDataContractScreen {
     error_message: Option<String>,
     error_details_expanded: bool,
     completed_fee_result: Option<FeeResult>,
+    /// Set to true when the input JSON was auto-wrapped with contract metadata
+    contract_was_wrapped: bool,
 }
 
 impl RegisterDataContractScreen {
@@ -114,29 +117,108 @@ impl RegisterDataContractScreen {
             error_message: None,
             error_details_expanded: false,
             completed_fee_result: None,
+            contract_was_wrapped: false,
         }
+    }
+
+    /// Check if a JSON value looks like raw document schemas (e.g. output from dashpay.io)
+    /// rather than a full contract definition. Raw schemas are an object where each value
+    /// is a document schema (has "type", "properties", etc.) but the top-level object
+    /// lacks contract metadata fields like "$format_version", "id", "version".
+    fn looks_like_raw_document_schemas(json: &serde_json::Value) -> bool {
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => return false,
+        };
+
+        // If it already has contract metadata fields, it's not raw schemas
+        if obj.contains_key("$format_version")
+            || obj.contains_key("id")
+            || obj.contains_key("version")
+            || obj.contains_key("documentSchemas")
+        {
+            return false;
+        }
+
+        // Check that at least one entry looks like a document schema
+        obj.values().any(|v| {
+            v.is_object()
+                && (v.get("type").is_some()
+                    || v.get("properties").is_some()
+                    || v.get("indices").is_some())
+        })
+    }
+
+    /// Wrap raw document schemas into a full contract JSON with required metadata.
+    fn wrap_document_schemas(
+        document_schemas: serde_json::Value,
+        owner_id: &Identifier,
+    ) -> serde_json::Value {
+        let owner_id_str =
+            owner_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        // Generate a random contract ID (will be replaced by the platform on registration)
+        let contract_id = Identifier::random();
+        let contract_id_str =
+            contract_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+        serde_json::json!({
+            "$format_version": "0",
+            "id": contract_id_str,
+            "ownerId": owner_id_str,
+            "version": 1,
+            "documentSchemas": document_schemas,
+            "config": {
+                "$format_version": "0",
+                "canBeDeleted": false,
+                "readonly": false,
+                "keepsHistory": false,
+                "documentsKeepHistoryContractDefault": false,
+                "documentsMutableContractDefault": true,
+                "documentsCanBeDeletedContractDefault": false,
+                "requiresIdentityEncryptionBoundedKey": null,
+                "requiresIdentityDecryptionBoundedKey": null
+            }
+        })
     }
 
     fn parse_contract(&mut self) {
         // Clear any previous parse/broadcast states
         self.broadcast_status = BroadcastStatus::Idle;
+        self.contract_was_wrapped = false;
 
         if self.contract_json_input.trim().is_empty() {
             // No input yet
             return;
         }
 
-        // Try to parse the user’s JSON -> serde_json::Value
+        // Try to parse the user's JSON -> serde_json::Value
         let json_result: Result<serde_json::Value, serde_json::Error> =
             serde_json::from_str(&self.contract_json_input);
 
         match json_result {
-            Ok(json_val) => {
+            Ok(mut json_val) => {
                 let platform_version = self.app_context.platform_version();
+
+                // If the JSON looks like raw document schemas (e.g. from dashpay.io),
+                // auto-wrap it with the required contract metadata
+                if Self::looks_like_raw_document_schemas(&json_val) {
+                    if let Some(qualified_identity) = &self.selected_qualified_identity {
+                        let owner_id = qualified_identity.identity.id();
+                        json_val = Self::wrap_document_schemas(json_val, &owner_id);
+                        self.contract_was_wrapped = true;
+                    } else {
+                        self.broadcast_status = BroadcastStatus::ParsingError(
+                            "Please select an identity before pasting raw document schemas."
+                                .to_string(),
+                        );
+                        return;
+                    }
+                }
+
                 match DataContract::from_json(json_val, true, platform_version) {
                     Ok(mut contract) => {
                         // ------------------------------------------
-                        // 1) Overwrite the contract’s ownerId
+                        // 1) Overwrite the contract's ownerId
                         // ------------------------------------------
                         if let Some(qualified_identity) = &self.selected_qualified_identity {
                             let new_owner_id = qualified_identity.identity.id();
@@ -204,6 +286,32 @@ impl RegisterDataContractScreen {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
+                // Show notification if the contract was auto-wrapped
+                if self.contract_was_wrapped {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    Frame::new()
+                        .fill(if dark_mode {
+                            Color32::from_rgb(40, 60, 40)
+                        } else {
+                            Color32::from_rgb(220, 245, 220)
+                        })
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(
+                                    "Raw document schemas detected. Contract metadata (format version, ID, owner, config) was auto-populated.",
+                                )
+                                .color(if dark_mode {
+                                    Color32::from_rgb(140, 220, 140)
+                                } else {
+                                    Color32::from_rgb(30, 100, 30)
+                                }),
+                            );
+                        });
+                    ui.add_space(5.0);
+                }
+
                 // Display estimated fee using SDK's registration_cost method
                 // This accounts for document types, indexes, tokens, and keywords
                 let platform_version = self.app_context.platform_version();
@@ -325,6 +433,7 @@ impl RegisterDataContractScreen {
             self.contract_alias_input = String::new();
             self.broadcast_status = BroadcastStatus::Idle;
             self.completed_fee_result = None;
+            self.contract_was_wrapped = false;
             return AppAction::None;
         }
 

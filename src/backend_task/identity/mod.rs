@@ -24,6 +24,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::Txid;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
@@ -31,6 +32,7 @@ use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -356,6 +358,87 @@ fn verify_key_input(
         }
         0 => Ok(None),
         _ => Err(format!("{} key is of incorrect size", type_key)),
+    }
+}
+
+/// Resolves an asset lock proof before a broadcast attempt.
+///
+/// If the proof is an `Instant` variant, checks whether the instant lock may have expired
+/// (transaction is chain-locked with >8 confirmations). If so, attempts to upgrade it to a
+/// `Chain` proof if Platform has verified the transaction's Core block. If the proof is
+/// already a `Chain` variant (or another type), returns it as-is.
+///
+/// Returns `Err` if the instant lock has expired but Platform hasn't yet verified the
+/// transaction's Core block.
+pub(super) async fn resolve_asset_lock_proof(
+    sdk: &Sdk,
+    asset_lock_proof: &AssetLockProof,
+    tx_id: Txid,
+    core_chain_locked_height: u32,
+) -> Result<AssetLockProof, String> {
+    if let AssetLockProof::Instant(instant_asset_lock_proof) = asset_lock_proof {
+        let tx_info = crate::context::get_transaction_info_via_dapi(sdk, &tx_id).await?;
+
+        if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
+            // Transaction is old enough that instant lock may have expired
+            let tx_block_height = tx_info.height;
+
+            if tx_block_height <= core_chain_locked_height {
+                // Platform has verified this Core block, use chain lock proof
+                Ok(AssetLockProof::Chain(ChainAssetLockProof {
+                    core_chain_locked_height: tx_block_height,
+                    out_point: OutPoint::new(tx_id, 0),
+                }))
+            } else {
+                // Platform hasn't verified this Core block yet
+                Err(format!(
+                    "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                    and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
+                    Please wait for Platform to sync with Core chain.",
+                    tx_block_height, core_chain_locked_height
+                ))
+            }
+        } else {
+            Ok(AssetLockProof::Instant(instant_asset_lock_proof.clone()))
+        }
+    } else {
+        Ok(asset_lock_proof.clone())
+    }
+}
+
+/// Attempts to create a chain asset lock proof as a fallback after an instant lock proof
+/// was rejected by Platform (e.g., "Instant lock proof signature is invalid" or
+/// "wasn't created recently").
+///
+/// Returns `Ok(Some(proof))` if a chain proof was successfully constructed,
+/// `Ok(None)` if the transaction is not yet chain-locked, or
+/// `Err` if the transaction is chain-locked but Platform hasn't verified its Core block yet.
+pub(super) async fn try_fallback_to_chain_asset_lock_proof(
+    sdk: &Sdk,
+    tx_id: Txid,
+    core_chain_locked_height: u32,
+) -> Result<Option<AssetLockProof>, String> {
+    let tx_info = crate::context::get_transaction_info_via_dapi(sdk, &tx_id).await?;
+
+    if tx_info.is_chain_locked && tx_info.height > 0 {
+        let tx_block_height = tx_info.height;
+
+        if tx_block_height <= core_chain_locked_height {
+            // Platform has verified this Core block, use chain lock proof
+            Ok(Some(AssetLockProof::Chain(ChainAssetLockProof {
+                core_chain_locked_height: tx_block_height,
+                out_point: OutPoint::new(tx_id, 0),
+            })))
+        } else {
+            Err(format!(
+                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
+                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
+                Please wait for Platform to sync with Core chain.",
+                tx_block_height, core_chain_locked_height
+            ))
+        }
+    } else {
+        Ok(None)
     }
 }
 

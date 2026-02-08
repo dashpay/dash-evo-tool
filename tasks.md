@@ -1550,7 +1550,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4f Extract state transition sign-and-broadcast helper** (P2)
   Create a helper function in `src/backend_task/mod.rs` (or a new `src/backend_task/broadcast_helper.rs`) that encapsulates the repeated sign→broadcast→proof-error-logging pattern. Signature approximately: `async fn sign_and_broadcast(sdk, state_transition_builder, signing_key, identity, context, operation_name) -> Result<StateTransitionProofResult, String>`. Apply to token operations (pause, resume, burn, mint, freeze, unfreeze, transfer, destroy_frozen, emergency_action, set_price, purchase) and identity/contract operations. This eliminates ~15-20 lines of duplicated error-handling per file across 17+ files.
 
-- [ ] **5.4g Extract asset lock proof resolution helper** (P3)
+- [x] **5.4g Extract asset lock proof resolution helper** (P3)
   Extract the duplicated InstantAssetLockProof→ChainAssetLockProof conversion logic from `src/backend_task/identity/register_identity.rs:66-96` and `src/backend_task/identity/top_up_identity.rs:60-94` into a shared function in `src/backend_task/identity/mod.rs`. Both files have identical logic for checking confirmations, height, and Platform block validation.
 
 - [ ] **5.4h Standardize error display in contract screens** (P3)
@@ -1722,7 +1722,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
-| 5. Architecture | 13 | 4 |
+| 5. Architecture | 13 | 11 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

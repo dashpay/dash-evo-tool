@@ -1,6 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::DPNSNameInfo;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -35,7 +36,7 @@ impl AppContext {
             };
 
             let sdk_guard = {
-                let guard = self.sdk.read().unwrap();
+                let guard = self.sdk.read_or_recover();
                 guard.clone()
             };
 

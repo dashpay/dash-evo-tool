@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -34,14 +35,13 @@ impl AppContext {
 
         // Insert the transaction into waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
             proofs.insert(tx_id, None);
         }
 
         // Broadcast the transaction
         self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
+            .read_or_recover()
             .send_raw_transaction(&asset_lock_transaction)
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
@@ -96,14 +96,13 @@ impl AppContext {
 
         // Insert the transaction into waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
             proofs.insert(tx_id, None);
         }
 
         // Broadcast the transaction
         self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
+            .read_or_recover()
             .send_raw_transaction(&asset_lock_transaction)
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 

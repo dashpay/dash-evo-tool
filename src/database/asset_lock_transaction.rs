@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
     InstantLock, Network, Transaction,
@@ -22,7 +23,7 @@ impl Database {
 
         let islock_bytes = islock.map(serialize);
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let sql = "
         INSERT INTO asset_lock_transaction (tx_id, transaction_data, amount, instant_lock_data, wallet, network)
@@ -56,7 +57,7 @@ impl Database {
         &self,
         txid: &[u8; 32],
     ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 32], String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare(
             "SELECT transaction_data, amount, instant_lock_data, wallet, network FROM asset_lock_transaction WHERE tx_id = ?1",
@@ -96,7 +97,7 @@ impl Database {
         txid: &[u8; 32],
         chain_locked_height: Option<u32>,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "UPDATE asset_lock_transaction SET chain_locked_height = ?1 WHERE tx_id = ?2",
@@ -112,7 +113,7 @@ impl Database {
         tx_id: &[u8; 32],
         identity_id: &[u8; 32],
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let rows_updated = conn.execute(
             "UPDATE asset_lock_transaction
@@ -155,7 +156,7 @@ impl Database {
         }
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "UPDATE asset_lock_transaction
@@ -174,7 +175,7 @@ impl Database {
         txid: &[u8; 32],
         identity_id: &[u8; 32],
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = ?1 WHERE tx_id = ?2",
@@ -186,7 +187,7 @@ impl Database {
 
     /// Deletes an asset lock transaction by its transaction ID (as bytes).
     pub fn delete_asset_lock_transaction(&self, txid: &[u8; 32]) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "DELETE FROM asset_lock_transaction WHERE tx_id = ?1",
@@ -212,7 +213,7 @@ impl Database {
             [u8; 32],
         )>,
     > {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare(
             "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, identity_id, wallet, network FROM asset_lock_transaction where network = ?",
@@ -271,7 +272,7 @@ impl Database {
             String,
         )>,
     > {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare(
             "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, wallet, network FROM asset_lock_transaction WHERE identity_id = ?1",

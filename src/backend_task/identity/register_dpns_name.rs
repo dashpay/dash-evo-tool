@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
+use crate::lock_helper::RwLockExt;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
@@ -179,7 +180,7 @@ impl AppContext {
         };
 
         let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
+            let guard = self.sdk.read_or_recover();
             guard.clone()
         };
 

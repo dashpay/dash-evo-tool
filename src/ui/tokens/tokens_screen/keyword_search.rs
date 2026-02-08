@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::lock_helper::MutexExt;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
@@ -59,7 +60,7 @@ impl TokensScreen {
 
                     if go_clicked || enter_pressed {
                         // Clear old results, set status
-                        self.search_results.lock().unwrap().clear();
+                        self.search_results.lock_or_recover().clear();
                         let now = Utc::now().timestamp() as u64;
                         self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
                         self.search_current_page = 1;
@@ -79,7 +80,7 @@ impl TokensScreen {
                         // Clear the search input
                         self.token_search_query = Some("".to_string());
                         // Clear the search results
-                        self.search_results.lock().unwrap().clear();
+                        self.search_results.lock_or_recover().clear();
                         // Reset the search status
                         self.contract_search_status = ContractSearchStatus::NotStarted;
                         // Clear pagination state
@@ -114,7 +115,7 @@ impl TokensScreen {
             }
             ContractSearchStatus::Complete => {
                 // Show the results
-                let results = self.search_results.lock().unwrap().clone();
+                let results = self.search_results.lock_or_recover().clone();
                 if results.is_empty() {
                     ui.label("No tokens match your keyword.");
                 } else {

@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::identity::{
     IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
+use crate::lock_helper::RwLockExt;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };
@@ -20,7 +21,7 @@ impl AddNewIdentityScreen {
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
                 // Get the receive address
                 if self.funding_address.is_none() {
-                    let mut wallet = wallet_guard.write().unwrap();
+                    let mut wallet = wallet_guard.write_or_recover();
                     let receive_address = wallet.receive_address(
                         self.app_context.network,
                         true,
@@ -31,8 +32,7 @@ impl AddNewIdentityScreen {
                         if !has_address {
                             self.app_context
                                 .core_client
-                                .read()
-                                .expect("Core client lock was poisoned")
+                                .read_or_recover()
                                 .import_address(
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),
@@ -45,16 +45,14 @@ impl AddNewIdentityScreen {
                         let info = self
                             .app_context
                             .core_client
-                            .read()
-                            .expect("Core client lock was poisoned")
+                            .read_or_recover()
                             .get_address_info(&receive_address)
                             .map_err(|e| e.to_string())?;
 
                         if !(info.is_watchonly || info.is_mine) {
                             self.app_context
                                 .core_client
-                                .read()
-                                .expect("Core client lock was poisoned")
+                                .read_or_recover()
                                 .import_address(
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),
@@ -129,7 +127,7 @@ impl AddNewIdentityScreen {
         }
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = *self.step.read_or_recover();
 
         ui.add_space(10.0);
 
@@ -189,7 +187,7 @@ impl AddNewIdentityScreen {
                             ),
                         };
 
-                        let mut step = self.step.write().unwrap();
+                        let mut step = self.step.write_or_recover();
                         *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                         // Create the backend task to register the identity

@@ -1,3 +1,4 @@
+use crate::lock_helper::MutexExt;
 use crate::{
     backend_task::contested_names::ScheduledDPNSVote, context::AppContext, database::Database,
 };
@@ -97,7 +98,7 @@ impl Database {
         votes: &Vec<ScheduledDPNSVote>,
     ) -> rusqlite::Result<()> {
         let network = app_context.network.to_string();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock_or_recover();
         let tx = conn.transaction()?;
         for vote in votes {
             let vote_choice = vote.choice.to_string();
@@ -117,7 +118,7 @@ impl Database {
         contested_name: &str,
     ) -> rusqlite::Result<()> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             "DELETE FROM scheduled_votes WHERE identity_id = ? AND contested_name = ? AND network = ?",
             params![identity_id, contested_name, network],
@@ -145,7 +146,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<ScheduledDPNSVote>> {
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare("SELECT * FROM scheduled_votes WHERE network = ?")?;
         let votes_iter = stmt.query_map(params![network], |row| {
             let voter_id_bytes: Vec<u8> = row.get(0)?;
@@ -209,7 +210,7 @@ impl Database {
     /// Clear all scheduled votes from the db
     pub fn clear_all_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "DELETE FROM scheduled_votes WHERE network = ?",
@@ -221,7 +222,7 @@ impl Database {
 
     pub fn clear_executed_scheduled_votes(&self, app_context: &AppContext) -> rusqlite::Result<()> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "DELETE FROM scheduled_votes WHERE executed = 1 AND network = ?",

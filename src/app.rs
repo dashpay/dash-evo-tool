@@ -8,6 +8,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
@@ -391,8 +392,7 @@ impl AppState {
 
         let mainnet_core_zmq_endpoint = mainnet_app_context
             .config
-            .read()
-            .unwrap()
+            .read_or_recover()
             .core_zmq_endpoint
             .clone()
             .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
@@ -422,7 +422,7 @@ impl AppState {
 
         let testnet_core_zmq_endpoint = testnet_app_context
             .as_ref()
-            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
+            .and_then(|ctx| ctx.config.read_or_recover().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:23709".to_string());
         let testnet_disable_zmq = testnet_app_context
             .as_ref()
@@ -449,7 +449,7 @@ impl AppState {
 
         let devnet_core_zmq_endpoint = devnet_app_context
             .as_ref()
-            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
+            .and_then(|ctx| ctx.config.read_or_recover().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:23710".to_string());
         let devnet_disable_zmq = devnet_app_context
             .as_ref()
@@ -476,7 +476,7 @@ impl AppState {
 
         let local_core_zmq_endpoint = local_app_context
             .as_ref()
-            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
+            .and_then(|ctx| ctx.config.read_or_recover().core_zmq_endpoint.clone())
             .unwrap_or_else(|| "tcp://127.0.0.1:20302".to_string());
         let local_disable_zmq = local_app_context
             .as_ref()
@@ -964,8 +964,7 @@ impl App for AppState {
                             screen.scheduled_vote_cast_in_progress = true;
                             if let Some((_, s)) = screen
                                 .scheduled_votes
-                                .lock()
-                                .unwrap()
+                                .lock_or_recover()
                                 .iter_mut()
                                 .find(|(v, _)| v == &vote)
                             {

@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use crate::ui::components::styled::StyledCheckbox;
 use eframe::epaint::Color32;
@@ -23,7 +24,7 @@ pub trait ScreenWithWalletUnlock {
 
     fn should_ask_for_password(&mut self) -> bool {
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
-            let mut wallet = wallet_guard.write().unwrap();
+            let mut wallet = wallet_guard.write_or_recover();
             if !wallet.uses_password {
                 if let Err(e) = wallet.wallet_seed.open_no_password() {
                     self.set_error_message(Some(e));
@@ -49,7 +50,7 @@ pub trait ScreenWithWalletUnlock {
         let mut unlocked_wallet: Option<Arc<RwLock<Wallet>>> = None;
 
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
-            let mut wallet = wallet_guard.write().unwrap();
+            let mut wallet = wallet_guard.write_or_recover();
 
             // Only render the unlock prompt if the wallet requires a password and is locked
             if wallet.uses_password && !wallet.is_open() {

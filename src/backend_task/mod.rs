@@ -1,4 +1,5 @@
 use crate::app::TaskResult;
+use crate::lock_helper::RwLockExt;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
@@ -312,7 +313,7 @@ impl AppContext {
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = {
-            let guard = self.sdk.read().unwrap();
+            let guard = self.sdk.read_or_recover();
             guard.clone()
         };
         match task {

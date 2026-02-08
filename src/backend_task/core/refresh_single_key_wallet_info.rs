@@ -1,6 +1,7 @@
 //! Refresh Single Key Wallet Info - Reload UTXOs and balances for a single key wallet
 
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
@@ -21,10 +22,7 @@ impl AppContext {
 
         // Step 2: Import address to Core (needed for UTXO queries)
         {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+            let client = self.core_client.read_or_recover();
 
             if let Err(e) = client.import_address(&address, None, Some(false)) {
                 tracing::debug!(?e, address = %address, "import_address failed during single key refresh");
@@ -33,10 +31,7 @@ impl AppContext {
 
         // Step 3: Get UTXOs for this address
         let utxo_map = {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+            let client = self.core_client.read_or_recover();
 
             let utxos = client
                 .list_unspent(Some(0), None, Some(&[&address]), None, None)

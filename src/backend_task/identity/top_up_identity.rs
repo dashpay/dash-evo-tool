@@ -1,6 +1,7 @@
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info_via_dapi};
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Error;
@@ -30,7 +31,7 @@ impl AppContext {
         } = input;
 
         let sdk = {
-            let guard = self.sdk.read().unwrap();
+            let guard = self.sdk.read_or_recover();
             guard.clone()
         };
 
@@ -49,7 +50,7 @@ impl AppContext {
 
                     // Scope the read guard so it's dropped before the async DAPI call below
                     let private_key = {
-                        let wallet = wallet.read().unwrap();
+                        let wallet = wallet.read_or_recover();
                         wallet
                             .private_key_for_address(&address, self.network)?
                             .ok_or("Asset Lock not valid for wallet")?
@@ -104,7 +105,7 @@ impl AppContext {
                         used_utxos,
                         wallet_seed_hash,
                     ) = {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write_or_recover();
                         let seed_hash = wallet.seed_hash();
                         let tx_result = match wallet.top_up_asset_lock_transaction(
                             sdk.network,
@@ -118,10 +119,7 @@ impl AppContext {
                             Err(_) => {
                                 wallet
                                     .reload_utxos(
-                                        &self
-                                            .core_client
-                                            .read()
-                                            .expect("Core client lock was poisoned"),
+                                        &self.core_client.read_or_recover(),
                                         self.network,
                                         Some(self),
                                     )
@@ -154,13 +152,12 @@ impl AppContext {
                     //     .map_err(|e| e.to_string())?;
 
                     {
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
                         proofs.insert(tx_id, None);
                     }
 
                     self.core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
+                        .read_or_recover()
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
@@ -178,7 +175,7 @@ impl AppContext {
                         .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
                     {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write_or_recover();
                         wallet.utxos.retain(|_, utxo_map| {
                             utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
                             !utxo_map.is_empty() // Keep addresses that still have UTXOs
@@ -210,7 +207,7 @@ impl AppContext {
                             loop {
                                 {
                                     let proofs =
-                                        self.transactions_waiting_for_finality.lock().unwrap();
+                                        self.transactions_waiting_for_finality.lock_or_recover();
                                     if let Some(Some(proof)) = proofs.get(&tx_id) {
                                         return proof.clone();
                                     }
@@ -224,7 +221,7 @@ impl AppContext {
                             Err(_) => {
                                 // Clean up on timeout
                                 let mut proofs =
-                                    self.transactions_waiting_for_finality.lock().unwrap();
+                                    self.transactions_waiting_for_finality.lock_or_recover();
                                 proofs.remove(&tx_id);
                                 return Err(format!(
                                     "Timeout waiting for asset lock proof after {} seconds. \
@@ -250,7 +247,7 @@ impl AppContext {
                 ) => {
                     // Scope the write lock to avoid holding it across an await.
                     let (asset_lock_transaction, asset_lock_proof_private_key, wallet_seed_hash) = {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write_or_recover();
                         let seed_hash = wallet.seed_hash();
                         let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
                             sdk.network,
@@ -273,13 +270,12 @@ impl AppContext {
                     //     .map_err(|e| e.to_string())?;
 
                     {
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                        let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
                         proofs.insert(tx_id, None);
                     }
 
                     self.core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
+                        .read_or_recover()
                         .send_raw_transaction(&asset_lock_transaction)
                         .map_err(|e| e.to_string())?;
 
@@ -297,7 +293,7 @@ impl AppContext {
                         .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
                     {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write_or_recover();
                         wallet.utxos.retain(|_, utxo_map| {
                             utxo_map.retain(|outpoint, _| outpoint != &utxo);
                             !utxo_map.is_empty()
@@ -322,7 +318,7 @@ impl AppContext {
                             loop {
                                 {
                                     let proofs =
-                                        self.transactions_waiting_for_finality.lock().unwrap();
+                                        self.transactions_waiting_for_finality.lock_or_recover();
                                     if let Some(Some(proof)) = proofs.get(&tx_id) {
                                         return proof.clone();
                                     }
@@ -336,7 +332,7 @@ impl AppContext {
                             Err(_) => {
                                 // Clean up on timeout
                                 let mut proofs =
-                                    self.transactions_waiting_for_finality.lock().unwrap();
+                                    self.transactions_waiting_for_finality.lock_or_recover();
                                 proofs.remove(&tx_id);
                                 return Err(format!(
                                     "Timeout waiting for asset lock proof after {} seconds. \
@@ -572,7 +568,7 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         {
-            let mut wallet = wallet.write().unwrap();
+            let mut wallet = wallet.write_or_recover();
             wallet
                 .unused_asset_locks
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);

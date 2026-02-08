@@ -1,3 +1,4 @@
+use crate::lock_helper::MutexExt;
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -283,7 +284,7 @@ impl crate::database::Database {
         identity_id: &Identifier,
         network: &str,
     ) -> rusqlite::Result<Option<StoredProfile>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare(
             "SELECT identity_id, display_name, bio, avatar_url, avatar_hash,
@@ -356,7 +357,7 @@ impl crate::database::Database {
         owner_identity_id: &Identifier,
         network: &str,
     ) -> rusqlite::Result<Vec<StoredContact>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT owner_identity_id, contact_identity_id, username, display_name,
                     avatar_url, public_message, contact_status, created_at, updated_at, last_seen
@@ -443,7 +444,7 @@ impl crate::database::Database {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ";
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             sql,
             params![
@@ -480,7 +481,7 @@ impl crate::database::Database {
         network: &str,
         request_type: &str,
     ) -> rusqlite::Result<Vec<StoredContactRequest>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let sql = if request_type == "sent" {
             "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
                     request_type, status, created_at, responded_at, expires_at
@@ -533,7 +534,7 @@ impl crate::database::Database {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ";
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             sql,
             params![
@@ -569,7 +570,7 @@ impl crate::database::Database {
         identity_id: &Identifier,
         limit: u32,
     ) -> rusqlite::Result<Vec<StoredPayment>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT id, tx_id, from_identity_id, to_identity_id, amount, memo,
                     payment_type, status, created_at, confirmed_at
@@ -651,7 +652,7 @@ impl crate::database::Database {
         owner_identity_id: &Identifier,
         contact_identity_id: &Identifier,
     ) -> rusqlite::Result<ContactAddressIndex> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Try to get existing entry
         let mut stmt = conn.prepare(
@@ -701,7 +702,7 @@ impl crate::database::Database {
         owner_identity_id: &Identifier,
         contact_identity_id: &Identifier,
     ) -> rusqlite::Result<u32> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // First, ensure the row exists with default values if it doesn't
         let init_sql = "
@@ -798,7 +799,7 @@ impl crate::database::Database {
         &self,
         owner_identity_id: &Identifier,
     ) -> rusqlite::Result<Vec<ContactAddressIndex>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT owner_identity_id, contact_identity_id, next_send_index,
                     highest_receive_index, bloom_registered_count
@@ -856,7 +857,7 @@ impl crate::database::Database {
         &self,
         address: &dash_sdk::dpp::dashcore::Address,
     ) -> rusqlite::Result<Option<(Identifier, Identifier, u32)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT owner_identity_id, contact_identity_id, address_index
              FROM dashpay_address_mappings
@@ -888,7 +889,7 @@ impl crate::database::Database {
         &self,
         owner_identity_id: &Identifier,
     ) -> rusqlite::Result<Vec<(String, Identifier, u32)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT address, contact_identity_id, address_index
              FROM dashpay_address_mappings

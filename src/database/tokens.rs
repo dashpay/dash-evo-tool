@@ -10,6 +10,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::params;
 
 use super::Database;
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
@@ -43,7 +44,7 @@ impl Database {
         let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT token_config
              FROM token
@@ -73,7 +74,7 @@ impl Database {
         let network = app_context.network.to_string();
         let token_id_bytes = token_id.to_vec();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT data_contract_id
              FROM token
@@ -128,7 +129,7 @@ impl Database {
         )?;
 
         // Insert an identity token balance of 0 for each identity for this token
-        let wallets = app_context.wallets.read().unwrap();
+        let wallets = app_context.wallets.read_or_recover();
         for identity in self.get_local_qualified_identities(app_context, &wallets)? {
             self.insert_identity_token_balance(token_id, &identity.identity.id(), 0, app_context)?;
         }
@@ -197,7 +198,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfoWithDataContract>> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare(
             "SELECT
@@ -276,7 +277,7 @@ impl Database {
         app_context: &AppContext,
     ) -> rusqlite::Result<IndexMap<Identifier, TokenInfo>> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // -- 1.  query id / alias / config / contract / position ────────────────
         let mut stmt = conn.prepare(
@@ -338,7 +339,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         let rows_data = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock_or_recover();
             let mut stmt = conn.prepare(
                 "SELECT b.token_id, t.token_alias, t.token_config, b.identity_id, b.balance, t.data_contract_id, t.token_position
              FROM identity_token_balances AS b
@@ -480,7 +481,7 @@ impl Database {
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
     pub fn save_token_order(&self, all_ids: Vec<(Identifier, Identifier)>) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let tx = conn.unchecked_transaction()?;
 
         // Clear existing rows
@@ -504,7 +505,7 @@ impl Database {
     /// Loads the custom identity order from the DB, returning a list of Identifiers in the stored order.
     /// If there's no data, returns an empty Vec.
     pub fn load_token_order(&self) -> rusqlite::Result<Vec<(Identifier, Identifier)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Read all rows sorted by pos
         let mut stmt = conn.prepare(
@@ -556,7 +557,7 @@ impl Database {
         }
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Delete tokens and cascade deletions in related tables due to foreign keys
         conn.execute("DELETE FROM token WHERE network = ?", params![network])?;

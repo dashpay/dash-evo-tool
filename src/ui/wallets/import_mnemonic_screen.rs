@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -257,7 +258,7 @@ impl ImportMnemonicScreen {
                 })?;
 
             let wallet_arc = Arc::new(RwLock::new(wallet));
-            let new_wallet_seed_hash = wallet_arc.read().unwrap().seed_hash();
+            let new_wallet_seed_hash = wallet_arc.read_or_recover().seed_hash();
 
             // Acquire a write lock and add the new wallet
             if let Ok(mut wallets) = self.app_context.wallets.write() {

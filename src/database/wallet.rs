@@ -1,4 +1,5 @@
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
@@ -61,7 +62,7 @@ impl Database {
         seed_hash: &[u8; 32],
         new_alias: Option<String>,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         conn.execute(
             "UPDATE wallet SET alias = ? WHERE seed_hash = ?",
@@ -77,7 +78,7 @@ impl Database {
     /// to keep the database consistent before deleting the wallet itself.
     pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock_or_recover();
         let tx = conn.transaction()?;
 
         let mut address_stmt =
@@ -138,7 +139,7 @@ impl Database {
         path_type: DerivationPathType,
         balance: Option<u64>,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let address = check_address_for_network(address.as_unchecked().clone(), network)
             .expect("Expected address to be valid for network");
@@ -351,7 +352,7 @@ impl Database {
         network: &Network,
         transactions: &[WalletTransaction],
     ) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock_or_recover();
         let tx = conn.transaction()?;
         let network_str = network.to_string();
 
@@ -411,7 +412,7 @@ impl Database {
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
@@ -964,7 +965,7 @@ impl Database {
         address: &Address,
         network: &Network,
     ) -> rusqlite::Result<Option<(u64, u32)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let network_str = network.to_string();
         let canonical_address = Wallet::canonical_address(address, *network);
         let address_str = canonical_address.to_string();
@@ -993,7 +994,7 @@ impl Database {
         seed_hash: &[u8; 32],
         network: &Network,
     ) -> rusqlite::Result<Vec<(Address, u64, u32)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let network_str = network.to_string();
 
         let mut stmt = conn.prepare(
@@ -1054,7 +1055,7 @@ impl Database {
     /// This removes both the addresses from wallet_addresses and their balances from platform_address_balances
     pub fn clear_all_platform_addresses(&self, network: &Network) -> rusqlite::Result<usize> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Delete from platform_address_balances
         conn.execute(
@@ -1080,7 +1081,7 @@ impl Database {
         &self,
         seed_hash: &[u8; 32],
     ) -> rusqlite::Result<(u64, u64, u64)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.query_row(
             "SELECT last_platform_full_sync, last_platform_sync_checkpoint, COALESCE(last_terminal_block, 0) FROM wallet WHERE seed_hash = ?",
             params![seed_hash],

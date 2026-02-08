@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use crate::model::qualified_contract::QualifiedContract;
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
@@ -94,7 +95,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         // Query the contract by ID
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT contract, alias FROM contract WHERE contract_id = ? AND network = ?",
         )?;
@@ -139,7 +140,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         // Query the contract by ID
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt =
             conn.prepare("SELECT contract FROM contract WHERE contract_id = ? AND network = ?")?;
 
@@ -182,7 +183,7 @@ impl Database {
 
         // Get the existing contract alias (if any)
         let existing_alias = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock_or_recover();
             conn.query_row(
                 "SELECT alias FROM contract WHERE contract_id = ? AND network = ?",
                 params![contract_id.to_vec(), network.clone()],
@@ -217,7 +218,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         // Query the contract by alias and network
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt =
             conn.prepare("SELECT contract, alias FROM contract WHERE alias = ? AND network = ?")?;
 
@@ -269,7 +270,7 @@ impl Database {
             query.push_str(" OFFSET ?");
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(&query)?;
 
         // Store the limit and offset in variables to extend their lifetimes
@@ -352,7 +353,7 @@ impl Database {
         }
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Delete tokens and cascade deletions in related tables due to foreign keys
         conn.execute("DELETE FROM contract WHERE network = ?", params![network])?;
@@ -367,7 +368,7 @@ impl Database {
         new_alias: Option<&str>,
     ) -> rusqlite::Result<()> {
         let id = identifier.to_vec();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let rows_updated = conn.execute(
             "UPDATE contract SET alias = ? WHERE contract_id = ?",
@@ -384,7 +385,7 @@ impl Database {
     #[allow(dead_code)] // May be used for retrieving user-friendly contract names
     pub fn get_contract_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare("SELECT alias FROM contract WHERE contract_id = ?")?;
         let alias: Option<String> = stmt.query_row(params![id], |row| row.get(0)).ok();

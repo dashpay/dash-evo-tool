@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::lock_helper::RwLockExt;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
@@ -173,7 +174,7 @@ impl TopUpIdentityScreen {
         let can_top_up =
             self.selected_platform_address.is_some() && has_valid_amount && self.wallet.is_some();
 
-        let step = { *self.step.read().unwrap() };
+        let step = { *self.step.read_or_recover() };
 
         ui.horizontal(|ui| {
             let button_text = match step {
@@ -279,7 +280,7 @@ impl TopUpIdentityScreen {
 
         // Update step
         {
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_or_recover();
             *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
         }
 

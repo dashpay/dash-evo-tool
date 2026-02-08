@@ -5,6 +5,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::contested_name::ContestedName;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
@@ -537,7 +538,7 @@ impl AppContext {
 
     pub fn bootstrap_loaded_wallets(self: &Arc<Self>) {
         let wallets: Vec<_> = {
-            let guard = self.wallets.read().unwrap();
+            let guard = self.wallets.read_or_recover();
             guard.values().cloned().collect()
         };
 
@@ -565,7 +566,7 @@ impl AppContext {
             }
 
             let single_key_wallets: Vec<_> = {
-                let guard = self.single_key_wallets.read().unwrap();
+                let guard = self.single_key_wallets.read_or_recover();
                 guard.values().cloned().collect()
             };
             for wallet in single_key_wallets {
@@ -596,7 +597,7 @@ impl AppContext {
         address_infos: &dash_sdk::query_types::AddressInfos,
     ) -> Result<(), String> {
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read_or_recover();
             wallets
                 .get(&seed_hash)
                 .cloned()
@@ -815,7 +816,7 @@ impl AppContext {
         let mapping = self.spv_manager.det_wallets_snapshot();
 
         // Take a snapshot of known addresses per wallet so we can scope DB updates
-        let wallets_guard = self.wallets.read().unwrap();
+        let wallets_guard = self.wallets.read_or_recover();
 
         for (seed_hash, wallet_id) in mapping.iter() {
             // Log total balance for visibility
@@ -849,7 +850,7 @@ impl AppContext {
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
             let mut known_addresses: std::collections::BTreeSet<dash_sdk::dpp::dashcore::Address> = {
-                let w = wallet_arc.read().unwrap();
+                let w = wallet_arc.read_or_recover();
                 w.known_addresses.keys().cloned().collect()
             };
 
@@ -1150,14 +1151,14 @@ impl AppContext {
 
     /// Fetches all local qualified identities from the database
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
     /// Fetches all local qualified identities from the database
     #[allow(dead_code)] // May be used for loading identities in wallets
     pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         self.db
             .get_local_qualified_identities_in_wallets(self, &wallets)
     }
@@ -1166,7 +1167,7 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> Result<Option<QualifiedIdentity>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         // Get the identity from the database
         let result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
 
@@ -1214,7 +1215,7 @@ impl AppContext {
         identity: &mut QualifiedIdentity,
         wallet_hashes: &[WalletSeedHash],
     ) -> Result<()> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         for wallet_hash in wallet_hashes {
             if let Some(wallet) = wallets.get(wallet_hash) {
                 identity
@@ -1277,7 +1278,7 @@ impl AppContext {
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
     pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         let qualified_identities = self.db.get_local_qualified_identities(self, &wallets)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
@@ -1343,7 +1344,7 @@ impl AppContext {
     /// until the database operation is complete. This ensures atomicity and prevents
     /// race conditions regardless of whether the database operation succeeds or fails.
     pub fn invalidate_settings_cache(&'_ self) -> SettingsCacheGuard<'_> {
-        let mut guard = self.cached_settings.write().unwrap();
+        let mut guard = self.cached_settings.write_or_recover();
         *guard = None;
         guard
     }
@@ -1359,7 +1360,7 @@ impl AppContext {
     pub fn get_settings(&self) -> Result<Option<Settings>> {
         // First, try to read from cache
         {
-            let cache = self.cached_settings.read().unwrap();
+            let cache = self.cached_settings.read_or_recover();
             if let Some(ref settings) = *cache {
                 return Ok(Some(settings.clone()));
             }
@@ -1370,7 +1371,7 @@ impl AppContext {
 
         // Update cache with the fresh data
         {
-            let mut cache = self.cached_settings.write().unwrap();
+            let mut cache = self.cached_settings.write_or_recover();
             *cache = settings.clone();
         }
 
@@ -1473,9 +1474,9 @@ impl AppContext {
         let mut wallet_outpoints = Vec::new();
 
         // Identify the wallets associated with the transaction
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write_or_recover();
             for (vout, tx_out) in tx.output.iter().enumerate() {
                 let address = if let Ok(output_addr) =
                     Address::from_script(&tx_out.script_pubkey, self.network)
@@ -1591,7 +1592,7 @@ impl AppContext {
         };
 
         {
-            let mut transactions = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut transactions = self.transactions_waiting_for_finality.lock_or_recover();
 
             if let Some(asset_lock_proof) = transactions.get_mut(&tx.txid()) {
                 *asset_lock_proof = proof.clone();
@@ -1599,9 +1600,9 @@ impl AppContext {
         }
 
         // Identify the wallet associated with the transaction
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read_or_recover();
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write_or_recover();
 
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses
             let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {

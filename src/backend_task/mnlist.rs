@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -78,7 +79,7 @@ pub async fn run_mnlist_task(
             base_block_height,
             block_height,
         } => {
-            let client = app.core_client.read().unwrap();
+            let client = app.core_client.read_or_recover();
             // Determine the range (replicate UI logic approximately)
             let loaded_list_height = match app.network {
                 Network::Dash => 2_227_096,

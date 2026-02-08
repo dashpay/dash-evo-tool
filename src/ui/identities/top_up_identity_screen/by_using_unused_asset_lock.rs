@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::lock_helper::RwLockExt;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
@@ -14,7 +15,7 @@ impl TopUpIdentityScreen {
         };
 
         // Read the wallet to access unused asset locks
-        let wallet = selected_wallet.read().unwrap();
+        let wallet = selected_wallet.read_or_recover();
 
         if wallet.unused_asset_locks.is_empty() {
             ui.label("No unused asset locks available.");
@@ -63,7 +64,7 @@ impl TopUpIdentityScreen {
                         ));
 
                         // Update the step to ready to create identity
-                        let mut step = self.step.write().unwrap();
+                        let mut step = self.step.write_or_recover();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 });
@@ -81,7 +82,7 @@ impl TopUpIdentityScreen {
         let mut action = AppAction::None;
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = *self.step.read_or_recover();
 
         ui.heading(
             format!(

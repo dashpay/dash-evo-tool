@@ -1,5 +1,6 @@
 use crate::backend_task::FeeResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
@@ -19,7 +20,7 @@ impl AppContext {
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
+            let guard = self.sdk.read_or_recover();
             guard.clone()
         };
 

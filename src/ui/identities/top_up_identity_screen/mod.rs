@@ -9,6 +9,7 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -95,12 +96,12 @@ impl TopUpIdentityScreen {
         let mut step_update_method: Option<FundingMethod> = None;
 
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_or_recover();
             let wallets = &*wallets_guard;
 
             if wallets.len() > 1 {
                 // Cache current funding method to avoid holding the lock across UI callbacks
-                let funding_method = *self.funding_method.read().unwrap();
+                let funding_method = *self.funding_method.read_or_recover();
 
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self
@@ -115,7 +116,7 @@ impl TopUpIdentityScreen {
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
                             let (wallet_alias, has_required_resources) = {
-                                let wallet_read = wallet.read().unwrap();
+                                let wallet_read = wallet.read_or_recover();
                                 let alias = wallet_read
                                     .alias
                                     .clone()
@@ -149,11 +150,11 @@ impl TopUpIdentityScreen {
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
                     // Cache current funding method to avoid holding the lock across updates
-                    let funding_method = *self.funding_method.read().unwrap();
+                    let funding_method = *self.funding_method.read_or_recover();
 
                     // Check if the wallet has the required resources
                     let has_required_resources = {
-                        let wallet_read = wallet.read().unwrap();
+                        let wallet_read = wallet.read_or_recover();
                         match funding_method {
                             FundingMethod::UseWalletBalance => wallet_read.has_balance(),
                             FundingMethod::UseUnusedAssetLock => {
@@ -188,7 +189,7 @@ impl TopUpIdentityScreen {
             if let Some(method) = step_update_method {
                 self.update_step_after_wallet_change(method);
             } else {
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_or_recover();
                 *step = WalletFundedScreenStep::ChooseFundingMethod;
             }
         }
@@ -198,7 +199,7 @@ impl TopUpIdentityScreen {
 
     /// Adjust the current step to match the funding method after a wallet switch.
     fn update_step_after_wallet_change(&mut self, funding_method: FundingMethod) {
-        let mut step = self.step.write().unwrap();
+        let mut step = self.step.write_or_recover();
         *step = match funding_method {
             FundingMethod::AddressWithQRCode => WalletFundedScreenStep::WaitingOnFunds,
             FundingMethod::UseUnusedAssetLock
@@ -210,17 +211,17 @@ impl TopUpIdentityScreen {
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
         let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap();
+        let mut funding_method = funding_method_arc.write_or_recover();
 
         // Check if any wallet has unused asset locks, balance, or Platform address balance
         let (has_any_unused_asset_lock, has_any_balance, has_any_platform_balance) = {
-            let wallets = self.app_context.wallets.read().unwrap();
+            let wallets = self.app_context.wallets.read_or_recover();
             let mut has_unused_asset_lock = false;
             let mut has_balance = false;
             let mut has_platform_balance = false;
 
             for wallet in wallets.values() {
-                let wallet = wallet.read().unwrap();
+                let wallet = wallet.read_or_recover();
                 if wallet.has_unused_asset_lock() {
                     has_unused_asset_lock = true;
                 }
@@ -256,7 +257,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        let mut step = self.step.write().unwrap();
+                        let mut step = self.step.write_or_recover();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 });
@@ -270,7 +271,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        let mut step = self.step.write().unwrap();
+                        let mut step = self.step.write_or_recover();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 });
@@ -284,7 +285,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        let mut step = self.step.write().unwrap();
+                        let mut step = self.step.write_or_recover();
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 });
@@ -297,7 +298,7 @@ impl TopUpIdentityScreen {
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::WaitingOnFunds;
                 }
             });
@@ -320,7 +321,7 @@ impl TopUpIdentityScreen {
                         ),
                     };
 
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                     AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
@@ -355,7 +356,7 @@ impl TopUpIdentityScreen {
                     ),
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_or_recover();
                 *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to top_up the identity
@@ -368,7 +369,7 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = *self.funding_method.read().unwrap();
+        let funding_method = *self.funding_method.read_or_recover();
 
         // Only apply max amount restriction when using wallet balance
         // For QR code funding, funds come from external source so no max applies
@@ -377,7 +378,7 @@ impl TopUpIdentityScreen {
                 let max_amount_duffs = self
                     .wallet
                     .as_ref()
-                    .map(|w| w.read().unwrap().total_balance_duffs())
+                    .map(|w| w.read_or_recover().total_balance_duffs())
                     .unwrap_or(0);
                 // Convert Duffs to Credits (1 Duff = 1000 Credits)
                 let total_credits = max_amount_duffs * 1000;
@@ -431,7 +432,7 @@ impl ScreenLike for TopUpIdentityScreen {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error topping up identity: {}", message));
             // Reset step so UI is not stuck on waiting messages
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_or_recover();
             if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance
                 || *step == WalletFundedScreenStep::WaitingForAssetLock
             {
@@ -455,12 +456,12 @@ impl ScreenLike for TopUpIdentityScreen {
             self.copied_to_clipboard = None;
             self.error_message = None;
 
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_or_recover();
             *step = WalletFundedScreenStep::Success;
             return;
         }
 
-        let mut step = self.step.write().unwrap();
+        let mut step = self.step.write_or_recover();
         let current_step = *step;
         match current_step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
@@ -493,7 +494,7 @@ impl ScreenLike for TopUpIdentityScreen {
                             return false;
                         };
                         if let Some(wallet) = &self.wallet {
-                            let wallet = wallet.read().unwrap();
+                            let wallet = wallet.read_or_recover();
                             wallet.known_addresses.contains_key(&address)
                         } else {
                             false
@@ -552,7 +553,7 @@ impl ScreenLike for TopUpIdentityScreen {
             }
 
             ScrollArea::vertical().show(ui, |ui| {
-                let step = { *self.step.read().unwrap() };
+                let step = { *self.step.read_or_recover() };
                 if step == WalletFundedScreenStep::Success {
                     inner_action |= self.show_success(ui);
                     return;
@@ -598,7 +599,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.add_space(10.0);
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
+                let funding_method = *self.funding_method.read_or_recover();
                 if funding_method == FundingMethod::NoSelection {
                     return;
                 }
@@ -609,7 +610,7 @@ impl ScreenLike for TopUpIdentityScreen {
                     || funding_method == FundingMethod::UsePlatformAddress
                 {
                     // Check if there's more than one wallet to show selection UI
-                    let wallet_count = self.app_context.wallets.read().unwrap().len();
+                    let wallet_count = self.app_context.wallets.read_or_recover().len();
 
                     if wallet_count > 1 {
                         ui.horizontal(|ui| {

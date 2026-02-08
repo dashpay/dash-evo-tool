@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::lock_helper::RwLockExt;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
@@ -8,7 +9,7 @@ use egui::{Color32, Frame, Margin, RichText, Ui};
 impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.wallet {
-            let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
+            let wallet = selected_wallet.read_or_recover(); // Read lock on the wallet
 
             let total_balance: u64 = wallet.total_balance_duffs(); // Use stored balance with UTXO fallback
 
@@ -41,7 +42,7 @@ impl TopUpIdentityScreen {
         self.top_up_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = *self.step.read_or_recover();
 
         let Ok(_) = self.funding_amount.parse::<f64>() else {
             return action;

@@ -5,6 +5,7 @@ use image::Luma;
 use qrcode::QrCode;
 use std::sync::{Arc, RwLock};
 
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
@@ -59,7 +60,7 @@ pub fn capture_qr_funding_utxo_if_available(
     funding_address: Option<&Address>,
 ) -> Option<(OutPoint, TxOut, Address)> {
     if !matches!(
-        *step.read().expect("wallet funding step lock poisoned"),
+        *step.read_or_recover(),
         WalletFundedScreenStep::WaitingOnFunds
     ) {
         return None;
@@ -70,9 +71,7 @@ pub fn capture_qr_funding_utxo_if_available(
     let wallet_arc = wallet?;
 
     let candidate_utxo = {
-        let wallet = wallet_arc
-            .read()
-            .expect("wallet lock poisoned while checking funding UTXO");
+        let wallet = wallet_arc.read_or_recover();
         wallet.utxos.get(&address).and_then(|utxos| {
             utxos
                 .iter()
@@ -83,9 +82,7 @@ pub fn capture_qr_funding_utxo_if_available(
     };
 
     if let Some((outpoint, tx_out)) = candidate_utxo {
-        let mut step = step
-            .write()
-            .expect("wallet funding step write lock poisoned");
+        let mut step = step.write_or_recover();
         *step = WalletFundedScreenStep::FundsReceived;
         Some((outpoint, tx_out, address))
     } else {

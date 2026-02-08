@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use crate::model::contested_name::{ContestState, Contestant, ContestedName};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -23,7 +24,7 @@ impl Database {
         } else {
             Duration::from_secs(60 * 90)
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT
                 cn.normalized_contested_name,
@@ -155,8 +156,11 @@ impl Database {
         } else {
             Duration::from_secs(60 * 90)
         };
-        let current_timestamp = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
-        let conn = self.conn.lock().unwrap();
+        let current_timestamp = std::time::UNIX_EPOCH
+            .elapsed()
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT
                 cn.normalized_contested_name,
@@ -288,7 +292,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         // Check if the contested name already exists and get the current values if it does
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT locked_votes, abstain_votes, awarded_to, ending_time
              FROM contested_name
@@ -378,7 +382,7 @@ impl Database {
             match winner {
                 ContestedDocumentVotePollWinnerInfo::NoWinner => {}
                 ContestedDocumentVotePollWinnerInfo::WonByIdentity(won_by) => {
-                    let mut conn = self.conn.lock().unwrap();
+                    let mut conn = self.conn.lock_or_recover();
                     // Start a transaction
                     let tx = conn.transaction()?;
                     tx.execute(
@@ -396,7 +400,7 @@ impl Database {
                     tx.commit()?;
                 }
                 ContestedDocumentVotePollWinnerInfo::Locked => {
-                    let mut conn = self.conn.lock().unwrap();
+                    let mut conn = self.conn.lock_or_recover();
                     // Start a transaction
                     let tx = conn.transaction()?;
                     tx.execute(
@@ -415,7 +419,7 @@ impl Database {
             }
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock_or_recover();
         let locked_votes = contenders.lock_vote_tally.unwrap_or(0) as i64;
         let abstain_votes = contenders.abstain_vote_tally.unwrap_or(0) as i64;
 
@@ -532,7 +536,7 @@ impl Database {
     ) -> Result<()> {
         let network = app_context.network.to_string();
         // Check if the contestant already exists and get the current values if it does
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT name, info, votes
              FROM contestant
@@ -599,7 +603,7 @@ impl Database {
         app_context: &AppContext,
     ) -> Result<Vec<String>> {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut names_to_be_updated: Vec<(String, Option<i64>)> = Vec::new();
         let mut new_names: Vec<String> = Vec::new();
 
@@ -684,7 +688,7 @@ impl Database {
         I: IntoIterator<Item = (String, TimestampMillis)>,
     {
         let network = app_context.network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Prepare statement for selecting existing entries
         let select_query = "SELECT end_time
@@ -729,7 +733,7 @@ impl Database {
         vote_strength: u64,
         vote_choice: ResourceVoteChoice,
     ) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock_or_recover();
         let tx = conn.transaction()?;
 
         match vote_choice {

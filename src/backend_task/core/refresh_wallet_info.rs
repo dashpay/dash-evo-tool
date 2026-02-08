@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -37,10 +38,7 @@ impl AppContext {
 
         // Step 2: Import addresses to Core (no wallet lock needed)
         {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+            let client = self.core_client.read_or_recover();
 
             for address in &addresses {
                 if let Err(e) = client.import_address(address, None, Some(false)) {
@@ -51,10 +49,7 @@ impl AppContext {
 
         // Step 3: Fetch UTXOs from Core RPC (no wallet lock needed)
         let utxo_map: HashMap<OutPoint, TxOut> = {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+            let client = self.core_client.read_or_recover();
 
             // Get UTXOs for all addresses
             let utxos = if addresses.is_empty() {
@@ -96,10 +91,7 @@ impl AppContext {
         // Step 5: Fetch total received for each address from Core RPC (no wallet lock)
         let mut total_received_map: HashMap<Address, u64> = HashMap::new();
         {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+            let client = self.core_client.read_or_recover();
 
             for address in &addresses {
                 match client.get_received_by_address(address, None) {
@@ -119,10 +111,7 @@ impl AppContext {
 
         // Step 6: Check which asset locks are stale (no wallet lock needed)
         let stale_txids: Vec<_> = {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+            let client = self.core_client.read_or_recover();
 
             asset_lock_txs
                 .iter()

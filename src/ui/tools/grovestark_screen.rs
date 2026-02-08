@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::grovestark::GroveSTARKTask;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::ui::RootScreenType;
 use crate::ui::ScreenLike;
@@ -360,7 +361,7 @@ impl GroveSTARKScreen {
         let private_key = match self.get_qualified_identity(&identity_id) {
             Some(qualified_identity) => {
                 // Get the wallets for resolving encrypted keys
-                let wallets = app_context.wallets.read().unwrap();
+                let wallets = app_context.wallets.read_or_recover();
                 let wallet_vec: Vec<_> = wallets.values().cloned().collect();
 
                 // Try to get the private key

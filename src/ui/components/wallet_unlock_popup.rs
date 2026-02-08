@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use crate::ui::components::styled::StyledCheckbox;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
@@ -214,7 +215,7 @@ impl WalletUnlockPopup {
 
                 // Attempt unlock if requested
                 if attempt_unlock {
-                    let mut wallet_guard = wallet.write().unwrap();
+                    let mut wallet_guard = wallet.write_or_recover();
                     match wallet_guard.wallet_seed.open(&self.password) {
                         Ok(_) => {
                             // Notify app context that wallet was unlocked
@@ -255,13 +256,13 @@ impl WalletUnlockPopup {
 
 /// Helper function to check if a wallet needs unlocking
 pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
-    let wallet_guard = wallet.read().unwrap();
+    let wallet_guard = wallet.read_or_recover();
     wallet_guard.uses_password && !wallet_guard.is_open()
 }
 
 /// Helper function to try opening a wallet without password (for wallets that don't use passwords)
 pub fn try_open_wallet_no_password(wallet: &Arc<RwLock<Wallet>>) -> Result<(), String> {
-    let mut wallet_guard = wallet.write().unwrap();
+    let mut wallet_guard = wallet.write_or_recover();
     if !wallet_guard.uses_password {
         wallet_guard.wallet_seed.open_no_password()
     } else {

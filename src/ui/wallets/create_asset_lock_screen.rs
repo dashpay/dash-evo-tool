@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -64,7 +65,7 @@ impl CreateAssetLockScreen {
 
         // Calculate next unused identity index
         let identity_index = {
-            let wallet_guard = wallet.read().unwrap();
+            let wallet_guard = wallet.read_or_recover();
             wallet_guard
                 .identities
                 .keys()
@@ -103,7 +104,7 @@ impl CreateAssetLockScreen {
     }
 
     fn generate_funding_address(&mut self) -> Result<(), String> {
-        let mut wallet = self.wallet.write().unwrap();
+        let mut wallet = self.wallet.write_or_recover();
 
         // Generate a new asset lock funding address
         let receive_address =
@@ -114,8 +115,7 @@ impl CreateAssetLockScreen {
             if !has_address {
                 self.app_context
                     .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
+                    .read_or_recover()
                     .import_address(
                         &receive_address,
                         Some("Managed by Dash Evo Tool - Asset Lock"),
@@ -128,16 +128,14 @@ impl CreateAssetLockScreen {
             let info = self
                 .app_context
                 .core_client
-                .read()
-                .expect("Core client lock was poisoned")
+                .read_or_recover()
                 .get_address_info(&receive_address)
                 .map_err(|e| e.to_string())?;
 
             if !(info.is_watchonly || info.is_mine) {
                 self.app_context
                     .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
+                    .read_or_recover()
                     .import_address(
                         &receive_address,
                         Some("Managed by Dash Evo Tool - Asset Lock"),
@@ -231,7 +229,7 @@ impl CreateAssetLockScreen {
                 self.selected_identity_string.clear();
                 // Recalculate next unused identity index
                 self.identity_index = {
-                    let wallet_guard = self.wallet.read().unwrap();
+                    let wallet_guard = self.wallet.read_or_recover();
                     wallet_guard
                         .identities
                         .keys()
@@ -253,7 +251,7 @@ impl CreateAssetLockScreen {
                 self.asset_lock_tx_id = None;
                 self.error_message = None;
                 self.show_advanced_options = false;
-                *self.step.write().unwrap() = WalletFundedScreenStep::WaitingOnFunds;
+                *self.step.write_or_recover() = WalletFundedScreenStep::WaitingOnFunds;
             }
 
             ui.add_space(100.0);
@@ -362,7 +360,7 @@ impl ScreenLike for CreateAssetLockScreen {
                 .show(ui, |ui| {
 
                     // Show success screen
-                    if *self.step.read().unwrap() == WalletFundedScreenStep::Success {
+                    if *self.step.read_or_recover() == WalletFundedScreenStep::Success {
                         inner_action |= self.show_success(ui);
                         return;
                     }
@@ -526,7 +524,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 ui.add_space(10.0);
 
                                 // Get used indices from wallet
-                                let wallet_guard = self.wallet.read().unwrap();
+                                let wallet_guard = self.wallet.read_or_recover();
                                 let used_indices: HashSet<u32> = wallet_guard.identities.keys().cloned().collect();
                                 drop(wallet_guard);
 
@@ -577,7 +575,7 @@ impl ScreenLike for CreateAssetLockScreen {
                             self.funding_utxo = Some(utxo);
                         }
 
-                        let step = *self.step.read().unwrap();
+                        let step = *self.step.read_or_recover();
 
                         // Request periodic repaints while waiting for funds
                         if step == WalletFundedScreenStep::WaitingOnFunds {
@@ -635,7 +633,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                             if let Some(credits) = credits {
                                                 // Transition to WaitingForAssetLock BEFORE dispatching to prevent duplicate dispatches
                                                 {
-                                                    let mut step = self.step.write().unwrap();
+                                                    let mut step = self.step.write_or_recover();
                                                     *step = WalletFundedScreenStep::WaitingForAssetLock;
                                                 }
 
@@ -729,7 +727,7 @@ impl ScreenLike for CreateAssetLockScreen {
     fn refresh(&mut self) {}
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        let current_step = *self.step.read().unwrap();
+        let current_step = *self.step.read_or_recover();
 
         match current_step {
             WalletFundedScreenStep::WaitingOnFunds => {
@@ -742,7 +740,7 @@ impl ScreenLike for CreateAssetLockScreen {
                         if let Some(funding_address) = &self.funding_address
                             && funding_address == address
                         {
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_or_recover();
                             *step = WalletFundedScreenStep::FundsReceived;
                             self.funding_utxo = Some(utxo);
                             drop(step); // Release the lock before creating new action
@@ -765,7 +763,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 self.asset_lock_tx_id = Some(tx_id);
                             }
 
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_or_recover();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
                             self.display_message(
@@ -780,7 +778,7 @@ impl ScreenLike for CreateAssetLockScreen {
                         // This is the asset lock transaction from ZMQ
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_or_recover();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
                             self.display_message(
@@ -802,7 +800,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 self.asset_lock_tx_id = Some(tx_id);
                             }
 
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_or_recover();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
                             self.display_message(
@@ -817,7 +815,7 @@ impl ScreenLike for CreateAssetLockScreen {
                         // This is the asset lock transaction from ZMQ
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_or_recover();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
                             self.display_message(

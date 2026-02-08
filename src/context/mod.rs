@@ -478,6 +478,74 @@ impl AppContext {
         default_platform_version(&self.network)
     }
 
+    /// Maps a `dash_sdk::Error` from a broadcast/state-transition operation into a
+    /// user-facing error string.  When the error is a `DriveProofError` the proof
+    /// data is persisted to the proof log database for later inspection.
+    ///
+    /// `operation_name` is a human-readable label such as "Mint Tokens" or
+    /// "Register Contract" that is embedded in the returned message.
+    pub fn map_broadcast_error(&self, error: dash_sdk::Error, operation_name: &str) -> String {
+        match error {
+            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                self.db
+                    .insert_proof_log_item(crate::model::proof_log_item::ProofLogItem {
+                        request_type:
+                            crate::model::proof_log_item::RequestType::BroadcastStateTransition,
+                        request_bytes: vec![],
+                        verification_path_query_bytes: vec![],
+                        height: block_info.height,
+                        time_ms: block_info.time_ms,
+                        proof_bytes,
+                        error: Some(proof_error.to_string()),
+                    })
+                    .ok();
+                format!(
+                    "Error broadcasting {} transition: {}, proof error logged",
+                    operation_name, proof_error
+                )
+            }
+            e => format!("Error broadcasting {} transition: {}", operation_name, e),
+        }
+    }
+
+    /// Variant of [`Self::map_broadcast_error`] that borrows the error fields
+    /// instead of consuming them. Useful when the caller still needs access to
+    /// the original error (e.g. identity registration retry logic).
+    ///
+    /// Returns `Some(formatted_message)` if the error was a `DriveProofError`
+    /// (i.e. proof was logged), or `None` otherwise.
+    pub fn try_log_proof_error(
+        &self,
+        error: &dash_sdk::Error,
+        operation_name: &str,
+    ) -> Option<String> {
+        if let dash_sdk::Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) =
+            *error
+        {
+            if let Err(e) =
+                self.db
+                    .insert_proof_log_item(crate::model::proof_log_item::ProofLogItem {
+                        request_type:
+                            crate::model::proof_log_item::RequestType::BroadcastStateTransition,
+                        request_bytes: vec![],
+                        verification_path_query_bytes: vec![],
+                        height: block_info.height,
+                        time_ms: block_info.time_ms,
+                        proof_bytes: proof_bytes.clone(),
+                        error: Some(proof_error.to_string()),
+                    })
+            {
+                tracing::warn!("Failed to persist proof log: {}", e);
+            }
+            Some(format!(
+                "Error broadcasting {} transition: {}, proof error logged",
+                operation_name, proof_error
+            ))
+        } else {
+            None
+        }
+    }
+
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
         if self.is_developer_mode() {
             Some(StateTransitionCreationOptions {

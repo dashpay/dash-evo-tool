@@ -4,7 +4,7 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info_via_dapi};
 use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -624,23 +624,8 @@ impl AppContext {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
                 // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
-                {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-                    return Err(format!(
-                        "Error registering identity: {}, proof error logged",
-                        proof_error
-                    ));
+                if let Some(msg) = self.try_log_proof_error(&e, "identity registration") {
+                    return Err(msg);
                 }
 
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
@@ -655,27 +640,10 @@ impl AppContext {
                         .await
                         .map_err(|e| {
                             // Log proof errors from retry
-                            if let Error::DriveProofError(
-                                ref proof_error,
-                                ref proof_bytes,
-                                ref block_info,
-                            ) = e
+                            if let Some(msg) =
+                                self.try_log_proof_error(&e, "identity registration")
                             {
-                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes: proof_bytes.clone(),
-                                    error: Some(proof_error.to_string()),
-                                }) {
-                                    tracing::warn!("Failed to persist proof log: {}", e);
-                                }
-                                return format!(
-                                    "Error registering identity: {}, proof error logged",
-                                    proof_error
-                                );
+                                return msg;
                             }
 
                             match IdentityCreateTransition::try_from_identity_with_signer(
@@ -805,20 +773,9 @@ impl AppContext {
             }
             Err(e) => {
                 // Log proof errors
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
+                if let Some(msg) =
+                    self.try_log_proof_error(&e, "identity registration from Platform addresses")
                 {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-
                     qualified_identity
                         .status
                         .update(IdentityStatus::FailedCreation);
@@ -829,10 +786,7 @@ impl AppContext {
                     )
                     .map_err(|e| e.to_string())?;
 
-                    return Err(format!(
-                        "Failed to create identity from Platform addresses: {}, proof error logged",
-                        proof_error
-                    ));
+                    return Err(msg);
                 }
 
                 qualified_identity

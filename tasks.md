@@ -1547,7 +1547,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4e Replace egui::ahash::HashMap with std HashMap in backend_task** (P3)
   In `src/backend_task/identity/load_identity.rs:32`, replace `egui::ahash::HashMap` import with `std::collections::HashMap` (or `ahash::HashMap` with a direct dependency if performance is needed). The backend layer should not depend on egui types.
 
-- [ ] **5.4f Extract state transition sign-and-broadcast helper** (P2)
+- [x] **5.4f Extract state transition sign-and-broadcast helper** (P2)
   Create a helper function in `src/backend_task/mod.rs` (or a new `src/backend_task/broadcast_helper.rs`) that encapsulates the repeated sign→broadcast→proof-error-logging pattern. Signature approximately: `async fn sign_and_broadcast(sdk, state_transition_builder, signing_key, identity, context, operation_name) -> Result<StateTransitionProofResult, String>`. Apply to token operations (pause, resume, burn, mint, freeze, unfreeze, transfer, destroy_frozen, emergency_action, set_price, purchase) and identity/contract operations. This eliminates ~15-20 lines of duplicated error-handling per file across 17+ files.
 
 - [ ] **5.4g Extract asset lock proof resolution helper** (P3)

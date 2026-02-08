@@ -2,11 +2,7 @@ use super::{BackendTaskSuccessResult, FeeResult};
 use crate::{
     app::TaskResult,
     context::AppContext,
-    model::{
-        fee_estimation::PlatformFeeEstimator,
-        proof_log_item::{ProofLogItem, RequestType},
-        qualified_identity::QualifiedIdentity,
-    },
+    model::{fee_estimation::PlatformFeeEstimator, qualified_identity::QualifiedIdentity},
 };
 use dash_sdk::{
     Error, Sdk,
@@ -121,21 +117,8 @@ impl AppContext {
                     crate::backend_task::contract::ContractResult::Updated(fee_result),
                 ))
             }
-            Err(e) => match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    // Log the proof error first, before any other operations
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
-
+            Err(e) => {
+                if let Some(_logged_msg) = self.try_log_proof_error(&e, "Contract Update") {
                     sender
                         .send(TaskResult::Success(Box::new(
                             BackendTaskSuccessResult::Contract(
@@ -147,7 +130,9 @@ impl AppContext {
 
                     // Try to extract contract ID and fetch the contract if it exists
                     // This handles the case where the contract was actually updated despite the proof error
-                    if let Ok(id) = extract_contract_id_from_error(proof_error.to_string().as_str())
+                    if let Error::DriveProofError(ref proof_error, _, _) = e
+                        && let Ok(id) =
+                            extract_contract_id_from_error(proof_error.to_string().as_str())
                     {
                         match self.network {
                             Network::Regtest => sleep(Duration::from_secs(3)).await,
@@ -164,17 +149,9 @@ impl AppContext {
                             ));
                         }
                     }
-
-                    Err(format!(
-                        "Error broadcasting Contract Update transition: {}, proof error logged",
-                        proof_error
-                    ))
                 }
-                e => Err(format!(
-                    "Error broadcasting Contract Update transition: {}",
-                    e
-                )),
-            },
+                Err(self.map_broadcast_error(e, "Contract Update"))
+            }
         }
     }
 }

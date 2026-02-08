@@ -1,8 +1,8 @@
 use super::TokenResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -11,7 +11,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::tokens::builders::claim::TokenClaimTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::ClaimResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
-use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
 
 impl AppContext {
@@ -46,26 +45,7 @@ impl AppContext {
         let result = sdk
             .token_claim(builder, &signing_key, actor_identity)
             .await
-            .map_err(|e| match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
-                    format!(
-                        "Error broadcasting ClaimTokens transition: {}, proof error logged",
-                        proof_error
-                    )
-                }
-                e => format!("Error broadcasting ClaimTokens transition: {}", e),
-            })?;
+            .map_err(|e| self.map_broadcast_error(e, "ClaimTokens"))?;
 
         // Using the result, update the balance of the claimer identity
         if let Some(token_id) = data_contract.token_id(token_position) {

@@ -2,8 +2,8 @@ use super::TokenResult;
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -11,7 +11,6 @@ use dash_sdk::dpp::tokens::info::v0::IdentityTokenInfoV0Accessors;
 use dash_sdk::platform::tokens::builders::freeze::TokenFreezeTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::FreezeResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
-use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
 
 impl AppContext {
@@ -50,26 +49,7 @@ impl AppContext {
         let result = sdk
             .token_freeze(builder, &signing_key, actor_identity)
             .await
-            .map_err(|e| match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
-                    format!(
-                        "Error broadcasting Freeze Tokens transition: {}, proof error logged",
-                        proof_error
-                    )
-                }
-                e => format!("Error broadcasting Freeze Tokens transition: {}", e),
-            })?;
+            .map_err(|e| self.map_broadcast_error(e, "Freeze Tokens"))?;
 
         // Log the proof-verified freeze result
         match result {

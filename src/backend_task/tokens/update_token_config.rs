@@ -1,6 +1,5 @@
 use super::{BackendTaskSuccessResult, TokenResult};
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::tokens::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -11,7 +10,7 @@ use dash_sdk::platform::tokens::builders::config_update::TokenConfigUpdateTransi
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use dash_sdk::{
-    Error, Sdk,
+    Sdk,
     dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem,
 };
 use std::sync::Arc;
@@ -101,26 +100,7 @@ impl AppContext {
         let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
-                    format!(
-                        "Error broadcasting Update token config transition: {}, proof error logged",
-                        proof_error
-                    )
-                }
-                e => format!("Error broadcasting Update token config transition: {}", e),
-            })?;
+            .map_err(|e| self.map_broadcast_error(e, "Update token config"))?;
 
         // Log proof result for audit trail
         tracing::info!("TokenConfigUpdate proof result: {}", proof_result);

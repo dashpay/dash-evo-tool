@@ -5,7 +5,7 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info_via_dapi};
 use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+
 use dash_sdk::Error;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
@@ -392,23 +392,8 @@ impl AppContext {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
                 // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
-                {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-                    return Err(format!(
-                        "Error topping up identity: {}, proof error logged",
-                        proof_error
-                    ));
+                if let Some(msg) = self.try_log_proof_error(&e, "identity top-up") {
+                    return Err(msg);
                 }
 
                 let error_string = e.to_string();
@@ -444,29 +429,10 @@ impl AppContext {
                                 .await
                                 .map_err(|e| {
                                     // Log proof errors from retry
-                                    if let Error::DriveProofError(
-                                        ref proof_error,
-                                        ref proof_bytes,
-                                        ref block_info,
-                                    ) = e
+                                    if let Some(msg) =
+                                        self.try_log_proof_error(&e, "identity top-up")
                                     {
-                                        if let Err(e) =
-                                            self.db.insert_proof_log_item(ProofLogItem {
-                                                request_type: RequestType::BroadcastStateTransition,
-                                                request_bytes: vec![],
-                                                verification_path_query_bytes: vec![],
-                                                height: block_info.height,
-                                                time_ms: block_info.time_ms,
-                                                proof_bytes: proof_bytes.clone(),
-                                                error: Some(proof_error.to_string()),
-                                            })
-                                        {
-                                            tracing::warn!("Failed to persist proof log: {}", e);
-                                        }
-                                        return format!(
-                                            "Error topping up identity: {}, proof error logged",
-                                            proof_error
-                                        );
+                                        return msg;
                                     }
                                     e.to_string()
                                 })?
@@ -495,27 +461,10 @@ impl AppContext {
                         .await
                         .map_err(|e| {
                             // Log proof errors from retry
-                            if let Error::DriveProofError(
-                                ref proof_error,
-                                ref proof_bytes,
-                                ref block_info,
-                            ) = e
+                            if let Some(msg) =
+                                self.try_log_proof_error(&e, "identity top-up")
                             {
-                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes: proof_bytes.clone(),
-                                    error: Some(proof_error.to_string()),
-                                }) {
-                                    tracing::warn!("Failed to persist proof log: {}", e);
-                                }
-                                return format!(
-                                    "Error topping up identity: {}, proof error logged",
-                                    proof_error
-                                );
+                                return msg;
                             }
 
                             match IdentityTopUpTransition::try_from_identity(

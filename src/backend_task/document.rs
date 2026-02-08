@@ -1,8 +1,9 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::document::{DocumentV0Getters, DocumentV0Setters};
@@ -26,7 +27,6 @@ use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::{Documents, IndexMap};
-use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,26 +179,7 @@ impl AppContext {
                 let result = sdk
                     .document_create(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error broadcasting document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error broadcasting document: {}", e),
-                    })?;
+                    .map_err(|e| self.map_broadcast_error(e, "document create"))?;
 
                 // Handle the result - DocumentCreateResult contains the created document
                 match result {
@@ -234,26 +215,7 @@ impl AppContext {
                 let result = sdk
                     .document_delete(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error deleting document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error deleting document: {}", e),
-                    })?;
+                    .map_err(|e| self.map_broadcast_error(e, "document delete"))?;
 
                 // Handle the result - DocumentDeleteResult contains the deleted document ID
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -292,26 +254,7 @@ impl AppContext {
                 let result = sdk
                     .document_replace(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error replacing document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error replacing document: {}", e),
-                    })?;
+                    .map_err(|e| self.map_broadcast_error(e, "document replace"))?;
 
                 // Handle the result - DocumentReplaceResult contains the replaced document
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -368,26 +311,7 @@ impl AppContext {
                 let result = sdk
                     .document_transfer(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error transferring document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error transferring document: {}", e),
-                    })?;
+                    .map_err(|e| self.map_broadcast_error(e, "document transfer"))?;
 
                 // Handle the result - DocumentTransferResult contains the transferred document
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -445,26 +369,7 @@ impl AppContext {
                 let result = sdk
                     .document_purchase(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error purchasing document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error purchasing document: {}", e),
-                    })?;
+                    .map_err(|e| self.map_broadcast_error(e, "document purchase"))?;
 
                 // Handle the result - DocumentPurchaseResult contains the purchased document
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -521,26 +426,7 @@ impl AppContext {
                 let result = sdk
                     .document_set_price(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error setting document price: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error setting document price: {}", e),
-                    })?;
+                    .map_err(|e| self.map_broadcast_error(e, "document set price"))?;
 
                 // Handle the result - DocumentSetPriceResult contains the document with updated price
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);

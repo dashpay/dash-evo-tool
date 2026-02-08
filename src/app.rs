@@ -4,6 +4,7 @@ use crate::app_dir::{
 };
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::{CoreItem, CoreResult};
+use crate::backend_task::error::BackendTaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
@@ -16,7 +17,6 @@ use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
-use crate::ui::helpers::translate_backend_error;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::theme::ThemeMode;
@@ -50,14 +50,24 @@ use tokio::sync::mpsc as tokiompsc;
 pub enum TaskResult {
     Refresh,
     Success(Box<BackendTaskSuccessResult>),
-    Error(String),
+    Error(BackendTaskError),
 }
 
+impl From<Result<BackendTaskSuccessResult, BackendTaskError>> for TaskResult {
+    fn from(value: Result<BackendTaskSuccessResult, BackendTaskError>) -> Self {
+        match value {
+            Ok(value) => TaskResult::Success(Box::new(value)),
+            Err(e) => TaskResult::Error(e),
+        }
+    }
+}
+
+/// Backwards-compatible conversion from string-error results during migration.
 impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
     fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
         match value {
             Ok(value) => TaskResult::Success(Box::new(value)),
-            Err(e) => TaskResult::Error(e),
+            Err(e) => TaskResult::Error(BackendTaskError::from(e)),
         }
     }
 }
@@ -886,8 +896,9 @@ impl App for AppState {
                         }
                     }
                 }
-                TaskResult::Error(message) => {
-                    let (summary, details) = translate_backend_error(&message);
+                TaskResult::Error(error) => {
+                    let summary = error.user_message();
+                    let details = error.technical_details();
                     self.visible_screen_mut().display_error(&summary, &details);
                 }
                 TaskResult::Refresh => {

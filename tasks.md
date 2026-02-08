@@ -1353,12 +1353,25 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Section 5: Architecture Improvements [Week 5-8]
 
-- [ ] **5.1 Design crate-level error type hierarchy** (P2)
+- [x] **5.1 Design crate-level error type hierarchy** (P2)
   Currently errors are `String` throughout (`Result<T, String>`). Design a proper error hierarchy using `thiserror`:
   - Define error types per module (wallet, identity, network, database)
   - Map to user-friendly display messages
   - Preserve error chains for debugging
   Start with `src/backend_task/` as the first module to convert.
+
+  **Implementation:**
+  Created `src/backend_task/error.rs` with a comprehensive error type hierarchy using `thiserror`:
+  - **Top-level `BackendTaskError` enum** wraps 13 domain-specific error types: `IdentityError`, `WalletError`, `CoreError`, `ContractError`, `DocumentError`, `TokenError`, `ContestError`, `DashPayTaskError`, `PlatformError`, `MnListError`, `GroveSTARKError`, `SystemError`, `BroadcastError`, plus a `Generic(String)` catch-all for migration.
+  - **Each error type** has `From<String>` impl for backwards compatibility — existing code that returns `Err("message".to_string())` works unchanged via `?`.
+  - **User-friendly messages** via `user_message()` methods on every error type. Domain-specific variants get curated messages; generic errors are classified by pattern matching on common SDK/Platform error strings (transport unavailable → connection failed, insufficient → funds error, etc.).
+  - **Recoverability classification** via `is_recoverable()` methods — network/timeout errors return true, validation errors return false.
+  - **`DashPayTaskError`** wraps the existing `DashPayError` (from `dashpay/errors.rs`) via `#[from]`, preserving its mature `user_message()`/`is_recoverable()` methods.
+  - Updated `TaskResult::Error` to hold `BackendTaskError` instead of `String`.
+  - Updated `run_backend_task()`, `run_backend_tasks_sequential()`, `run_backend_tasks_concurrent()`, and `run_wallet_task()` to return `Result<..., BackendTaskError>`.
+  - Updated `app.rs` error handling to use `error.user_message()` and `error.technical_details()` directly instead of `translate_backend_error()`.
+  - Added backwards-compatible `From<Result<BackendTaskSuccessResult, String>> for TaskResult` to support inner task functions that still return `Result<..., String>`.
+  - **Migration path:** Inner task functions can remain on `Result<..., String>` and be gradually converted to use domain-specific error types. The `.map_err(Into::into)` at the dispatcher boundary handles the conversion.
 
 - [ ] **5.2 Replace deprecated serde_yaml dependency** (P2)
   `serde_yaml = "0.9.34-deprecated"` in Cargo.toml. Evaluate alternatives:
@@ -1541,7 +1554,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 20 |
-| 5. Architecture | 4 | 0 |
+| 5. Architecture | 4 | 1 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

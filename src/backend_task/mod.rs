@@ -4,6 +4,7 @@ use crate::backend_task::contract::{ContractResult, ContractTask};
 use crate::backend_task::core::{CoreResult, CoreTask};
 use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::document::{DocumentResult, DocumentTask};
+use crate::backend_task::error::BackendTaskError;
 use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformResult};
 use crate::backend_task::system_task::{SystemResult, SystemTask};
@@ -23,6 +24,7 @@ pub mod contract;
 pub mod core;
 pub mod dashpay;
 pub mod document;
+pub mod error;
 pub mod grovestark;
 pub mod identity;
 pub mod mnlist;
@@ -33,7 +35,6 @@ pub mod tokens;
 pub mod update_data_contract;
 pub mod wallet;
 
-// TODO: Refactor how we handle errors and messages, and remove it from here
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 
 /// Information about fees paid for a platform state transition
@@ -117,7 +118,7 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+    ) -> Vec<Result<BackendTaskSuccessResult, BackendTaskError>> {
         let mut results = Vec::new();
         for task in tasks {
             match self.run_backend_task(task, sender.clone()).await {
@@ -133,7 +134,7 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+    ) -> Vec<Result<BackendTaskSuccessResult, BackendTaskError>> {
         let futures = tasks
             .into_iter()
             .map(|task| {
@@ -151,47 +152,58 @@ impl AppContext {
         self: &Arc<Self>,
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, BackendTaskError> {
         let sdk = {
             let guard = self.sdk.read_or_recover();
             guard.clone()
         };
         match task {
-            BackendTask::ContractTask(contract_task) => {
-                self.run_contract_task(*contract_task, &sdk, sender).await
-            }
-            BackendTask::ContestedResourceTask(contested_resource_task) => {
-                self.run_contested_resource_task(contested_resource_task, &sdk, sender)
-                    .await
-            }
-            BackendTask::IdentityTask(identity_task) => {
-                self.run_identity_task(identity_task, &sdk, sender).await
-            }
-            BackendTask::DocumentTask(document_task) => {
-                self.run_document_task(*document_task, &sdk).await
-            }
-            BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
-            BackendTask::DashPayTask(dashpay_task) => {
-                self.run_dashpay_task(*dashpay_task, &sdk).await
-            }
-            BackendTask::BroadcastStateTransition(state_transition) => {
-                self.broadcast_state_transition(state_transition, &sdk)
-                    .await
-            }
-            BackendTask::TokenTask(token_task) => {
-                self.run_token_task(*token_task, &sdk, sender).await
-            }
-            BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
-            BackendTask::MnListTask(mnlist_task) => mnlist::run_mnlist_task(self, mnlist_task)
+            BackendTask::ContractTask(contract_task) => self
+                .run_contract_task(*contract_task, &sdk, sender)
                 .await
-                .map(BackendTaskSuccessResult::MnList),
-            BackendTask::PlatformInfo(platform_info_task) => {
-                self.run_platform_info_task(platform_info_task).await
+                .map_err(Into::into),
+            BackendTask::ContestedResourceTask(contested_resource_task) => self
+                .run_contested_resource_task(contested_resource_task, &sdk, sender)
+                .await
+                .map_err(Into::into),
+            BackendTask::IdentityTask(identity_task) => self
+                .run_identity_task(identity_task, &sdk, sender)
+                .await
+                .map_err(Into::into),
+            BackendTask::DocumentTask(document_task) => self
+                .run_document_task(*document_task, &sdk)
+                .await
+                .map_err(Into::into),
+            BackendTask::CoreTask(core_task) => {
+                self.run_core_task(core_task).await.map_err(Into::into)
             }
+            BackendTask::DashPayTask(dashpay_task) => self
+                .run_dashpay_task(*dashpay_task, &sdk)
+                .await
+                .map_err(Into::into),
+            BackendTask::BroadcastStateTransition(state_transition) => self
+                .broadcast_state_transition(state_transition, &sdk)
+                .await
+                .map_err(Into::into),
+            BackendTask::TokenTask(token_task) => self
+                .run_token_task(*token_task, &sdk, sender)
+                .await
+                .map_err(Into::into),
+            BackendTask::SystemTask(system_task) => self
+                .run_system_task(system_task, sender)
+                .await
+                .map_err(Into::into),
+            BackendTask::MnListTask(mnlist_task) => Ok(BackendTaskSuccessResult::MnList(
+                mnlist::run_mnlist_task(self, mnlist_task).await?,
+            )),
+            BackendTask::PlatformInfo(platform_info_task) => self
+                .run_platform_info_task(platform_info_task)
+                .await
+                .map_err(Into::into),
             BackendTask::GroveSTARKTask(grovestark_task) => {
-                grovestark::run_grovestark_task(grovestark_task, &sdk)
-                    .await
-                    .map(BackendTaskSuccessResult::GroveSTARK)
+                Ok(BackendTaskSuccessResult::GroveSTARK(
+                    grovestark::run_grovestark_task(grovestark_task, &sdk).await?,
+                ))
             }
             BackendTask::WalletTask(wallet_task) => self.run_wallet_task(wallet_task).await,
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
@@ -201,49 +213,50 @@ impl AppContext {
     async fn run_wallet_task(
         self: &Arc<Self>,
         task: WalletTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, BackendTaskError> {
         match task {
-            WalletTask::GenerateReceiveAddress { seed_hash } => {
-                self.generate_receive_address(seed_hash).await
-            }
+            WalletTask::GenerateReceiveAddress { seed_hash } => self
+                .generate_receive_address(seed_hash)
+                .await
+                .map_err(Into::into),
             WalletTask::FetchPlatformAddressBalances {
                 seed_hash,
                 sync_mode,
-            } => {
-                self.fetch_platform_address_balances(seed_hash, sync_mode)
-                    .await
-            }
+            } => self
+                .fetch_platform_address_balances(seed_hash, sync_mode)
+                .await
+                .map_err(Into::into),
             WalletTask::TransferPlatformCredits {
                 seed_hash,
                 inputs,
                 outputs,
                 fee_payer_index,
-            } => {
-                self.transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
-                    .await
-            }
+            } => self
+                .transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
+                .await
+                .map_err(Into::into),
             WalletTask::FundPlatformAddressFromAssetLock {
                 seed_hash,
                 asset_lock_proof,
                 asset_lock_address,
                 outputs,
-            } => {
-                self.fund_platform_address_from_asset_lock(
+            } => self
+                .fund_platform_address_from_asset_lock(
                     seed_hash,
                     *asset_lock_proof,
                     asset_lock_address,
                     outputs,
                 )
                 .await
-            }
+                .map_err(Into::into),
             WalletTask::WithdrawFromPlatformAddress {
                 seed_hash,
                 inputs,
                 output_script,
                 core_fee_per_byte,
                 fee_payer_index,
-            } => {
-                self.withdraw_from_platform_address(
+            } => self
+                .withdraw_from_platform_address(
                     seed_hash,
                     inputs,
                     output_script,
@@ -251,21 +264,21 @@ impl AppContext {
                     fee_payer_index,
                 )
                 .await
-            }
+                .map_err(Into::into),
             WalletTask::FundPlatformAddressFromWalletUtxos {
                 seed_hash,
                 amount,
                 destination,
                 fee_deduct_from_output,
-            } => {
-                self.fund_platform_address_from_wallet_utxos(
+            } => self
+                .fund_platform_address_from_wallet_utxos(
                     seed_hash,
                     amount,
                     destination,
                     fee_deduct_from_output,
                 )
                 .await
-            }
+                .map_err(Into::into),
         }
     }
 }

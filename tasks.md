@@ -1107,7 +1107,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for implementation:**
 
-- [ ] **4.1a Add "hide zero balances" checkbox to wallet address table** (P2)
+- [x] **4.1a Add "hide zero balances" checkbox to wallet address table** (P2)
   In `src/ui/wallets/wallets_screen/address_table.rs`:
   (1) Add `hide_zero_balances: bool` field to `WalletsBalancesScreen` (default `true`).
   (2) Add checkbox UI near the account filter/sorting controls in `render_address_table()`.

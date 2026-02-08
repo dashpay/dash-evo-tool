@@ -631,3 +631,8 @@
 - GH#369 PARTIALLY CONFIRMED: Import wallet defaults to 12 words vs creation's 24; validation feedback could be more specific
 - GH#368 PARTIALLY CONFIRMED: 7 suggestions triaged — seed phrase length already supported, but password masking default, entropy animation, and pill overflow need fixes
 - GH#367 PARTIALLY CONFIRMED: Wallet purpose confusion — needs explanatory text in UI; multi-wallet error already addressed
+
+## Run 101 — 2026-02-08
+**Task:** 4.1a Add "hide zero balances" checkbox to wallet address table
+**What was done:** Added a `hide_zero_balances: bool` field (default `true`) to `WalletsBalancesScreen` and a corresponding checkbox in `render_address_table()`. When enabled, addresses with both zero Core balance and zero Platform credits are filtered out. The checkbox appears above the address table, allowing users to toggle visibility of empty addresses. This addresses GH#471's request to declutter the wallet address list by hiding unused addresses by default.
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/address_table.rs

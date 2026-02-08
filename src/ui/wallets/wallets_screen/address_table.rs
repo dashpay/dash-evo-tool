@@ -193,7 +193,14 @@ impl WalletsBalancesScreen {
                 .retain(|data| data.account_category == category && data.account_index == index);
         }
 
-        // Space allocation for UI elements is handled by the layout system
+        // Filter out zero-balance addresses if enabled
+        if self.hide_zero_balances {
+            address_data.retain(|data| data.balance > 0 || data.platform_credits > 0);
+        }
+
+        // Checkbox to toggle hiding zero balances
+        ui.checkbox(&mut self.hide_zero_balances, "Hide zero balances");
+        ui.add_space(4.0);
 
         // Render the table
         TableBuilder::new(ui)

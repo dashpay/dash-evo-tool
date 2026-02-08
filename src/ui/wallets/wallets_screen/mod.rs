@@ -115,6 +115,8 @@ pub struct WalletsBalancesScreen {
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
     refresh_mode: RefreshMode,
+    /// Whether to hide addresses with zero balance in the address table
+    hide_zero_balances: bool,
 }
 
 impl WalletsBalancesScreen {
@@ -205,6 +207,7 @@ impl WalletsBalancesScreen {
             pending_asset_lock_search_after_unlock: false,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
+            hide_zero_balances: true,
         }
     }
 

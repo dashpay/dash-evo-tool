@@ -857,7 +857,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.5a Extract SPV & wallet lifecycle into context/wallet_lifecycle.rs** (P2)
   Move ~480 lines of SPV and wallet lifecycle methods (lines 486-1043) into a new `src/context/wallet_lifecycle.rs` as a separate `impl AppContext` block. Methods to move: `spv_manager`, `clear_spv_data`, `start_spv`, `bootstrap_wallet_addresses`, `handle_wallet_unlocked`, `handle_wallet_locked`, `wallet_seed_snapshot`, `queue_spv_wallet_load`, `queue_spv_wallet_unload`, `queue_wallet_identity_discovery`, `bootstrap_loaded_wallets`, `update_wallet_platform_address_info_from_sdk`, `register_spv_address`, `wallet_network_key`, `sync_spv_account_addresses`, `spv_account_metadata`, `classify_derivation_metadata`, `spv_setup_reconcile_listener`, `reconcile_spv_wallets`, `stop_spv`, `clear_network_database`. This is the largest self-contained group and will reduce context/mod.rs by ~25%.
 
-- [ ] **3.5b Extract identity/DPNS database facade into context/identity_db.rs** (P2)
+- [x] **3.5b Extract identity/DPNS database facade into context/identity_db.rs** (P2)
   Move ~170 lines of identity and DPNS database facade methods (lines 1171-1363) into a new `src/context/identity_db.rs` as a separate `impl AppContext` block. Methods: `insert_local_qualified_identity`, `update_local_qualified_identity`, `set_identity_alias`, `set_contract_alias`, `get_identity_alias`, `load_local_qualified_identities`, `load_local_qualified_identities_in_wallets`, `get_identity_by_id`, `load_local_voting_identities`, `load_local_user_identities`, `load_wallet_for_identity`, `all_contested_names`, `ongoing_contested_names`, `insert_scheduled_votes`, `get_scheduled_votes`, `clear_all_scheduled_votes`, `clear_executed_scheduled_votes`, `delete_scheduled_vote`, `mark_vote_executed`, `local_dpns_names`.
 
 - [ ] **3.5c Extract contract/token database facade into context/contract_token_db.rs** (P2)
@@ -1111,7 +1111,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 34 | 20 |
+| 3. Refactoring | 34 | 21 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

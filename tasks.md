@@ -1382,9 +1382,123 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Implementation:** Replaced `serde_yaml` with `serde_yaml_ng` (v0.10.0), a direct community fork of dtolnay's serde-yaml with API compatibility. Chose `serde_yaml_ng` over `serde_yml` due to quality concerns with the latter (AI-generated additions with soundness issues). Only 2 call sites used `serde_yaml`: (1) `contracts_documents_screen.rs:785` — `serde_yaml::to_string()` for YAML document display, (2) `add_existing_identity_screen.rs:61` — `serde_yaml::from_str()` for testnet nodes YAML import. Both updated to `serde_yaml_ng::` prefix — drop-in replacement with identical API.
 
-- [ ] **5.3 [META] Evaluate workspace structure feasibility** (P3)
+- [x] **5.3 [META] Evaluate workspace structure feasibility** (P3)
   Analyze the dependency graph between modules. Could the project benefit from a Cargo workspace with separate crates (e.g., `ui`, `backend`, `model`, `database`)?
   Estimate effort, identify circular dependencies that would block this, and create a migration plan if feasible.
+
+  **Evaluation Results:**
+
+  **Codebase size by module (lines of Rust):**
+  - `ui/` — 73,750 lines (63% of codebase, 76+ files)
+  - `backend_task/` — 21,105 lines (18%)
+  - `database/` — 8,785 lines (8%)
+  - `model/` — 7,706 lines (7%)
+  - `context/` — 1,915 lines (2%)
+  - `spv/` — 1,186 lines (1%)
+  - `components/` — 934 lines (<1%)
+  - Standalone files (app.rs, config.rs, etc.) — 2,476 lines (2%)
+  - **Total: ~117,642 lines**
+
+  **Dependency graph (A → B means A imports from B):**
+  ```
+  ui → backend_task (154 imports across 64 files)
+  ui → context (76 imports across 76 files)
+  ui → model (165 imports across 72 files)
+  ui → database (2 imports across 2 files)
+  backend_task → context (heavy)
+  backend_task → model (heavy)
+  backend_task → database (heavy)
+  backend_task → ui (6 imports — REVERSE DEPENDENCY)
+  database → model (heavy)
+  database → context (via AppContext for token operations)
+  database → ui (3 imports — REVERSE DEPENDENCY)
+  model → ui (2 imports — REVERSE DEPENDENCY)
+  context → model (heavy)
+  context → database (heavy)
+  context → ui (2 imports — REVERSE DEPENDENCY)
+  context → spv (light)
+  app.rs → everything (orchestrator)
+  ```
+
+  **Circular dependencies found (blocking a clean workspace split):**
+
+  1. **backend_task → ui (6 imports in 5 files):**
+     - `tokens/mod.rs` → `ui::tokens::tokens_screen::{IdentityTokenInfo, IdentityTokenIdentifier, ContractDescriptionInfo, TokenInfo}`
+     - `tokens/update_token_config.rs` → `ui::tokens::tokens_screen::IdentityTokenInfo`
+     - `tokens/query_token_non_claimed_perpetual_distribution_rewards.rs` → `ui::tokens::tokens_screen::IdentityTokenIdentifier`
+     - `contract.rs` → `ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo}`
+     - `system_task/mod.rs` → `ui::theme::ThemeMode`
+     - `identity/load_identity.rs` → `ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX`
+
+  2. **database → ui (3 imports in 2 files):**
+     - `settings.rs` → `ui::RootScreenType`, `ui::theme::ThemeMode`
+     - `tokens.rs` → `ui::tokens::tokens_screen::{IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract, IdentityTokenBalance}`
+
+  3. **model → ui (2 imports in 1 file):**
+     - `settings.rs` → `ui::RootScreenType`, `ui::theme::ThemeMode`
+
+  4. **context → ui (2 imports in 2 files):**
+     - `settings_db.rs` → `ui::RootScreenType`
+     - `contract_token_db.rs` → `ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier}`
+
+  5. **Leaking GUI types into non-GUI layers:**
+     - `model/qualified_identity/mod.rs` imports `egui::Color32` (for identity color)
+     - `backend_task/identity/load_identity.rs` imports `egui::ahash::HashMap` (using egui as hash map provider)
+
+  **Types that would need to move to a shared/common crate:**
+  - `RootScreenType` — enum defining screen types, used by model, database, context
+  - `ThemeMode` — light/dark mode enum, used by model, database, backend_task
+  - `IdentityTokenInfo`, `IdentityTokenIdentifier`, `TokenInfo`, `ContractDescriptionInfo`, `TokenInfoWithDataContract`, `IdentityTokenBalance` — token data structs currently in `ui::tokens::tokens_screen`, used by backend_task, database, context
+  - `MAX_IDENTITY_INDEX` — a constant from `ui::identities`, used by backend_task
+
+  **Proposed workspace structure (if pursued):**
+  ```
+  dash-evo-tool-types/     (shared types, ~500 lines)
+  ├── RootScreenType, ThemeMode
+  ├── Token DTOs (IdentityTokenInfo, TokenInfo, etc.)
+  ├── MAX_IDENTITY_INDEX constant
+  └── Dependencies: dash-sdk only
+
+  dash-evo-tool-model/     (~7,700 lines)
+  ├── Data types, wallet models, settings
+  └── Dependencies: types, dash-sdk
+
+  dash-evo-tool-database/  (~8,800 lines)
+  ├── SQLite persistence
+  └── Dependencies: types, model, rusqlite
+
+  dash-evo-tool-backend/   (~21,100 lines)
+  ├── Async business logic
+  └── Dependencies: types, model, database, context, dash-sdk, tokio
+
+  dash-evo-tool-ui/        (~73,750 lines)
+  ├── All egui screens and components
+  └── Dependencies: types, model, backend, context, egui, eframe
+
+  dash-evo-tool/           (main binary, ~5,000 lines)
+  ├── app.rs, main.rs, config.rs, logging.rs
+  └── Dependencies: all crates
+  ```
+
+  **Feasibility assessment: NOT RECOMMENDED at this time.**
+
+  **Reasons against:**
+  1. **High effort, low reward.** Moving ~20 types to a shared crate and restructuring imports across 100+ files is a multi-week effort. The project is single-binary with no library consumers, so the primary benefit (reusability) doesn't apply.
+  2. **Compilation is already fast enough.** With 117K lines in a single crate, incremental compilation handles changes well. A workspace would only help initial full builds, which are dominated by the `dash-sdk` dependency tree anyway.
+  3. **Circular dependencies require type relocation.** 6 token-related types currently live in UI code but are used by backend/database/context. Moving them requires careful API design since they carry serialization logic (bincode, Display impls) and are tightly coupled to platform SDK types.
+  4. **egui leakage into model layer.** `qualified_identity/mod.rs` uses `egui::Color32` for identity colors. This would require introducing a non-egui color type or accepting egui as a dependency in the model crate.
+  5. **Ongoing development friction.** Every cross-crate change requires version coordination. With a single active developer and no downstream consumers, this adds overhead with no benefit.
+  6. **Prior refactoring already achieved the key goals.** Tasks 3.1–3.7 decomposed the large files (4400→2300 lines for masternode screen, 3800→2670 for wallets, etc.) and extracted shared utilities. Module-level organization within a single crate provides similar readability benefits without the workspace overhead.
+
+  **Lower-effort alternative (recommended instead):**
+  Task 5.4 should focus on moving the ~20 UI-defined types that are used across module boundaries into a `src/types/` or `src/shared/` module. This achieves cleaner layering without the Cargo workspace overhead:
+  - Move `RootScreenType`, `ThemeMode` from `ui/` to `types/`
+  - Move `IdentityTokenInfo`, `TokenInfo`, etc. from `ui/tokens/tokens_screen/` to `model/tokens/` or `types/`
+  - Move `MAX_IDENTITY_INDEX` to `model/` or `types/`
+  - Replace `egui::Color32` usage in model with a custom `IdentityColor` type
+  - Replace `egui::ahash::HashMap` with `std::collections::HashMap` in backend_task
+
+  **No sub-tasks created.** The workspace split is not recommended. Task 5.4 will address the type-boundary issues as a simpler alternative.
 
 - [ ] **5.4 [META] Review module boundaries and shared utility opportunities** (P3)
   Identify code that's currently scattered across modules but could be centralized:
@@ -1556,7 +1670,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 20 |
-| 5. Architecture | 4 | 2 |
+| 5. Architecture | 4 | 3 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

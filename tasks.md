@@ -1373,12 +1373,14 @@ These META tasks validate reported bugs against the current codebase before any 
   - Added backwards-compatible `From<Result<BackendTaskSuccessResult, String>> for TaskResult` to support inner task functions that still return `Result<..., String>`.
   - **Migration path:** Inner task functions can remain on `Result<..., String>` and be gradually converted to use domain-specific error types. The `.map_err(Into::into)` at the dispatcher boundary handles the conversion.
 
-- [ ] **5.2 Replace deprecated serde_yaml dependency** (P2)
+- [x] **5.2 Replace deprecated serde_yaml dependency** (P2)
   `serde_yaml = "0.9.34-deprecated"` in Cargo.toml. Evaluate alternatives:
   - `serde_yml` (maintained fork)
   - Remove YAML support if not needed
   - Other serialization format
   Check what actually uses YAML in the codebase and make the minimal change.
+
+  **Implementation:** Replaced `serde_yaml` with `serde_yaml_ng` (v0.10.0), a direct community fork of dtolnay's serde-yaml with API compatibility. Chose `serde_yaml_ng` over `serde_yml` due to quality concerns with the latter (AI-generated additions with soundness issues). Only 2 call sites used `serde_yaml`: (1) `contracts_documents_screen.rs:785` — `serde_yaml::to_string()` for YAML document display, (2) `add_existing_identity_screen.rs:61` — `serde_yaml::from_str()` for testnet nodes YAML import. Both updated to `serde_yaml_ng::` prefix — drop-in replacement with identical API.
 
 - [ ] **5.3 [META] Evaluate workspace structure feasibility** (P3)
   Analyze the dependency graph between modules. Could the project benefit from a Cargo workspace with separate crates (e.g., `ui`, `backend`, `model`, `database`)?
@@ -1554,7 +1556,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 20 |
-| 5. Architecture | 4 | 1 |
+| 5. Architecture | 4 | 2 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

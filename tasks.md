@@ -748,10 +748,74 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.3f Move validate_perpetual_distribution_recipient to distributions.rs** (P3)
   Move the top-level `validate_perpetual_distribution_recipient()` function (lines 97-128) to `distributions.rs` where the rest of the distribution logic lives.
 
-- [ ] **3.4 [META] Review send_screen.rs (2744 lines) and single_key_send_screen.rs (1042 lines)** (P2)
+- [x] **3.4 [META] Review send_screen.rs (2744 lines) and single_key_send_screen.rs (1042 lines)** (P2)
   Identify shared code between these two files for extraction into common utilities.
   Focus on: fee estimation logic, address validation, recipient management, transaction building.
   Create sub-tasks for specific extractions.
+
+  **Review Results:**
+
+  **File structure:**
+  - `send_screen.rs` (2,750 lines, ~40 methods): HD wallet send screen supporting 4 transaction types (Core→Core, Core→Platform, Platform→Platform, Platform→Core) with both simple and advanced modes. 19 methods over 50 lines. No unwrap/expect/panic calls.
+  - `single_key_send_screen.rs` (1,057 lines, ~17 methods): Single-key wallet send screen with simple/advanced modes, fee confirmation dialog, multiple recipients. 8 methods over 50 lines. No dangerous unwrap/expect/panic calls.
+
+  **Duplicated code between files:**
+  1. **`format_dash()`** — Identical static method: `Amount::dash_from_duffs(amount_duffs).to_string()`. Appears in both files.
+  2. **`parse_amount_to_duffs()`** — Identical static method: `Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH").dash_to_duffs()`. Appears in both files.
+  3. **`render_wallet_info()`** — Similar pattern (reads wallet from Arc<RwLock>, displays alias and balance in a styled frame). Different layouts but same logic pattern.
+  4. **Message display pattern** — Both implement a styled error/success message banner with dismiss button. send_screen uses `SendStatus` enum + `render_send_status()` (73 lines); single_key uses `message` tuple + inline rendering in `ui()` (30 lines). Same visual pattern.
+  5. **Wallet unlock gate** — send_screen uses `WalletUnlockPopup` component (36 lines); single_key has its own `render_wallet_unlock()` (71 lines) with inline password input. Could be unified to both use WalletUnlockPopup.
+  6. **Heading + Advanced Options checkbox** — Identical 10-line pattern in both `ui()` methods: heading "Send Dash" + right-aligned "Advanced Options" checkbox.
+  7. **Fee confirmation dialog** — single_key has a full dialog (128 lines) for handling "min relay fee not met" errors with retry. send_screen lacks this feature entirely for Core→Core sends. Could be extracted as a shared component.
+
+  **send_screen.rs internal refactoring opportunities:**
+  1. **Advanced mode is ~800 lines** (render_advanced_send: 168, render_core_inputs: 123, render_platform_inputs: 127, render_advanced_outputs: 85, render_advanced_send_button: 64, validate_and_send_advanced: 65, plus 4 send_advanced_* methods ~230 lines). This is a self-contained subsystem that could be a separate file.
+  2. **Platform fee estimation functions** (lines 50-116, 3 functions ~65 lines) are file-level functions only used by send_screen.rs. They belong alongside the PlatformFeeEstimator module.
+  3. **Platform address allocation** (lines 120-263, 2 functions ~145 lines) is independent utility code for allocating platform addresses with fee estimation.
+  4. **4 send type methods** (send_core_to_core: 45, send_core_to_platform: 39, send_platform_to_platform: 127, send_platform_to_core: 117) totaling ~330 lines could be grouped together.
+
+  **Sub-tasks created for incremental extraction:**
+
+- [ ] **3.4a Extract shared send utilities into send_utils.rs** (P2)
+  Create `src/ui/wallets/send_utils.rs` with shared utilities used by both send screens:
+  - `format_dash(amount_duffs: u64) -> String` — duplicated in both files
+  - `parse_amount_to_duffs(input: &str) -> Result<u64, String>` — duplicated in both files
+  - `parse_amount_to_credits(input: &str) -> Result<Credits, String>` — from send_screen.rs, generally useful
+  - `format_credits(credits: Credits) -> String` — from send_screen.rs, generally useful
+  - `detect_address_type(address: &str) -> AddressType` — from send_screen.rs, reusable
+  - `AddressType` enum — from send_screen.rs, needed by detect_address_type
+  Update both send screens to import from send_utils instead of having their own copies.
+
+- [ ] **3.4b Extract fee confirmation dialog into a shared component** (P2)
+  Move the `FeeConfirmationDialog` struct and `render_fee_confirmation_dialog()` (128 lines) from `single_key_send_screen.rs` into a reusable component (e.g., `src/ui/components/fee_confirmation_dialog.rs`). Also move `parse_min_relay_fee_error()` (20 lines) there since it's the trigger logic. This dialog handles the case where the network requires a higher fee than estimated and lets the user confirm. Could be reused by send_screen.rs for Core→Core sends.
+
+- [ ] **3.4c Extract advanced send mode into send_screen/advanced.rs** (P2)
+  Move the advanced send mode (~800 lines) from `send_screen.rs` into a new `send_screen/advanced.rs` module (converting send_screen.rs into a `send_screen/` directory with `mod.rs`):
+  - `render_advanced_send()` (168 lines)
+  - `render_core_inputs()` (123 lines)
+  - `render_platform_inputs()` (127 lines)
+  - `render_advanced_outputs()` (85 lines)
+  - `render_advanced_send_button()` (64 lines)
+  - `validate_and_send_advanced()` (65 lines)
+  - `send_advanced_core_to_core()` (61 lines)
+  - `send_advanced_core_to_platform()` (58 lines)
+  - `send_advanced_platform_to_platform()` (54 lines)
+  - `send_advanced_platform_to_core()` (57 lines)
+  - `AdvancedSourceType` enum, `AdvancedOutput` struct, `CoreAddressInput`/`PlatformAddressInput` structs
+  This reduces send_screen.rs from ~2750 to ~1950 lines.
+
+- [ ] **3.4d Extract platform fee estimation and address allocation** (P3)
+  Move platform-specific fee estimation and address allocation code from `send_screen.rs` to the existing `src/model/fee_estimation.rs` module (or a new `src/model/platform_address_allocation.rs`):
+  - `estimate_platform_fee()` (17 lines, line 50)
+  - `estimate_withdrawal_fee_from_transition()` (25 lines, line 69)
+  - `estimate_address_funding_fee_from_transition()` (21 lines, line 96)
+  - `AddressAllocationResult` struct (12 fields, line 120)
+  - `allocate_platform_addresses_with_fee()` (101 lines, line 134)
+  - `allocate_platform_addresses()` (17 lines, line 247)
+  These are pure computation functions with no UI dependencies, making them good candidates for the model layer.
+
+- [ ] **3.4e Unify wallet unlock approach in single_key_send_screen** (P3)
+  Replace the custom inline `render_wallet_unlock()` (71 lines) in `single_key_send_screen.rs` with the existing `WalletUnlockPopup` component that `send_screen.rs` already uses. This eliminates duplicate password input UI, show/hide toggle, and zeroization logic. The `WalletUnlockPopup` component in `src/ui/components/wallet_unlock_popup.rs` already handles all these cases for HD wallets; need to verify it works for single-key wallets or adapt it.
 
 - [ ] **3.5 [META] Review context.rs (1754 lines, 40+ fields)** (P2)
   Identify a module split strategy. Possible groupings:
@@ -996,14 +1060,14 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 65 (24 META + 41 direct)
+**Total tasks:** 70 (24 META + 46 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 24 | 15 |
+| 3. Refactoring | 29 | 16 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

@@ -459,3 +459,18 @@
 **Task:** 3.3f Move validate_perpetual_distribution_recipient to distributions.rs
 **What was done:** Moved the `validate_perpetual_distribution_recipient()` function (32 lines) from the top level of `tokens_screen/mod.rs` to `distributions.rs` where the rest of the distribution logic lives. Added a `pub use` re-export in mod.rs so existing callers (`structs.rs`) continue to work unchanged. Cleaned up two now-unused imports from mod.rs (`IdentityType`, `TokenDistributionRecipient`) and moved `TokenDistributionRecipient` to the test module where it's still needed. Added `QualifiedIdentity`, `IdentityType` imports to distributions.rs for the moved function.
 **Files changed:** src/ui/tokens/tokens_screen/mod.rs, src/ui/tokens/tokens_screen/distributions.rs, tasks.md, activity.md
+
+## Run 71 — 2026-02-07
+**Task:** 3.4 [META] Review send_screen.rs (2744 lines) and single_key_send_screen.rs (1042 lines)
+**What was done:** Reviewed both send screen files in detail (~3,800 lines combined). Identified 7 areas of duplicated/shared code between the files (format_dash, parse_amount_to_duffs, render_wallet_info, message display, wallet unlock, heading pattern, fee confirmation dialog). Identified 4 internal refactoring opportunities in send_screen.rs (advanced mode extraction ~800 lines, platform fee functions ~65 lines, address allocation ~145 lines, send type methods ~330 lines). Created 5 specific sub-tasks for incremental extraction.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 5 (3.4a through 3.4e)
+
+**Summary of findings:**
+- send_screen.rs: 2,750 lines, ~40 methods, 19 methods over 50 lines, zero unwrap/expect/panic calls
+- single_key_send_screen.rs: 1,057 lines, ~17 methods, 8 methods over 50 lines, zero dangerous panics
+- 7 duplicated patterns identified between files: format_dash, parse_amount_to_duffs, render_wallet_info, message display banner, wallet unlock, heading+checkbox, fee confirmation dialog
+- send_screen.rs advanced mode is ~800 lines that can be extracted to a separate file
+- Platform fee estimation functions (65 lines) and address allocation (145 lines) are pure computation code that belongs in the model layer
+- FeeConfirmationDialog (128 lines) in single_key_send_screen could be a shared component
+- single_key_send_screen has its own wallet unlock UI (71 lines) that could be replaced by the existing WalletUnlockPopup component

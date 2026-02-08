@@ -1748,7 +1748,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **6.4e Fix TODO: Save local network settings including password** (P2)
   In `src/ui/network_chooser_screen.rs:192`, the local network configuration save doesn't persist password and other local-only settings. Add persistence for these fields.
 
-- [ ] **6.4f Fix TODO: Make next_identity_id() reliable** (P2)
+- [x] **6.4f Fix TODO: Make next_identity_id() reliable** (P2)
   In `src/ui/identities/add_new_identity_screen/mod.rs:409`, the `next_identity_id()` function is unreliable because it relies on the wallet's identities map which may be out of sync with Platform. Consider querying Platform directly or using a different approach.
 
 - [ ] **6.5 Add config save/load roundtrip tests** (P2)
@@ -1888,7 +1888,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 19 | 13 |
+| 6. Testing | 19 | 14 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

@@ -369,6 +369,25 @@ impl Database {
         identities
     }
 
+    /// Returns all wallet_index values used by identities associated with a given wallet
+    /// seed hash and network. This provides a more reliable view of used identity indices
+    /// than the in-memory wallet.identities map, which may be stale.
+    pub fn used_identity_indices_for_wallet(
+        &self,
+        wallet_seed_hash: &[u8],
+        network: Network,
+    ) -> rusqlite::Result<Vec<u32>> {
+        let conn = self.conn.lock_or_recover();
+        let network_str = network.to_string();
+        let mut stmt = conn.prepare(
+            "SELECT wallet_index FROM identity WHERE wallet = ? AND network = ? AND wallet_index IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![wallet_seed_hash, network_str], |row| {
+            row.get::<_, u32>(0)
+        })?;
+        rows.collect()
+    }
+
     /// Deletes a local qualified identity with the given identifier from the database.
     pub fn delete_local_qualified_identity(
         &self,
@@ -575,5 +594,149 @@ impl Database {
         tracing::debug!("Renamed column 'is_in_creation' to 'status' in identity table");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::platform::Identifier;
+
+    fn insert_test_identity(db: &crate::database::Database, id: &Identifier) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+            rusqlite::params![id.to_vec()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_set_and_get_identity_alias() {
+        let db = create_test_database().unwrap();
+        let id = Identifier::random();
+        insert_test_identity(&db, &id);
+
+        // Initially no alias
+        let alias = db.get_identity_alias(&id).unwrap();
+        assert!(alias.is_none());
+
+        // Set alias
+        db.set_identity_alias(&id, Some("My Identity")).unwrap();
+        let alias = db.get_identity_alias(&id).unwrap();
+        assert_eq!(alias, Some("My Identity".to_string()));
+
+        // Update alias
+        db.set_identity_alias(&id, Some("Renamed")).unwrap();
+        assert_eq!(
+            db.get_identity_alias(&id).unwrap(),
+            Some("Renamed".to_string())
+        );
+
+        // Clear alias
+        db.set_identity_alias(&id, None).unwrap();
+        // Note: get_identity_alias returns Ok(None) both when no row and when alias is NULL
+    }
+
+    #[test]
+    fn test_set_alias_nonexistent_identity_fails() {
+        let db = create_test_database().unwrap();
+        let id = Identifier::random();
+
+        let result = db.set_identity_alias(&id, Some("Alias"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_and_load_identity_order() {
+        let db = create_test_database().unwrap();
+
+        let ids: Vec<Identifier> = (0..5).map(|_| Identifier::random()).collect();
+
+        // Insert identities into the identity table (FK reference)
+        for id in &ids {
+            insert_test_identity(&db, id);
+        }
+
+        db.save_identity_order(ids.clone()).unwrap();
+
+        let loaded = db.load_identity_order().unwrap();
+        assert_eq!(loaded.len(), 5);
+        for (expected, actual) in ids.iter().zip(loaded.iter()) {
+            assert_eq!(expected, actual);
+        }
+    }
+
+    #[test]
+    fn test_save_identity_order_replaces_previous() {
+        let db = create_test_database().unwrap();
+
+        let ids1: Vec<Identifier> = (0..3).map(|_| Identifier::random()).collect();
+        let ids2: Vec<Identifier> = (0..2).map(|_| Identifier::random()).collect();
+
+        for id in ids1.iter().chain(ids2.iter()) {
+            insert_test_identity(&db, id);
+        }
+
+        db.save_identity_order(ids1).unwrap();
+        db.save_identity_order(ids2.clone()).unwrap();
+
+        let loaded = db.load_identity_order().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded, ids2);
+    }
+
+    #[test]
+    fn test_load_empty_identity_order() {
+        let db = create_test_database().unwrap();
+        let loaded = db.load_identity_order().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_all_identities_in_devnets_and_regtest() {
+        let db = create_test_database().unwrap();
+
+        // Insert identities for different networks
+        let testnet_id = Identifier::random();
+        let devnet_id = Identifier::random();
+        let regtest_id = Identifier::random();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+                rusqlite::params![testnet_id.to_vec()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'devnet-test')",
+                rusqlite::params![devnet_id.to_vec()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'regtest')",
+                rusqlite::params![regtest_id.to_vec()],
+            )
+            .unwrap();
+        }
+
+        {
+            let conn = db.conn.lock().unwrap();
+            db.delete_all_identities_in_all_devnets_and_regtest(&conn)
+                .unwrap();
+        }
+
+        // Testnet identity should remain
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let remaining_network: String = conn
+            .query_row("SELECT network FROM identity", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining_network, "testnet");
     }
 }

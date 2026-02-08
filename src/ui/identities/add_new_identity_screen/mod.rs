@@ -265,7 +265,16 @@ impl AddNewIdentityScreen {
             // Check if we have access to the selected wallet
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
                 let wallet = wallet_guard.read_or_recover();
-                let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
+                // Combine indices from both the wallet's in-memory map and the database
+                let mut used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
+                let seed_hash = wallet.seed_hash();
+                if let Ok(db_indices) = self
+                    .app_context
+                    .db
+                    .used_identity_indices_for_wallet(&seed_hash, self.app_context.network)
+                {
+                    used_indices.extend(db_indices);
+                }
 
                 // Modify the selected text to include "(used)" if the current index is used
                 let selected_text = {
@@ -406,20 +415,34 @@ impl AddNewIdentityScreen {
 
     /// Generate next identity ID that can be used for the new identity.
     ///
-    /// TODO: This function is not working in a reliable way, because it relies on the
-    /// `identities` map in the wallet, which may not be up to date (user can remove
-    /// identities from the wallet while they still are stored on the Platform).
+    /// Consults both the in-memory wallet identities map and the database to find
+    /// the highest used identity index. This is more reliable than using only the
+    /// wallet's in-memory map, which may be stale if identities were registered
+    /// from another device or if the local DB was modified.
     fn next_identity_id(&self) -> u32 {
-        self.selected_wallet
-            .as_ref()
-            .unwrap()
-            .read_or_recover()
-            .identities
-            .keys()
-            .copied()
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or_default()
+        let wallet_guard = self.selected_wallet.as_ref().unwrap().read_or_recover();
+
+        // Source 1: wallet's in-memory identities map
+        let max_from_wallet = wallet_guard.identities.keys().copied().max();
+
+        // Source 2: database query for all identity indices associated with this wallet
+        let seed_hash = wallet_guard.seed_hash();
+        let max_from_db = self
+            .app_context
+            .db
+            .used_identity_indices_for_wallet(&seed_hash, self.app_context.network)
+            .ok()
+            .and_then(|indices| indices.into_iter().max());
+
+        // Take the higher of the two sources
+        let overall_max = match (max_from_wallet, max_from_db) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+
+        overall_max.map(|max| max + 1).unwrap_or_default()
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {

@@ -930,3 +930,9 @@
 **What was done:** Updated the `save()` method in `NetworkChooserScreen` to also persist the local network (Regtest) RPC password to the `.env` config file. Previously, `save()` only saved DB-backed settings (custom_dash_qt_path and overwrite_dash_conf) but did not persist the local network password, which was only saved through its own separate "Save" button. Now any call to `save()` also writes the local password to the config file if it is non-empty, using the same `Config::load()` → `update_core_rpc_password()` → `Config::save()` pattern already used by the password's dedicated Save button. Removed the TODO comment.
 **Files changed:** src/ui/network_chooser_screen.rs
 **Sub-tasks created:** 0
+
+## Run 155 — 2026-02-08
+**Task:** 6.4f Fix TODO: Make next_identity_id() reliable
+**What was done:** Made `next_identity_id()` more reliable by consulting both the wallet's in-memory identities map AND the database's identity table. Added `used_identity_indices_for_wallet()` method to `Database` that queries the identity table for all `wallet_index` values associated with a given wallet seed hash and network. Updated `next_identity_id()` in `add_new_identity_screen/mod.rs` to take the maximum of both sources (wallet map and DB) before adding 1. Also updated `render_identity_index_input()` to merge used indices from both sources when displaying the "(used)" indicator in the identity index selector. Previously, both functions relied solely on the wallet's in-memory `identities` map, which could be stale or incomplete if identities were registered from another device, if the wallet map hadn't been refreshed, or if DB entries existed that weren't yet loaded into memory. Removed the TODO comment.
+**Files changed:** src/database/identities.rs, src/ui/identities/add_new_identity_screen/mod.rs
+**Sub-tasks created:** 0

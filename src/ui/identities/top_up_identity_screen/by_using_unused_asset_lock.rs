@@ -126,7 +126,7 @@ impl TopUpIdentityScreen {
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
         ui.set_style(new_style);
         let button = egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::DASH_BLUE)
             .frame(true)
             .corner_radius(3.0);
         if ui.add(button).clicked() {

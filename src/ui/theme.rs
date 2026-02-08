@@ -63,6 +63,12 @@ impl DashColors {
     pub const INFO: Color32 = Color32::from_rgb(52, 152, 219);
     /// Darker red for danger button hover state
     pub const DANGER_HOVER: Color32 = Color32::from_rgb(200, 0, 0);
+    /// Red for danger/destructive action buttons (delete, remove)
+    pub const DANGER_RED: Color32 = Color32::from_rgb(200, 60, 60);
+    /// Gray fill for disabled/inactive buttons
+    pub const BUTTON_DISABLED: Color32 = Color32::from_rgb(100, 100, 100);
+    /// Salmon/orange for input validation warnings
+    pub const VALIDATION_WARNING: Color32 = Color32::from_rgb(255, 150, 100);
 
     // Network accent colors
     /// Muted Dash blue for dark mode (20% darker)
@@ -337,6 +343,34 @@ impl DashColors {
             Self::DARK_INPUT_BACKGROUND // rgb(40, 40, 40)
         } else {
             Self::WHITE
+        }
+    }
+
+    /// Subtle stripe color for alternating table rows in dark mode
+    pub fn stripe_dark() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 10)
+    }
+
+    /// Subtle stripe color for alternating table rows in light mode
+    pub fn stripe_light() -> Color32 {
+        Color32::from_rgba_unmultiplied(0, 100, 200, 10)
+    }
+
+    /// Stripe color adapting to dark/light mode
+    pub fn stripe(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::stripe_dark()
+        } else {
+            Self::stripe_light()
+        }
+    }
+
+    /// Fill color for unselected toggle/segmented buttons
+    pub fn unselected_fill(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::DARK_BORDER // rgb(60, 60, 60)
+        } else {
+            Color32::from_rgb(220, 220, 220)
         }
     }
 

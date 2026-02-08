@@ -536,7 +536,7 @@ impl ScreenLike for TopUpIdentityScreen {
 
             // Display error message at the top, outside of scroll area
             if let Some(error_message) = self.error_message.clone() {
-                let message_color = egui::Color32::from_rgb(255, 100, 100);
+                let message_color = DashColors::ERROR;
 
                 ui.horizontal(|ui| {
                     egui::Frame::new()

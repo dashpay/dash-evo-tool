@@ -530,7 +530,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
             let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
                 .fill(if button_enabled {
-                    Color32::from_rgb(0, 128, 255)
+                    DashColors::DASH_BLUE
                 } else {
                     Color32::GRAY
                 })
@@ -589,7 +589,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     ));
                 }
                 RegisterDpnsNameStatus::ErrorMessage(msg) => {
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::ERROR;
                     let msg = msg.clone();
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))

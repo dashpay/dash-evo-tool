@@ -4,6 +4,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
+use crate::ui::theme::DashColors;
 use egui::{Color32, RichText, Ui};
 
 impl AddNewIdentityScreen {
@@ -84,7 +85,7 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
 
         let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::DASH_BLUE)
             .frame(true)
             .corner_radius(3.0);
         if ui.add(button).clicked() {

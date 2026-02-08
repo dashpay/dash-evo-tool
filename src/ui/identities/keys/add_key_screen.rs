@@ -639,7 +639,7 @@ impl ScreenLike for AddKeyScreen {
             new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
             ui.set_style(new_style);
             let button = egui::Button::new(RichText::new("Add Key").color(Color32::WHITE))
-                .fill(Color32::from_rgb(0, 128, 255))
+                .fill(DashColors::DASH_BLUE)
                 .frame(true)
                 .corner_radius(3.0);
             if ui.add(button).clicked() {
@@ -685,7 +685,7 @@ impl ScreenLike for AddKeyScreen {
                     ui.label(format!("Adding key... Time taken so far: {}", display_time));
                 }
                 AddKeyStatus::ErrorMessage(msg) => {
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::ERROR;
                     let msg = msg.clone();
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))

@@ -1205,7 +1205,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.2b Centralize inline colors in component files to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in the 7 component files (`top_panel.rs`, `left_panel.rs`, `left_wallet_panel.rs`, `styled.rs`, `entropy_grid.rs`, `wallet_unlock.rs`, `wallet_unlock_popup.rs`, `confirmation_dialog.rs`, `info_popup.rs`) with `DashColors` constants. Total ~40 instances. These are the shared components that set the example for the rest of the codebase. Add any missing semantic colors to `DashColors` as needed (e.g., `LINK_BLUE`, `DARK_GRAY_TEXT`).
 
-- [ ] **4.2c Centralize inline colors in identity screens to DashColors** (P3)
+- [x] **4.2c Centralize inline colors in identity screens to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in `src/ui/identities/` files (~35 instances across identities_screen.rs, add_existing_identity_screen.rs, add_new_identity_screen/mod.rs, transfer_screen.rs, withdraw_screen.rs, register_dpns_name_screen.rs, top_up_identity_screen/mod.rs, keys/add_key_screen.rs, keys/key_info_screen.rs, funding_common.rs). Map common patterns: error reds → `DashColors::ERROR`, success greens → `DashColors::SUCCESS`, warning oranges → `DashColors::WARNING_ORANGE`.
 
 - [ ] **4.2d Centralize inline colors in wallet screens to DashColors** (P3)

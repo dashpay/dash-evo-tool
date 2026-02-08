@@ -906,3 +906,9 @@
 **What was done:** Changed `AppContext::platform_version()` to dynamically read the version from the SDK instance via `self.sdk.read_or_recover().version()` instead of calling the static `default_platform_version()` helper. This ensures that if the SDK version is ever updated at runtime (e.g., after a network upgrade), the method reflects the actual version. The standalone `default_platform_version()` function is retained for use during SDK initialization (before an SDK instance exists, i.e., in `sdk_wrapper.rs`). Removed the TODO comment and added a doc comment explaining when to use each function. Added `RwLockExt` import for poison-recovery lock access.
 **Files changed:** src/context/mod.rs
 **Sub-tasks created:** 0
+
+## Run 151 — 2026-02-08
+**Task:** 6.4b Fix TODO: Add confirmation dialog for unsaved profile changes
+**What was done:** Added a confirmation dialog to the profile screen's Cancel button when there are unsaved changes. When the user clicks Cancel with `has_unsaved_changes` true, a `ConfirmationDialog` with "Discard Changes?" title and danger mode is shown, giving options to "Discard" (confirms cancel) or "Keep Editing" (returns to editing). Uses the existing `ConfirmationDialog` component pattern with `Option<ConfirmationDialog>` field, matching the approach used in token screens like `destroy_frozen_funds_screen.rs`.
+**Files changed:** src/ui/dashpay/profile_screen.rs
+**Sub-tasks created:** 0

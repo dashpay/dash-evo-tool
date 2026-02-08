@@ -1736,7 +1736,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **6.4a Fix TODO: Use SDK version instead of hardcoded PLATFORM_V11** (P2)
   In `src/context/mod.rs:659`, replace hardcoded `PLATFORM_V11` with dynamic `self.sdk.read().unwrap().version()` call. Verify SDK exposes this method and that the version is available at the point of use.
 
-- [ ] **6.4b Fix TODO: Add confirmation dialog for unsaved profile changes** (P2)
+- [x] **6.4b Fix TODO: Add confirmation dialog for unsaved profile changes** (P2)
   In `src/ui/dashpay/profile_screen.rs:949`, add a confirmation dialog when the user cancels profile editing with unsaved changes, similar to the existing `ConfirmationDialog` pattern used elsewhere in the codebase.
 
 - [ ] **6.4c Fix TODO: Use proof response to detect contested DPNS names** (P3)
@@ -1888,7 +1888,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 19 | 10 |
+| 6. Testing | 19 | 11 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

@@ -7,6 +7,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -26,11 +27,12 @@ use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
-use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
-use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
@@ -57,6 +59,10 @@ pub struct KeyInfoScreen {
     show_confirm_remove_private_key: bool,
     show_confirm_disable_key: bool,
     disable_key_submitted: bool,
+    show_confirm_replace_key: bool,
+    replace_key_submitted: bool,
+    replace_key_type: KeyType,
+    replace_key_private_hex: String,
     success_message: Option<String>,
 }
 
@@ -80,6 +86,7 @@ impl ScreenLike for KeyInfoScreen {
             MessageType::Error => {
                 self.error_message = Some(message.to_string());
                 self.disable_key_submitted = false;
+                self.replace_key_submitted = false;
             }
             MessageType::Success => {
                 self.success_message = Some(message.to_string());
@@ -89,20 +96,32 @@ impl ScreenLike for KeyInfoScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::Identity(IdentityResult::DisabledKeys(
-            updated_identity,
-            _fee_result,
-        )) = backend_task_success_result
-        {
-            // Update the local identity and key state
-            self.identity = updated_identity;
-            // Refresh the key from the updated identity
-            let key_id = self.key.id();
-            if let Some(updated_key) = self.identity.identity.public_keys().get(&key_id) {
-                self.key = IdentityPublicKey::clone(updated_key);
+        if let BackendTaskSuccessResult::Identity(identity_result) = backend_task_success_result {
+            match identity_result {
+                IdentityResult::DisabledKeys(updated_identity, _fee_result) => {
+                    self.identity = updated_identity;
+                    let key_id = self.key.id();
+                    if let Some(updated_key) = self.identity.identity.public_keys().get(&key_id) {
+                        self.key = IdentityPublicKey::clone(updated_key);
+                    }
+                    self.disable_key_submitted = false;
+                    self.success_message = Some("Key has been disabled on Platform.".to_string());
+                }
+                IdentityResult::ReplacedKey(updated_identity, _fee_result) => {
+                    self.identity = updated_identity;
+                    let key_id = self.key.id();
+                    if let Some(updated_key) = self.identity.identity.public_keys().get(&key_id) {
+                        self.key = IdentityPublicKey::clone(updated_key);
+                    }
+                    self.replace_key_submitted = false;
+                    self.replace_key_private_hex.clear();
+                    self.success_message = Some(
+                        "Master key has been replaced on Platform. The old key is now disabled."
+                            .to_string(),
+                    );
+                }
+                _ => {}
             }
-            self.disable_key_submitted = false;
-            self.success_message = Some("Key has been disabled on Platform.".to_string());
         }
     }
 
@@ -642,6 +661,38 @@ impl ScreenLike for KeyInfoScreen {
                     inner_action |= self.render_disable_key_confirm(ui);
                 }
 
+                // Replace Master Key section
+                // Only show for master keys that are not disabled and where we can sign
+                if !self.key.is_disabled()
+                    && self.key.security_level() == SecurityLevel::MASTER
+                    && self.identity.can_sign_with_master_key().is_some()
+                {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.heading(RichText::new("Key Management").color(text_primary));
+                    ui.add_space(5.0);
+
+                    if self.replace_key_submitted {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new("Replacing master key on Platform...")
+                                    .color(text_primary),
+                            );
+                        });
+                    } else if ui.button("Replace Master Key").clicked() {
+                        self.generate_replace_key();
+                        self.show_confirm_replace_key = true;
+                    }
+                }
+
+                // Show the replace key confirmation popup
+                if self.show_confirm_replace_key {
+                    inner_action |= self.render_replace_key_confirm(ui);
+                }
+
                 ui.add_space(10.0);
             });
 
@@ -712,6 +763,10 @@ impl KeyInfoScreen {
             show_confirm_remove_private_key: false,
             show_confirm_disable_key: false,
             disable_key_submitted: false,
+            show_confirm_replace_key: false,
+            replace_key_submitted: false,
+            replace_key_type: KeyType::ECDSA_SECP256K1,
+            replace_key_private_hex: String::new(),
             success_message: None,
         }
     }
@@ -924,6 +979,167 @@ impl KeyInfoScreen {
                 });
             });
         action
+    }
+
+    fn generate_replace_key(&mut self) {
+        use bip39::rand::{SeedableRng, rngs::StdRng};
+        let mut rng = StdRng::from_entropy();
+        match self
+            .replace_key_type
+            .random_public_and_private_key_data(&mut rng, self.app_context.platform_version())
+        {
+            Ok((_, private_key_bytes)) => {
+                self.replace_key_private_hex = hex::encode(private_key_bytes);
+            }
+            Err(_) => {
+                self.error_message = Some("Failed to generate a random private key.".to_string());
+                self.show_confirm_replace_key = false;
+            }
+        }
+    }
+
+    fn render_replace_key_confirm(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+        egui::Window::new("Replace Master Key")
+            .collapsible(false)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    RichText::new(
+                        "This will generate a new master key and disable the current one \
+                         in a single atomic transition.\n\n\
+                         Make sure to save the new private key! You will need it to sign \
+                         future identity updates.",
+                    )
+                    .color(text_primary),
+                );
+                ui.add_space(10.0);
+
+                ui.label(
+                    RichText::new(format!(
+                        "Old Key ID: {}\nKey Type: {:?}",
+                        self.key.id(),
+                        self.key.key_type()
+                    ))
+                    .color(text_primary),
+                );
+                ui.add_space(10.0);
+
+                // Key type selector for the new key
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("New Key Type:").color(text_primary));
+                    let prev_type = self.replace_key_type;
+                    egui::ComboBox::from_id_salt("replace_key_type_selector")
+                        .selected_text(format!("{:?}", self.replace_key_type))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.replace_key_type,
+                                KeyType::ECDSA_SECP256K1,
+                                "ECDSA_SECP256K1",
+                            );
+                            ui.selectable_value(
+                                &mut self.replace_key_type,
+                                KeyType::BLS12_381,
+                                "BLS12_381",
+                            );
+                            ui.selectable_value(
+                                &mut self.replace_key_type,
+                                KeyType::ECDSA_HASH160,
+                                "ECDSA_HASH160",
+                            );
+                            ui.selectable_value(
+                                &mut self.replace_key_type,
+                                KeyType::EDDSA_25519_HASH160,
+                                "EDDSA_25519_HASH160",
+                            );
+                        });
+                    // Regenerate if key type changed
+                    if prev_type != self.replace_key_type {
+                        self.generate_replace_key();
+                    }
+                });
+                ui.add_space(5.0);
+
+                // Show the generated private key (read-only, copyable)
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("New Private Key (hex):").color(text_primary));
+                });
+                let mut key_display = self.replace_key_private_hex.clone();
+                ui.add(
+                    egui::TextEdit::singleline(&mut key_display)
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(5.0);
+                if ui.small_button("Regenerate").clicked() {
+                    self.generate_replace_key();
+                }
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.show_confirm_replace_key = false;
+                        self.replace_key_private_hex.clear();
+                    }
+                    ui.add_space(3.0);
+                    if ui
+                        .button(RichText::new("Replace Master Key").color(DashColors::WARNING))
+                        .clicked()
+                    {
+                        self.show_confirm_replace_key = false;
+                        self.replace_key_submitted = true;
+                        action = self.submit_replace_key();
+                    }
+                });
+            });
+        action
+    }
+
+    fn submit_replace_key(&mut self) -> AppAction {
+        let private_key_bytes: [u8; 32] = match hex::decode(&self.replace_key_private_hex) {
+            Ok(bytes) if bytes.len() == 32 => bytes.try_into().unwrap(),
+            _ => {
+                self.error_message = Some("Invalid private key for replacement.".to_string());
+                self.replace_key_submitted = false;
+                return AppAction::None;
+            }
+        };
+
+        // Generate the public key from the private key
+        let public_key_data = match self
+            .replace_key_type
+            .public_key_data_from_private_key_data(&private_key_bytes, self.app_context.network)
+        {
+            Ok(data) => data,
+            Err(e) => {
+                self.error_message = Some(format!("Failed to derive public key: {}", e));
+                self.replace_key_submitted = false;
+                return AppAction::None;
+            }
+        };
+
+        let new_key = IdentityPublicKeyV0 {
+            id: 0, // Will be set by backend task
+            key_type: self.replace_key_type,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::MASTER,
+            data: public_key_data.into(),
+            read_only: false,
+            disabled_at: None,
+            contract_bounds: None,
+        };
+
+        let new_qualified_key = QualifiedIdentityPublicKey {
+            identity_public_key: new_key.into(),
+            in_wallet_at_derivation_path: None,
+        };
+
+        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::ReplaceKey(
+            self.identity.clone(),
+            self.key.id(),
+            new_qualified_key,
+            private_key_bytes,
+        )))
     }
 
     fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {

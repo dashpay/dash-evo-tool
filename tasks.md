@@ -1801,7 +1801,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.1a Implement GH#497: Disable identity keys** (P2)
   Create `src/backend_task/identity/disable_keys.rs` (~80-100 lines) that accepts a `QualifiedIdentity` and a `Vec<KeyID>` of keys to disable. Use the existing `IdentityUpdateTransition::try_from_identity_with_signer()` pattern from `add_key_to_identity.rs`, passing the key IDs in the `keys_to_disable` parameter (currently `vec![]`). Add `DisableKeysFromIdentity(QualifiedIdentity, Vec<KeyID>)` to `IdentityTask` enum. Add `DisabledKeys(QualifiedIdentity)` to `IdentityResult`. In the UI, add a "Disable Key" button to `key_info_screen.rs` (shown only for non-disabled, non-master keys) with a confirmation dialog. After success, refresh the identity.
 
-- [ ] **7.1b Implement GH#498: Replace master key** (P2)
+- [x] **7.1b Implement GH#498: Replace master key** (P2)
   Depends on 7.1a (disable keys infrastructure). Create `src/backend_task/identity/replace_master_key.rs` (~120-150 lines) that generates a new master key and disables the old one in a single `IdentityUpdateTransition`. The transition must pass both `vec![new_master_key]` and `vec![old_master_key_id]`. Create `src/ui/identities/keys/replace_master_key_screen.rs` (~500-600 lines) with: key type selection (ECDSA_SECP256K1 default), random key generation, confirmation dialog showing old→new key details. Add `ReplaceMasterKey(QualifiedIdentity, QualifiedIdentityPublicKey)` task variant and corresponding result variant. Add navigation from `key_info_screen.rs` when viewing a master key.
 
 - [ ] **7.1c Investigate GH#468: Mobile Dashpay wallet identity derivation paths** (P2)

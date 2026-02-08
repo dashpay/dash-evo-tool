@@ -8,6 +8,7 @@ mod refresh_identity;
 mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
 mod register_identity;
+mod replace_key;
 mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
@@ -49,6 +50,7 @@ pub enum IdentityResult {
     LoadedIdentity(QualifiedIdentity),
     AddedKeyToIdentity(FeeResult),
     DisabledKeys(QualifiedIdentity, FeeResult),
+    ReplacedKey(QualifiedIdentity, FeeResult),
     TransferredCredits(FeeResult),
     WithdrewFromIdentity(FeeResult),
     RegisteredDpnsName {
@@ -321,6 +323,12 @@ pub enum IdentityTask {
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     DisableKeys(QualifiedIdentity, Vec<KeyID>),
+    ReplaceKey(
+        QualifiedIdentity,
+        KeyID,
+        QualifiedIdentityPublicKey,
+        [u8; 32],
+    ),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -612,6 +620,21 @@ impl AppContext {
             IdentityTask::DisableKeys(qualified_identity, key_ids) => {
                 self.disable_identity_keys(sdk, qualified_identity, key_ids)
                     .await
+            }
+            IdentityTask::ReplaceKey(
+                qualified_identity,
+                old_key_id,
+                new_qualified_key,
+                new_private_key,
+            ) => {
+                self.replace_identity_key(
+                    sdk,
+                    qualified_identity,
+                    old_key_id,
+                    new_qualified_key,
+                    new_private_key,
+                )
+                .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
                 self.register_identity(registration_info).await

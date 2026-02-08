@@ -699,9 +699,54 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.2e Extract asset lock rendering into wallets_screen/asset_locks.rs** (P3)
   Move `render_wallet_asset_locks()` (lines 1168-1321, 154 lines) into a new file. This is a self-contained table rendering function for asset lock transactions with its own status display, action buttons, and pagination.
 
-- [ ] **3.3 [META] Review tokens_screen/mod.rs (3707 lines)** (P2)
+- [x] **3.3 [META] Review tokens_screen/mod.rs (3707 lines)** (P2)
   Same approach as 3.2. Token listing, creation, and configuration are likely separable concerns.
   Reference: `issues/ui-tokens-014-very-large-function.md`, `issues/ui-tokens-015-duplicate-control-rules-ui-code.md`.
+
+  **Review Results:**
+
+  **File structure (3,716 lines, ~40 methods, 7 functions over 100 lines):**
+  - `TokensScreen` struct with 235+ fields (lines 1159-1393), no grouping into sub-structs
+  - Already partially extracted: 8 modules (token_creator.rs: 1,677 lines, my_tokens.rs: 1,034 lines, distributions.rs: 1,083 lines, structs.rs: 562 lines, groups.rs: 288 lines, keyword_search.rs: 251 lines, contract_details.rs: 109 lines, data_contract_json_pop_up.rs: 103 lines) — total 5,107 lines extracted
+  - Main `TokensScreen` impl block: 1,225 lines (lines 1506-2730)
+  - `ScreenLike` impl: 436 lines (lines 2732-3168)
+  - `ChangeControlRulesUI` impl: 586 lines (lines 241-826) — **95% duplicate code** between two render methods
+  - Test module: 546 lines (lines 3170-3716)
+
+  **Largest functions:**
+  - `build_distribution_rules()` (320 lines, line 2015) — parses 8 distribution function variants
+  - `render_mint_control_change_rules_ui()` (301 lines, line 486) — nearly identical to `render_control_change_rules_ui()` (241 lines, line 243)
+  - `new()` (272 lines, line 1507) — massive constructor for 235+ fields
+  - `ui()` (236 lines, line 2802) — main render dispatch
+  - `reset_token_creator()` (117 lines, line 2378) — resets all token creator fields
+  - `history_row()` (108 lines, line 1862) — tri-state history checkbox
+
+  **Key observations:**
+  1. `ChangeControlRulesUI` has two nearly identical render methods (542 combined lines) — `render_control_change_rules_ui()` and `render_mint_control_change_rules_ui()`. The mint version adds 3 extra sections (new tokens destination, allow choosing destination, sub-rules) but the first ~200 lines of the mint method are copy-pasted from the non-mint version. These should be unified.
+  2. `build_distribution_rules()` (320 lines) belongs in `distributions.rs` module alongside the existing distribution rendering code.
+  3. All types and enums that are only used by specific subsystems could move to their respective modules: `ChangeControlRulesUI` to a control_rules module, distribution-related enums/structs to distributions.rs.
+  4. Top-level helper functions (`load_formula_image`, `validate_perpetual_distribution_recipient`, `sub_checkbox`, `tri_state`, `sanitize_i64`, `sanitize_u64`) could be extracted since they don't depend on `TokensScreen` state.
+  5. `TokenBuildArgs` struct (lines 1121-1157) and its construction logic could move to token_creator.rs.
+
+  **Sub-tasks created for incremental extraction:**
+
+- [ ] **3.3a Extract ChangeControlRulesUI into tokens_screen/control_rules.rs** (P2)
+  Move the `ChangeControlRulesUI` struct, its `From` impl, and the entire impl block (lines 225-826, ~600 lines) into a new `control_rules.rs` module. This includes `render_control_change_rules_ui()`, `render_mint_control_change_rules_ui()`, and `extract_change_control_rules()`. Also move `ContractDescriptionInfo` struct (line 131) and the `sub_checkbox()` and `tri_state()` helper functions (lines 137-158) that are used by these render methods.
+
+- [ ] **3.3b Deduplicate render_control_change_rules_ui and render_mint_control_change_rules_ui** (P2)
+  These two methods share ~200 lines of identical UI code (expand/collapse button, action takers combo, identity/group inputs, admin rules section). Refactor into a single parameterized method with an optional `MintExtras` struct parameter that enables the additional mint-specific sections (new tokens destination, allow choosing destination, sub-rules). This should reduce the combined 542 lines to ~350 lines.
+
+- [ ] **3.3c Move build_distribution_rules() to distributions.rs** (P2)
+  Move the `build_distribution_rules()` method (lines 2015-2334, 320 lines) from the main `TokensScreen` impl to the existing `distributions.rs` module. Also move `parse_pre_programmed_distributions()` (lines 2339-2376, 38 lines). These are the parsing counterparts to the distribution rendering code already in distributions.rs. Move the distribution-related enums (`PerpetualDistributionIntervalTypeUI`, `DistributionFunctionUI`, `TokenDistributionRecipientUI`, `DistributionEntry`, `IntervalTimeUnit`, `TokenNameLanguage`) to either distributions.rs or structs.rs as appropriate.
+
+- [ ] **3.3d Move TokenBuildArgs and estimate_registration_cost to token_creator.rs** (P2)
+  Move the `TokenBuildArgs` struct (lines 1121-1157) and `estimate_registration_cost()` method (lines 1971-2013) to the existing `token_creator.rs` module, which already contains all the token creator rendering logic. Also move `render_base_supply_input()` (line 2689) and `render_max_supply_input()` (line 2705) since they are only used by the token creator.
+
+- [ ] **3.3e Move history_row() and reset_token_creator() to token_creator.rs** (P3)
+  Move `history_row()` (lines 1862-1969, 108 lines) and `reset_token_creator()` (lines 2378-2494, 117 lines) to `token_creator.rs`. Both are exclusively used by the token creator subscreen. Also move `load_formula_image()` (line 83), `sanitize_i64()` (line 160), `sanitize_u64()` (line 164) helper functions and the formula PNG constants (lines 75-79) since they are only used by token creator/distributions code.
+
+- [ ] **3.3f Move validate_perpetual_distribution_recipient to distributions.rs** (P3)
+  Move the top-level `validate_perpetual_distribution_recipient()` function (lines 97-128) to `distributions.rs` where the rest of the distribution logic lives.
 
 - [ ] **3.4 [META] Review send_screen.rs (2744 lines) and single_key_send_screen.rs (1042 lines)** (P2)
   Identify shared code between these two files for extraction into common utilities.
@@ -958,7 +1003,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 18 | 11 |
+| 3. Refactoring | 24 | 12 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

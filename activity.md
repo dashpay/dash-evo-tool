@@ -415,3 +415,17 @@
 **Task:** 3.2e Extract asset lock rendering into wallets_screen/asset_locks.rs
 **What was done:** Extracted `render_wallet_asset_locks()` (154 lines) from `wallets_screen/mod.rs` into a new `wallets_screen/asset_locks.rs` module (167 lines with imports). This self-contained function renders the asset locks table for HD wallets, including the "Create Asset Lock" and "Search for Unused" buttons, the asset lock table with transaction ID, address, amount, InstantLock/usable status, and View/Fund action buttons. Also handles opening the fund platform dialog. Cleaned up unused `DerivationPathHelpers` import from mod.rs. mod.rs reduced from ~2142 to ~1988 lines.
 **Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/asset_locks.rs (new)
+
+## Run 64 — 2026-02-07
+**Task:** 3.3 [META] Review tokens_screen/mod.rs (3707 lines)
+**What was done:** Performed structural analysis of tokens_screen/mod.rs (3,716 lines, 235+ field struct, 7 functions over 100 lines). The file is already partially extracted (8 modules totaling 5,107 lines), but mod.rs still contains: ChangeControlRulesUI impl (586 lines with 95% duplicated render methods), build_distribution_rules() (320 lines of parsing logic), TokenBuildArgs struct, and token creator helper methods. Identified 6 specific extraction and deduplication sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (3.3a through 3.3f)
+
+**Summary of findings:**
+- ChangeControlRulesUI has two 95% identical render methods (542 combined lines) — extract and deduplicate
+- build_distribution_rules() (320 lines) belongs in distributions.rs with existing distribution code
+- TokenBuildArgs, estimate_registration_cost, reset_token_creator, history_row belong in token_creator.rs
+- Distribution-related enums/structs should move to distributions.rs or structs.rs
+- Top-level helper functions can move to their respective modules
+- TokensScreen struct has 235+ fields with no sub-struct grouping (noted but not creating a task — field grouping is best done after the extraction tasks reduce the surface area)

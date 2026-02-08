@@ -28,6 +28,226 @@ use egui::{Color32, ComboBox, Response, Ui};
 use super::theme::DashColors;
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
+/// Translates a raw backend error string into a user-friendly summary and technical details.
+///
+/// Returns `(user_friendly_summary, technical_details)`. The summary is a short, plain-language
+/// description of what went wrong. The details contain the original raw error string for
+/// debugging purposes.
+///
+/// # Examples
+/// ```ignore
+/// let (summary, details) = translate_backend_error("Transport(Status { code: Unavailable })");
+/// assert_eq!(summary, "Connection to Platform failed. Check your network connection.");
+/// ```
+pub fn translate_backend_error(raw: &str) -> (String, String) {
+    let raw_lower = raw.to_lowercase();
+
+    // Connection / transport errors
+    if raw_lower.contains("transport(status") {
+        if raw_lower.contains("unavailable") {
+            return (
+                "Connection to Platform failed. Check your network connection.".to_string(),
+                raw.to_string(),
+            );
+        }
+        if raw_lower.contains("deadlineexceeded") || raw_lower.contains("deadline exceeded") {
+            return (
+                "Request timed out. The Platform may be busy — try again later.".to_string(),
+                raw.to_string(),
+            );
+        }
+        if raw_lower.contains("internal") {
+            return (
+                "Platform returned an internal error. Try again later.".to_string(),
+                raw.to_string(),
+            );
+        }
+        return (
+            "Connection error while communicating with Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Generic connection / network errors
+    if raw_lower.contains("connection refused")
+        || raw_lower.contains("connect error")
+        || raw_lower.contains("connection reset")
+    {
+        return (
+            "Could not connect to the server. Check that Dash Core is running and your network connection is active.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    if raw_lower.contains("timed out") || raw_lower.contains("timeout") {
+        return (
+            "The operation timed out. The server may be busy — try again later.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Insufficient funds / balance errors
+    if raw_lower.contains("insufficient") && raw_lower.contains("balance") {
+        return (
+            "Insufficient balance for this operation.".to_string(),
+            raw.to_string(),
+        );
+    }
+    if raw_lower.contains("insufficient") {
+        return (
+            "Insufficient funds for this operation.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Identity not found
+    if raw_lower.contains("identity") && raw_lower.contains("not found") {
+        return (
+            "The requested identity was not found on Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+    if raw_lower.contains("identity at revision") {
+        return (
+            "The identity could not be found at the expected revision.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Document / contract not found
+    if raw_lower.contains("document type not found") {
+        return (
+            "The requested document type was not found in the contract.".to_string(),
+            raw.to_string(),
+        );
+    }
+    if raw_lower.contains("contract not found") || raw_lower.contains("contractnotfound") {
+        return (
+            "The data contract was not found on Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+    if raw_lower.contains("notfound")
+        || (raw_lower.contains("not found") && raw_lower.contains("query"))
+    {
+        return (
+            "The requested item was not found on Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Already exists
+    if raw_lower.contains("already exists") {
+        return (
+            "This item already exists on Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Invalid contract / protocol errors from DPP
+    if raw_lower.contains("invalid contract") || raw_lower.contains("protocolerror") {
+        return (
+            "The contract data is invalid or has been modified on Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // State transition broadcast errors
+    if raw_lower.contains("state transition broadcast error")
+        || raw_lower.contains("statetransition")
+    {
+        if raw_lower.contains("identity balance is not enough") {
+            return (
+                "Insufficient identity balance to cover this transaction's fees.".to_string(),
+                raw.to_string(),
+            );
+        }
+        return (
+            "Failed to broadcast the transaction to Platform.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // RPC / Core errors
+    if raw_lower.contains("wallet file not specified") {
+        return (
+            "Dash Core has multiple wallets loaded. Please ensure only one wallet is active."
+                .to_string(),
+            raw.to_string(),
+        );
+    }
+    if raw_lower.contains("rpc") && raw_lower.contains("error") {
+        return (
+            "Error communicating with Dash Core. Check that Core is running and configured correctly.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Authentication / cookie errors
+    if raw_lower.contains("cookie")
+        || raw_lower.contains("authentication")
+        || raw_lower.contains("unauthorized")
+    {
+        return (
+            "Authentication with Dash Core failed. Check your RPC credentials or cookie file."
+                .to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Database errors
+    if raw_lower.contains("database")
+        || raw_lower.contains("rusqlite")
+        || raw_lower.contains("sqlite")
+    {
+        return (
+            "A database error occurred. The application data may be corrupted.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Fee-related errors
+    if raw_lower.contains("min relay fee not met") || raw_lower.contains("fee rate") {
+        return (
+            "The transaction fee is too low. Try increasing the fee.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Consensus / validation errors
+    if raw_lower.contains("consensus") && raw_lower.contains("error") {
+        return (
+            "The transaction failed Platform validation.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Frozen token errors
+    if raw_lower.contains("frozen") {
+        return (
+            "This token or identity is currently frozen.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // Paused token errors
+    if raw_lower.contains("paused") {
+        return (
+            "This token is currently paused.".to_string(),
+            raw.to_string(),
+        );
+    }
+
+    // If the raw error is already user-readable (short, no nested parens/braces),
+    // use it directly as the summary.
+    if raw.len() < 120 && !raw.contains("(Status") && !raw.contains("Protocol(") {
+        return (raw.to_string(), String::new());
+    }
+
+    // Default: generic message with raw error as details
+    ("Operation failed.".to_string(), raw.to_string())
+}
+
 /// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
 /// This constant provides a constant padding to be used in such cases to ensure proper alignment.
 pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;

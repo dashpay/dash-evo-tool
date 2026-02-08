@@ -16,6 +16,7 @@ use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
+use crate::ui::helpers::translate_backend_error;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::theme::ThemeMode;
@@ -886,8 +887,8 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Error(message) => {
-                    self.visible_screen_mut()
-                        .display_message(&message, MessageType::Error);
+                    let (summary, details) = translate_backend_error(&message);
+                    self.visible_screen_mut().display_error(&summary, &details);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();

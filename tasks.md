@@ -1267,7 +1267,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.3a Create ErrorDisplay component with expandable details** (P2)
   Create `src/ui/components/error_display.rs` with an `ErrorDisplay` struct that shows a user-friendly summary message and optionally an expandable "Show details" section for the raw technical error. API: `ErrorDisplay::new(summary: &str, details: Option<&str>)` with `.show(ui)`. Integrate with the existing `DashColors::error_color()` for consistent styling. Add text wrapping (`.wrap()`) by default. This establishes the pattern for all subsequent error display improvements.
 
-- [ ] **4.3b Add backend error translation layer for common SDK errors** (P2)
+- [x] **4.3b Add backend error translation layer for common SDK errors** (P2)
   Create `src/ui/helpers/error_translation.rs` (or add to existing helpers) with a `translate_backend_error(raw: &str) -> (String, String)` function that returns `(user_friendly_summary, technical_details)`. Map common patterns:
   - `"Transport(Status { code: Unavailable"` → "Connection to Platform failed. Check your network connection."
   - `"Transport(Status { code: DeadlineExceeded"` → "Request timed out. The Platform may be busy."
@@ -1495,7 +1495,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 20 | 13 |
+| 4. UI/UX | 20 | 14 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

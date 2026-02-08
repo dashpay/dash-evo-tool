@@ -840,6 +840,12 @@ pub trait ScreenLike {
     }
     fn ui(&mut self, ctx: &Context) -> AppAction;
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
+    /// Display a translated error with a user-friendly summary and optional technical details.
+    /// The default implementation delegates to `display_message` with the summary only.
+    /// Screens that want to show expandable details can override this method.
+    fn display_error(&mut self, summary: &str, _details: &str) {
+        self.display_message(summary, MessageType::Error);
+    }
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
         self.display_message("Success", MessageType::Success)
     }

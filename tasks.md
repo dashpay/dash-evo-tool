@@ -1048,7 +1048,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.7e Consolidate credits-to-DASH formatting** (P3)
   Replace the duplicate `credits as f64 / 1000.0 / 100_000_000.0` in `send_utils.rs:34` and `by_platform_address.rs:238` with the existing `fee_estimation::format_credits_as_dash()`. If the function signatures differ, adapt the callers. Also consider extracting a `CREDITS_PER_DASH` constant to a shared location.
 
-- [ ] **3.7f Extract 20% safety buffer into helper function** (P3)
+- [x] **3.7f Extract 20% safety buffer into helper function** (P3)
   Create a helper `apply_fee_safety_margin(base: u64, percent: u32) -> u64` in `fee_estimation.rs` and replace the 3 instances of `total.saturating_add(total / 5)` at `fee_estimation.rs:343`, `fee_estimation.rs:389`, and `platform_address_allocation.rs:49`.
 
 ---
@@ -1278,7 +1278,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 49 | 32 |
+| 3. Refactoring | 49 | 33 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

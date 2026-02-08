@@ -340,7 +340,7 @@ impl PlatformFeeEstimator {
         let total = self.apply_multiplier(base_fee.saturating_add(storage_fee));
 
         // Add 20% safety buffer to account for fee variability
-        total.saturating_add(total / 5)
+        apply_fee_safety_margin(total, 20)
     }
 
     /// Estimate fee for identity top-up.
@@ -386,7 +386,7 @@ impl PlatformFeeEstimator {
         let total = self.apply_multiplier(base_fee.saturating_add(storage_fee));
 
         // Add 20% safety buffer to account for fee variability
-        total.saturating_add(total / 5)
+        apply_fee_safety_margin(total, 20)
     }
 
     /// Estimate fee for document batch transition
@@ -670,6 +670,19 @@ pub fn format_credits(credits: u64) -> String {
     } else {
         format!("{} credits ({:.10} DASH)", credits, dash)
     }
+}
+
+/// Apply a safety margin to a fee estimate.
+///
+/// Adds the specified percentage as a buffer to account for fee variability
+/// between estimation and actual platform execution. Uses saturating arithmetic
+/// to prevent overflow.
+///
+/// # Arguments
+/// * `fee` - The base fee estimate
+/// * `percent` - The safety margin percentage (e.g., 20 for 20%)
+pub fn apply_fee_safety_margin(fee: u64, percent: u64) -> u64 {
+    fee.saturating_add(fee.saturating_mul(percent) / 100)
 }
 
 #[cfg(test)]

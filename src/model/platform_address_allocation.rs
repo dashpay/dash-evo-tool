@@ -6,7 +6,7 @@
 //! - Allocating platform addresses for transfers (selecting which addresses
 //!   to use and how much from each)
 
-use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::fee_estimation::{PlatformFeeEstimator, apply_fee_safety_margin};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -46,7 +46,7 @@ pub fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usiz
 
     // Total with 20% safety buffer
     let total = base_fee.saturating_add(storage_fee);
-    total.saturating_add(total / 5)
+    apply_fee_safety_margin(total, 20)
 }
 
 /// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.

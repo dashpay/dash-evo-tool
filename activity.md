@@ -661,3 +661,9 @@
 **Task:** 4.1f Add wallet purpose explanation to creation flow
 **What was done:** Added brief explanatory text at the top of the wallet creation screen, below the "Follow these steps to create your wallet" heading. The text reads: "Dash Evo Tool creates its own wallet for managing identities, usernames, and Platform operations. This wallet is separate from your Dash Core wallet." Uses weak/subdued styling at 13px with text wrapping enabled for proper display on all screen sizes. This addresses GH#367 user confusion about the wallet's purpose and its relationship to Dash Core.
 **Files changed:** src/ui/wallets/add_new_wallet_screen.rs
+
+## Run 107 — 2026-02-08
+**Task:** 4.2 [META] Audit UI screens for component design pattern compliance
+**What was done:** Audited 124 Rust files in `src/ui/` and 19 component files in `src/ui/components/` against the design pattern in `doc/COMPONENT_DESIGN_PATTERN.md`. Key findings: (1) Only 1 struct (`ContractChooserState`) has public mutable fields — all screen structs correctly use private fields. (2) Only 2 components (`AmountInput`, `ConfirmationDialog`) implement the full `Component` + `ComponentResponse` trait pattern; 8 others use custom `.show()` methods — noted but not flagged since they work correctly. (3) 210+ hardcoded `Color32::from_rgb(...)` instances across 75 non-theme files instead of using centralized `DashColors` constants. (4) ~37 files eagerly initialize cheap components in `new()` instead of lazy `Option<Component>` pattern — deferred as low priority. Created 5 sub-tasks focused on the two actionable findings: making `ContractChooserState` fields private and centralizing inline colors to `DashColors` across component files, identity screens, wallet screens, and remaining UI modules.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 5 (4.2a through 4.2e)

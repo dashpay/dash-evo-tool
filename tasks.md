@@ -1149,13 +1149,70 @@ These META tasks validate reported bugs against the current codebase before any 
   (2) Add note about Dash Core requirement: "Requires Dash Core running with a single wallet loaded. DET will add watching-only addresses to Core for monitoring."
   This addresses GH#367 items 1-3 about user confusion regarding the wallet's purpose and relationship to Core.
 
-- [ ] **4.2 [META] Audit UI screens for component design pattern compliance** (P3)
+- [x] **4.2 [META] Audit UI screens for component design pattern compliance** (P3)
   Reference: `doc/COMPONENT_DESIGN_PATTERN.md`. Check all screens in `src/ui/` for:
   - Public mutable fields (should be private)
   - Missing builder methods
   - Missing Response structs with ComponentResponse trait
   - Eager initialization (should be lazy)
   Create fix tasks for non-compliant components.
+
+  **Audit Results:**
+
+  Audited 124 Rust files in `src/ui/`, 19 component files in `src/ui/components/`, and the `doc/COMPONENT_DESIGN_PATTERN.md` reference.
+
+  **Component Trait Adoption:**
+  Only 2 components implement the full `Component` + `ComponentResponse` pattern: `AmountInput` and `ConfirmationDialog`. The remaining 8 component structs (`EntropyGrid`, `FeeConfirmationDialog`, `IdentitySelector`, `InfoPopup`, `StyledButton/Card/Checkbox`, `WalletUnlockPopup`) use custom `.show()` methods or `egui::Widget` trait instead. This is noted but NOT flagged for mandatory conversion — the custom patterns work and converting them would be high effort with low practical benefit.
+
+  **Finding 1: Public Mutable Fields (1 component)**
+  `ContractChooserState` in `src/ui/components/contract_chooser_panel.rs:22-30` has 8 public mutable fields (`right_click_contract_id`, `show_context_menu`, `context_menu_position`, `expanded_contracts`, `expanded_sections`, `expanded_doc_types`, `expanded_indexes`, `expanded_tokens`). This is the ONLY struct in `src/ui/` with public fields — all screen structs correctly use private fields. Fix: make fields private and add accessor/mutator methods, or convert to a proper Component with internal state management.
+
+  **Finding 2: Inline Color Usage (254 `from_rgb` + 49 `from_rgba` = 303 instances across 76 files)**
+  Pervasive use of hardcoded `Color32::from_rgb(...)` and `Color32::from_rgba_unmultiplied(...)` throughout UI code instead of centralized `DashColors` constants or `ComponentStyles` methods. `DashColors` already provides 40+ named colors including semantic colors (`SUCCESS`, `ERROR`, `WARNING`, `WARNING_ORANGE`, `INFO`) and theme-aware functions, but most screens don't use them. Note: 93 of the 303 instances are in `theme.rs` itself (defining the color constants), so the actual violation count is ~210 instances across 75 files.
+
+  Top offenders (inline color count excluding theme.rs):
+  - `src/ui/components/top_panel.rs` — 9 instances
+  - `src/ui/identities/identities_screen.rs` — 15 instances (9 from_rgb + 6 from_rgba)
+  - `src/ui/wallets/import_mnemonic_screen.rs` — 8 instances
+  - `src/ui/wallets/add_new_wallet_screen.rs` — 8 instances
+  - `src/ui/wallets/wallets_screen/dialogs.rs` — 8 instances (5 from_rgb + 3 from_rgba)
+  - `src/ui/dpns/dpns_contested_names_screen.rs` — 6 instances
+  - `src/ui/identities/add_existing_identity_screen.rs` — 8 instances
+  - `src/ui/tools/transition_visualizer_screen.rs` — 11 instances (6 from_rgb + 5 from_rgba)
+  - `src/ui/dashpay/profile_screen.rs` — 3 instances
+  - `src/ui/components/confirmation_dialog.rs` — 6 instances (3 from_rgb + 3 from_rgba)
+  - `src/ui/components/wallet_unlock_popup.rs` — 7 instances (4 from_rgb + 3 from_rgba)
+  - `src/ui/components/left_panel.rs` — 4 instances
+
+  Common patterns that should be constants:
+  - Error red: `Color32::from_rgb(255, 100, 100)`, `Color32::from_rgb(220, 80, 80)`, `Color32::from_rgb(200, 0, 0)` — should use `DashColors::ERROR`
+  - Success green: `Color32::from_rgb(0, 128, 0)`, `Color32::from_rgb(0, 100, 0)` — should use `DashColors::SUCCESS`
+  - Link/action blue: `Color32::from_rgb(0, 128, 255)`, `Color32::from_rgb(100, 149, 237)` — should use `DashColors::DASH_BLUE` or `DashColors::INFO`
+  - Dark mode backgrounds: `Color32::from_rgb(40, 40, 40)`, `Color32::from_rgb(80, 80, 80)` — should use `DashColors::DARK_INPUT_BACKGROUND` / `DashColors::DARK_DISABLED`
+  - Conditional dark mode checks: `if ui.ctx().style().visuals.dark_mode { ... } else { ... }` for colors — should use `DashColors` theme-aware functions
+
+  **Finding 3: Eager Component Initialization (~37 files)**
+  Components like `WalletUnlockPopup`, `ConfirmationDialog`, and `InfoPopup` are eagerly created in screen `new()` constructors instead of using `Option<Component>` with `get_or_insert_with()`. This is noted but is LOW PRIORITY — `WalletUnlockPopup::new()` and `ConfirmationDialog::new()` are cheap constructors (no I/O, no network, small allocations), so eager initialization has negligible performance impact. The pattern doc recommends lazy init for correctness (ensuring context is available), not performance. Converting would be high churn with minimal benefit. NOT creating fix tasks for this.
+
+  **Finding 4: Components Not Implementing Component Trait (8 components)**
+  `EntropyGrid`, `FeeConfirmationDialog`, `IdentitySelector`, `InfoPopup`, `StyledButton`, `StyledCard`, `StyledCheckbox`, `WalletUnlockPopup` don't implement `Component` + `ComponentResponse`. However, they all have private fields and work correctly. Converting would be disruptive without clear benefit. NOT creating fix tasks for this.
+
+  **Sub-tasks created (only high-impact, actionable items):**
+
+- [ ] **4.2a Make ContractChooserState fields private** (P3)
+  In `src/ui/components/contract_chooser_panel.rs:22-30`, make all 8 public fields private. Add accessor methods as needed. This is the only component struct violating the private-fields requirement. Check all callers in `src/ui/contracts_documents/` to update field access to use new methods.
+
+- [ ] **4.2b Centralize inline colors in component files to DashColors** (P3)
+  Replace hardcoded `Color32::from_rgb(...)` in the 7 component files (`top_panel.rs`, `left_panel.rs`, `left_wallet_panel.rs`, `styled.rs`, `entropy_grid.rs`, `wallet_unlock.rs`, `wallet_unlock_popup.rs`, `confirmation_dialog.rs`, `info_popup.rs`) with `DashColors` constants. Total ~40 instances. These are the shared components that set the example for the rest of the codebase. Add any missing semantic colors to `DashColors` as needed (e.g., `LINK_BLUE`, `DARK_GRAY_TEXT`).
+
+- [ ] **4.2c Centralize inline colors in identity screens to DashColors** (P3)
+  Replace hardcoded `Color32::from_rgb(...)` in `src/ui/identities/` files (~35 instances across identities_screen.rs, add_existing_identity_screen.rs, add_new_identity_screen/mod.rs, transfer_screen.rs, withdraw_screen.rs, register_dpns_name_screen.rs, top_up_identity_screen/mod.rs, keys/add_key_screen.rs, keys/key_info_screen.rs, funding_common.rs). Map common patterns: error reds → `DashColors::ERROR`, success greens → `DashColors::SUCCESS`, warning oranges → `DashColors::WARNING_ORANGE`.
+
+- [ ] **4.2d Centralize inline colors in wallet screens to DashColors** (P3)
+  Replace hardcoded `Color32::from_rgb(...)` in `src/ui/wallets/` files (~35 instances across wallets_screen/mod.rs, wallets_screen/dialogs.rs, send_screen/mod.rs, send_screen/advanced.rs, single_key_send_screen.rs, import_mnemonic_screen.rs, add_new_wallet_screen.rs, create_asset_lock_screen.rs, asset_lock_detail_screen.rs). Same color mapping approach.
+
+- [ ] **4.2e Centralize inline colors in token, dashpay, dpns, contracts, and tools screens to DashColors** (P3)
+  Replace hardcoded `Color32::from_rgb(...)` in remaining UI modules (~100 instances across tokens/, dashpay/, dpns/, contracts_documents/, tools/ directories). This is the largest batch but most instances follow the same 4-5 color patterns. Can be done file-by-file with search-and-replace within each file.
 
 - [ ] **4.3 [META] Review error display patterns across all screens** (P2)
   Identify where raw error messages (including Rust debug output) are shown to users.
@@ -1353,7 +1410,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 128 (24 META + 104 direct)
+**Total tasks:** 133 (24 META + 109 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1361,7 +1418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 10 | 7 |
+| 4. UI/UX | 15 | 8 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

@@ -599,28 +599,40 @@ impl SpvManager {
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                interface
-                    .get_quorum_by_height(core_chain_locked_height, llmq_type, qh)
-                    .await
-                    .map(|q| {
-                        tracing::debug!(
-                            "Quorum public key found: type={}, hash={}, height={}",
-                            quorum_type,
-                            hex::encode(quorum_hash),
-                            core_chain_locked_height
-                        );
-                        *q.quorum_entry.quorum_public_key.as_ref()
-                    })
-                    .map_err(|e| {
-                        tracing::warn!(
-                            "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
-                            core_chain_locked_height,
-                            quorum_type,
-                            hex::encode(quorum_hash),
-                            e
-                        );
-                        e.to_string()
-                    })
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    interface.get_quorum_by_height(core_chain_locked_height, llmq_type, qh),
+                )
+                .await
+                .map_err(|_| {
+                    let msg = format!(
+                        "Quorum lookup timed out after 30s at height {} for llmq_type={} hash=0x{}",
+                        core_chain_locked_height,
+                        quorum_type,
+                        hex::encode(quorum_hash),
+                    );
+                    tracing::warn!("{}", msg);
+                    msg
+                })?
+                .map(|q| {
+                    tracing::debug!(
+                        "Quorum public key found: type={}, hash={}, height={}",
+                        quorum_type,
+                        hex::encode(quorum_hash),
+                        core_chain_locked_height
+                    );
+                    *q.quorum_entry.quorum_public_key.as_ref()
+                })
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Quorum lookup failed at height {} for llmq_type={} hash=0x{}: {}",
+                        core_chain_locked_height,
+                        quorum_type,
+                        hex::encode(quorum_hash),
+                        e
+                    );
+                    e.to_string()
+                })
             })
         })
     }

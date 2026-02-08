@@ -1974,7 +1974,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop** (P2)
   In `src/backend_task/core/mod.rs:503-544`, add a `const MAX_FEE_ITERATIONS: usize = 50` (or similar) and convert the infinite `loop` to `for _ in 0..MAX_FEE_ITERATIONS`. After exhausting iterations, return `Err("Could not build transaction after maximum fee adjustment attempts")`. This prevents potential infinite loops if fee estimation is unstable.
 
-- [ ] **7.3c Fix infra-016: Add timeout to quorum public key lookup** (P2)
+- [x] **7.3c Fix infra-016: Add timeout to quorum public key lookup** (P2)
   In `src/spv/manager.rs:591-617`, wrap the `interface.get_quorum_by_height()` call with `tokio::time::timeout(Duration::from_secs(30), ...)`. Return a descriptive timeout error if the quorum lookup doesn't complete within 30 seconds. This prevents the calling thread from blocking indefinitely.
 
 - [ ] **7.4 [META] Review token system for completeness** (P2)
@@ -2074,6 +2074,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 19 | 10 |
+| 7. Features | 19 | 11 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

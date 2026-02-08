@@ -1069,3 +1069,8 @@
 **Task:** 7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop
 **What was done:** Added `MAX_FEE_ITERATIONS` constant (50) to `build_spv_unsigned_transaction_multi()` in `src/backend_task/core/mod.rs` and converted the infinite `loop` to a bounded `for _ in 0..MAX_FEE_ITERATIONS`. After exhausting iterations, the function returns a descriptive error instead of potentially looping indefinitely. All existing early-return paths (successful build, convergence check, non-InsufficientFunds errors) remain unchanged.
 **Files changed:** src/backend_task/core/mod.rs
+
+## Run 174 — 2026-02-08
+**Task:** 7.3c Fix infra-016: Add timeout to quorum public key lookup
+**What was done:** Wrapped the `interface.get_quorum_by_height()` async call in `get_quorum_public_key()` with `tokio::time::timeout(Duration::from_secs(30), ...)`. If the quorum lookup doesn't complete within 30 seconds, the function now returns a descriptive timeout error with quorum type, hash, and height info, and logs a warning. This prevents the calling thread from blocking indefinitely if the SPV client hangs or the network is unreachable.
+**Files changed:** src/spv/manager.rs

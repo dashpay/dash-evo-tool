@@ -817,13 +817,57 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.4e Unify wallet unlock approach in single_key_send_screen** (P3)
   Replace the custom inline `render_wallet_unlock()` (71 lines) in `single_key_send_screen.rs` with the existing `WalletUnlockPopup` component that `send_screen.rs` already uses. This eliminates duplicate password input UI, show/hide toggle, and zeroization logic. The `WalletUnlockPopup` component in `src/ui/components/wallet_unlock_popup.rs` already handles all these cases for HD wallets; need to verify it works for single-key wallets or adapt it.
 
-- [ ] **3.5 [META] Review context.rs (1754 lines, 40+ fields)** (P2)
+- [x] **3.5 [META] Review context.rs (1754 lines, 40+ fields)** (P2)
   Identify a module split strategy. Possible groupings:
   - Network/SDK configuration
   - Wallet management
   - Database access
   - UI state coordination
   Create sub-tasks with specific field groupings and proposed module boundaries.
+
+  **Review Results:**
+
+  **File structure (1,863 lines, ~65 methods, 48 fields on AppContext struct):**
+  - `AppContext` struct: 48 fields (lines 66-114), single monolithic impl block (lines 116-1818)
+  - `new()` constructor: 280 lines (lines 117-396) — initializes SDK, providers, contracts, Core RPC client, wallets
+  - Two standalone items: `DapiTransactionInfo` struct + `get_transaction_info_via_dapi()` async fn (lines 1820-1851), `default_platform_version()` const fn (lines 1854-1863)
+  - No test module
+
+  **Logical groupings identified:**
+
+  1. **SPV & Wallet Lifecycle** (~480 lines, lines 486-1043): All SPV-related methods (`start_spv`, `stop_spv`, `spv_manager`, `clear_spv_data`, `spv_setup_reconcile_listener`, `reconcile_spv_wallets`, `sync_spv_account_addresses`, `spv_account_metadata`, `classify_derivation_metadata`) plus wallet bootstrap/lifecycle (`bootstrap_loaded_wallets`, `bootstrap_wallet_addresses`, `handle_wallet_unlocked`, `handle_wallet_locked`, `wallet_seed_snapshot`, `queue_spv_wallet_load`, `queue_spv_wallet_unload`, `queue_wallet_identity_discovery`, `update_wallet_platform_address_info_from_sdk`, `register_spv_address`, `wallet_network_key`). Self-contained subsystem with clear boundaries — these methods mostly interact with `spv_manager`, `wallets`, `single_key_wallets`, and `subtasks` fields.
+
+  2. **Identity & DPNS Database Facade** (~170 lines, lines 1171-1363): Thin delegation to `self.db` for identity/DPNS operations: `insert_local_qualified_identity`, `update_local_qualified_identity`, `set_identity_alias`, `get_identity_alias`, `load_local_qualified_identities`, `load_local_qualified_identities_in_wallets`, `get_identity_by_id`, `load_local_voting_identities`, `load_local_user_identities`, `load_wallet_for_identity`, `all_contested_names`, `ongoing_contested_names`, `insert_scheduled_votes`, `get_scheduled_votes`, `clear_all_scheduled_votes`, `clear_executed_scheduled_votes`, `delete_scheduled_vote`, `mark_vote_executed`, `local_dpns_names`. Nearly all are 1-3 line methods delegating to `self.db`.
+
+  3. **Settings Database Facade** (~80 lines, lines 1366-1441): Settings cache management and DB delegation: `update_settings`, `update_main_password`, `update_dash_core_execution_settings`, `update_disable_zmq`, `invalidate_settings_cache`, `get_settings`. Uses `cached_settings` RwLock for read-through caching.
+
+  4. **Contract & Token Database Facade** (~160 lines, lines 1444-1817): Contract/token CRUD: `get_contracts` (with system contract injection, 55 lines), `get_contract_by_id`, `get_unqualified_contract_by_id`, `remove_contract`, `replace_contract`, `identity_token_balances`, `remove_token_balance`, `insert_token` (with bincode serialization), `remove_token`, `insert_token_identity_balance`, `get_contract_by_token_id`, `remove_wallet`. Mostly thin DB delegation except `get_contracts()` which injects 5 system contracts.
+
+  5. **Transaction & Asset Lock Processing** (~190 lines, lines 1529-1718): `received_transaction_finality` (96 lines) and `received_asset_lock_finality` (90 lines). These handle incoming transaction events from ZMQ, updating wallets, UTXOs, DashPay payments, and asset locks in both memory and DB. Complex multi-step operations touching `wallets`, `db`, `transactions_waiting_for_finality`.
+
+  6. **SDK/Core Client Initialization** (~370 lines, lines 117-396 + 1081-1168): `new()` (280 lines), `reinit_core_client_and_sdk()` (88 lines), `set_core_backend_mode()` (52 lines). These manage SDK/provider lifecycle and Core RPC client creation. Heavy but tightly coupled to the struct's initialization fields.
+
+  7. **Miscellaneous Accessors** (~80 lines, scattered): `enable_animations`, `enable_developer_mode`, `core_backend_mode`, `fee_multiplier_permille`, `set_fee_multiplier_permille`, `fee_estimator`, `clear_network_database`, `is_developer_mode`, `repaint_animation`, `platform_version`, `state_transition_options`. Small, simple accessor methods that should stay on the main struct.
+
+  **Recommended split strategy:**
+  Convert `src/context.rs` into a `src/context/` directory with `mod.rs` retaining the struct definition, `new()`, accessors, and re-exports. Extract large logical groups into separate files as `impl AppContext` blocks (Rust allows impl blocks in separate files within the same crate).
+
+  **Sub-tasks created for incremental extraction:**
+
+- [ ] **3.5a Extract SPV & wallet lifecycle into context/wallet_lifecycle.rs** (P2)
+  Move ~480 lines of SPV and wallet lifecycle methods (lines 486-1043) into a new `src/context/wallet_lifecycle.rs` as a separate `impl AppContext` block. Methods to move: `spv_manager`, `clear_spv_data`, `start_spv`, `bootstrap_wallet_addresses`, `handle_wallet_unlocked`, `handle_wallet_locked`, `wallet_seed_snapshot`, `queue_spv_wallet_load`, `queue_spv_wallet_unload`, `queue_wallet_identity_discovery`, `bootstrap_loaded_wallets`, `update_wallet_platform_address_info_from_sdk`, `register_spv_address`, `wallet_network_key`, `sync_spv_account_addresses`, `spv_account_metadata`, `classify_derivation_metadata`, `spv_setup_reconcile_listener`, `reconcile_spv_wallets`, `stop_spv`, `clear_network_database`. This is the largest self-contained group and will reduce context/mod.rs by ~25%.
+
+- [ ] **3.5b Extract identity/DPNS database facade into context/identity_db.rs** (P2)
+  Move ~170 lines of identity and DPNS database facade methods (lines 1171-1363) into a new `src/context/identity_db.rs` as a separate `impl AppContext` block. Methods: `insert_local_qualified_identity`, `update_local_qualified_identity`, `set_identity_alias`, `set_contract_alias`, `get_identity_alias`, `load_local_qualified_identities`, `load_local_qualified_identities_in_wallets`, `get_identity_by_id`, `load_local_voting_identities`, `load_local_user_identities`, `load_wallet_for_identity`, `all_contested_names`, `ongoing_contested_names`, `insert_scheduled_votes`, `get_scheduled_votes`, `clear_all_scheduled_votes`, `clear_executed_scheduled_votes`, `delete_scheduled_vote`, `mark_vote_executed`, `local_dpns_names`.
+
+- [ ] **3.5c Extract contract/token database facade into context/contract_token_db.rs** (P2)
+  Move ~160 lines of contract and token CRUD methods (lines 1444-1817) into a new `src/context/contract_token_db.rs` as a separate `impl AppContext` block. Methods: `get_contracts`, `get_contract_by_id`, `get_unqualified_contract_by_id`, `remove_contract`, `replace_contract`, `identity_token_balances`, `remove_token_balance`, `insert_token`, `remove_token`, `remove_wallet`, `insert_token_identity_balance`, `get_contract_by_token_id`.
+
+- [ ] **3.5d Extract transaction/asset lock processing into context/transaction_processing.rs** (P2)
+  Move ~190 lines of transaction and asset lock event handling (lines 1529-1718) into a new `src/context/transaction_processing.rs` as a separate `impl AppContext` block. Methods: `received_transaction_finality`, `received_asset_lock_finality`. Also move the standalone `DapiTransactionInfo` struct and `get_transaction_info_via_dapi()` async function (lines 1820-1851) since they are transaction-related utilities.
+
+- [ ] **3.5e Extract settings database facade into context/settings_db.rs** (P3)
+  Move ~80 lines of settings management methods (lines 1366-1441) into a new `src/context/settings_db.rs` as a separate `impl AppContext` block. Methods: `update_settings`, `update_main_password`, `update_dash_core_execution_settings`, `update_disable_zmq`, `invalidate_settings_cache`, `get_settings`. Also move the `SettingsCacheGuard` type alias since it's only used by these methods.
 
 - [ ] **3.6 [META] Review BackendTaskSuccessResult enum (60+ variants)** (P2)
   This enum in `src/backend_task/mod.rs` has grown unwieldy. Design a simplification:
@@ -1060,14 +1104,14 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 70 (24 META + 46 direct)
+**Total tasks:** 75 (24 META + 51 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 29 | 18 |
+| 3. Refactoring | 34 | 19 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

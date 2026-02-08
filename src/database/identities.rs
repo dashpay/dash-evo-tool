@@ -156,54 +156,54 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Prepare the main statement to select identities, including wallet_index
+        // Use a LEFT JOIN to load identities and their top-ups in a single query,
+        // avoiding the N+1 query pattern of querying top_up per identity.
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index, status FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT i.data, i.alias, i.wallet_index, i.status, i.id, t.top_up_index, t.amount
+             FROM identity i
+             LEFT JOIN top_up t ON i.id = t.identity_id
+             WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL
+             ORDER BY i.id",
         )?;
 
-        // Prepare the statement to select top-ups (will be used multiple times)
-        let mut top_up_stmt =
-            conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
+        let mut rows = stmt.query(params![network])?;
 
-        // Iterate over each identity
-        let identity_iter = stmt.query_map(params![network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let alias: Option<String> = row.get(1)?;
-            let wallet_index: Option<u32> = row.get(2)?;
-            // Handle NULL status values from older database entries by defaulting to Active (2)
-            let status: Option<u8> = row.get(3)?;
+        let mut identities: Vec<QualifiedIdentity> = Vec::new();
+        let mut current_id: Option<Vec<u8>> = None;
 
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
-            identity.alias = alias;
-            identity.wallet_index = wallet_index;
+        while let Some(row) = rows.next()? {
+            let id: Vec<u8> = row.get(4)?;
 
-            identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
-            identity.network = app_context.network;
+            if current_id.as_ref() != Some(&id) {
+                // New identity row
+                let data: Vec<u8> = row.get(0)?;
+                let alias: Option<String> = row.get(1)?;
+                let wallet_index: Option<u32> = row.get(2)?;
+                let status: Option<u8> = row.get(3)?;
 
-            // Associate wallets
-            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+                let mut identity = QualifiedIdentity::from_bytes(&data);
+                identity.alias = alias;
+                identity.wallet_index = wallet_index;
+                identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
+                identity.network = app_context.network;
+                identity.associated_wallets = wallets.clone();
+                identity.top_ups = BTreeMap::new();
 
-            // Retrieve the identity_id as bytes
-            let identity_id = identity.identity.id().to_buffer();
-
-            // Query the top_up table for this identity_id
-            let mut top_ups = BTreeMap::new();
-            let mut rows = top_up_stmt.query(params![identity_id])?;
-
-            while let Some(top_up_row) = rows.next()? {
-                let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u64 = top_up_row.get(1)?;
-                top_ups.insert(top_up_index, amount);
+                identities.push(identity);
+                current_id = Some(id);
             }
 
-            // Assign the top_ups to the identity
-            identity.top_ups = top_ups;
+            // Add top-up entry if present (NULL when identity has no top-ups)
+            let top_up_index: Option<u32> = row.get(5)?;
+            let amount: Option<u64> = row.get(6)?;
+            if let (Some(idx), Some(amt)) = (top_up_index, amount)
+                && let Some(identity) = identities.last_mut()
+            {
+                identity.top_ups.insert(idx, amt);
+            }
+        }
 
-            Ok(identity)
-        })?;
-
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        identities
+        Ok(identities)
     }
 
     #[allow(dead_code)] // May be used for filtering identities that belong to specific wallets
@@ -216,50 +216,51 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Prepare the main statement to select identities, including wallet_index
+        // Use a LEFT JOIN to load identities and their top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index FROM identity WHERE is_local = 1 AND network = ? AND data IS NOT NULL AND wallet_index IS NOT NULL",
+            "SELECT i.data, i.alias, i.wallet_index, i.id, t.top_up_index, t.amount
+             FROM identity i
+             LEFT JOIN top_up t ON i.id = t.identity_id
+             WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL AND i.wallet_index IS NOT NULL
+             ORDER BY i.id",
         )?;
 
-        // Prepare the statement to select top-ups (will be used multiple times)
-        let mut top_up_stmt =
-            conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
+        let mut rows = stmt.query(params![network])?;
 
-        // Iterate over each identity
-        let identity_iter = stmt.query_map(params![network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let alias: Option<String> = row.get(1)?;
-            let wallet_index: Option<u32> = row.get(2)?;
+        let mut identities: Vec<QualifiedIdentity> = Vec::new();
+        let mut current_id: Option<Vec<u8>> = None;
 
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
-            identity.alias = alias;
-            identity.wallet_index = wallet_index;
-            identity.network = app_context.network;
+        while let Some(row) = rows.next()? {
+            let id: Vec<u8> = row.get(3)?;
 
-            // Associate wallets
-            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+            if current_id.as_ref() != Some(&id) {
+                // New identity row
+                let data: Vec<u8> = row.get(0)?;
+                let alias: Option<String> = row.get(1)?;
+                let wallet_index: Option<u32> = row.get(2)?;
 
-            // Retrieve the identity_id as bytes
-            let identity_id = identity.identity.id().to_buffer();
+                let mut identity = QualifiedIdentity::from_bytes(&data);
+                identity.alias = alias;
+                identity.wallet_index = wallet_index;
+                identity.network = app_context.network;
+                identity.associated_wallets = wallets.clone();
+                identity.top_ups = BTreeMap::new();
 
-            // Query the top_up table for this identity_id
-            let mut top_ups = BTreeMap::new();
-            let mut rows = top_up_stmt.query(params![identity_id])?;
-
-            while let Some(top_up_row) = rows.next()? {
-                let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u64 = top_up_row.get(1)?;
-                top_ups.insert(top_up_index, amount);
+                identities.push(identity);
+                current_id = Some(id);
             }
 
-            // Assign the top_ups to the identity
-            identity.top_ups = top_ups;
+            // Add top-up entry if present
+            let top_up_index: Option<u32> = row.get(4)?;
+            let amount: Option<u64> = row.get(5)?;
+            if let (Some(idx), Some(amt)) = (top_up_index, amount)
+                && let Some(identity) = identities.last_mut()
+            {
+                identity.top_ups.insert(idx, amt);
+            }
+        }
 
-            Ok(identity)
-        })?;
-
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        identities
+        Ok(identities)
     }
 
     pub fn get_identity_by_id(
@@ -272,50 +273,45 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Prepare the main statement to select identities, including wallet_index
+        // Use a LEFT JOIN to load identity and its top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT data, alias, wallet_index FROM identity WHERE id = ? AND is_local = 1 AND network = ? AND data IS NOT NULL",
+            "SELECT i.data, i.alias, i.wallet_index, t.top_up_index, t.amount
+             FROM identity i
+             LEFT JOIN top_up t ON i.id = t.identity_id
+             WHERE i.id = ? AND i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL",
         )?;
 
-        // Prepare the statement to select top-ups (will be used multiple times)
-        let mut top_up_stmt =
-            conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
+        let mut rows = stmt.query(params![identifier.to_buffer(), network])?;
 
-        // Iterate over each identity
-        let identity_iter = stmt.query_map(params![identifier.to_buffer(), network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let alias: Option<String> = row.get(1)?;
-            let wallet_index: Option<u32> = row.get(2)?;
+        let mut identity: Option<QualifiedIdentity> = None;
 
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
-            identity.alias = alias;
-            identity.wallet_index = wallet_index;
-            identity.network = app_context.network;
+        while let Some(row) = rows.next()? {
+            if identity.is_none() {
+                let data: Vec<u8> = row.get(0)?;
+                let alias: Option<String> = row.get(1)?;
+                let wallet_index: Option<u32> = row.get(2)?;
 
-            // Associate wallets
-            identity.associated_wallets = wallets.clone(); //todo: use less wallets
+                let mut qi = QualifiedIdentity::from_bytes(&data);
+                qi.alias = alias;
+                qi.wallet_index = wallet_index;
+                qi.network = app_context.network;
+                qi.associated_wallets = wallets.clone();
+                qi.top_ups = BTreeMap::new();
 
-            // Retrieve the identity_id as bytes
-            let identity_id = identity.identity.id().to_buffer();
-
-            // Query the top_up table for this identity_id
-            let mut top_ups = BTreeMap::new();
-            let mut rows = top_up_stmt.query(params![identity_id])?;
-
-            while let Some(top_up_row) = rows.next()? {
-                let top_up_index: u32 = top_up_row.get(0)?;
-                let amount: u64 = top_up_row.get(1)?;
-                top_ups.insert(top_up_index, amount);
+                identity = Some(qi);
             }
 
-            // Assign the top_ups to the identity
-            identity.top_ups = top_ups;
+            // Add top-up entry if present
+            let top_up_index: Option<u32> = row.get(3)?;
+            let amount: Option<u64> = row.get(4)?;
+            if let (Some(idx), Some(amt)) = (top_up_index, amount)
+                && let Some(ref mut qi) = identity
+            {
+                qi.top_ups.insert(idx, amt);
+            }
+        }
 
-            Ok(identity)
-        })?;
-
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        Ok(identities?.into_iter().next())
+        Ok(identity)
     }
 
     pub fn get_local_voting_identities(

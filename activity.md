@@ -1142,3 +1142,18 @@
 **Task:** 7.5b Wrap insert_token() in a transaction
 **What was done:** Wrapped the token insert and identity balance inserts in `insert_token()` inside a single database transaction. Previously, the token row was inserted first via `self.execute()`, then each identity token balance was inserted in a separate `self.execute()` call in a loop — if any balance insert failed, the token row would remain without its balances. Now, identities are fetched first (releasing the connection lock), then a transaction is opened and both the token upsert and all identity balance upserts execute atomically. Either all succeed or all roll back.
 **Files changed:** src/database/tokens.rs
+
+## Run 186 — 2026-02-08
+**Task:** 7.5c Fix silent error masking in contacts.rs load_contact_private_info
+**What was done:** In `load_contact_private_info()`, replaced `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` for both nickname and notes fields, and `row.get::<_, i32>(2).unwrap_or(0)` with `row.get::<_, Option<i32>>(2)?.unwrap_or(0)` for is_hidden. Previously, SQL type conversion errors (e.g., from database corruption where a non-TEXT value is stored in a TEXT column) were silently masked as empty strings or zero. Now, type errors are properly propagated via `?` while SQL NULL values are still handled gracefully via `unwrap_or_default()`.
+**Files changed:** src/database/contacts.rs
+
+## Run 187 — 2026-02-08
+**Task:** 7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback
+**What was done:** Replaced `_ => unreachable!()` in `get_scheduled_votes()` at `scheduled_votes.rs:163` with a safe fallback that treats unexpected `executed` column values as `false` (not executed) and logs a `tracing::warn!` with the unexpected value and contested name for debugging. The `executed` column is an INTEGER constrained to 0/1 by INSERT logic, but database corruption or manual editing could produce other values. Previously this would panic the app; now it degrades gracefully.
+**Files changed:** src/database/scheduled_votes.rs
+
+## Run 188 — 2026-02-08
+**Task:** 7.5e Optimize identity loading N+1 query with JOIN
+**What was done:** Replaced the N+1 query pattern in three identity loading functions in `identities.rs` with single LEFT JOIN queries. Previously, `get_local_qualified_identities()`, `get_local_qualified_identities_in_wallets()`, and `get_identity_by_id()` each prepared a separate `top_up_stmt` and executed it per identity inside the `query_map` closure, resulting in O(n) additional queries for n identities. Now each function uses a single `SELECT ... FROM identity i LEFT JOIN top_up t ON i.id = t.identity_id` query and groups results by identity ID in Rust code. For identities with no top-ups, the LEFT JOIN produces NULL values which are handled gracefully. This reduces database round-trips from O(n+1) to O(1) per call.
+**Files changed:** src/database/identities.rs

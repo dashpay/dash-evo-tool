@@ -789,7 +789,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.4b Extract fee confirmation dialog into a shared component** (P2)
   Move the `FeeConfirmationDialog` struct and `render_fee_confirmation_dialog()` (128 lines) from `single_key_send_screen.rs` into a reusable component (e.g., `src/ui/components/fee_confirmation_dialog.rs`). Also move `parse_min_relay_fee_error()` (20 lines) there since it's the trigger logic. This dialog handles the case where the network requires a higher fee than estimated and lets the user confirm. Could be reused by send_screen.rs for Core→Core sends.
 
-- [ ] **3.4c Extract advanced send mode into send_screen/advanced.rs** (P2)
+- [x] **3.4c Extract advanced send mode into send_screen/advanced.rs** (P2)
   Move the advanced send mode (~800 lines) from `send_screen.rs` into a new `send_screen/advanced.rs` module (converting send_screen.rs into a `send_screen/` directory with `mod.rs`):
   - `render_advanced_send()` (168 lines)
   - `render_core_inputs()` (123 lines)
@@ -1067,7 +1067,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 29 | 16 |
+| 3. Refactoring | 29 | 17 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

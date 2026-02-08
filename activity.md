@@ -724,3 +724,17 @@
 **What was done:** Added contextual recovery suggestions to error displays across 6 screen locations. Created `recovery_suggestion()` function in `src/ui/helpers.rs` that analyzes error messages and returns actionable guidance (e.g., "Check your internet connection and ensure Dash Core is running" for connection errors, "Verify you have sufficient funds" for balance errors, "Try increasing the fee" for fee errors). Enhanced `ErrorDisplay` component with `.with_suggestion()` builder method that renders suggestions in italic secondary-colored text below the error summary. Updated error displays in: `token_operation_base.rs` (all token operation screens), `transfer_screen.rs`, `withdraw_screen.rs`, `register_dpns_name_screen.rs`, `wallets_screen/mod.rs`, and `add_contracts_screen.rs`. All displays now use `horizontal_wrapped` with `.wrap()` for proper text wrapping and show recovery suggestions when applicable.
 **Files changed:** src/ui/helpers.rs, src/ui/components/error_display.rs, src/ui/tokens/token_operation_base.rs, src/ui/identities/transfer_screen.rs, src/ui/identities/withdraw_screen.rs, src/ui/identities/register_dpns_name_screen.rs, src/ui/wallets/wallets_screen/mod.rs, src/ui/contracts_documents/add_contracts_screen.rs
 **Sub-tasks created:** 0
+
+## Run 119 — 2026-02-08
+**Task:** 4.4 [META] Review input validation across all form screens
+**What was done:** Comprehensive audit of all form input validation across the entire UI. Reviewed amount inputs (AmountInput component, Amount.parse()), address inputs (send_screen, withdraw_screen, single_key_send_screen, address_balance_screen), text inputs (profile fields, DPNS names, wallet aliases, token names), and fee inputs. Verified the two referenced issue files (ui-identity-009 bio length mismatch, ui-identity-011 withdrawal address timing). Found that AmountInput/Amount.parse() are excellent (overflow/decimal/min-max checks), but identified 6 specific gaps requiring fixes.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 6 (4.4a through 4.4f)
+
+**Summary of findings:**
+- Amount validation: EXCELLENT overall. AmountInput uses checked_mul/checked_add, decimal enforcement, min/max limits. Only issue: f64 precision loss in transfer/withdraw max calculations.
+- Address validation: GOOD in send_screen (real-time + network check). MISSING in single_key_send_screen (no frontend validation at all) and address_balance_screen (accepts any string).
+- Text validation: DPNS names excellent (3-63 chars, alphanumeric+hyphens). Profile display name good (25 chars). Bio validation code correct but GUIDELINES TEXT says 250 instead of 140. Wallet aliases have NO validation.
+- Fee inputs: None user-editable (all auto-calculated). Good design.
+- Withdraw address: Confirmed ui-identity-011 — validation timing allows confirmation dialog to open with invalid address, then dismisses itself.
+- 15+ fields audited across all form screens

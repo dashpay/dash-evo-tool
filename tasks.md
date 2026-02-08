@@ -1295,7 +1295,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Timeout errors → "The operation timed out. You can try again."
   Apply the same pattern to error displays in identity screens (`transfer_screen.rs:801`, `withdraw_screen.rs:639`, `register_dpns_name_screen.rs:601`), wallet screens (`wallets_screen/mod.rs:1574`), and contract screens (`add_contracts_screen.rs:347`).
 
-- [ ] **4.4 [META] Review input validation across all form screens** (P2)
+- [x] **4.4 [META] Review input validation across all form screens** (P2)
   Check all input fields across the app for missing validation:
   - Amount inputs (overflow, negative, too many decimals)
   - Address inputs (format, network mismatch)
@@ -1303,6 +1303,51 @@ These META tasks validate reported bugs against the current codebase before any 
   - Fee inputs
   Reference: `issues/ui-identity-009-profile-validation-inconsistency.md`, `issues/ui-identity-011-withdrawal-address-validation-timing.md`.
   Create fix tasks for missing validation.
+
+  **Review Results:**
+
+  **Amount Inputs:**
+  - Amount.parse() and AmountInput component are EXCELLENT — overflow checking (checked_mul/checked_add), decimal enforcement, min/max limits, no unwraps on parse results. Used consistently across send_screen, top_up, asset_lock, token screens.
+  - **CONFIRMED:** transfer_screen.rs:138-139 and withdraw_screen.rs:110-111 use f64 arithmetic for max amount calculation (credits→f64→credits), causing potential precision loss of 1-2 duffs. Should use integer arithmetic with saturating_sub.
+  - single_key_send_screen.rs: Amount stored as raw String, but properly validated at submit time via parse_amount_to_duffs() with zero check. ACCEPTABLE.
+
+  **Address Inputs:**
+  - send_screen.rs: GOOD — real-time address type detection via detect_address_type(), network validation at submit.
+  - withdraw_screen.rs: CONFIRMED (ui-identity-011) — address format validated on change, but network mismatch only caught at submit time after confirmation dialog opens. If address is invalid when confirmation dialog opens, dialog is dismissed and user must retry.
+  - **CONFIRMED:** single_key_send_screen.rs has NO frontend address validation — raw String passed to backend. User gets no feedback until Send fails.
+  - **CONFIRMED:** address_balance_screen.rs has NO format validation — accepts any string, only checks for empty.
+  - add_contracts_screen.rs: Validates hex/Base58 at submit time only. ACCEPTABLE for this use case.
+  - add_token_by_id_screen.rs: Only supports Base58, not hex (inconsistent with add_contracts_screen). LOW PRIORITY.
+
+  **Text/Name Inputs:**
+  - **CONFIRMED (ui-identity-009):** profile_screen.rs:24 says "Bios are limited to 250 characters" but code enforces 140 chars (line 231). Guidelines text misleads users.
+  - DPNS name: EXCELLENT — 3-63 char limits, alphanumeric+hyphens only, cannot start/end with hyphen.
+  - Token names: GOOD — 3-50 char limits, duplicate language detection.
+  - **CONFIRMED:** Wallet alias (add_new_wallet_screen.rs:234,243 and import_mnemonic_screen.rs) has NO validation — no length limit, no character restriction, whitespace-only strings pass through (only trimmed for empty check but raw value used if non-empty).
+  - Profile display name: GOOD — 25 char limit, empty check, character counter.
+  - Profile avatar URL: GOOD — 500 char limit, scheme validation.
+  - **CONFIRMED:** add_contact_screen.rs account_label has 100-char limit but no UI character counter feedback.
+
+  **Fee Inputs:**
+  - No user-editable fee inputs found — fees are calculated automatically. GOOD design.
+
+- [ ] **4.4a Fix ui-identity-009: Profile bio length guideline mismatch** (P2)
+  In `src/ui/dashpay/profile_screen.rs:24`, change "Bios are limited to 250 characters" to "Bios are limited to 140 characters" in the `PROFILE_GUIDELINES_INFO_TEXT` constant. The code enforces 140 (line 231) and the error message says 140 (line 61), but the guideline text misleads users by saying 250.
+
+- [ ] **4.4b Fix single_key_send_screen address validation: Add real-time format checking** (P2)
+  In `src/ui/wallets/single_key_send_screen.rs`, the recipient address field (lines 280-287) has no frontend validation — the raw String is passed to the backend. Add real-time address validation on change (similar to withdraw_screen.rs pattern) using `Address::from_str()` or `detect_address_type()` from send_utils.rs. Show error text next to each recipient's address field when invalid.
+
+- [ ] **4.4c Fix withdraw_screen address validation timing** (P2)
+  In `src/ui/identities/withdraw_screen.rs`, the confirmation dialog (show_confirmation_popup, line 203) re-validates the address and dismisses itself if invalid (lines 209-214). Prevent the confirmation dialog from opening when `withdrawal_address_error` is already set. Add a network mismatch check in the on-change validation (line 152-165) using `require_network()`.
+
+- [ ] **4.4d Fix f64 precision in transfer/withdraw max amount calculations** (P2)
+  In `src/ui/identities/transfer_screen.rs:138-139` and `src/ui/identities/withdraw_screen.rs:110-111`, replace floating-point arithmetic with integer arithmetic using `saturating_sub`. For transfer: `self.max_amount.saturating_sub(20_000_000)` (0.0002 DASH in credits). For withdraw: `self.max_amount.saturating_sub(500_000_000)` (0.005 DASH in credits). Currently the f64 round-trip (`u64→f64→u64`) can lose 1-2 duffs of precision.
+
+- [ ] **4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens** (P3)
+  In `src/ui/wallets/add_new_wallet_screen.rs:234-243` and `src/ui/wallets/import_mnemonic_screen.rs` (alias usage), trim the alias before use and add a reasonable length limit (e.g., 64 characters). Currently whitespace-only strings pass through without triggering the empty fallback (since `.trim().is_empty()` check is only for auto-naming but the raw un-trimmed value is used at line 243).
+
+- [ ] **4.4f Add basic format validation to address_balance_screen** (P3)
+  In `src/ui/tools/address_balance_screen.rs:42-54`, add a prefix check before submitting: address should start with "evo1" or "tevo1" (matching the hint text at line 64). Currently accepts any non-empty string.
 
 ---
 
@@ -1487,7 +1532,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 138 (24 META + 114 direct)
+**Total tasks:** 144 (24 META + 120 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1495,7 +1540,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 20 | 16 |
+| 4. UI/UX | 26 | 17 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

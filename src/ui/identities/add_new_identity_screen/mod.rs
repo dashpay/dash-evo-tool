@@ -47,7 +47,7 @@ use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
-pub const MAX_IDENTITY_INDEX: u32 = 30;
+pub use crate::model::qualified_identity::MAX_IDENTITY_INDEX;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FundingMethod {

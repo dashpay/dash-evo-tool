@@ -1,6 +1,8 @@
 pub mod encrypted_key_storage;
 pub mod qualified_identity_public_key;
 
+pub const MAX_IDENTITY_INDEX: u32 = 30;
+
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};

@@ -1535,7 +1535,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4b Move RootScreenType and ThemeMode from UI to model layer** (P2)
   Move `RootScreenType` from `src/ui/mod.rs:95-121` and `ThemeMode` from `src/ui/theme.rs:5-10` to `src/model/` (e.g., `src/model/app_settings.rs` or existing `src/model/settings.rs`). Update imports in `model/settings.rs`, `database/settings.rs`, `context/settings_db.rs`, `backend_task/system_task/mod.rs`, and all UI files. Add re-exports in `ui/mod.rs` and `ui/theme.rs` for backward compatibility if needed.
 
-- [ ] **5.4c Move MAX_IDENTITY_INDEX to model layer** (P3)
+- [x] **5.4c Move MAX_IDENTITY_INDEX to model layer** (P3)
   Move `MAX_IDENTITY_INDEX` from `src/ui/identities/add_new_identity_screen/mod.rs:50` to `src/model/` (e.g., `src/model/constants.rs` or `src/model/qualified_identity/mod.rs`). Update imports in `backend_task/identity/load_identity.rs:16` and `ui/identities/add_new_identity_screen/mod.rs`.
 
 - [ ] **5.4d Replace egui::Color32 in model with framework-agnostic type** (P3)

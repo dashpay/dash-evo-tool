@@ -2,6 +2,7 @@ use super::{BackendTaskSuccessResult, IdentityResult};
 use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
+use crate::model::qualified_identity::MAX_IDENTITY_INDEX;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -13,7 +14,6 @@ use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;

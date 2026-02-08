@@ -4,7 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::amount::Amount;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{MAX_IDENTITY_INDEX, QualifiedIdentity};
 use crate::model::wallet::Wallet;
 use crate::ui::components::Component;
 use crate::ui::components::amount_input::AmountInput;
@@ -24,8 +24,6 @@ use egui::{Button, RichText, Vec2};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
-
-const MAX_IDENTITY_INDEX: u32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AssetLockPurpose {

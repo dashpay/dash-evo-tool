@@ -1121,3 +1121,8 @@
 **Task:** 7.4e Fix query_tokens.rs expect() calls on DocumentQuery creation
 **What was done:** Replaced 2 `.expect()` calls on `DocumentQuery::new()` in `query_tokens.rs` with `.map_err(|e| format!("Failed to create document query: {}", e))?`. The first at line 31 creates a query for "contractKeywords" documents, and the second at line 73 creates a query for "shortDescription" documents. Previously, if the keyword search contract's document type schema was missing or invalid, the backend task would panic. Now these produce descriptive error messages that propagate to the caller.
 **Files changed:** src/backend_task/tokens/query_tokens.rs
+
+## Run 182 — 2026-02-08
+**Task:** 7.4f Document marketplace trade mode limitation
+**What was done:** Documented the marketplace trade mode limitation in two locations. (1) In `backend_task/tokens/mod.rs`, replaced the terse inline comment on the match statement with a multi-line comment explaining that marketplace trading is not yet supported on Dash Platform, the parameter is kept for forward compatibility, and when SDK support is added the match and UI selector should be extended. (2) In the token creator UI (`token_creator.rs`), disabled the Marketplace Trade Mode ComboBox using `ui.add_enabled_ui(false, ...)` so users can see it's locked to "Not Tradeable", and updated the info tooltip text to lead with "Marketplace trading is not yet supported on Dash Platform." The `update_token_config.rs` already had the correct message ("Marketplace settings are not yet supported.") so no changes needed there.
+**Files changed:** src/backend_task/tokens/mod.rs, src/ui/tokens/tokens_screen/token_creator.rs

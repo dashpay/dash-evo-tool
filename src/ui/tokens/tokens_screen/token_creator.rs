@@ -772,22 +772,26 @@ impl TokensScreen {
                                         ui.end_row();
 
                                         // Marketplace Trade Mode
+                                        // Marketplace trading is not yet supported on Dash Platform.
+                                        // The ComboBox is disabled with a single "Not Tradeable" option
+                                        // until the Platform SDK supports additional trade modes.
                                         ui.horizontal(|ui| {
                                             ui.label("Marketplace Trade Mode:");
-                                            ComboBox::from_id_salt("marketplace_trade_mode_selector")
-                                                .selected_text("Not Tradeable")
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(
-                                                        &mut self.marketplace_trade_mode,
-                                                        0,
-                                                        "Not Tradeable",
-                                                    );
-                                                    // Future trade modes can be added here when SDK supports them
-                                                });
+                                            ui.add_enabled_ui(false, |ui| {
+                                                ComboBox::from_id_salt("marketplace_trade_mode_selector")
+                                                    .selected_text("Not Tradeable")
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut self.marketplace_trade_mode,
+                                                            0,
+                                                            "Not Tradeable",
+                                                        );
+                                                    });
+                                            });
 
                                             crate::ui::helpers::info_icon_button(ui,
-                                                "Currently, all tokens are created as 'Not Tradeable'. \
-                                                Future updates will add more trade mode options.\n\n\
+                                                "Marketplace trading is not yet supported on Dash Platform. \
+                                                All tokens are created as 'Not Tradeable'.\n\n\
                                                 IMPORTANT: If you want to enable marketplace trading in the future, \
                                                 make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
                                                 section to something other than 'No One'. Otherwise, trading can never be enabled."

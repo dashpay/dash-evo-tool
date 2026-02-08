@@ -821,10 +821,14 @@ impl AppContext {
         token_config_v0.description = token_description;
 
         // Set marketplace rules
-        // Map the u8 value to TokenTradeMode (0 = NotTradeable)
+        // Marketplace trading is not yet supported on Dash Platform. The
+        // `marketplace_trade_mode` parameter is accepted for forward compatibility
+        // but currently only `NotTradeable` is valid. When the Platform SDK adds
+        // support for additional `TokenTradeMode` variants (e.g., DirectPurchase),
+        // extend this match and the UI's trade-mode selector accordingly.
         let trade_mode = match marketplace_trade_mode {
             0 => TokenTradeMode::NotTradeable,
-            _ => TokenTradeMode::NotTradeable, // Default to NotTradeable for any unknown value
+            _ => TokenTradeMode::NotTradeable,
         };
 
         token_config_v0.marketplace_rules = TokenMarketplaceRules::V0(TokenMarketplaceRulesV0 {

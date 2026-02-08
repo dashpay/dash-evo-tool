@@ -2063,7 +2063,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.4e Fix query_tokens.rs expect() calls on DocumentQuery creation** (P2)
   In `src/backend_task/tokens/query_tokens.rs:31,73`, replace `.expect("create query")` and `.expect("create desc query")` with `?` error propagation using `.map_err(|e| format!("Failed to create document query: {}", e))?`.
 
-- [ ] **7.4f Document marketplace trade mode limitation** (P3)
+- [x] **7.4f Document marketplace trade mode limitation** (P3)
   In `src/backend_task/tokens/mod.rs:809-813`, the `marketplace_trade_mode` parameter always maps to `NotTradeable`. Add a code comment explaining this is pending SDK marketplace support. In the token creator UI, if marketplace settings are selectable, disable the option with a tooltip "Marketplace trading is not yet supported on Platform" or gate behind developer mode.
 
 - [ ] **7.5 [META] Review database layer** (P3)
@@ -2089,5 +2089,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 26 | 16 |
+| 7. Features | 26 | 17 |
 | 8. Security | 2 | 0 |

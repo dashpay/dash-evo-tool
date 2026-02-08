@@ -78,9 +78,24 @@ impl SendPaymentScreen {
     }
 
     fn load_contact_info(&mut self) {
-        // TODO: Load contact info from backend/database
-        // Mock data for now
-        self.to_contact_name = Some("alice.dash".to_string());
+        let owner_id = self.from_identity.identity.id();
+        let network_str = self.app_context.network.to_string();
+        if let Ok(contacts) = self
+            .app_context
+            .db
+            .load_dashpay_contacts(&owner_id, &network_str)
+        {
+            let contact_bytes = self.to_contact_id.to_buffer().to_vec();
+            if let Some(contact) = contacts
+                .iter()
+                .find(|c| c.contact_identity_id == contact_bytes)
+            {
+                self.to_contact_name = contact
+                    .username
+                    .clone()
+                    .or_else(|| contact.display_name.clone());
+            }
+        }
     }
 
     fn send_payment(&mut self) -> AppAction {

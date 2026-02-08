@@ -381,12 +381,21 @@ impl SpvManager {
         std::thread::Builder::new()
             .name("spv".to_string())
             .spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
+                let rt = match tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(4)
                     .enable_all()
                     .thread_name("spv-rt")
                     .build()
-                    .expect("Failed to create SPV runtime");
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let err_msg = format!("Failed to create SPV runtime: {e}");
+                        tracing::error!("{}", err_msg);
+                        let _ = manager.write_last_error(Some(err_msg));
+                        let _ = manager.write_status(SpvStatus::Error);
+                        return;
+                    }
+                };
 
                 rt.block_on(async move {
                     let manager_for_loop = Arc::clone(&manager);

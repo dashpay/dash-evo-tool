@@ -1052,6 +1052,11 @@
 - infra-003 CONFIRMED: expect() on SPV runtime creation in background thread (P1)
 - wallet-013 CONFIRMED: Unbounded fee calculation loop with no iteration limit (P2)
 - infra-016 CONFIRMED: Quorum lookup with no timeout can block indefinitely (P2)
+
+## Run 172 — 2026-02-08
+**Task:** 7.3a Fix infra-003: Replace expect() on SPV runtime creation
+**What was done:** Replaced `.expect("Failed to create SPV runtime")` in `src/spv/manager.rs` with a `match` that logs the error via `tracing::error!`, writes it to `last_error`, sets `SpvStatus::Error`, and returns from the thread closure. Previously, if the tokio runtime failed to build (e.g., due to resource limits), the background thread would panic. Now it gracefully reports the error and exits cleanly.
+**Files changed:** src/spv/manager.rs
 - wallet-016 FALSE POSITIVE: Error IS propagated via `?`, only bool return discarded
 - infra-006 FALSE POSITIVE: Cited busy-wait pattern doesn't exist in current code
 - infra-008 CONFIRMED but LOW PRIORITY: Silent lock error fallback in status methods (acceptable for high-frequency UI queries)

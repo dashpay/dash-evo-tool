@@ -1968,7 +1968,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `context_provider_spv.rs` handles lock poisoning properly and propagates errors — no issues.
   - PR#525 is actively modifying `spv/manager.rs` (+274/-75 lines) — sub-tasks should be coordinated with that PR.
 
-- [ ] **7.3a Fix infra-003: Replace expect() on SPV runtime creation** (P1)
+- [x] **7.3a Fix infra-003: Replace expect() on SPV runtime creation** (P1)
   In `src/spv/manager.rs:389`, replace `.expect("Failed to create SPV runtime")` with a `match` that sets `SpvStatus::Error`, writes the error to `last_error`, logs via `tracing::error!`, and returns early. The thread closure needs to propagate this cleanly since it's inside `std::thread::spawn`.
 
 - [ ] **7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop** (P2)
@@ -2074,6 +2074,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 19 | 8 |
+| 7. Features | 19 | 9 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

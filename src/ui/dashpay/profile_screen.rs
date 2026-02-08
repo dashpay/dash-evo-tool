@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -1373,7 +1373,7 @@ impl ProfileScreen {
         self.profile_load_attempted = true;
 
         match result {
-            BackendTaskSuccessResult::DashPayProfile(profile_data) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::Profile(profile_data)) => {
                 if let Some((display_name, bio, avatar_url)) = profile_data {
                     // Check if avatar URL changed - if so, we need to re-fetch the avatar
                     let old_avatar_url = self.profile.as_ref().map(|p| p.avatar_url.clone());
@@ -1454,7 +1454,7 @@ impl ProfileScreen {
                     // Don't show a message - let the UI show "Create Profile" button
                 }
             }
-            BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ProfileUpdated(_identity_id)) => {
                 // Profile was successfully created/updated
                 // Save the profile data to database BEFORE clearing edit fields
                 if let Some(ref identity) = self.selected_identity {

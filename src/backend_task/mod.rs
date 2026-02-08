@@ -2,7 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreResult, CoreTask};
-use crate::backend_task::dashpay::{ContactData, DashPayTask};
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
@@ -123,24 +123,8 @@ pub enum BackendTaskSuccessResult {
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
 
-    // DashPay related results
-    DashPayProfile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
-    DashPayContactProfile(Option<Document>),          // Contact's public profile document
-    DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
-    DashPayContactRequests {
-        incoming: Vec<(Identifier, Document)>, // (request_id, document)
-        outgoing: Vec<(Identifier, Document)>, // (request_id, document)
-    },
-    DashPayContacts(Vec<Identifier>), // List of contact identity IDs
-    DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
-    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
-    DashPayProfileUpdated(Identifier), // Identity ID of updated profile
-    DashPayContactRequestSent(String), // Username or ID of recipient
-    DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
-    DashPayContactRequestRejected(Identifier), // Request ID that was rejected
-    DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
-    DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
-    DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
+    // DashPay domain results
+    DashPay(DashPayResult),
     GroveSTARK(grovestark::GroveSTARKResult),
 
     // MNList-specific results

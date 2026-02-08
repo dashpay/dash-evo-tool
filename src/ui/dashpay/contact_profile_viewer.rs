@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -702,7 +702,7 @@ impl ScreenLike for ContactProfileViewerScreen {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayContactProfile(profile_doc) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactProfile(profile_doc)) => {
                 if let Some(doc) = profile_doc {
                     // Extract profile data from the document
                     use dash_sdk::dpp::document::DocumentV0Getters;

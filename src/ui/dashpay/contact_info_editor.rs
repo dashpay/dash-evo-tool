@@ -1,5 +1,5 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::dashpay::{ContactData, DashPayTask};
+use crate::backend_task::dashpay::{ContactData, DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -307,7 +307,7 @@ impl ContactInfoEditorScreen {
             BackendTaskSuccessResult::Message(msg) => {
                 self.display_message(&msg, MessageType::Success);
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactsWithInfo(contacts_data)) => {
                 self.handle_contacts_result(contacts_data);
             }
             _ => {

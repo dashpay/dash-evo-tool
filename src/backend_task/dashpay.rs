@@ -22,7 +22,28 @@ pub mod validation;
 pub use contacts::ContactData;
 
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::{Document, Identifier, IdentityPublicKey};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DashPayResult {
+    Profile(Option<(String, String, String)>), // (display_name, bio, avatar_url)
+    ContactProfile(Option<Document>),          // Contact's public profile document
+    ProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // (identity_id, profile_document, username)
+    ContactRequests {
+        incoming: Vec<(Identifier, Document)>,
+        outgoing: Vec<(Identifier, Document)>,
+    },
+    Contacts(Vec<Identifier>),          // List of contact identity IDs
+    ContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
+    PaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
+    ProfileUpdated(Identifier),                               // Identity ID of updated profile
+    ContactRequestSent(String),                               // Username or ID of recipient
+    ContactRequestAccepted(Identifier),                       // Request ID that was accepted
+    ContactRequestRejected(Identifier),                       // Request ID that was rejected
+    ContactAlreadyEstablished(Identifier),                    // Contact ID that already exists
+    ContactInfoUpdated(Identifier),                           // Contact ID whose info was updated
+    PaymentSent(String, String, f64),                         // (recipient, address, amount)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {
@@ -179,7 +200,9 @@ impl AppContext {
                 // m/9'/5'/15'/account'/(our_identity_id)/(contact_identity_id)/index
                 //
                 // For now, return empty payment history until SPV client is available
-                Ok(BackendTaskSuccessResult::DashPayPaymentHistory(Vec::new()))
+                Ok(BackendTaskSuccessResult::DashPay(
+                    DashPayResult::PaymentHistory(Vec::new()),
+                ))
             }
             DashPayTask::SendPaymentToContact {
                 identity,

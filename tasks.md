@@ -970,7 +970,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producers: `src/backend_task/tokens/` (16 files)
   - Consumers: `src/ui/tokens/` (15 screens)
 
-- [ ] **3.6f Extract DashPay results into DashPayResult sub-enum** (P2)
+- [x] **3.6f Extract DashPay results into DashPayResult sub-enum** (P2)
   Create `DashPayResult` with 14 variants: `Profile`, `ContactProfile`, `ProfileSearchResults`, `ContactRequests`, `Contacts`, `ContactsWithInfo`, `PaymentHistory`, `ProfileUpdated`, `ContactRequestSent`, `ContactRequestAccepted`, `ContactRequestRejected`, `ContactAlreadyEstablished`, `ContactInfoUpdated`, `PaymentSent`. Update:
   - Producers: `src/backend_task/dashpay/` (5 files)
   - Consumers: `src/ui/dashpay/` (8+ screens)
@@ -1223,7 +1223,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 43 | 26 |
+| 3. Refactoring | 43 | 27 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

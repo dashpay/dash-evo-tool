@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -439,7 +439,12 @@ impl ScreenLike for SendPaymentScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.sending = false;
-        if let BackendTaskSuccessResult::DashPayPaymentSent(recipient, address, amount) = result {
+        if let BackendTaskSuccessResult::DashPay(DashPayResult::PaymentSent(
+            recipient,
+            address,
+            amount,
+        )) = result
+        {
             // Extract txid from the address (or we could modify the result to include it)
             self.payment_success = true;
             self.tx_id = Some(format!("Sent to {}", address));
@@ -792,7 +797,7 @@ impl PaymentHistory {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayPaymentHistory(payment_data) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::PaymentHistory(payment_data)) => {
                 self.payments.clear();
                 self.has_searched = true;
 

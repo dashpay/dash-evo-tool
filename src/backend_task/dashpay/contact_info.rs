@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::DashPayResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
@@ -518,7 +519,7 @@ pub async fn create_or_update_contact_info(
         }
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated(
-        contact_user_id,
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::ContactInfoUpdated(contact_user_id),
     ))
 }

@@ -1,5 +1,5 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -329,7 +329,7 @@ impl ScreenLike for ProfileSearchScreen {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ProfileSearchResults(results)) => {
                 self.search_results.clear();
 
                 // Convert backend results to UI results

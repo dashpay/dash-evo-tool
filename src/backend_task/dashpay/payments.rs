@@ -1,6 +1,7 @@
 use super::encryption::decrypt_extended_public_key;
 use super::hd_derivation::derive_payment_address;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::DashPayResult;
 use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -341,10 +342,12 @@ pub async fn send_payment_to_contact_impl(
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;
 
-    Ok(BackendTaskSuccessResult::DashPayPaymentSent(
-        to_contact_id.to_string(Encoding::Base58),
-        to_address.to_string(),
-        amount_dash,
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::PaymentSent(
+            to_contact_id.to_string(Encoding::Base58),
+            to_address.to_string(),
+            amount_dash,
+        ),
     ))
 }
 

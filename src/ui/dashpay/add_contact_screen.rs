@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -628,7 +628,7 @@ impl ScreenLike for AddContactScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::DashPayContactRequestSent(recipient) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactRequestSent(recipient)) => {
                 // Contact request sent successfully - show success screen
                 self.status = ContactRequestStatus::Success(format!(
                     "Contact request sent to {} successfully!",

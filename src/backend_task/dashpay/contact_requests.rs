@@ -6,6 +6,7 @@ use super::hd_derivation::{
 };
 use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::DashPayResult;
 use crate::backend_task::dashpay::auto_accept_proof::{
     AutoAcceptProofData, create_auto_accept_proof_bytes_with_key,
 };
@@ -154,7 +155,9 @@ pub async fn load_contact_requests(
         outgoing.len()
     );
 
-    Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::ContactRequests { incoming, outgoing },
+    ))
 }
 
 pub async fn send_contact_request(
@@ -504,8 +507,8 @@ pub async fn send_contact_request_with_proof(
         }
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
-        to_username_or_id.to_string(),
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::ContactRequestSent(to_username_or_id.to_string()),
     ))
 }
 
@@ -605,8 +608,8 @@ pub async fn accept_contact_request(
         .map_err(|e| format!("Error checking existing requests: {}", e))?;
 
     if !existing.is_empty() {
-        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(
-            from_identity_id,
+        return Ok(BackendTaskSuccessResult::DashPay(
+            DashPayResult::ContactAlreadyEstablished(from_identity_id),
         ));
     }
 
@@ -634,8 +637,8 @@ pub async fn accept_contact_request(
     .await;
 
     match result {
-        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
-            request_id,
+        Ok(_) => Ok(BackendTaskSuccessResult::DashPay(
+            DashPayResult::ContactRequestAccepted(request_id),
         )),
         Err(e) => Err(e),
     }
@@ -679,7 +682,7 @@ pub async fn reject_contact_request(
     )
     .await?;
 
-    Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
-        request_id,
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::ContactRequestRejected(request_id),
     ))
 }

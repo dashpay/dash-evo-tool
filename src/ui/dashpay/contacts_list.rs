@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
@@ -1007,7 +1007,7 @@ impl ScreenLike for ContactsList {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayContacts(contact_ids) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::Contacts(contact_ids)) => {
                 // Clear existing contacts
                 self.contacts.clear();
 
@@ -1033,7 +1033,7 @@ impl ScreenLike for ContactsList {
                 self.has_loaded = true;
                 self.message = None;
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactsWithInfo(contacts_data)) => {
                 // Clear existing contacts
                 self.contacts.clear();
 
@@ -1131,7 +1131,7 @@ impl ScreenLike for ContactsList {
                 self.has_loaded = true;
                 self.message = None;
             }
-            BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactProfile(Some(doc))) => {
                 // Extract profile information from the document
                 use dash_sdk::dpp::document::DocumentV0Getters;
                 let properties = doc.properties();

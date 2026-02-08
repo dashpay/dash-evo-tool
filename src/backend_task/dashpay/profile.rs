@@ -1,5 +1,6 @@
 use super::avatar_processing::{calculate_avatar_hash, calculate_dhash_fingerprint};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::DashPayResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -82,11 +83,13 @@ pub async fn load_profile(
             );
         }
 
-        Ok(BackendTaskSuccessResult::DashPayProfile(Some((
-            display_name.to_string(),
-            bio.to_string(),
-            avatar_url.to_string(),
-        ))))
+        Ok(BackendTaskSuccessResult::DashPay(DashPayResult::Profile(
+            Some((
+                display_name.to_string(),
+                bio.to_string(),
+                avatar_url.to_string(),
+            )),
+        )))
     } else {
         // No profile found - cache this fact to avoid repeated network queries
         let network_str = app_context.network.to_string();
@@ -98,7 +101,9 @@ pub async fn load_profile(
             tracing::error!("Failed to cache 'no profile' state in database: {}", e);
         }
 
-        Ok(BackendTaskSuccessResult::DashPayProfile(None))
+        Ok(BackendTaskSuccessResult::DashPay(DashPayResult::Profile(
+            None,
+        )))
     }
 }
 
@@ -255,8 +260,8 @@ pub async fn update_profile(
             tracing::info!("Profile cached in database for identity {}", identity_id);
         }
 
-        Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
-            identity.identity.id(),
+        Ok(BackendTaskSuccessResult::DashPay(
+            DashPayResult::ProfileUpdated(identity.identity.id()),
         ))
     } else {
         // Create new profile using DocumentCreateTransitionBuilder
@@ -335,8 +340,8 @@ pub async fn update_profile(
             );
         }
 
-        Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
-            identity.identity.id(),
+        Ok(BackendTaskSuccessResult::DashPay(
+            DashPayResult::ProfileUpdated(identity.identity.id()),
         ))
     }
 }
@@ -421,7 +426,9 @@ pub async fn fetch_contact_profile(
         Ok(results) => {
             // Extract the profile document if found
             let profile_doc = results.into_iter().next().and_then(|(_, doc)| doc);
-            Ok(BackendTaskSuccessResult::DashPayContactProfile(profile_doc))
+            Ok(BackendTaskSuccessResult::DashPay(
+                DashPayResult::ContactProfile(profile_doc),
+            ))
         }
         Err(e) => {
             // Return a more helpful error message
@@ -452,8 +459,8 @@ pub async fn search_profiles(
 
     let query_trimmed = search_query.trim();
     if query_trimmed.is_empty() {
-        return Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(
-            results,
+        return Ok(BackendTaskSuccessResult::DashPay(
+            DashPayResult::ProfileSearchResults(results),
         ));
     }
 
@@ -526,7 +533,7 @@ pub async fn search_profiles(
         results.push((identity_id, profile_doc, username));
     }
 
-    Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(
-        results,
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::ProfileSearchResults(results),
     ))
 }

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -857,7 +857,10 @@ impl ScreenLike for ContactRequests {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactRequests {
+                incoming,
+                outgoing,
+            }) => {
                 tracing::debug!(
                     "Received DashPayContactRequests result: {} incoming, {} outgoing",
                     incoming.len(),
@@ -975,7 +978,9 @@ impl ScreenLike for ContactRequests {
 
                 // Don't show a message, just display the results
             }
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactRequestAccepted(
+                request_id,
+            )) => {
                 // Mark as accepted only after successful backend operation
                 self.accepted_requests.insert(request_id);
                 self.message = Some((
@@ -983,12 +988,14 @@ impl ScreenLike for ContactRequests {
                     MessageType::Success,
                 ));
             }
-            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactRequestRejected(
+                request_id,
+            )) => {
                 // Mark as rejected only after successful backend operation
                 self.rejected_requests.insert(request_id);
                 self.message = Some(("Contact request rejected".to_string(), MessageType::Success));
             }
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactAlreadyEstablished(_)) => {
                 self.message = Some(("Contact already established".to_string(), MessageType::Info));
             }
             BackendTaskSuccessResult::Message(msg) => {

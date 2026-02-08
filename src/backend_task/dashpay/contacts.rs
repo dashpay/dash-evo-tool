@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::DashPayResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -496,8 +497,8 @@ pub async fn load_contacts(
         }
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
+    Ok(BackendTaskSuccessResult::DashPay(
+        DashPayResult::ContactsWithInfo(contact_list),
     ))
 }
 

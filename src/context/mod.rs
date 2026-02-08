@@ -12,6 +12,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
+use crate::lock_helper::RwLockExt;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
 use crate::model::settings::Settings;
@@ -100,7 +101,7 @@ impl AppContext {
         let config = match Config::load() {
             Ok(config) => config,
             Err(e) => {
-                println!("Failed to load config: {e}");
+                tracing::error!("Failed to load config: {e}");
                 return None;
             }
         };
@@ -475,7 +476,7 @@ impl AppContext {
     }
 
     pub fn platform_version(&self) -> &'static PlatformVersion {
-        default_platform_version(&self.network)
+        self.sdk.read_or_recover().version()
     }
 
     /// Maps a `dash_sdk::Error` from a broadcast/state-transition operation into a
@@ -655,8 +656,11 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
+///
+/// Used during SDK initialization (before an SDK instance exists).
+/// Once an `AppContext` is available, prefer `AppContext::platform_version()`
+/// which reads the version dynamically from the SDK.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
-    // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
     match network {
         Network::Dash => &PLATFORM_V11,
         Network::Testnet => &PLATFORM_V11,

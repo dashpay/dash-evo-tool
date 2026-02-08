@@ -900,3 +900,9 @@
 **What was done:** Found and triaged 47 TODO/FIXME comments across src/. Categorized into 7 groups: SPV developer mode gates (7 instances, deferred to task 7.3), DashPay feature stubs (19 instances, deferred to task 7.2), token screen filtering (3 instances, already tracked as ui-tokens-023), actionable code improvements (8 instances, 6 new sub-tasks created), known limitations (5 instances, no action needed), DB migration discussion (1 instance, informational), and SPV activation height (1 instance, deferred to 7.3). No stale/done TODOs found — all are still relevant.
 **Files changed:** tasks.md, activity.md
 **Sub-tasks created:** 6 (6.4a through 6.4f)
+
+## Run 150 — 2026-02-08
+**Task:** 6.4a Fix TODO: Use SDK version instead of hardcoded PLATFORM_V11
+**What was done:** Changed `AppContext::platform_version()` to dynamically read the version from the SDK instance via `self.sdk.read_or_recover().version()` instead of calling the static `default_platform_version()` helper. This ensures that if the SDK version is ever updated at runtime (e.g., after a network upgrade), the method reflects the actual version. The standalone `default_platform_version()` function is retained for use during SDK initialization (before an SDK instance exists, i.e., in `sdk_wrapper.rs`). Removed the TODO comment and added a doc comment explaining when to use each function. Added `RwLockExt` import for poison-recovery lock access.
+**Files changed:** src/context/mod.rs
+**Sub-tasks created:** 0

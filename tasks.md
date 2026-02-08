@@ -1340,7 +1340,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.4c Fix withdraw_screen address validation timing** (P2)
   In `src/ui/identities/withdraw_screen.rs`, the confirmation dialog (show_confirmation_popup, line 203) re-validates the address and dismisses itself if invalid (lines 209-214). Prevent the confirmation dialog from opening when `withdrawal_address_error` is already set. Add a network mismatch check in the on-change validation (line 152-165) using `require_network()`.
 
-- [ ] **4.4d Fix f64 precision in transfer/withdraw max amount calculations** (P2)
+- [x] **4.4d Fix f64 precision in transfer/withdraw max amount calculations** (P2)
   In `src/ui/identities/transfer_screen.rs:138-139` and `src/ui/identities/withdraw_screen.rs:110-111`, replace floating-point arithmetic with integer arithmetic using `saturating_sub`. For transfer: `self.max_amount.saturating_sub(20_000_000)` (0.0002 DASH in credits). For withdraw: `self.max_amount.saturating_sub(500_000_000)` (0.005 DASH in credits). Currently the f64 round-trip (`u64→f64→u64`) can lose 1-2 duffs of precision.
 
 - [ ] **4.4e Add wallet alias validation in add_new_wallet and import_mnemonic screens** (P3)

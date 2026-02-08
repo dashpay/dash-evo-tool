@@ -107,8 +107,8 @@ impl WithdrawalScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.005).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        // 0.005 DASH = 500_000_000 credits (1 DASH = 100_000_000_000 credits)
+        let max_amount_credits = self.max_amount.saturating_sub(500_000_000);
 
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {

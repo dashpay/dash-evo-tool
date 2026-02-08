@@ -753,3 +753,8 @@
 **Task:** 4.4c Fix withdraw_screen address validation timing
 **What was done:** Improved address validation in the withdrawal screen with two changes: (1) Added network mismatch detection to the on-change validation by switching from `Address::from_str()` to parsing as `Address<NetworkUnchecked>` and then calling `require_network()`. Users now see "Address is not valid for the current network" if they enter e.g. a testnet address while on mainnet. (2) Added an early guard in `show_confirmation_popup()` that prevents the dialog from opening when `withdrawal_address_error` is already set. The confirmation popup's address re-validation was also updated to use `require_network()` for consistency.
 **Files changed:** src/ui/identities/withdraw_screen.rs
+
+## Run 123 — 2026-02-08
+**Task:** 4.4d Fix f64 precision in transfer/withdraw max amount calculations
+**What was done:** Replaced floating-point arithmetic with integer arithmetic using `saturating_sub` in both transfer_screen.rs and withdraw_screen.rs for the "Max" button amount calculation. Transfer screen: replaced `(self.max_amount as f64 / 100_000_000_000.0 - 0.0002).max(0.0)` round-trip with `self.max_amount.saturating_sub(20_000_000)` (0.0002 DASH = 20M credits). Withdraw screen: replaced `(self.max_amount as f64 / 100_000_000_000.0 - 0.005).max(0.0)` round-trip with `self.max_amount.saturating_sub(500_000_000)` (0.005 DASH = 500M credits). Previously the u64→f64→u64 conversion could lose 1-2 duffs of precision due to IEEE 754 floating-point representation limits for large credit values.
+**Files changed:** src/ui/identities/transfer_screen.rs, src/ui/identities/withdraw_screen.rs

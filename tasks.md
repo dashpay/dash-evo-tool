@@ -1553,7 +1553,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4g Extract asset lock proof resolution helper** (P3)
   Extract the duplicated InstantAssetLockProof→ChainAssetLockProof conversion logic from `src/backend_task/identity/register_identity.rs:66-96` and `src/backend_task/identity/top_up_identity.rs:60-94` into a shared function in `src/backend_task/identity/mod.rs`. Both files have identical logic for checking confirmations, height, and Platform block validation.
 
-- [ ] **5.4h Standardize error display in contract screens** (P3)
+- [x] **5.4h Standardize error display in contract screens** (P3)
   Replace the duplicated `render_error_bubble()` methods in `src/ui/contracts_documents/register_contract_screen.rs` and `src/ui/contracts_documents/update_contract_screen.rs` with the existing `ErrorDisplay` component from `src/ui/components/error_display.rs`. Verify the component supports the same styling (error color, rounded frame, expandable details).
 
 - [ ] **5.4i Centralize modal overlay helper** (P3)
@@ -1722,7 +1722,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
-| 5. Architecture | 13 | 11 |
+| 5. Architecture | 13 | 12 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

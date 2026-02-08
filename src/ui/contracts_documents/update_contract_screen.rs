@@ -8,6 +8,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::error_display::ErrorDisplay;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -60,6 +61,7 @@ pub struct UpdateDataContractScreen {
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    error_details_expanded: bool,
     completed_fee_result: Option<FeeResult>,
 }
 
@@ -120,6 +122,7 @@ impl UpdateDataContractScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
+            error_details_expanded: false,
             completed_fee_result: None,
         }
     }
@@ -184,7 +187,7 @@ impl UpdateDataContractScreen {
             });
     }
 
-    /// Renders an error message at the top of the screen with a styled bubble
+    /// Renders an error message at the top of the screen using the shared ErrorDisplay component
     fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
         let error_msg = match &self.broadcast_status {
             BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
@@ -193,21 +196,11 @@ impl UpdateDataContractScreen {
         };
 
         if let Some(msg) = error_msg {
-            let error_color = DashColors::ERROR;
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
-                        ui.add_space(8.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.broadcast_status = BroadcastStatus::Idle;
-                        }
-                    });
-                });
+            let dismissed = ErrorDisplay::new(&msg).show(ui, &mut self.error_details_expanded);
+            if dismissed {
+                self.broadcast_status = BroadcastStatus::Idle;
+                self.error_details_expanded = false;
+            }
             ui.add_space(10.0);
         }
     }

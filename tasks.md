@@ -2051,7 +2051,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.4b Fix GH#224: Add key selection in token creator simple mode** (P2)
   In `src/ui/tokens/tokens_screen/token_creator.rs:273-283`, simple mode uses `.find()` to auto-select the first matching key with no way to change it. Add a key selection dropdown in simple mode (similar to the identity selection ComboBox) that shows all eligible keys (Purpose::AUTHENTICATION, SecurityLevel::CRITICAL or HIGH). Default to the first match but allow the user to select a different one. This resolves GH#224 where users with 7 keys only see key ID 1.
 
-- [ ] **7.4c Fix token_creator.rs unwrap on identity/key submission** (P1)
+- [x] **7.4c Fix token_creator.rs unwrap on identity/key submission** (P1)
   In `src/ui/tokens/tokens_screen/token_creator.rs:1607-1608`, `.unwrap()` on `selected_identity` and `selected_key` will panic if neither is set. Add validation before the submission block: check both are `Some`, and if not, set `self.token_creator_error_message = Some("Please select an identity and signing key.")` and return early.
 
 - [ ] **7.4d Implement frozen identity filtering for destroy/unfreeze screens** (P2)
@@ -2089,5 +2089,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 26 | 13 |
+| 7. Features | 26 | 14 |
 | 8. Security | 2 | 0 |

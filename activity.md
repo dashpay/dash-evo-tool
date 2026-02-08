@@ -1106,3 +1106,8 @@
 **Task:** 7.4b Fix GH#224: Add key selection in token creator simple mode
 **What was done:** Added a key selection dropdown (ComboBox) in the token creator's simple mode. Previously, simple mode used `.find()` to auto-select the first eligible key (Authentication purpose, Critical or High security level) with no way to change it, meaning users with multiple keys could only use key ID 1. Now, when multiple eligible keys exist, a "Signing key:" ComboBox appears below the identity selector showing all eligible keys. The first eligible key is still auto-selected by default, but users can switch to any other eligible key. When only one eligible key exists, the ComboBox is hidden (same behavior as before). Imported `format_key_label` from helpers for consistent key display formatting.
 **Files changed:** src/ui/tokens/tokens_screen/token_creator.rs
+
+## Run 179 — 2026-02-08
+**Task:** 7.4c Fix token_creator.rs unwrap on identity/key submission
+**What was done:** Replaced two `.unwrap()` calls on `self.selected_identity` and `self.selected_key` in the token creator confirmation handler with a `match` that validates both are `Some` before proceeding. If either is `None`, sets an error message ("Please select an identity and signing key.") and closes the confirmation popup instead of panicking. Previously, if a user somehow reached the confirmation dialog without having selected an identity or signing key, the app would crash.
+**Files changed:** src/ui/tokens/tokens_screen/token_creator.rs

@@ -2060,7 +2060,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (b) Track frozen status locally after freeze operations. Faster but may miss external freeze actions.
   Option (a) recommended. Add a loading indicator while fetching, and cache results to avoid repeated queries.
 
-- [ ] **7.4e Fix query_tokens.rs expect() calls on DocumentQuery creation** (P2)
+- [x] **7.4e Fix query_tokens.rs expect() calls on DocumentQuery creation** (P2)
   In `src/backend_task/tokens/query_tokens.rs:31,73`, replace `.expect("create query")` and `.expect("create desc query")` with `?` error propagation using `.map_err(|e| format!("Failed to create document query: {}", e))?`.
 
 - [ ] **7.4f Document marketplace trade mode limitation** (P3)
@@ -2089,5 +2089,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 26 | 15 |
+| 7. Features | 26 | 16 |
 | 8. Security | 2 | 0 |

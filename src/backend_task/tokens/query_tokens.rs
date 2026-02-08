@@ -28,7 +28,7 @@ impl AppContext {
         // ── 1. fetch keyword → contractId docs ────────────────────────────────
         let mut kw_query =
             DocumentQuery::new(self.keyword_search_contract.clone(), "contractKeywords")
-                .expect("create query");
+                .map_err(|e| format!("Failed to create document query: {}", e))?;
         kw_query.limit = 100;
         kw_query.start = cursor.clone();
         kw_query = kw_query.with_where(WhereClause {
@@ -70,7 +70,7 @@ impl AppContext {
             // build a WHERE contractId == cid query
             let mut desc_query =
                 DocumentQuery::new(self.keyword_search_contract.clone(), "shortDescription")
-                    .expect("create desc query");
+                    .map_err(|e| format!("Failed to create document query: {}", e))?;
             desc_query.limit = 1; // only one per contract (schema‑unique)
             desc_query = desc_query.with_where(WhereClause {
                 field: "contractId".into(),

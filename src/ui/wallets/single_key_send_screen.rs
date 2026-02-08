@@ -5,6 +5,9 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::ui::components::fee_confirmation_dialog::{
+    FeeConfirmationDialog, FeeConfirmationResponse, parse_min_relay_fee_error,
+};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -38,15 +41,6 @@ impl SendRecipient {
     }
 }
 
-/// State for the fee confirmation dialog shown when min relay fee is higher than estimated
-#[derive(Debug, Clone, Default)]
-struct FeeConfirmationDialog {
-    is_open: bool,
-    estimated_fee: u64,
-    required_fee: u64,
-    pending_request: Option<WalletPaymentRequest>,
-}
-
 pub struct SingleKeyWalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
@@ -70,6 +64,7 @@ pub struct SingleKeyWalletSendScreen {
 
     // Fee confirmation dialog
     fee_dialog: FeeConfirmationDialog,
+    pending_request: Option<WalletPaymentRequest>,
 
     // Advanced options toggle
     show_advanced_options: bool,
@@ -90,6 +85,7 @@ impl SingleKeyWalletSendScreen {
             show_password: false,
             error_message: None,
             fee_dialog: FeeConfirmationDialog::default(),
+            pending_request: None,
             show_advanced_options: false,
         }
     }
@@ -177,27 +173,6 @@ impl SingleKeyWalletSendScreen {
         Some((fee, selected_count, estimated_size))
     }
 
-    /// Parse the required fee from a "min relay fee not met" error message
-    fn parse_min_relay_fee_error(error: &str) -> Option<u64> {
-        // Error format: "min relay fee not met, X < Y"
-        if error.contains("min relay fee not met") || error.contains("min relay fee") {
-            // Try to find the pattern "X < Y" and extract Y
-            if let Some(pos) = error.find('<') {
-                let after_lt = &error[pos + 1..];
-                // Extract the number after '<'
-                let num_str: String = after_lt
-                    .trim()
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect();
-                if let Ok(required_fee) = num_str.parse::<u64>() {
-                    return Some(required_fee);
-                }
-            }
-        }
-        None
-    }
-
     fn validate_and_send(&mut self) -> Result<AppAction, String> {
         let wallet = self
             .selected_wallet
@@ -264,11 +239,7 @@ impl SingleKeyWalletSendScreen {
         };
 
         // Store the request for potential retry if min relay fee is too low
-        self.fee_dialog.pending_request = Some(request.clone());
-        // Store estimated fee for display in dialog
-        if let Some((estimated_fee, _, _)) = self.estimate_fee() {
-            self.fee_dialog.estimated_fee = estimated_fee;
-        }
+        self.pending_request = Some(request.clone());
 
         self.sending = true;
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
@@ -544,135 +515,6 @@ impl SingleKeyWalletSendScreen {
                     });
                 }
             });
-    }
-
-    fn render_fee_confirmation_dialog(&mut self, ctx: &Context) -> AppAction {
-        let mut action = AppAction::None;
-
-        if !self.fee_dialog.is_open {
-            return action;
-        }
-
-        let dark_mode = ctx.style().visuals.dark_mode;
-
-        egui::Window::new("Fee Confirmation Required")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.add_space(10.0);
-
-                ui.label(
-                    RichText::new("The network requires a higher fee than estimated.")
-                        .color(DashColors::text_primary(dark_mode))
-                        .size(14.0),
-                );
-
-                ui.add_space(15.0);
-
-                Frame::group(ui.style())
-                    .fill(DashColors::surface(dark_mode))
-                    .inner_margin(Margin::symmetric(12, 10))
-                    .corner_radius(5.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Estimated fee:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} duffs ({:.8} DASH)",
-                                    self.fee_dialog.estimated_fee,
-                                    self.fee_dialog.estimated_fee as f64 * 1e-8
-                                ))
-                                .color(DashColors::text_primary(dark_mode)),
-                            );
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Required fee:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} duffs ({:.8} DASH)",
-                                    self.fee_dialog.required_fee,
-                                    self.fee_dialog.required_fee as f64 * 1e-8
-                                ))
-                                .color(DashColors::WARNING)
-                                .strong(),
-                            );
-                        });
-
-                        let fee_diff = self
-                            .fee_dialog
-                            .required_fee
-                            .saturating_sub(self.fee_dialog.estimated_fee);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Additional cost:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "+{} duffs ({:.8} DASH)",
-                                    fee_diff,
-                                    fee_diff as f64 * 1e-8
-                                ))
-                                .color(DashColors::text_primary(dark_mode)),
-                            );
-                        });
-                    });
-
-                ui.add_space(15.0);
-
-                ui.label(
-                    RichText::new("Would you like to proceed with the higher fee?")
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-
-                ui.add_space(15.0);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        self.fee_dialog.is_open = false;
-                        self.fee_dialog.pending_request = None;
-                        self.sending = false;
-                    }
-
-                    ui.add_space(20.0);
-
-                    let confirm_button = egui::Button::new(
-                        RichText::new("Confirm & Send")
-                            .color(Color32::WHITE)
-                            .strong(),
-                    )
-                    .fill(DashColors::DASH_BLUE);
-
-                    if ui.add(confirm_button).clicked() {
-                        if let Some(mut request) = self.fee_dialog.pending_request.take() {
-                            // Update the request to use the higher fee
-                            request.override_fee = Some(self.fee_dialog.required_fee);
-
-                            if let Some(wallet) = &self.selected_wallet {
-                                action = AppAction::BackendTask(BackendTask::CoreTask(
-                                    CoreTask::SendSingleKeyWalletPayment {
-                                        wallet: wallet.clone(),
-                                        request,
-                                    },
-                                ));
-                            }
-                        }
-                        self.fee_dialog.is_open = false;
-                    }
-                });
-
-                ui.add_space(10.0);
-            });
-
-        action
     }
 
     fn render_wallet_info(&self, ui: &mut Ui) {
@@ -968,7 +810,27 @@ impl ScreenLike for SingleKeyWalletSendScreen {
         });
 
         // Render fee confirmation dialog (modal, on top of everything)
-        action |= self.render_fee_confirmation_dialog(ctx);
+        if let Some(response) = self.fee_dialog.show(ctx) {
+            match response {
+                FeeConfirmationResponse::Confirmed { override_fee } => {
+                    if let Some(mut request) = self.pending_request.take() {
+                        request.override_fee = Some(override_fee);
+                        if let Some(wallet) = &self.selected_wallet {
+                            action |= AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::SendSingleKeyWalletPayment {
+                                    wallet: wallet.clone(),
+                                    request,
+                                },
+                            ));
+                        }
+                    }
+                }
+                FeeConfirmationResponse::Canceled => {
+                    self.pending_request = None;
+                    self.sending = false;
+                }
+            }
+        }
 
         action
     }
@@ -977,16 +839,16 @@ impl ScreenLike for SingleKeyWalletSendScreen {
         // Check for success messages to reset sending state
         if message.contains("Sent") || message.contains("TxID") {
             self.sending = false;
-            self.fee_dialog.pending_request = None;
+            self.pending_request = None;
         }
 
         // Check for min relay fee error and show confirmation dialog
         if message_type == MessageType::Error
-            && let Some(required_fee) = Self::parse_min_relay_fee_error(message)
+            && let Some(required_fee) = parse_min_relay_fee_error(message)
         {
             // Show the fee confirmation dialog instead of the error message
-            self.fee_dialog.required_fee = required_fee;
-            self.fee_dialog.is_open = true;
+            let estimated_fee = self.estimate_fee().map(|(fee, _, _)| fee).unwrap_or(0);
+            self.fee_dialog.open(estimated_fee, required_fee);
             // Keep sending state true until user confirms or cancels
             return;
         }

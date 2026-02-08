@@ -5,6 +5,7 @@ pub mod contract_chooser_panel;
 pub mod dashpay_subscreen_chooser_panel;
 pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;
+pub mod fee_confirmation_dialog;
 pub mod identity_selector;
 pub mod info_popup;
 pub mod left_panel;

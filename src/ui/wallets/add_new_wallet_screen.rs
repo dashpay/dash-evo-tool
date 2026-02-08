@@ -491,7 +491,7 @@ impl AddNewWalletScreen {
                     self.receive_qr_texture = Some(texture);
                 }
                 Err(e) => {
-                    qr_error = Some(format!("QR error: {:?}", e));
+                    qr_error = Some(format!("QR code error: {}", e));
                 }
             }
         }

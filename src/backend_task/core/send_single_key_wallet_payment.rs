@@ -177,7 +177,7 @@ impl AppContext {
         for (i, (_, tx_out)) in selected_utxos.iter().enumerate() {
             let sighash = SighashCache::new(&tx)
                 .legacy_signature_hash(i, &tx_out.script_pubkey, EcdsaSighashType::All as u32)
-                .map_err(|e| format!("Failed to compute sighash: {:?}", e))?;
+                .map_err(|e| format!("Failed to compute sighash: {}", e))?;
 
             let message =
                 dash_sdk::dpp::dashcore::secp256k1::Message::from_digest(sighash.to_byte_array());

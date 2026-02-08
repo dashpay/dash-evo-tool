@@ -1359,8 +1359,8 @@ impl TokensScreen {
         for name_with_language in &self.token_names_input {
             if seen_languages.contains(&name_with_language.2) {
                 return Err(format!(
-                    "Duplicate token name language: {:?}",
-                    name_with_language.1
+                    "Duplicate token name language: {}",
+                    name_with_language.2
                 ));
             }
             seen_languages.insert(name_with_language.2);
@@ -1370,14 +1370,14 @@ impl TokensScreen {
         for name_with_language in &self.token_names_input {
             if name_with_language.0.len() < 3 || name_with_language.0.len() > 50 {
                 return Err(format!(
-                    "The name in {:?} must be between 3 and 50 characters",
+                    "The name in {} must be between 3 and 50 characters",
                     name_with_language.2
                 ));
             }
 
             if name_with_language.1.len() < 3 || name_with_language.1.len() > 50 {
                 return Err(format!(
-                    "The plural form in {:?} must be between 3 and 50 characters",
+                    "The plural form in {} must be between 3 and 50 characters",
                     name_with_language.2
                 ));
             }

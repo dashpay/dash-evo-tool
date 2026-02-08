@@ -1277,7 +1277,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Default: use the raw message as details with generic "Operation failed" as summary.
   Update `display_message()` implementations across screens to use this translation before displaying.
 
-- [ ] **4.3c Replace Debug format ({:?}) in user-facing error paths** (P2)
+- [x] **4.3c Replace Debug format ({:?}) in user-facing error paths** (P2)
   Replace `{:?}` format in error strings shown to users:
   - `src/backend_task/core/send_single_key_wallet_payment.rs:180` — change `format!("Failed to compute sighash: {:?}", e)` to `format!("Failed to compute sighash: {}", e)`
   - `src/ui/tokens/tokens_screen/token_creator.rs:1362` — change `format!("Duplicate token name language: {:?}", ...)` to use Display format for the language enum (implement Display or use a match to get human-readable name)

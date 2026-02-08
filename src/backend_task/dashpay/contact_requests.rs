@@ -92,11 +92,6 @@ pub async fn load_contact_requests(
     tracing::info!("Fetched {} outgoing documents", outgoing_docs.len());
 
     // Convert to vec of tuples (id, document)
-    // TODO: Process autoAcceptProof for incoming requests
-    // When an incoming request has a valid autoAcceptProof, we should:
-    // 1. Verify the proof signature
-    // 2. Automatically send a contact request back if valid
-    // 3. Mark the contact as auto-accepted
     let mut incoming: Vec<(Identifier, Document)> = incoming_docs
         .into_iter()
         .filter_map(|(id, doc)| doc.map(|d| (id, d)))

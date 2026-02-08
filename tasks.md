@@ -2128,7 +2128,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)` — queried in `get_asset_lock_transactions()`
   Also bump `DEFAULT_DB_VERSION` from 26 to 27 in `initialization.rs:8`.
 
-- [ ] **7.5b Wrap insert_token() in a transaction** (P2)
+- [x] **7.5b Wrap insert_token() in a transaction** (P2)
   In `src/database/tokens.rs:98-137`, wrap the token insert and identity balance inserts in a transaction. The token insert (line 111-129) and the loop inserting identity token balances (lines 131-135) should both be inside a single `conn.transaction()` block so that either all succeed or all roll back.
 
 - [ ] **7.5c Fix silent error masking in contacts.rs load_contact_private_info** (P2)
@@ -2174,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 19 |
+| 7. Features | 33 | 20 |
 | 8. Security | 2 | 0 |

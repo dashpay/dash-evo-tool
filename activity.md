@@ -1137,3 +1137,8 @@
 **What was done:** Reviewed all 17 database files (~8,785 lines) and 16 db-*.md issue files. Validated migration strategy (solid, version-based with per-version transactions and backup). Checked all 16 issue file claims against actual code: 5 already fixed by prior tasks (db-001/002/003/011 by tasks 2.5/2.3c/2.1a/6.3), 4 false positive or not confirmed (db-004/008/009/015), 5 confirmed and actionable (db-006/010/012/014/016), 2 confirmed but acceptable (db-007/013). Found 2 additional issues from direct inspection: N+1 query patterns in identity/top-up loading and identity order loading, plus silent parse failure logging gap in token order loading. Created 7 specific sub-tasks (7.5a through 7.5g).
 **Files changed:** tasks.md, activity.md
 **Sub-tasks created:** 7 (7.5a through 7.5g)
+
+## Run 185 — 2026-02-08
+**Task:** 7.5b Wrap insert_token() in a transaction
+**What was done:** Wrapped the token insert and identity balance inserts in `insert_token()` inside a single database transaction. Previously, the token row was inserted first via `self.execute()`, then each identity token balance was inserted in a separate `self.execute()` call in a loop — if any balance insert failed, the token row would remain without its balances. Now, identities are fetched first (releasing the connection lock), then a transaction is opened and both the token upsert and all identity balance upserts execute atomically. Either all succeed or all roll back.
+**Files changed:** src/database/tokens.rs

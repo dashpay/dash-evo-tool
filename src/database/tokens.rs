@@ -112,7 +112,14 @@ impl Database {
         let token_id_bytes = token_id.to_vec();
         let data_contract_bytes = data_contract_id.to_vec();
 
-        self.execute(
+        // Collect identities before acquiring the connection lock for the transaction
+        let wallets = app_context.wallets.read_or_recover();
+        let identities = self.get_local_qualified_identities(app_context, &wallets)?;
+
+        let mut conn = self.conn.lock_or_recover();
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "INSERT INTO token
               (id, token_alias, token_config, data_contract_id, token_position, network)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -133,10 +140,19 @@ impl Database {
         )?;
 
         // Insert an identity token balance of 0 for each identity for this token
-        let wallets = app_context.wallets.read_or_recover();
-        for identity in self.get_local_qualified_identities(app_context, &wallets)? {
-            self.insert_identity_token_balance(token_id, &identity.identity.id(), 0, app_context)?;
+        for identity in &identities {
+            let identity_id_bytes = identity.identity.id().to_vec();
+            tx.execute(
+                "INSERT INTO identity_token_balances
+                  (token_id, identity_id, balance, network)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
+                  balance = excluded.balance",
+                params![token_id_bytes, identity_id_bytes, 0u64, network],
+            )?;
         }
+
+        tx.commit()?;
 
         Ok(())
     }

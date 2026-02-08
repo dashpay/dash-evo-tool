@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -42,10 +43,7 @@ impl AppContext {
             });
         }
 
-        let client = self
-            .core_client
-            .read()
-            .expect("Core client lock was poisoned");
+        let client = self.core_client.read_or_recover();
 
         let mut recovered_count = 0;
         let mut total_amount = 0u64;

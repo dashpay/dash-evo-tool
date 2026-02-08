@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -38,10 +39,9 @@ impl AssetLockDetailScreen {
         // Find the wallet by seed hash
         let wallet = app_context
             .wallets
-            .read()
-            .unwrap()
+            .read_or_recover()
             .values()
-            .find(|w| w.read().unwrap().seed_hash() == wallet_seed_hash)
+            .find(|w| w.read_or_recover().seed_hash() == wallet_seed_hash)
             .cloned();
 
         Self {
@@ -69,7 +69,7 @@ impl AssetLockDetailScreen {
         Option<AssetLockProof>,
     )> {
         self.wallet.as_ref().and_then(|wallet| {
-            let wallet = wallet.read().unwrap();
+            let wallet = wallet.read_or_recover();
             wallet
                 .unused_asset_locks
                 .get(self.asset_lock_index)
@@ -218,7 +218,7 @@ impl AssetLockDetailScreen {
 
                     if (!needs_unlock || unlocked)
                         && let Some(wallet_arc) = self.wallet.clone() {
-                            let wallet = wallet_arc.read().unwrap();
+                            let wallet = wallet_arc.read_or_recover();
 
                             // Find the private key for this address
                             if let Some(derivation_path) = wallet.known_addresses.get(&address).cloned() {
@@ -229,7 +229,7 @@ impl AssetLockDetailScreen {
                                     ui.label(RichText::new("••••••••••••••••••••").font(egui::FontId::monospace(12.0)).color(DashColors::text_secondary(dark_mode)));
                                     if ui.small_button("View").clicked() {
                                         // Retrieve the private key when View is clicked
-                                        let wallet = wallet_arc.write().unwrap();
+                                        let wallet = wallet_arc.write_or_recover();
                                         match wallet.private_key_at_derivation_path(&derivation_path, self.app_context.network) {
                                             Ok(private_key) => {
                                                 self.private_key_wif = Some(private_key.to_wif());

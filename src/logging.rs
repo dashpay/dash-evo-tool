@@ -21,8 +21,7 @@ fn initialize_logger_internal() {
     });
 
     // Try to create a log file; fall back to stderr if it fails
-    let log_file_result =
-        app_user_data_file_path("det.log").and_then(std::fs::File::create);
+    let log_file_result = app_user_data_file_path("det.log").and_then(std::fs::File::create);
 
     let (subscriber_set, log_file_path_for_msg) = match log_file_result {
         Ok(log_file) => {

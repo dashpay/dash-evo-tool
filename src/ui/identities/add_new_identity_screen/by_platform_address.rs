@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::lock_helper::RwLockExt;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::components::amount_input::AmountInput;
@@ -15,7 +16,7 @@ const CREDITS_PER_DUFF: u64 = 1000;
 impl AddNewIdentityScreen {
     fn show_platform_address_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
-            let wallet = selected_wallet.read().unwrap();
+            let wallet = selected_wallet.read_or_recover();
 
             let total_platform_balance: u64 = wallet
                 .platform_address_info
@@ -53,7 +54,7 @@ impl AddNewIdentityScreen {
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, PlatformAddress, u64)> =
             if let Some(wallet_arc) = &self.selected_wallet {
-                let wallet = wallet_arc.read().unwrap();
+                let wallet = wallet_arc.read_or_recover();
                 wallet
                     .platform_addresses(network)
                     .into_iter()
@@ -208,7 +209,7 @@ impl AddNewIdentityScreen {
         ui.add_space(20.0);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = *self.step.read_or_recover();
 
         // Display estimated fee before action button (reuse already calculated value)
         let dark_mode = ui.ctx().style().visuals.dark_mode;

@@ -9,6 +9,7 @@ use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
@@ -151,8 +152,7 @@ impl AppContext {
         match task {
             CoreTask::GetBestChainLock => self
                 .core_client
-                .read()
-                .expect("Core client lock was poisoned")
+                .read_or_recover()
                 .get_best_chain_lock()
                 .map(|chain_lock| {
                     BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
@@ -353,8 +353,7 @@ impl AppContext {
 
         let txid = self
             .core_client
-            .read()
-            .expect("Core client lock was poisoned")
+            .read_or_recover()
             .send_raw_transaction(&tx)
             .map_err(|e| format!("Failed to broadcast transaction: {e}"))?;
 

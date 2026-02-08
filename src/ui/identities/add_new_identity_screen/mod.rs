@@ -11,6 +11,7 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -115,7 +116,7 @@ impl AddNewIdentityScreen {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &app_context.wallets.read().unwrap();
+            let wallets = &app_context.wallets.read_or_recover();
             // If a specific wallet seed hash is provided, use that wallet
             if let Some(seed_hash) = wallet_seed_hash
                 && let Some(wallet) = wallets.get(&seed_hash)
@@ -190,7 +191,7 @@ impl AddNewIdentityScreen {
         if let Some(wallet_lock) = &self.selected_wallet {
             // sanity checks
             {
-                let wallet = wallet_lock.read().unwrap();
+                let wallet = wallet_lock.read_or_recover();
                 if !wallet.is_open() {
                     return Err(format!(
                         "wallet {} is not open",
@@ -209,7 +210,7 @@ impl AddNewIdentityScreen {
             let dashpay_contract_id = app_context.dashpay_contract.id();
             let default_keys = default_identity_key_specs(dashpay_contract_id);
 
-            let mut wallet = wallet_lock.write().expect("wallet lock failed");
+            let mut wallet = wallet_lock.write_or_recover();
             let master_key = wallet.identity_authentication_ecdsa_private_key(
                 app_context.network,
                 identity_id_number,
@@ -261,7 +262,7 @@ impl AddNewIdentityScreen {
 
             // Check if we have access to the selected wallet
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-                let wallet = wallet_guard.read().unwrap();
+                let wallet = wallet_guard.read_or_recover();
                 let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
 
                 // Modify the selected text to include "(used)" if the current index is used
@@ -318,7 +319,7 @@ impl AddNewIdentityScreen {
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         let mut selected_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &self.app_context.wallets.read().unwrap();
+            let wallets = &self.app_context.wallets.read_or_recover();
             if wallets.len() > 1 {
                 // Retrieve the alias of the currently selected wallet, if any
                 let selected_wallet_alias = self
@@ -359,7 +360,7 @@ impl AddNewIdentityScreen {
                                 // Reset the copied to clipboard state
                                 self.copied_to_clipboard = None;
                                 // Reset the step to choose funding method
-                                let mut step = self.step.write().unwrap();
+                                let mut step = self.step.write_or_recover();
                                 *step = WalletFundedScreenStep::ChooseFundingMethod;
                             }
                         }
@@ -390,7 +391,7 @@ impl AddNewIdentityScreen {
     ///
     /// This function is called whenever a wallet was changed in the UI or unlocked
     fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
-        let is_open = wallet.read().expect("wallet lock poisoned").is_open();
+        let is_open = wallet.read_or_recover().is_open();
 
         self.selected_wallet = Some(wallet);
         self.identity_id_number = self.next_identity_id();
@@ -410,8 +411,7 @@ impl AddNewIdentityScreen {
         self.selected_wallet
             .as_ref()
             .unwrap()
-            .read()
-            .unwrap()
+            .read_or_recover()
             .identities
             .keys()
             .copied()
@@ -425,7 +425,7 @@ impl AddNewIdentityScreen {
             return;
         };
         let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
+        let mut funding_method = funding_method_arc.write_or_recover(); // Write lock on funding_method
 
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
@@ -438,14 +438,14 @@ impl AddNewIdentityScreen {
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::ChooseFundingMethod;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
 
                 let (has_unused_asset_lock, has_balance) = {
-                    let wallet = selected_wallet.read().unwrap();
+                    let wallet = selected_wallet.read_or_recover();
                     (wallet.has_unused_asset_lock(), wallet.has_balance())
                 };
 
@@ -460,7 +460,7 @@ impl AddNewIdentityScreen {
                 {
                     self.ensure_correct_identity_keys()
                         .expect("failed to initialize keys");
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::ReadyToCreate;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
@@ -476,7 +476,7 @@ impl AddNewIdentityScreen {
                 {
                     self.funding_amount = None;
                     self.funding_amount_input = None;
-                    let mut step = self.step.write().unwrap(); // Write lock on step
+                    let mut step = self.step.write_or_recover(); // Write lock on step
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }
                 if ui
@@ -487,7 +487,7 @@ impl AddNewIdentityScreen {
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::WaitingOnFunds;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
@@ -495,7 +495,7 @@ impl AddNewIdentityScreen {
 
                 // Check if wallet has Platform address balance
                 let has_platform_balance = {
-                    let wallet = selected_wallet.read().unwrap();
+                    let wallet = selected_wallet.read_or_recover();
                     wallet
                         .platform_address_info
                         .values()
@@ -512,7 +512,7 @@ impl AddNewIdentityScreen {
                 {
                     self.ensure_correct_identity_keys()
                         .expect("failed to initialize keys");
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::ReadyToCreate;
                     self.platform_funding_amount = None;
                     self.platform_funding_amount_input = None;
@@ -817,7 +817,7 @@ impl AddNewIdentityScreen {
                         ),
                     };
 
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                     AppAction::BackendTask(BackendTask::IdentityTask(
@@ -839,7 +839,7 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let seed = selected_wallet.read().unwrap().wallet_seed.clone();
+                let seed = selected_wallet.read_or_recover().wallet_seed.clone();
                 tracing::debug!(selected_wallet = ?selected_wallet,?seed, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
                     alias_input: self.alias_input.clone(),
@@ -852,7 +852,7 @@ impl AddNewIdentityScreen {
                     ),
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_or_recover();
                 *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
@@ -873,7 +873,7 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let wallet_seed_hash = selected_wallet.read().unwrap().seed_hash();
+                let wallet_seed_hash = selected_wallet.read_or_recover().seed_hash();
 
                 let mut inputs = std::collections::BTreeMap::new();
                 inputs.insert(platform_addr, amount);
@@ -890,7 +890,7 @@ impl AddNewIdentityScreen {
                         },
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_or_recover();
                 *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -902,12 +902,12 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = *self.funding_method.read().unwrap();
+        let funding_method = *self.funding_method.read_or_recover();
 
         // Calculate max amount if using wallet balance
         let max_amount_credits = if funding_method == FundingMethod::UseWalletBalance {
             self.selected_wallet.as_ref().map(|wallet| {
-                let wallet = wallet.read().unwrap();
+                let wallet = wallet.read_or_recover();
                 // Convert duffs to credits (1 duff = 1000 credits)
                 wallet.total_balance_duffs() * 1000
             })
@@ -944,7 +944,7 @@ impl AddNewIdentityScreen {
     /// If the master key is not set, this function is a no-op and returns Ok(false).
     fn update_identity_key(&mut self) -> Result<bool, String> {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let mut wallet = wallet_guard.write().unwrap();
+            let mut wallet = wallet_guard.write_or_recover();
             let identity_index = self.identity_id_number;
 
             // Update the master private key and keys input from the wallet
@@ -993,7 +993,7 @@ impl AddNewIdentityScreen {
         security_level: SecurityLevel,
     ) {
         if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let mut wallet = wallet_guard.write().unwrap();
+            let mut wallet = wallet_guard.write_or_recover();
             let new_key_index = self.identity_keys.keys_input.len() as u32 + 1;
 
             // Add a new key with default parameters (no contract bounds for manually added keys)
@@ -1020,7 +1020,7 @@ impl ScreenLike for AddNewIdentityScreen {
         if message_type == MessageType::Error {
             self.error_message = Some(format!("Error registering identity: {}", message));
             // Reset step so we stop showing "Waiting for Platform acknowledgement"
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_or_recover();
             *step = WalletFundedScreenStep::ReadyToCreate;
         } else {
             self.error_message = Some(message.to_string());
@@ -1032,12 +1032,12 @@ impl ScreenLike for AddNewIdentityScreen {
         {
             self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
             self.completed_fee_result = Some(fee_result);
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_or_recover();
             *step = WalletFundedScreenStep::Success;
             return;
         }
 
-        let mut step = self.step.write().unwrap();
+        let mut step = self.step.write_or_recover();
         let current_step = *step;
         match current_step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
@@ -1070,7 +1070,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             return false;
                         };
                         if let Some(wallet) = &self.selected_wallet {
-                            let wallet = wallet.read().unwrap();
+                            let wallet = wallet.read_or_recover();
                             wallet.known_addresses.contains_key(&address)
                         } else {
                             false
@@ -1128,7 +1128,7 @@ impl ScreenLike for AddNewIdentityScreen {
             }
 
             ScrollArea::vertical().show(ui, |ui| {
-                let step = {*self.step.read().unwrap()};
+                let step = {*self.step.read_or_recover()};
                 if step == WalletFundedScreenStep::Success {
                     inner_action |= self.show_success(ui);
                     return;
@@ -1187,7 +1187,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     // Display the heading with an info icon that shows a tooltip on hover
                     ui.horizontal(|ui| {
                         let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                        let wallet = wallet_guard.read().unwrap();
+                        let wallet = wallet_guard.read_or_recover();
                         if wallet.identities.is_empty() {
                             ui.heading(format!(
                                 "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
@@ -1294,7 +1294,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
+                let funding_method = *self.funding_method.read_or_recover();
 
                 if funding_method == FundingMethod::NoSelection {
                     return;

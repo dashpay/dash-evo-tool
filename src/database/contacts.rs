@@ -1,3 +1,4 @@
+use crate::lock_helper::MutexExt;
 use dash_sdk::platform::Identifier;
 use rusqlite::{Connection, params};
 
@@ -60,7 +61,7 @@ impl crate::database::Database {
         owner_identity_id: &Identifier,
         contact_identity_id: &Identifier,
     ) -> rusqlite::Result<(String, String, bool)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT nickname, notes, is_hidden FROM contact_private_info
              WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
@@ -91,7 +92,7 @@ impl crate::database::Database {
         &self,
         owner_identity_id: &Identifier,
     ) -> rusqlite::Result<Vec<ContactPrivateInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT owner_identity_id, contact_identity_id, nickname, notes, is_hidden
              FROM contact_private_info

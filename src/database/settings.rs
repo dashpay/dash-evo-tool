@@ -1,5 +1,6 @@
 use crate::database::Database;
 use crate::database::initialization::DEFAULT_DB_VERSION;
+use crate::lock_helper::MutexExt;
 use crate::model::password_info::PasswordInfo;
 use crate::model::settings::UserMode;
 use crate::ui::RootScreenType;
@@ -337,7 +338,7 @@ impl Database {
 
     /// Gets the use_local_spv_node flag from the settings table.
     pub fn get_use_local_spv_node(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let result: Option<bool> = conn.query_row(
             "SELECT use_local_spv_node FROM settings WHERE id = 1",
             [],
@@ -357,7 +358,7 @@ impl Database {
 
     /// Gets the auto_start_spv flag from the settings table.
     pub fn get_auto_start_spv(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let result: Option<bool> = conn.query_row(
             "SELECT auto_start_spv FROM settings WHERE id = 1",
             [],
@@ -396,7 +397,7 @@ impl Database {
 
     /// Gets the close_dash_qt_on_exit flag from the settings table.
     pub fn get_close_dash_qt_on_exit(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let result: Option<bool> = conn.query_row(
             "SELECT close_dash_qt_on_exit FROM settings WHERE id = 1",
             [],
@@ -469,7 +470,7 @@ impl Database {
     /// Gets the selected wallet hashes from the settings table.
     /// Returns (selected_wallet_hash, selected_single_key_hash).
     pub fn get_selected_wallet_hashes(&self) -> Result<SelectedWalletHashes> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let result = conn.query_row(
             "SELECT selected_wallet_hash, selected_single_key_hash FROM settings WHERE id = 1",
             [],
@@ -550,7 +551,7 @@ impl Database {
         )>,
     > {
         // Query the settings row
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode, onboarding_completed, show_evonode_tools, user_mode, close_dash_qt_on_exit FROM settings WHERE id = 1",
         )?;

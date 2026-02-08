@@ -1,6 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -80,7 +81,7 @@ impl AppContext {
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self.wallets.read_or_recover().clone();
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
@@ -286,7 +287,7 @@ impl AppContext {
         };
 
         let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
+            let guard = self.sdk.read_or_recover();
             guard.clone()
         };
 
@@ -339,7 +340,7 @@ impl AppContext {
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .map(|wallet| (wallet.read_or_recover().seed_hash(), wallet.clone()))
                 .collect(),
             wallet_index: None, //todo
             top_ups: Default::default(),
@@ -355,7 +356,7 @@ impl AppContext {
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
         {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write_or_recover();
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
@@ -377,7 +378,7 @@ impl AppContext {
             if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
                 continue;
             }
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write_or_recover();
             if !wallet.is_open() {
                 continue;
             }

@@ -1,6 +1,7 @@
 use super::{BackendTaskSuccessResult, IdentityIndex};
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -38,7 +39,7 @@ impl AppContext {
 
         for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
             let public_key = {
-                let wallet = wallet_arc_ref.wallet.write().unwrap();
+                let wallet = wallet_arc_ref.wallet.write_or_recover();
                 wallet.identity_authentication_ecdsa_public_key(
                     self.network,
                     identity_index,
@@ -116,7 +117,7 @@ impl AppContext {
         };
 
         let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
+            let guard = self.sdk.read_or_recover();
             guard.clone()
         };
 
@@ -162,7 +163,7 @@ impl AppContext {
 
         let wallet_seed_hash;
         let (public_key_result_map, public_key_hash_result_map) = {
-            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            let mut wallet = wallet_arc_ref.wallet.write_or_recover();
             wallet_seed_hash = wallet.seed_hash();
             wallet.identity_authentication_ecdsa_public_keys_data_map(
                 self.network,
@@ -224,7 +225,7 @@ impl AppContext {
 
         let private_keys = private_keys_map.into();
 
-        let wallet_seed_hash = wallet_arc_ref.wallet.read().unwrap().seed_hash();
+        let wallet_seed_hash = wallet_arc_ref.wallet.read_or_recover().seed_hash();
 
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
@@ -259,7 +260,7 @@ impl AppContext {
         .map_err(|e| format!("Database error: {}", e))?;
 
         {
-            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            let mut wallet = wallet_arc_ref.wallet.write_or_recover();
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());

@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, WalletSeedHash};
 use crate::spv::CoreBackendMode;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ impl AppContext {
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read_or_recover();
             wallets
                 .get(&seed_hash)
                 .cloned()

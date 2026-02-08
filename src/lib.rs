@@ -9,6 +9,7 @@ pub mod context_provider;
 pub mod context_provider_spv;
 pub mod cpu_compatibility;
 pub mod database;
+pub mod lock_helper;
 pub mod logging;
 pub mod model;
 pub mod sdk_wrapper;

@@ -3,6 +3,7 @@ pub mod encryption;
 pub mod single_key;
 mod utxos;
 
+use crate::lock_helper::RwLockExt;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
 use dash_sdk::dpp::identity::signer::Signer;
@@ -607,7 +608,7 @@ impl Wallet {
     ) -> Option<Arc<RwLock<Wallet>>> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_or_recover();
             // Check if the wallet's seed hash matches the provided wallet_seed_hash
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Return a clone of the Arc<RwLock<Wallet>> that matches
@@ -626,7 +627,7 @@ impl Wallet {
     ) -> Result<Option<[u8; 32]>, String> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_or_recover();
             // Check if this wallet's seed hash matches the target hash
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Attempt to derive the private key using the provided derivation path
@@ -732,8 +733,7 @@ impl Wallet {
                     let address = Address::p2pkh(&public_key, network);
                     app_context
                         .core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
+                        .read_or_recover()
                         .import_address(
                             &address,
                             Some(

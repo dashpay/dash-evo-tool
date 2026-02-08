@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -44,7 +45,7 @@ impl AppContext {
         // Step 1: Create the asset lock transaction
         let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read_or_recover();
                 wallets
                     .get(&seed_hash)
                     .cloned()
@@ -65,10 +66,7 @@ impl AppContext {
                     // Reload UTXOs and try again
                     wallet
                         .reload_utxos(
-                            &self
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned"),
+                            &self.core_client.read_or_recover(),
                             self.network,
                             Some(self),
                         )
@@ -90,21 +88,20 @@ impl AppContext {
 
         // Step 2: Register this transaction as waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
             proofs.insert(tx_id, None);
         }
 
         // Step 3: Broadcast the transaction
         self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
+            .read_or_recover()
             .send_raw_transaction(&asset_lock_transaction)
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
         // Step 4: Remove used UTXOs from wallet
         {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read_or_recover();
                 wallets
                     .get(&seed_hash)
                     .cloned()
@@ -146,12 +143,12 @@ impl AppContext {
             tokio::select! {
                 _ = &mut timeout => {
                     // Clean up the finality tracking entry before returning error
-                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
                     proofs.remove(&tx_id);
                     return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
                 }
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    let proofs = self.transactions_waiting_for_finality.lock_or_recover();
                     if let Some(Some(proof)) = proofs.get(&tx_id) {
                         asset_lock_proof = proof.clone();
                         break;
@@ -162,14 +159,14 @@ impl AppContext {
 
         // Step 6: Clean up the finality tracking
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
             proofs.remove(&tx_id);
         }
 
         // Step 7: Get wallet and SDK for the platform funding operation
         let (wallet, sdk) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read_or_recover();
                 wallets
                     .get(&seed_hash)
                     .cloned()

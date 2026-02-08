@@ -3,6 +3,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::WalletPaymentRequest;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
@@ -197,8 +198,7 @@ impl AppContext {
         // Broadcast transaction
         let txid = self
             .core_client
-            .read()
-            .expect("Core client lock was poisoned")
+            .read_or_recover()
             .send_raw_transaction(&tx)
             .map_err(|e| format!("Failed to broadcast transaction: {}", e))?;
 

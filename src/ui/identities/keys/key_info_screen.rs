@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
@@ -380,7 +381,7 @@ impl ScreenLike for KeyInfoScreen {
                                         });
                                 } else {
                                     let wallet =
-                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
+                                        self.selected_wallet.as_ref().unwrap().read_or_recover();
                                     match wallet.private_key_at_derivation_path(
                                         &derivation_path.derivation_path,
                                         self.app_context.network,
@@ -436,7 +437,7 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                                 if self.decrypted_private_key.is_none() {
                                     let wallet =
-                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
+                                        self.selected_wallet.as_ref().unwrap().read_or_recover();
                                     match wallet.private_key_at_derivation_path(
                                         &derivation_path.derivation_path,
                                         self.app_context.network,
@@ -597,7 +598,7 @@ impl KeyInfoScreen {
     ) -> Self {
         let selected_wallet =
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
-                let wallets = app_context.wallets.read().unwrap();
+                let wallets = app_context.wallets.read_or_recover();
                 wallets
                     .get(&wallet_derivation_path.wallet_seed_hash)
                     .cloned()

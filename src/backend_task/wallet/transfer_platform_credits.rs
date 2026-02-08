@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
@@ -21,7 +22,7 @@ impl AppContext {
         // Clone wallet and SDK before the async operation to avoid holding guards across await
         let (wallet, sdk) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read_or_recover();
                 wallets
                     .get(&seed_hash)
                     .cloned()

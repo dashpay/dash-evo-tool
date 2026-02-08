@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::lock_helper::RwLockExt;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
@@ -8,7 +9,7 @@ use egui::{Color32, RichText, Ui};
 impl AddNewIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
-            let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
+            let wallet = selected_wallet.read_or_recover(); // Read lock on the wallet
 
             let total_balance: u64 = wallet.total_balance_duffs(); // Use stored balance with UTXO fallback
 
@@ -42,7 +43,7 @@ impl AddNewIdentityScreen {
         self.render_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = *self.step.read_or_recover();
 
         // Check if we have a valid amount before showing the button
         let has_valid_amount = self

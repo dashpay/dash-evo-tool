@@ -3,6 +3,7 @@ use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -109,7 +110,7 @@ impl IdentitiesScreen {
     /// Reorders `self.identities` to match the order of the provided list of IDs.
     /// Any IDs not present in the provided list are left in their current position.
     fn reorder_map_to(&self, new_order: Vec<Identifier>) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_or_recover();
         if lock.is_empty() || new_order.is_empty() {
             return;
         }
@@ -196,7 +197,7 @@ impl IdentitiesScreen {
                 IdentitiesSortOrder::Descending => ordering.reverse(),
             }
         });
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_or_recover();
         *lock = list
             .iter()
             .map(|qi| (qi.identity.id(), qi.clone()))
@@ -262,7 +263,7 @@ impl IdentitiesScreen {
 
     // Up/down reorder methods
     fn move_identity_up(&mut self, identity_id: &Identifier) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_or_recover();
         if let Some(idx) = lock.get_index_of(identity_id)
             && idx > 0
         {
@@ -274,7 +275,7 @@ impl IdentitiesScreen {
 
     // arrow down
     fn move_identity_down(&mut self, identity_id: &Identifier) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_or_recover();
         if let Some(idx) = lock.get_index_of(identity_id)
             && idx + 1 < lock.len()
         {
@@ -286,7 +287,7 @@ impl IdentitiesScreen {
 
     // Save the current index order to DB
     fn save_current_order(&self) {
-        let lock = self.identities.lock().unwrap();
+        let lock = self.identities.lock_or_recover();
         let all_ids = lock.keys().cloned().collect::<Vec<_>>();
         drop(lock);
         self.app_context.db.save_identity_order(all_ids).ok();
@@ -295,7 +296,7 @@ impl IdentitiesScreen {
     /// This method merges the ephemeral-sorted `Vec` back into the IndexMap
     /// so the IndexMap is updated to the user’s currently displayed order.
     fn update_index_map_to_current_ephemeral(&self, ephemeral_list: Vec<QualifiedIdentity>) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_or_recover();
         // basically reorder the underlying IndexMap to match ephemeral_list
         for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
             let id = qi.identity.id();
@@ -311,9 +312,9 @@ impl IdentitiesScreen {
         if let Some(in_wallet_text) = self.wallet_seed_hash_cache.get(wallet_seed_hash) {
             return Some(in_wallet_text.clone());
         }
-        let wallets = self.app_context.wallets.read().unwrap();
+        let wallets = self.app_context.wallets.read_or_recover();
         for wallet in wallets.values() {
-            let wallet_guard = wallet.read().unwrap();
+            let wallet_guard = wallet.read_or_recover();
             if &wallet_guard.seed_hash() == wallet_seed_hash {
                 let in_wallet_text = if let Some(alias) = wallet_guard.alias.as_ref() {
                     alias.clone()
@@ -930,7 +931,7 @@ impl IdentitiesScreen {
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
-                            let mut lock = self.identities.lock().unwrap();
+                            let mut lock = self.identities.lock_or_recover();
                             lock.shift_remove(&identity_id);
 
                             if let Err(e) = self
@@ -1064,7 +1065,7 @@ impl IdentitiesScreen {
 
                         // Update in memory
                         {
-                            let mut identities = self.identities.lock().unwrap();
+                            let mut identities = self.identities.lock_or_recover();
                             if let Some(identity_to_update) = identities.get_mut(&identity_id) {
                                 identity_to_update.alias = new_alias.clone();
                             }
@@ -1106,7 +1107,7 @@ impl IdentitiesScreen {
 
 impl ScreenLike for IdentitiesScreen {
     fn refresh(&mut self) {
-        let mut identities = self.identities.lock().unwrap();
+        let mut identities = self.identities.lock_or_recover();
         *identities = self
             .app_context
             .load_local_qualified_identities()
@@ -1170,12 +1171,11 @@ impl ScreenLike for IdentitiesScreen {
             "Load Identity",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddExistingIdentity)),
         ));
-        if !self.identities.lock().unwrap().is_empty() {
+        if !self.identities.lock_or_recover().is_empty() {
             // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity
             let backend_tasks: Vec<BackendTask> = self
                 .identities
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .values()
                 .map(|qi| BackendTask::IdentityTask(IdentityTask::RefreshIdentity(qi.clone())))
                 .collect();
@@ -1198,7 +1198,7 @@ impl ScreenLike for IdentitiesScreen {
         action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
 
         let identities_vec = {
-            let guard = self.identities.lock().unwrap();
+            let guard = self.identities.lock_or_recover();
             guard.values().cloned().collect::<Vec<_>>()
         };
 

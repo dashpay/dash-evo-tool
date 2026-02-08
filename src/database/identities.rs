@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::dashcore::Network;
@@ -17,7 +18,7 @@ impl Database {
         new_alias: Option<&str>,
     ) -> rusqlite::Result<()> {
         let id = identifier.to_vec();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let rows_updated = conn.execute(
             "UPDATE identity SET alias = ? WHERE id = ?",
@@ -33,7 +34,7 @@ impl Database {
 
     pub fn get_identity_alias(&self, identifier: &Identifier) -> rusqlite::Result<Option<String>> {
         let id = identifier.to_vec();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         let mut stmt = conn.prepare("SELECT alias FROM identity WHERE id = ?")?;
         let alias: Option<String> = stmt.query_row(params![id], |row| row.get(0)).ok();
@@ -130,7 +131,7 @@ impl Database {
         let network = app_context.network.to_string();
 
         // Check if the identity already exists
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt =
             conn.prepare("SELECT COUNT(*) FROM identity WHERE id = ? AND network = ?")?;
         let count: i64 = stmt.query_row(params![id, network], |row| row.get(0))?;
@@ -154,7 +155,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Prepare the main statement to select identities, including wallet_index
         let mut stmt = conn.prepare(
@@ -214,7 +215,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Prepare the main statement to select identities, including wallet_index
         let mut stmt = conn.prepare(
@@ -270,7 +271,7 @@ impl Database {
     ) -> rusqlite::Result<Option<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Prepare the main statement to select identities, including wallet_index
         let mut stmt = conn.prepare(
@@ -324,7 +325,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT data FROM identity WHERE is_local = 1 AND network = ? AND identity_type != 'User' AND data IS NOT NULL",
         )?;
@@ -350,7 +351,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>> {
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
@@ -377,7 +378,7 @@ impl Database {
         let id = identifier.to_vec();
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Perform the deletion only if the identity is marked as local
         conn.execute(
@@ -411,7 +412,7 @@ impl Database {
         }
         let network = app_context.network.to_string();
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Perform the deletion only if the identity is marked as local
         conn.execute(
@@ -449,7 +450,7 @@ impl Database {
     /// Saves the user’s custom identity order (the entire list).
     /// This method overwrites whatever was there before.
     pub fn save_identity_order(&self, all_ids: Vec<Identifier>) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let tx = conn.unchecked_transaction()?;
 
         // Clear existing rows
@@ -472,7 +473,7 @@ impl Database {
     /// Loads the user’s custom identity order (the entire list).
     /// If an identity in the order doesn't exist in the identity table, it is removed.
     pub fn load_identity_order(&self) -> rusqlite::Result<Vec<Identifier>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Read all rows sorted by pos
         let mut stmt = conn.prepare("SELECT identity_id FROM identity_order ORDER BY pos ASC")?;

@@ -1,3 +1,4 @@
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
 use crate::model::wallet::Wallet;
 use bincode::{Decode, Encode};
@@ -67,7 +68,7 @@ impl QualifiedIdentityPublicKey {
 
                     // Iterate over each wallet to check for matching derivation paths
                     for locked_wallet in wallets {
-                        let wallet = locked_wallet.read().unwrap();
+                        let wallet = locked_wallet.read_or_recover();
                         if let Some(derivation_path) = wallet.known_addresses.get(&address) {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
@@ -108,7 +109,7 @@ impl QualifiedIdentityPublicKey {
 
                     // Iterate over each wallet to check for matching derivation paths
                     for locked_wallet in wallets {
-                        let wallet = locked_wallet.read().unwrap();
+                        let wallet = locked_wallet.read_or_recover();
                         if let Some(derivation_path) = wallet.known_addresses.get(&address) {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
@@ -158,7 +159,7 @@ impl QualifiedIdentityPublicKey {
 
                 // Iterate over each wallet to check for matching derivation paths
                 for locked_wallet in wallets {
-                    let wallet = locked_wallet.read().unwrap();
+                    let wallet = locked_wallet.read_or_recover();
                     if let Some(derivation_path) = wallet.known_addresses.get(&address) {
                         in_wallet_at_derivation_path = Some(WalletDerivationPath {
                             wallet_seed_hash: wallet.seed_hash(),

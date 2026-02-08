@@ -1,6 +1,7 @@
 //! Database operations for single key wallets
 
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use crate::model::wallet::single_key::{
     ClosedSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
@@ -44,7 +45,7 @@ impl Database {
         wallet: &SingleKeyWallet,
         network: Network,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             "INSERT OR REPLACE INTO single_key_wallet (
                 key_hash,
@@ -84,7 +85,7 @@ impl Database {
         network: Network,
     ) -> rusqlite::Result<Vec<SingleKeyWallet>> {
         let mut wallets = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock_or_recover();
             let mut stmt = conn.prepare(
                 "SELECT
                     key_hash,
@@ -216,7 +217,7 @@ impl Database {
         key_hash: &SingleKeyHash,
         network: Network,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             "DELETE FROM single_key_wallet WHERE key_hash = ?1 AND network = ?2",
             params![key_hash.as_slice(), network.to_string()],
@@ -232,7 +233,7 @@ impl Database {
         unconfirmed_balance: u64,
         total_balance: u64,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             "UPDATE single_key_wallet SET
                 confirmed_balance = ?1,
@@ -255,7 +256,7 @@ impl Database {
         key_hash: &SingleKeyHash,
         alias: Option<&str>,
     ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(
             "UPDATE single_key_wallet SET alias = ?1 WHERE key_hash = ?2",
             params![alias, key_hash.as_slice()],

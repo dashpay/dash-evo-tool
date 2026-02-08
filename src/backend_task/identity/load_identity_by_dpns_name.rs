@@ -1,5 +1,6 @@
 use super::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
@@ -138,7 +139,7 @@ impl AppContext {
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self.wallets.read_or_recover().clone();
 
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();
@@ -162,7 +163,7 @@ impl AppContext {
             dpns_names: owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .map(|wallet| (wallet.read_or_recover().seed_hash(), wallet.clone()))
                 .collect(),
             wallet_index: None,
             top_ups: Default::default(),

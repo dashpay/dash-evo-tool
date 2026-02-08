@@ -16,6 +16,7 @@ mod top_ups;
 mod utxo;
 mod wallet;
 
+use crate::lock_helper::MutexExt;
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Params};
 use std::sync::Mutex;
@@ -34,14 +35,14 @@ impl Database {
     }
 
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         conn.execute(sql, params)
     }
 
     /// Removes all application data tied to a specific Dash network.
     pub fn clear_network_data(&self, network: Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock_or_recover();
         let tx = conn.transaction()?;
 
         // Remove DashPay/contact data referencing identities from this network.

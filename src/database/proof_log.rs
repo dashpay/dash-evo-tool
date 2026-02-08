@@ -1,4 +1,5 @@
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use rusqlite::params;
 use std::ops::Range;
@@ -55,7 +56,7 @@ impl Database {
 
     /// Inserts a new ProofLogItem into the proof_log table
     pub fn insert_proof_log_item(&self, item: ProofLogItem) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Convert RequestType to u8
         let request_type_int: u8 = item.request_type.into();
@@ -83,7 +84,7 @@ impl Database {
         only_get_errored: bool,
         range: Range<u64>,
     ) -> rusqlite::Result<Vec<ProofLogItem>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Build the query based on the only_get_errored flag
         let mut query = String::from(

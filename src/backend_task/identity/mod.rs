@@ -14,6 +14,7 @@ mod withdraw_from_identity;
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
@@ -582,7 +583,7 @@ impl AppContext {
         // Get the wallet for signing - clone it to avoid holding guard across await
         let wallet_clone = {
             let wallet = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read_or_recover();
                 wallets
                     .get(&wallet_seed_hash)
                     .cloned()
@@ -677,7 +678,7 @@ impl AppContext {
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
         {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read_or_recover();
             for (seed_hash, wallet_arc) in wallets.iter() {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)

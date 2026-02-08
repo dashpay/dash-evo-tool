@@ -1,4 +1,5 @@
 use crate::database::Database;
+use crate::lock_helper::MutexExt;
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use std::fs;
@@ -14,7 +15,7 @@ impl Database {
         // created with an older schema. This must happen before any queries that
         // depend on these columns (like db_schema_version which needs database_version).
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock_or_recover();
             // Check if settings table exists before trying to ensure columns
             let settings_exists: bool = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
@@ -171,10 +172,7 @@ impl Database {
                 original_version, to_version
             )),
             std::cmp::Ordering::Less => {
-                let mut conn = self
-                    .conn
-                    .lock()
-                    .expect("Failed to lock database connection");
+                let mut conn = self.conn.lock_or_recover();
 
                 for version in (original_version + 1)..=to_version {
                     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -191,7 +189,7 @@ impl Database {
 
     /// Checks if the `settings` table is empty or missing, indicating a first-time setup.
     fn is_first_time_setup(&self) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
 
         // Check if the `settings` table exists by querying `sqlite_master`
         let table_exists: bool = conn.query_row(
@@ -219,7 +217,7 @@ impl Database {
     /// This is to allow the app to detect when database version is too high and to prevent
     /// the app from running with an unsupported database version.
     fn db_schema_version(&self) -> rusqlite::Result<u16> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         let result: rusqlite::Result<u16> = conn.query_row(
             "SELECT database_version FROM settings WHERE id = 1",
             [],
@@ -265,7 +263,7 @@ impl Database {
 
     /// Creates all required tables with indexes if they don't already exist.
     fn create_tables(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock_or_recover();
         // Create the settings table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (

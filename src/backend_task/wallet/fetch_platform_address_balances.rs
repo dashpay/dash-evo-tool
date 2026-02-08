@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::{
     DerivationPathHelpers, DerivationPathReference, DerivationPathType, Wallet,
     WalletAddressProvider, WalletSeedHash,
@@ -26,7 +27,7 @@ impl AppContext {
         let start_time = std::time::Instant::now();
 
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read_or_recover();
             wallets
                 .get(&seed_hash)
                 .cloned()

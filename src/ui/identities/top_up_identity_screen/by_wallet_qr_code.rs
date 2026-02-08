@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::lock_helper::RwLockExt;
 use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -14,7 +15,7 @@ impl TopUpIdentityScreen {
             if let Some(wallet_guard) = self.wallet.as_ref() {
                 // Get the receive address from the selected wallet
                 if self.funding_address.is_none() {
-                    let mut wallet = wallet_guard.write().unwrap();
+                    let mut wallet = wallet_guard.write_or_recover();
                     let receive_address = wallet.receive_address(
                         self.app_context.network,
                         true,
@@ -102,7 +103,7 @@ impl TopUpIdentityScreen {
         }
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = *self.step.read_or_recover();
 
         ui.heading(
             format!(
@@ -164,7 +165,7 @@ impl TopUpIdentityScreen {
                         ),
                     };
 
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_or_recover();
                     *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                     return AppAction::BackendTask(BackendTask::IdentityTask(

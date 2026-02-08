@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::{v0::ExtendedEpochInfoV0Getters, ExtendedEpochInfo};
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
@@ -343,7 +344,7 @@ impl AppContext {
         request: PlatformInfoTaskRequestType,
     ) -> Result<BackendTaskSuccessResult, String> {
         let sdk = {
-            let sdk_guard = self.sdk.read().unwrap();
+            let sdk_guard = self.sdk.read_or_recover();
             sdk_guard.clone()
         };
 

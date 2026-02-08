@@ -863,7 +863,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.5c Extract contract/token database facade into context/contract_token_db.rs** (P2)
   Move ~160 lines of contract and token CRUD methods (lines 1444-1817) into a new `src/context/contract_token_db.rs` as a separate `impl AppContext` block. Methods: `get_contracts`, `get_contract_by_id`, `get_unqualified_contract_by_id`, `remove_contract`, `replace_contract`, `identity_token_balances`, `remove_token_balance`, `insert_token`, `remove_token`, `remove_wallet`, `insert_token_identity_balance`, `get_contract_by_token_id`.
 
-- [ ] **3.5d Extract transaction/asset lock processing into context/transaction_processing.rs** (P2)
+- [x] **3.5d Extract transaction/asset lock processing into context/transaction_processing.rs** (P2)
   Move ~190 lines of transaction and asset lock event handling (lines 1529-1718) into a new `src/context/transaction_processing.rs` as a separate `impl AppContext` block. Methods: `received_transaction_finality`, `received_asset_lock_finality`. Also move the standalone `DapiTransactionInfo` struct and `get_transaction_info_via_dapi()` async function (lines 1820-1851) since they are transaction-related utilities.
 
 - [ ] **3.5e Extract settings database facade into context/settings_db.rs** (P3)
@@ -1111,7 +1111,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 34 | 21 |
+| 3. Refactoring | 34 | 22 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

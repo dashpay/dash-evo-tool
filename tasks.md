@@ -1199,7 +1199,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created (only high-impact, actionable items):**
 
-- [ ] **4.2a Make ContractChooserState fields private** (P3)
+- [x] **4.2a Make ContractChooserState fields private** (P3)
   In `src/ui/components/contract_chooser_panel.rs:22-30`, make all 8 public fields private. Add accessor methods as needed. This is the only component struct violating the private-fields requirement. Check all callers in `src/ui/contracts_documents/` to update field access to use new methods.
 
 - [ ] **4.2b Centralize inline colors in component files to DashColors** (P3)

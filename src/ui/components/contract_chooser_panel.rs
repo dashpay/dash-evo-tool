@@ -20,14 +20,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct ContractChooserState {
-    pub right_click_contract_id: Option<String>,
-    pub show_context_menu: bool,
-    pub context_menu_position: egui::Pos2,
-    pub expanded_contracts: std::collections::HashSet<String>,
-    pub expanded_sections: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    pub expanded_doc_types: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    pub expanded_indexes: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    pub expanded_tokens: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    right_click_contract_id: Option<String>,
+    show_context_menu: bool,
+    context_menu_position: egui::Pos2,
+    expanded_contracts: std::collections::HashSet<String>,
+    expanded_sections: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    expanded_doc_types: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    expanded_indexes: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    expanded_tokens: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl Default for ContractChooserState {

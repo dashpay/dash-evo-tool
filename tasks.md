@@ -988,13 +988,68 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.6i Extract remaining top-level variants into System/Platform sub-enums** (P3)
   Create `PlatformResult` with 1 variant: `Info(PlatformInfoTaskResult)`. Create `SystemResult` with 1 variant: `UpdatedThemePreference(ThemeMode)`. Move `BroadcastedStateTransition` into either a top-level kept variant or a `BroadcastResult` sub-enum. Clean up the top-level enum to have only: `None`, `Refresh`, `Message(String)`, plus the domain sub-enum wrappers. Update `app.rs` pre-handling for `UpdatedThemePreference` to use `System(SystemResult::UpdatedThemePreference(...))`.
 
-- [ ] **3.7 [META] Identify and catalog code duplication** (P3)
+- [x] **3.7 [META] Identify and catalog code duplication** (P3)
   Systematically identify duplicated code across the codebase. Key known areas:
   - Fee calculation (3+ implementations)
   - Send screen logic (2 files)
   - Error handling patterns
   - UI layout boilerplate
   Create deduplication sub-tasks ordered by impact.
+
+  **Catalog Results:**
+
+  **Category 1: Token Operation Screen Boilerplate (~2,500+ duplicated lines)**
+  The 13 token operation screens (mint, burn, freeze, unfreeze, pause, resume, claim, destroy_frozen_funds, transfer, direct_purchase, set_price, update_config, view_claims) share massive structural duplication:
+  - **Identical Status enums** — 13 nearly identical enums (`MintTokensStatus`, `BurnTokensStatus`, etc.) all with variants `NotStarted`, `WaitingForResult(u64)`, `ErrorMessage(String)`, `Complete`. Only names differ.
+  - **Identical `new()` initialization** — Each loads identities, selects first identity, selects wallet, selects key, initializes confirmation dialog, wallet unlock popup, etc. (~30-40 lines per screen × 13 screens = ~450 lines duplicated).
+  - **Identical wallet-locked overlay** — 37 occurrences across 35 files of "Wallet is locked" message with `Color32::from_rgb(200, 150, 50)` orange warning color. Each uses slightly different wording.
+  - **Identical key validation errors** — "No authentication keys with CRITICAL security level found" messages in 10+ token screens with identical colored error labels and "Check Keys"/"Add key" buttons.
+  - **Identical status rendering** — `WaitingForResult` elapsed time display and `ErrorMessage` colored label rendering duplicated across all 13 screens with minor format variations ("elapsed: {} seconds" vs "elapsed: {}s").
+  - **Identical confirmation/success popup** — `show_confirmation_popup()` and `show_success_screen()` patterns repeated identically.
+
+  **Category 2: Warning/Error Color Constants (32 occurrences)**
+  `Color32::from_rgb(200, 150, 50)` is used as an inline "warning orange" color in 31 files (32 occurrences). This should be a named constant in a shared colors module (or added to the existing `DashColors` struct).
+
+  **Category 3: Fee Calculation Duplication (3 patterns)**
+  - **`estimate_p2pkh_tx_size()`** — Identical function duplicated in `backend_task/core/mod.rs:663` and `ui/wallets/single_key_send_screen.rs:104`. Same formula: 8 + varint(inputs) + varint(outputs) + 148×inputs + 34×outputs.
+  - **20% safety buffer** — `total.saturating_add(total / 5)` applied identically in `fee_estimation.rs:343`, `fee_estimation.rs:389`, and `platform_address_allocation.rs:49`.
+  - **Credits-to-DASH formatting** — `credits as f64 / 1000.0 / 100_000_000.0` duplicated in `send_utils.rs:34` and `top_up_identity_screen/by_platform_address.rs:238`, while `fee_estimation.rs:639` has a centralized version that isn't used by these two.
+
+  **Category 4: Identity/Wallet/Key Selection Pattern (~600-1200 lines)**
+  30+ screens have identical field triplets:
+  ```
+  selected_qualified_identity: Option<QualifiedIdentity>
+  selected_key: Option<IdentityPublicKey>
+  selected_wallet: Option<Arc<RwLock<Wallet>>>
+  ```
+  With identical initialization logic: load identities → select first → get wallet → select key. Each occurrence is 20-40 lines.
+
+  **Category 5: ConfirmationDialog Boilerplate (27 files)**
+  The `confirmation_dialog: Option<ConfirmationDialog>` field and its rendering/status-check pattern appears identically in 27 files (token, contract, identity, DashPay screens). Each implements the same `.show()` → match `Confirmed`/`Canceled` pattern.
+
+  **Category 6: WalletUnlockPopup Pattern (40+ files)**
+  `wallet_unlock_popup: WalletUnlockPopup` field with identical initialization and usage pattern across 40+ screens. Each screen independently checks `wallet_needs_unlock()`, tries `try_open_wallet_no_password()`, and handles `WalletUnlockResult`. 9-12 lines per occurrence.
+
+  **Sub-tasks created by priority (highest impact first):**
+
+- [ ] **3.7a Extract shared token operation screen base into a reusable struct/trait** (P2)
+  Create a `TokenOperationBase` struct (or similar) in `src/ui/tokens/` that encapsulates the shared fields and initialization logic used by all 13 token operation screens: `selected_qualified_identity`, `selected_key`, `selected_wallet`, `wallet_unlock_popup`, `confirmation_dialog`, `show_advanced_options`, `group`, `is_unilateral_group_member`, `group_action_id`, `public_note`, `error_message`. Provide a `new(app_context)` constructor with the common initialization logic. Provide shared methods: `render_wallet_locked_overlay()`, `render_key_validation_error()`, `render_status_display()`. Each token screen struct then embeds `base: TokenOperationBase` and delegates common rendering to it. Start with 2-3 screens (e.g., pause, resume which are simplest) as proof of concept.
+
+- [ ] **3.7b Extract shared Status enum into a generic OperationStatus** (P2)
+  Create a single `OperationStatus` enum (or `TaskStatus`) in `src/ui/tokens/` (or `src/ui/components/`) with variants `NotStarted`, `WaitingForResult(u64)`, `ErrorMessage(String)`, `Complete`. Replace the 13 identical per-screen status enums (`MintTokensStatus`, `BurnTokensStatus`, etc.) with this shared type. Also extract the status rendering logic into a shared `render_operation_status()` helper that handles elapsed time display and error message coloring consistently.
+
+- [ ] **3.7c Extract warning color constant and wallet-locked overlay helper** (P2)
+  (1) Add a `WARNING_ORANGE` constant (or `warning_color()` method) to `DashColors` for the `Color32::from_rgb(200, 150, 50)` used in 31 files. Replace all 32 inline occurrences.
+  (2) Extract the "Wallet is locked" overlay into a shared helper function in `src/ui/helpers.rs`: `render_wallet_locked_overlay(ui: &mut Ui, action_description: &str)` that takes the action text (e.g., "to send a payment", "to mint tokens") and renders the standardized overlay with the warning color.
+
+- [ ] **3.7d Deduplicate estimate_p2pkh_tx_size** (P3)
+  Move `estimate_p2pkh_tx_size()` to a shared location (e.g., `src/model/fee_estimation.rs` as a standalone function). Remove the duplicate in `single_key_send_screen.rs:104-119` and update calls in both `backend_task/core/mod.rs` and `single_key_send_screen.rs` to use the shared version.
+
+- [ ] **3.7e Consolidate credits-to-DASH formatting** (P3)
+  Replace the duplicate `credits as f64 / 1000.0 / 100_000_000.0` in `send_utils.rs:34` and `by_platform_address.rs:238` with the existing `fee_estimation::format_credits_as_dash()`. If the function signatures differ, adapt the callers. Also consider extracting a `CREDITS_PER_DASH` constant to a shared location.
+
+- [ ] **3.7f Extract 20% safety buffer into helper function** (P3)
+  Create a helper `apply_fee_safety_margin(base: u64, percent: u32) -> u64` in `fee_estimation.rs` and replace the 3 instances of `total.saturating_add(total / 5)` at `fee_estimation.rs:343`, `fee_estimation.rs:389`, and `platform_address_allocation.rs:49`.
 
 ---
 
@@ -1223,7 +1278,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 43 | 28 |
+| 3. Refactoring | 49 | 29 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

@@ -2066,7 +2066,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.4f Document marketplace trade mode limitation** (P3)
   In `src/backend_task/tokens/mod.rs:809-813`, the `marketplace_trade_mode` parameter always maps to `NotTradeable`. Add a code comment explaining this is pending SDK marketplace support. In the token creator UI, if marketplace settings are selectable, disable the option with a tooltip "Marketplace trading is not yet supported on Platform" or gate behind developer mode.
 
-- [ ] **7.5 [META] Review database layer** (P3)
+- [x] **7.5 [META] Review database layer** (P3)
   Check `src/database/` for:
   - Missing indexes on frequently queried columns
   - Migration strategy (how are schema changes handled?)
@@ -2074,11 +2074,96 @@ These META tasks validate reported bugs against the current codebase before any 
   Reference: `issues/db-*.md` files, `issues/context-017-database-execute-error-swallowed.md`.
   Create improvement tasks.
 
+  **Triage Results:**
+
+  **Reviewed files:** 17 database files in `src/database/` (mod.rs, initialization.rs, wallet.rs, identities.rs, contracts.rs, tokens.rs, settings.rs, utxo.rs, contacts.rs, dashpay.rs, proof_log.rs, scheduled_votes.rs, single_key_wallet.rs, asset_lock_transaction.rs, contested_names.rs, top_ups.rs, test_helpers.rs). Also reviewed 16 `db-*.md` issue files. Total ~8,785 lines of database code.
+
+  **Migration Strategy:**
+  - Version-based migration system (26 versions, `DEFAULT_DB_VERSION = 26` in `initialization.rs:8`).
+  - Each version step applies changes inside a transaction (`initialization.rs:178-183`): `conn.transaction()` → `apply_version_changes()` → `update_database_version()` → `tx.commit()`. Rollback is automatic on failure.
+  - Database is backed up before migration (`backup_db()` at `initialization.rs:237-262`).
+  - Schema version stored in `settings.database_version`. Higher-than-supported version correctly returns an error suggesting app update.
+  - **SOLID architecture.** No issues found with migration strategy itself.
+
+  **Issue Files (db-001 through db-016) — Status:**
+  - **db-001 (Mutex unwrap panic)** — ALREADY FIXED by task 2.5. All lock sites now use `lock_or_recover()`.
+  - **db-002 (expect panics)** — ALREADY FIXED by task 2.3c. All `expect()` calls in wallet.rs data loading replaced with `map_err`.
+  - **db-003 (migration panic)** — ALREADY FIXED by task 2.1a. Migration failure now returns `Err` instead of panicking.
+  - **db-004 (SQL injection risk in fix_identity_devnet_network_name)** — FALSE POSITIVE. Table names come from a hardcoded `const TABLES` array at `identities.rs:542-554`, not from user input. The `format!()` at line 558 uses constant strings only.
+  - **db-005 (dynamic SQL construction)** — PARTIALLY CONFIRMED. The `identities.rs:558` format is safe (see db-004). However, `contested_names.rs:664` uses `format!()` to build an `IN` clause with dynamically generated `?` placeholders — this is the CORRECT pattern for parameterized IN queries in SQLite (values are still bound as parameters, not interpolated). SAFE by design. The `contracts.rs:265` dynamic query construction also uses parameterized values. All safe.
+  - **db-006 (missing transaction atomicity)** — CONFIRMED. `tokens.rs:98-137` `insert_token()` inserts the token record (line 111-129) then loops through identities to insert balance records (lines 131-135) WITHOUT a transaction. If a balance insert fails partway, the token is saved but some identity balances are missing, leaving the database inconsistent. Fix: wrap in transaction.
+  - **db-007 (unchecked_transaction usage)** — CONFIRMED but ACCEPTABLE. Used in `identities.rs:473` and `tokens.rs:507` for `save_identity_order()` and `save_token_order()`. Both functions explicitly call `tx.commit()` (lines 488, 523). The `unchecked_transaction()` is correct here — it avoids automatic nested transaction behavior when the connection already has a lock. Not a bug.
+  - **db-008 (duplicate wallet loading code)** — NOT CONFIRMED in current code. The wallet address insertion logic in `wallet.rs` appears clean. Likely already addressed in prior refactoring.
+  - **db-009 (incorrect comment)** — NOT CONFIRMED. Comment about seed sizes appears correct for context. Minor documentation issue at most.
+  - **db-010 (unreachable in production)** — CONFIRMED. `scheduled_votes.rs:159` has `_ => unreachable!()` for a database boolean column. While the `executed` column is constrained to 0/1 by the INSERT logic, database corruption or manual editing could trigger this. Fix: use `_ => false` or return error.
+  - **db-011 (eprintln in production)** — ALREADY FIXED by task 6.3. All `eprintln!` replaced with tracing macros.
+  - **db-012 (silent error swallowing in contacts)** — CONFIRMED. `contacts.rs:77-79` uses `row.get::<_, String>(0).unwrap_or_default()` which converts SQL type conversion errors to empty strings silently. If the `nickname` or `notes` column contains non-TEXT data (e.g., due to corruption), the error is masked. Fix: use `row.get(0)?` since the closure already returns `rusqlite::Result`.
+  - **db-013 (PRAGMA foreign_keys toggle)** — CONFIRMED in two locations: `scheduled_votes.rs:56,90` and `asset_lock_transaction.rs:351,393`. Both toggle `PRAGMA foreign_keys = OFF` then `ON` during table recreation. If an error occurs between OFF and ON, FK constraints remain disabled for the connection. Both are in migration paths (version 6 and version 7) called during `try_perform_migration()` which uses per-version transactions. The PRAGMA runs outside the transaction (SQLite limitation: PRAGMA can't run inside a transaction), but the migration transaction will roll back the DDL changes. LOW RISK since this only runs once during migration, but technically the connection's FK enforcement is left off on error.
+  - **db-014 (missing indexes on network column)** — CONFIRMED. Six indexes exist: `idx_wallet_addresses_path_reference`, `idx_wallet_addresses_path_type`, `idx_utxos_address`, `idx_utxos_network`, `idx_identity_local_network_type`, `idx_alias_network`. However, the `wallet` table has NO index on `network` despite being queried with `WHERE network = ?` in `get_wallets()` (line 418) and `get_wallet_addresses()` (line 511) — these are startup-path queries that load ALL wallets and addresses. The `token` table also lacks a network index despite 8 queries filtering by network. The `identity_token_balances` table lacks indexes entirely. The `scheduled_votes` table has 10 queries filtering by network with no index. Fix: add network indexes to high-traffic tables.
+  - **db-015 (or_else unnecessary allocation)** — NOT CONFIRMED in current code. The `contracts.rs` code now uses `.optional()` correctly.
+  - **db-016 (unwrap_or_default masks errors)** — CONFIRMED, same as db-012. See above.
+
+  **Additional Findings from Direct Code Inspection:**
+
+  **N+1 Query Pattern in Identity Loading (P2):**
+  `identities.rs:166-204` — `get_local_qualified_identities()` prepares a `top_up_stmt` and then inside the `query_map` closure calls `top_up_stmt.query()` PER IDENTITY to load top-ups. This is O(n) queries for n identities. The same pattern repeats in `get_local_qualified_identities_in_wallets()` (lines 226-260) and `get_identity_by_id()` (lines 282-316). For 10-20 identities this is acceptable, but it won't scale. Fix: use a JOIN or batch query to load all top-ups in a single query, then distribute them in memory.
+
+  **N+1 Query Pattern in Identity Order Loading (P3):**
+  `identities.rs:517-526` — `load_identity_order()` calls `conn.prepare("SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)")` inside a loop for EACH identity in the order list. This is another O(n) pattern. Fix: load all identity IDs in a single query and filter in memory, or use a JOIN.
+
+  **Token insert_token() not transactional (P2):**
+  `tokens.rs:98-137` — As noted above in db-006, the `insert_token()` function inserts a token row and then loops through all identities to insert zero-balance records. These are separate database operations not wrapped in a transaction. If any identity balance insert fails, the token is saved but some balances are missing.
+
+  **Silent Identifier parse failure in load_token_order (P3):**
+  `tokens.rs:545-553` — `load_token_order()` silently skips rows where `Identifier::from_vec()` fails with empty `else` blocks and comments "handle error". Should log a warning via `tracing::warn!`.
+
+  **Sub-tasks created for implementation:**
+
+- [ ] **7.5a Add missing network indexes to high-traffic tables** (P2)
+  Add database migration (version 27) to create network indexes on frequently queried tables:
+  - `CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)` — wallet table queried with `WHERE network = ?` at startup
+  - `CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)` — 8 queries filter by network
+  - `CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)` — queried in `get_identity_token_balances()`
+  - `CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)` — 10 queries filter by network
+  - `CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)` — queried in `get_asset_lock_transactions()`
+  Also bump `DEFAULT_DB_VERSION` from 26 to 27 in `initialization.rs:8`.
+
+- [ ] **7.5b Wrap insert_token() in a transaction** (P2)
+  In `src/database/tokens.rs:98-137`, wrap the token insert and identity balance inserts in a transaction. The token insert (line 111-129) and the loop inserting identity token balances (lines 131-135) should both be inside a single `conn.transaction()` block so that either all succeed or all roll back.
+
+- [ ] **7.5c Fix silent error masking in contacts.rs load_contact_private_info** (P2)
+  In `src/database/contacts.rs:76-79`, replace `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` (or simply `row.get(0)?`). The closure returns `rusqlite::Result`, so `?` properly propagates SQL type errors instead of silently converting them to empty strings. The `unwrap_or_default()` should only handle SQL NULL values (which are distinct from type errors). Same fix for lines 78 and 79.
+
+- [ ] **7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback** (P2)
+  In `src/database/scheduled_votes.rs:159`, replace `_ => unreachable!()` with `_ => false` (treating any unexpected value as not-executed). Add a `tracing::warn!` for unexpected values. Database corruption or manual editing could trigger the unreachable and panic the app.
+
+- [ ] **7.5e Optimize identity loading N+1 query with JOIN** (P3)
+  In `src/database/identities.rs:166-204`, replace the per-identity `top_up_stmt.query()` pattern with a single query using a LEFT JOIN:
+  ```sql
+  SELECT i.data, i.alias, i.wallet_index, i.status, t.top_up_index, t.amount
+  FROM identity i
+  LEFT JOIN top_up t ON i.id = t.identity_id
+  WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL
+  ```
+  Then group the results by identity in Rust code. This reduces O(n) queries to O(1). Apply the same pattern to `get_local_qualified_identities_in_wallets()` (lines 226-260) and `get_identity_by_id()` (lines 282-316).
+
+- [ ] **7.5f Optimize load_identity_order N+1 existence check** (P3)
+  In `src/database/identities.rs:517-526`, replace the per-row `SELECT EXISTS(...)` check with a single JOIN query:
+  ```sql
+  SELECT io.identity_id FROM identity_order io
+  INNER JOIN identity i ON io.identity_id = i.id
+  ORDER BY io.pos ASC
+  ```
+  This returns only valid identity IDs (those that still exist in the identity table) in a single query instead of O(n) queries. Handle dangling cleanup afterward.
+
+- [ ] **7.5g Log parse failures in load_token_order instead of silently skipping** (P3)
+  In `src/database/tokens.rs:545-553`, replace the empty `else` blocks with `tracing::warn!("Failed to parse token/identity ID from token_order table, skipping")` to aid debugging of data integrity issues.
+
 ---
 
 ## Progress Tracking
 
-**Total tasks:** 177 (24 META + 153 direct)
+**Total tasks:** 184 (25 META + 159 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -2089,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 26 | 17 |
+| 7. Features | 33 | 18 |
 | 8. Security | 2 | 0 |

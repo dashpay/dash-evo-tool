@@ -1126,3 +1126,9 @@
 **Task:** 7.4f Document marketplace trade mode limitation
 **What was done:** Documented the marketplace trade mode limitation in two locations. (1) In `backend_task/tokens/mod.rs`, replaced the terse inline comment on the match statement with a multi-line comment explaining that marketplace trading is not yet supported on Dash Platform, the parameter is kept for forward compatibility, and when SDK support is added the match and UI selector should be extended. (2) In the token creator UI (`token_creator.rs`), disabled the Marketplace Trade Mode ComboBox using `ui.add_enabled_ui(false, ...)` so users can see it's locked to "Not Tradeable", and updated the info tooltip text to lead with "Marketplace trading is not yet supported on Dash Platform." The `update_token_config.rs` already had the correct message ("Marketplace settings are not yet supported.") so no changes needed there.
 **Files changed:** src/backend_task/tokens/mod.rs, src/ui/tokens/tokens_screen/token_creator.rs
+
+## Run 183 — 2026-02-08
+**Task:** 7.5 [META] Review database layer
+**What was done:** Reviewed all 17 database files (~8,785 lines) and 16 db-*.md issue files. Validated migration strategy (solid, version-based with per-version transactions and backup). Checked all 16 issue file claims against actual code: 5 already fixed by prior tasks (db-001/002/003/011 by tasks 2.5/2.3c/2.1a/6.3), 4 false positive or not confirmed (db-004/008/009/015), 5 confirmed and actionable (db-006/010/012/014/016), 2 confirmed but acceptable (db-007/013). Found 2 additional issues from direct inspection: N+1 query patterns in identity/top-up loading and identity order loading, plus silent parse failure logging gap in token order loading. Created 7 specific sub-tasks (7.5a through 7.5g).
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 7 (7.5a through 7.5g)

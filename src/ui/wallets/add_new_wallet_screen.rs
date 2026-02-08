@@ -750,6 +750,16 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ui, |ui| {
                     ui.add_space(10.0);
                     ui.heading("Follow these steps to create your wallet.");
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(
+                        RichText::new(
+                            "Dash Evo Tool creates its own wallet for managing identities, \
+                            usernames, and Platform operations. This wallet is separate from \
+                            your Dash Core wallet."
+                        )
+                        .weak()
+                        .size(13.0),
+                    ).wrap());
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(5.0);

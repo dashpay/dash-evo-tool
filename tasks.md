@@ -1143,7 +1143,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (4) Add clarifying text below wallet name: "This can be edited later and is not recorded publicly."
   (5) Make seed phrase display responsive to window size — use wrapping layout instead of fixed-width frame.
 
-- [ ] **4.1f Add wallet purpose explanation to creation flow** (P3)
+- [x] **4.1f Add wallet purpose explanation to creation flow** (P3)
   In `src/ui/wallets/add_new_wallet_screen.rs` (or a shared intro component):
   (1) Add brief explanatory text at the top of the wallet creation screen explaining what the DET wallet is for: "Dash Evo Tool creates its own wallet for managing identities, usernames, and Platform operations. This wallet is separate from your Dash Core wallet."
   (2) Add note about Dash Core requirement: "Requires Dash Core running with a single wallet loaded. DET will add watching-only addresses to Core for monitoring."
@@ -1361,7 +1361,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 10 | 1 |
+| 4. UI/UX | 10 | 7 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

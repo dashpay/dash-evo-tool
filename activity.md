@@ -656,3 +656,8 @@
 **Task:** 4.1e Wallet creation UX polish
 **What was done:** Five UX improvements to the wallet creation screen: (1) Password field now defaults to masked (dots) with a Show/Hide toggle button, instead of showing plain text by default. (2) Entropy grid freezes after seed phrase generation, preventing accidental changes to the randomness after the mnemonic is produced. Added a `frozen` field to `U256EntropyGrid` with a `freeze()` method. (3) Increased password strength progress bar width from 200 to 250px so "Very Strong" text doesn't overflow; shortened "less than a second" crack time to "<1 second". (4) Added clarifying text below wallet name input: "This can be edited later and is not recorded publicly." (5) Made seed phrase display responsive to window size: uses nearly full available width (clamped 200-600px) instead of fixed 65% of available width, and adapts to 2 columns on narrow screens (<300px).
 **Files changed:** src/ui/wallets/add_new_wallet_screen.rs, src/ui/components/entropy_grid.rs
+
+## Run 106 — 2026-02-08
+**Task:** 4.1f Add wallet purpose explanation to creation flow
+**What was done:** Added brief explanatory text at the top of the wallet creation screen, below the "Follow these steps to create your wallet" heading. The text reads: "Dash Evo Tool creates its own wallet for managing identities, usernames, and Platform operations. This wallet is separate from your Dash Core wallet." Uses weak/subdued styling at 13px with text wrapping enabled for proper display on all screen sizes. This addresses GH#367 user confusion about the wallet's purpose and its relationship to Dash Core.
+**Files changed:** src/ui/wallets/add_new_wallet_screen.rs

@@ -1,9 +1,12 @@
-use super::BackendTaskSuccessResult;
-use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
+use super::{BackendTaskSuccessResult, FeeResult};
+use crate::ui::tokens::tokens_screen::{
+    ContractDescriptionInfo, IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo,
+};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -43,6 +46,37 @@ use dash_sdk::{
     },
 };
 use std::{collections::BTreeMap, sync::Arc};
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum TokenResult {
+    PausedTokens(FeeResult),
+    ResumedTokens(FeeResult),
+    MintedTokens(FeeResult),
+    BurnedTokens(FeeResult),
+    FrozeTokens(FeeResult),
+    UnfrozeTokens(FeeResult),
+    TransferredTokens(FeeResult),
+    PurchasedTokens(FeeResult),
+    SetTokenPrice(FeeResult),
+    DestroyedFrozenFunds(FeeResult),
+    ClaimedTokens(FeeResult),
+    UpdatedTokenConfig(String, FeeResult),
+    FetchedTokenBalances,
+    SavedToken,
+    DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
+    EstimatedDistributionRewards(
+        IdentityTokenIdentifier,
+        TokenAmount,
+        IntervalEvaluationExplanation,
+    ),
+    TokenPricing {
+        token_id: Identifier,
+        prices: Option<TokenPricingSchedule>,
+    },
+    RegisteredTokenContract,
+    TokenNotFound,
+}
 
 mod burn_tokens;
 mod claim_tokens;
@@ -291,7 +325,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
+                .map(|_| BackendTaskSuccessResult::Token(TokenResult::RegisteredTokenContract))
                 .map_err(|e| format!("Failed to register token contract: {e}"))
             }
             TokenTask::QueryMyTokenBalances => self
@@ -550,7 +584,7 @@ impl AppContext {
                             Err(e) => Err(format!("Error fetching contract for token: {}", e)),
                         }
                     }
-                    Ok(None) => Ok(BackendTaskSuccessResult::TokenNotFound),
+                    Ok(None) => Ok(BackendTaskSuccessResult::Token(TokenResult::TokenNotFound)),
                     Err(e) => Err(format!("Error fetching token info: {}", e)),
                 }
             }
@@ -572,7 +606,7 @@ impl AppContext {
                     )
                     .map_err(|e| format!("error saving token: {}", e))?;
 
-                Ok(BackendTaskSuccessResult::SavedToken)
+                Ok(BackendTaskSuccessResult::Token(TokenResult::SavedToken))
             }
             TokenTask::UpdateTokenConfig {
                 identity_token_info,

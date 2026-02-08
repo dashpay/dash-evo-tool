@@ -1,3 +1,4 @@
+use super::TokenResult;
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
@@ -17,16 +18,16 @@ impl AppContext {
             Ok(pricing_data) => {
                 // Check if we got any pricing data for this token
                 if let Some((_, pricing_option)) = pricing_data.into_iter().next() {
-                    Ok(BackendTaskSuccessResult::TokenPricing {
+                    Ok(BackendTaskSuccessResult::Token(TokenResult::TokenPricing {
                         token_id,
                         prices: pricing_option,
-                    })
+                    }))
                 } else {
                     // No pricing data found
-                    Ok(BackendTaskSuccessResult::TokenPricing {
+                    Ok(BackendTaskSuccessResult::Token(TokenResult::TokenPricing {
                         token_id,
                         prices: None,
-                    })
+                    }))
                 }
             }
             Err(e) => Err(format!("Failed to fetch token pricing: {}", e)),

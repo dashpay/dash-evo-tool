@@ -12,7 +12,7 @@ use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
@@ -330,10 +330,10 @@ impl PurchaseTokenScreen {
 impl ScreenLike for PurchaseTokenScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::TokenPricing {
+            BackendTaskSuccessResult::Token(TokenResult::TokenPricing {
                 token_id: _,
                 prices,
-            } => {
+            }) => {
                 self.pricing_fetch_attempted = true;
                 if let Some(schedule) = prices {
                     self.fetched_pricing_schedule = Some(schedule);
@@ -351,7 +351,7 @@ impl ScreenLike for PurchaseTokenScreen {
                     );
                 }
             }
-            BackendTaskSuccessResult::PurchasedTokens(fee_result) => {
+            BackendTaskSuccessResult::Token(TokenResult::PurchasedTokens(fee_result)) => {
                 self.completed_fee_result = Some(fee_result);
                 self.status = PurchaseTokensStatus::Complete;
             }

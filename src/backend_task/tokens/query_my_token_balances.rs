@@ -1,5 +1,6 @@
 //! Query token balances from Platform
 
+use super::TokenResult;
 use crate::backend_task::{BackendTaskSuccessResult, NO_IDENTITIES_FOUND};
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -85,7 +86,9 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
+        Ok(BackendTaskSuccessResult::Token(
+            TokenResult::FetchedTokenBalances,
+        ))
     }
 
     pub async fn query_token_balance(
@@ -133,6 +136,8 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
+        Ok(BackendTaskSuccessResult::Token(
+            TokenResult::FetchedTokenBalances,
+        ))
     }
 }

@@ -1,6 +1,6 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -338,7 +338,9 @@ impl ScreenLike for UnfreezeTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::UnfrozeTokens(fee_result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::Token(TokenResult::UnfrozeTokens(fee_result)) =
+            backend_task_success_result
+        {
             self.completed_fee_result = Some(fee_result);
             self.status = UnfreezeTokensStatus::Complete;
         }

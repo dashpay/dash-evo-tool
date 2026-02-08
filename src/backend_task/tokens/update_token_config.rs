@@ -1,4 +1,4 @@
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, TokenResult};
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
@@ -173,9 +173,8 @@ impl AppContext {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::UpdatedTokenConfig(
-            change_item.to_string(),
-            fee_result,
+        Ok(BackendTaskSuccessResult::Token(
+            TokenResult::UpdatedTokenConfig(change_item.to_string(), fee_result),
         ))
     }
 }

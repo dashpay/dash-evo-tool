@@ -1,36 +1,31 @@
 use crate::app::TaskResult;
-use crate::lock_helper::RwLockExt;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreResult, CoreTask};
-use crate::backend_task::dashpay::{DashPayTask, ContactData};
+use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::{WalletResult, WalletTask};
 use crate::context::AppContext;
-use crate::ui::tokens::tokens_screen::{
-    ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
-};
+use crate::lock_helper::RwLockExt;
+use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
 use crate::utils::egui_mpsc::SenderAsync;
 use contested_names::ScheduledDPNSVote;
-use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
+use grovestark::GroveSTARKTask;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
-use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -121,20 +116,10 @@ pub enum BackendTaskSuccessResult {
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
     #[allow(dead_code)] // May be used for token search results
     TokensByKeyword(Vec<TokenInfo>, Option<Start>),
-    DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
-    TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
-        IdentityTokenIdentifier,
-        TokenAmount,
-        IntervalEvaluationExplanation,
-    ),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
     ActiveGroupActions(IndexMap<Identifier, GroupAction>),
-    TokenPricing {
-        token_id: Identifier,
-        prices: Option<TokenPricingSchedule>,
-    },
     UpdatedThemePreference(crate::ui::theme::ThemeMode),
     PlatformInfo(PlatformInfoTaskResult),
 
@@ -161,21 +146,8 @@ pub enum BackendTaskSuccessResult {
     // MNList-specific results
     MnList(mnlist::MnListResult),
 
-    // Token operation results (replacing string messages)
-    PausedTokens(FeeResult),
-    ResumedTokens(FeeResult),
-    MintedTokens(FeeResult),
-    BurnedTokens(FeeResult),
-    FrozeTokens(FeeResult),
-    UnfrozeTokens(FeeResult),
-    TransferredTokens(FeeResult),
-    PurchasedTokens(FeeResult),
-    SetTokenPrice(FeeResult),
-    DestroyedFrozenFunds(FeeResult),
-    ClaimedTokens(FeeResult),
-    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
-    FetchedTokenBalances,
-    SavedToken,
+    // Token domain results
+    Token(tokens::TokenResult),
 
     // Document operation results (replacing string messages)
     DeletedDocument(Identifier, FeeResult),
@@ -189,10 +161,8 @@ pub enum BackendTaskSuccessResult {
     RemovedContract,
     FetchedNonce,
     RegisteredContract(FeeResult),
-    RegisteredTokenContract,
     SavedContract,
     ContractNotFound,
-    TokenNotFound,
     ProofErrorLogged,
 
     // DPNS operation results (replacing string messages)

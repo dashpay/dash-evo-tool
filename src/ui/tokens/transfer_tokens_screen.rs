@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -263,7 +263,8 @@ impl ScreenLike for TransferTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
+        if let BackendTaskSuccessResult::Token(TokenResult::TransferredTokens(fee_result)) =
+            backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;

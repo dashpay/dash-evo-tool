@@ -1,6 +1,6 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -367,7 +367,9 @@ impl ScreenLike for MintTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::MintedTokens(fee_result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::Token(TokenResult::MintedTokens(fee_result)) =
+            backend_task_success_result
+        {
             self.completed_fee_result = Some(fee_result);
             self.status = MintTokensStatus::Complete;
         }

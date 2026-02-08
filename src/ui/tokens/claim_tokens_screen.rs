@@ -25,7 +25,7 @@ use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
-use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
@@ -258,7 +258,9 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::Token(TokenResult::ClaimedTokens(fee_result)) =
+            backend_task_success_result
+        {
             self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
         }

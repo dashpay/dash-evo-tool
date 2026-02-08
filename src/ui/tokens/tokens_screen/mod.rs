@@ -42,7 +42,7 @@ use egui::{ColorImage, TextureHandle};
 use enum_iterator::Sequence;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
-use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
@@ -1563,7 +1563,10 @@ impl ScreenLike for TokensScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
+            BackendTaskSuccessResult::Token(TokenResult::DescriptionsByKeyword(
+                descriptions,
+                next_cursor,
+            )) => {
                 let mut sr = self.search_results.lock_or_recover();
                 *sr = descriptions;
                 self.search_has_next_page = next_cursor.is_some();
@@ -1584,18 +1587,19 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
-            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
+            BackendTaskSuccessResult::Token(TokenResult::EstimatedDistributionRewards(
                 identity_token_id,
                 amount,
                 explanation,
-            ) => {
+            )) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount);
                 }
-                self.reward_explanations.insert(identity_token_id, explanation);
+                self.reward_explanations
+                    .insert(identity_token_id, explanation);
             }
-            BackendTaskSuccessResult::TokenPricing { token_id, prices } => {
+            BackendTaskSuccessResult::Token(TokenResult::TokenPricing { token_id, prices }) => {
                 // Store the pricing data
                 self.token_pricing_data.insert(token_id, prices);
                 // Clear loading state
@@ -1610,7 +1614,7 @@ impl ScreenLike for TokensScreen {
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
-            BackendTaskSuccessResult::FetchedTokenBalances => {
+            BackendTaskSuccessResult::Token(TokenResult::FetchedTokenBalances) => {
                 // Refresh my_tokens to show updated balances
                 self.my_tokens = my_tokens(
                     &self.app_context,
@@ -1620,7 +1624,7 @@ impl ScreenLike for TokensScreen {
                 );
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
-            BackendTaskSuccessResult::RegisteredTokenContract => {
+            BackendTaskSuccessResult::Token(TokenResult::RegisteredTokenContract) => {
                 self.token_creator_status = TokenCreatorStatus::Complete;
             }
             _ => {}

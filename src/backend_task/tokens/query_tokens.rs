@@ -1,5 +1,6 @@
 //! Execute token query by keyword on Platform
 
+use super::TokenResult;
 use crate::{
     backend_task::BackendTaskSuccessResult, context::AppContext,
     ui::tokens::tokens_screen::ContractDescriptionInfo,
@@ -100,9 +101,8 @@ impl AppContext {
         }
 
         // ── 3. return result ────────────────────────────────────────────────
-        Ok(BackendTaskSuccessResult::DescriptionsByKeyword(
-            descriptions,
-            next_cursor,
+        Ok(BackendTaskSuccessResult::Token(
+            TokenResult::DescriptionsByKeyword(descriptions, next_cursor),
         ))
     }
 }

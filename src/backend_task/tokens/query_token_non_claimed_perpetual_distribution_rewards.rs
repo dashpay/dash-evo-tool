@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use super::TokenResult;
 use crate::{backend_task::BackendTaskSuccessResult, context::AppContext};
 use dash_sdk::{platform::Identifier, Sdk};
 use dash_sdk::dpp::block::epoch::EpochIndex;
@@ -274,8 +275,8 @@ impl AppContext {
                 .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?
         };
 
-        Ok(
-            BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
+        Ok(BackendTaskSuccessResult::Token(
+            TokenResult::EstimatedDistributionRewards(
                 IdentityTokenIdentifier {
                     identity_id,
                     token_id,
@@ -283,6 +284,6 @@ impl AppContext {
                 explanation.total_amount,
                 explanation,
             ),
-        )
+        ))
     }
 }

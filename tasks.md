@@ -965,7 +965,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producers: `src/backend_task/identity/` (8 files)
   - Consumers: `src/ui/identities/` (7 screens)
 
-- [ ] **3.6e Extract Token results into TokenResult sub-enum** (P2)
+- [x] **3.6e Extract Token results into TokenResult sub-enum** (P2)
   Create `TokenResult` with 16 variants: `Paused`, `Resumed`, `Minted`, `Burned`, `Froze`, `Unfroze`, `Transferred`, `Purchased`, `SetPrice`, `DestroyedFrozenFunds`, `Claimed`, `UpdatedConfig`, `FetchedBalances`, `Saved`, `DescriptionsByKeyword`, `EstimatedDistributionRewards`, `TokenPricing`, `TokenNotFound`. Update:
   - Producers: `src/backend_task/tokens/` (16 files)
   - Consumers: `src/ui/tokens/` (15 screens)
@@ -1223,7 +1223,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 43 | 25 |
+| 3. Refactoring | 43 | 26 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

@@ -736,7 +736,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.3b Deduplicate render_control_change_rules_ui and render_mint_control_change_rules_ui** (P2)
   These two methods share ~200 lines of identical UI code (expand/collapse button, action takers combo, identity/group inputs, admin rules section). Refactor into a single parameterized method with an optional `MintExtras` struct parameter that enables the additional mint-specific sections (new tokens destination, allow choosing destination, sub-rules). This should reduce the combined 542 lines to ~350 lines.
 
-- [ ] **3.3c Move build_distribution_rules() to distributions.rs** (P2)
+- [x] **3.3c Move build_distribution_rules() to distributions.rs** (P2)
   Move the `build_distribution_rules()` method (lines 2015-2334, 320 lines) from the main `TokensScreen` impl to the existing `distributions.rs` module. Also move `parse_pre_programmed_distributions()` (lines 2339-2376, 38 lines). These are the parsing counterparts to the distribution rendering code already in distributions.rs. Move the distribution-related enums (`PerpetualDistributionIntervalTypeUI`, `DistributionFunctionUI`, `TokenDistributionRecipientUI`, `DistributionEntry`, `IntervalTimeUnit`, `TokenNameLanguage`) to either distributions.rs or structs.rs as appropriate.
 
 - [ ] **3.3d Move TokenBuildArgs and estimate_registration_cost to token_creator.rs** (P2)

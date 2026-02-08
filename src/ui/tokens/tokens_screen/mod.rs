@@ -9,6 +9,10 @@ mod structs;
 mod token_creator;
 
 pub use control_rules::{ChangeControlRulesUI, MintExtras};
+pub use distributions::{
+    DistributionEntry, DistributionFunctionUI, IntervalTimeUnit,
+    PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI,
+};
 pub use structs::*;
 
 pub use groups::*;
@@ -20,29 +24,20 @@ use crate::lock_helper::MutexExt;
 
 use serde_json;
 
-use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::{TokenAmount};
+use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
-use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
@@ -219,65 +214,6 @@ enum SortColumn {
 enum SortOrder {
     Ascending,
     Descending,
-}
-
-/// A lightweight enum for the user's choice of distribution type
-#[derive(Debug, Clone, PartialEq)]
-pub enum PerpetualDistributionIntervalTypeUI {
-    None,
-    BlockBased,
-    TimeBased,
-    EpochBased,
-}
-
-/// A lightweight enum for the user’s choice of distribution function
-#[derive(Debug, Clone, PartialEq, Ord, PartialOrd, Eq, Hash)]
-pub enum DistributionFunctionUI {
-    FixedAmount,
-    StepDecreasingAmount,
-    Stepwise,
-    Linear,
-    Polynomial,
-    Exponential,
-    Logarithmic,
-    InvertedLogarithmic,
-}
-
-impl DistributionFunctionUI {
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            DistributionFunctionUI::FixedAmount => "fixed_amount",
-            DistributionFunctionUI::StepDecreasingAmount => "step_decreasing_amount",
-            DistributionFunctionUI::Stepwise => "stepwise",
-            DistributionFunctionUI::Linear => "linear",
-            DistributionFunctionUI::Polynomial => "polynomial",
-            DistributionFunctionUI::Exponential => "exponential",
-            DistributionFunctionUI::Logarithmic => "logarithmic",
-            DistributionFunctionUI::InvertedLogarithmic => "inverted_logarithmic",
-        }
-    }
-}
-
-/// A lightweight enum for the user’s recipient selection
-#[derive(Debug, Clone, PartialEq)]
-pub enum TokenDistributionRecipientUI {
-    ContractOwner,
-    Identity,
-    EvonodesByParticipation,
-}
-
-#[derive(Default, Clone)]
-pub struct DistributionEntry {
-    /// Time from token contract registration when the distribution should occur
-    pub days: i32,
-    pub hours: i32,
-    pub minutes: i32,
-
-    /// The base58 identity to receive distribution
-    pub identity_str: String,
-
-    /// The distribution amount
-    pub amount_str: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Sequence)]
@@ -789,84 +725,6 @@ pub struct TokensScreen {
     document_schemas_input: String,
     parsed_document_schemas: Option<BTreeMap<String, serde_json::Value>>,
     document_schemas_error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IntervalTimeUnit {
-    Second,
-    Minute,
-    Hour,
-    Day,
-    Week,
-    Year,
-}
-
-impl IntervalTimeUnit {
-    /// Returns the equivalent duration in milliseconds
-    /// for the given amount of the unit.
-    pub fn ms_for_amount(&self, amount: u64) -> TimestampMillisInterval {
-        match self {
-            IntervalTimeUnit::Second => amount.saturating_mul(1_000),
-            IntervalTimeUnit::Minute => amount.saturating_mul(60_000),
-            IntervalTimeUnit::Hour => amount.saturating_mul(3_600_000),
-            IntervalTimeUnit::Day => amount.saturating_mul(86_400_000),
-            IntervalTimeUnit::Week => amount.saturating_mul(7).saturating_mul(86_400_000),
-            IntervalTimeUnit::Year => amount.saturating_mul(31_556_952_000),
-        }
-    }
-    pub fn label_for_amount(&self, amount_str: &str) -> &'static str {
-        let is_singular = amount_str == "1";
-        match (self, is_singular) {
-            (IntervalTimeUnit::Second, true) => "second",
-            (IntervalTimeUnit::Second, false) => "seconds",
-            (IntervalTimeUnit::Minute, true) => "minute",
-            (IntervalTimeUnit::Minute, false) => "minutes",
-            (IntervalTimeUnit::Hour, true) => "hour",
-            (IntervalTimeUnit::Hour, false) => "hours",
-            (IntervalTimeUnit::Day, true) => "day",
-            (IntervalTimeUnit::Day, false) => "days",
-            (IntervalTimeUnit::Week, true) => "week",
-            (IntervalTimeUnit::Week, false) => "weeks",
-            (IntervalTimeUnit::Year, true) => "year",
-            (IntervalTimeUnit::Year, false) => "years",
-        }
-    }
-
-    pub fn label_for_num_amount(&self, amount: u64) -> &'static str {
-        let is_singular = amount == 1;
-        match (self, is_singular) {
-            (IntervalTimeUnit::Second, true) => "second",
-            (IntervalTimeUnit::Second, false) => "seconds",
-            (IntervalTimeUnit::Minute, true) => "minute",
-            (IntervalTimeUnit::Minute, false) => "minutes",
-            (IntervalTimeUnit::Hour, true) => "hour",
-            (IntervalTimeUnit::Hour, false) => "hours",
-            (IntervalTimeUnit::Day, true) => "day",
-            (IntervalTimeUnit::Day, false) => "days",
-            (IntervalTimeUnit::Week, true) => "week",
-            (IntervalTimeUnit::Week, false) => "weeks",
-            (IntervalTimeUnit::Year, true) => "year",
-            (IntervalTimeUnit::Year, false) => "years",
-        }
-    }
-
-    pub fn capitalized_label_for_num_amount(&self, amount: u64) -> &'static str {
-        let is_singular = amount == 1;
-        match (self, is_singular) {
-            (IntervalTimeUnit::Second, true) => "Second",
-            (IntervalTimeUnit::Second, false) => "Seconds",
-            (IntervalTimeUnit::Minute, true) => "Minute",
-            (IntervalTimeUnit::Minute, false) => "Minutes",
-            (IntervalTimeUnit::Hour, true) => "Hour",
-            (IntervalTimeUnit::Hour, false) => "Hours",
-            (IntervalTimeUnit::Day, true) => "Day",
-            (IntervalTimeUnit::Day, false) => "Days",
-            (IntervalTimeUnit::Week, true) => "Week",
-            (IntervalTimeUnit::Week, false) => "Weeks",
-            (IntervalTimeUnit::Year, true) => "Year",
-            (IntervalTimeUnit::Year, false) => "Years",
-        }
-    }
 }
 
 fn my_tokens(
@@ -1409,369 +1267,6 @@ impl TokensScreen {
         fee += 200_000_000; //just an extra estimate
 
         fee
-    }
-
-    fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
-        // 1) Validate distribution input, parse numeric fields, etc.
-        let distribution_function = match self.perpetual_dist_function {
-            DistributionFunctionUI::FixedAmount => DistributionFunction::FixedAmount {
-                amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
-            },
-            DistributionFunctionUI::StepDecreasingAmount => {
-                DistributionFunction::StepDecreasingAmount {
-                    step_count: self.step_count_input.parse::<u32>().unwrap_or(0),
-                    decrease_per_interval_numerator: self
-                        .decrease_per_interval_numerator_input
-                        .parse::<u16>()
-                        .unwrap_or(0),
-                    decrease_per_interval_denominator: self
-                        .decrease_per_interval_denominator_input
-                        .parse::<u16>()
-                        .unwrap_or(0),
-                    start_decreasing_offset: if self
-                        .step_decreasing_start_period_offset_input
-                        .is_empty()
-                    {
-                        None
-                    } else {
-                        match self
-                            .step_decreasing_start_period_offset_input
-                            .parse::<u64>()
-                        {
-                            Ok(0) => None,
-                            Ok(v) => Some(v),
-                            Err(_) => {
-                                return Err("Invalid start decreasing offset for StepDecreasingAmount distribution. Put 0 for None.".to_string());
-                            }
-                        }
-                    },
-                    distribution_start_amount: self
-                        .step_decreasing_initial_emission_input
-                        .parse::<u64>()
-                        .unwrap_or(0),
-                    min_value: if self.step_decreasing_min_value_input.is_empty() {
-                        None
-                    } else {
-                        match self.step_decreasing_min_value_input.parse::<u64>() {
-                            Ok(0) => None,
-                            Ok(v) => Some(v),
-                            Err(_) => {
-                                return Err(
-                                    "Invalid min value for StepDecreasingAmount distribution. Put 0 for None."
-                                        .to_string(),
-                                );
-                            }
-                        }
-                    },
-                    max_interval_count: if self.step_decreasing_max_interval_count_input.is_empty()
-                    {
-                        None
-                    } else {
-                        match self.step_decreasing_max_interval_count_input.parse::<u16>() {
-                            Ok(0) => None,
-                            Ok(v) => Some(v),
-                            Err(_) => {
-                                return Err(
-                                    "Invalid max interval count for StepDecreasingAmount distribution. Put 0 for None."
-                                        .to_string(),
-                                );
-                            }
-                        }
-                    },
-                    trailing_distribution_interval_amount: self
-                        .step_decreasing_trailing_distribution_interval_amount_input
-                        .parse::<u64>()
-                        .unwrap_or(0),
-                }
-            }
-            DistributionFunctionUI::Stepwise => {
-                let steps: BTreeMap<u64, TokenAmount> = self
-                    .stepwise_steps
-                    .iter()
-                    .map(|(k, v)| (k.parse::<u64>().unwrap_or(0), v.parse::<u64>().unwrap_or(0)))
-                    .collect();
-                DistributionFunction::Stepwise(steps)
-            }
-            DistributionFunctionUI::Linear => DistributionFunction::Linear {
-                a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                d: self.linear_int_d_input.parse::<u64>().unwrap_or(1),
-                start_step: self
-                    .linear_int_start_step_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                starting_amount: self
-                    .linear_int_starting_amount_input
-                    .parse::<u64>()
-                    .unwrap_or(0),
-                min_value: self
-                    .linear_int_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .linear_int_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::Polynomial => DistributionFunction::Polynomial {
-                a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
-                m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
-                n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
-                d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
-                start_moment: self
-                    .poly_int_s_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
-                b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
-                min_value: self
-                    .poly_int_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .poly_int_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::Exponential => DistributionFunction::Exponential {
-                a: self.exp_a_input.parse::<u64>().unwrap_or(0),
-                d: self.exp_d_input.parse::<u64>().unwrap_or(0),
-                m: self.exp_m_input.parse::<i64>().unwrap_or(0),
-                n: self.exp_n_input.parse::<u64>().unwrap_or(0),
-                o: self.exp_o_input.parse::<i64>().unwrap_or(0),
-                start_moment: self.exp_s_input.parse::<u64>().map(Some).unwrap_or(None),
-                b: self.exp_b_input.parse::<u64>().unwrap_or(0),
-                min_value: self
-                    .exp_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .exp_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::Logarithmic => DistributionFunction::Logarithmic {
-                a: self.log_a_input.parse::<i64>().unwrap_or(0),
-                d: self.log_d_input.parse::<u64>().unwrap_or(0),
-                m: self.log_m_input.parse::<u64>().unwrap_or(0),
-                n: self.log_n_input.parse::<u64>().unwrap_or(0),
-                start_moment: self.log_s_input.parse::<u64>().map(Some).unwrap_or(None),
-                o: self.log_o_input.parse::<i64>().unwrap_or(0),
-                b: self.log_b_input.parse::<u64>().unwrap_or(0),
-                min_value: self
-                    .log_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .log_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::InvertedLogarithmic => {
-                DistributionFunction::InvertedLogarithmic {
-                    a: self.inv_log_a_input.parse::<i64>().unwrap_or(0),
-                    d: self.inv_log_d_input.parse::<u64>().unwrap_or(0),
-                    m: self.inv_log_m_input.parse::<u64>().unwrap_or(0),
-                    n: self.inv_log_n_input.parse::<u64>().unwrap_or(0),
-                    start_moment: self
-                        .inv_log_s_input
-                        .parse::<u64>()
-                        .map(Some)
-                        .unwrap_or(None),
-                    o: self.inv_log_o_input.parse::<i64>().unwrap_or(0),
-                    b: self.inv_log_b_input.parse::<u64>().unwrap_or(0),
-                    min_value: self
-                        .inv_log_min_value_input
-                        .parse::<u64>()
-                        .map(Some)
-                        .unwrap_or(None),
-                    max_value: self
-                        .inv_log_max_value_input
-                        .parse::<u64>()
-                        .map(Some)
-                        .unwrap_or(None),
-                }
-            }
-        };
-        let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
-            // Construct the `TokenPerpetualDistributionV0` from your selected type + function
-            let dist_type =
-                match self.perpetual_dist_type {
-                    PerpetualDistributionIntervalTypeUI::BlockBased => {
-                        // parse interval, parse emission
-                        // parse distribution function
-                        RewardDistributionType::BlockBasedDistribution {
-                            interval: self.perpetual_dist_interval_input.parse::<u64>().map_err(
-                                |_| "Distribution interval not a valid number".to_string(),
-                            )?,
-                            function: distribution_function,
-                        }
-                    }
-                    PerpetualDistributionIntervalTypeUI::EpochBased => {
-                        RewardDistributionType::EpochBasedDistribution {
-                            interval: self.perpetual_dist_interval_input.parse::<u16>().map_err(
-                                |_| "Distribution interval not a valid number".to_string(),
-                            )?,
-                            function: distribution_function,
-                        }
-                    }
-                    PerpetualDistributionIntervalTypeUI::TimeBased => {
-                        RewardDistributionType::TimeBasedDistribution {
-                            interval: self.perpetual_dist_interval_unit.ms_for_amount(
-                                self.perpetual_dist_interval_input.parse::<u64>().map_err(
-                                    |_| "Distribution interval not a valid number".to_string(),
-                                )?,
-                            ),
-                            function: distribution_function,
-                        }
-                    }
-                    _ => RewardDistributionType::BlockBasedDistribution {
-                        interval: 0,
-                        function: DistributionFunction::FixedAmount { amount: 0 },
-                    },
-                };
-
-            let recipient = match self.perpetual_dist_recipient {
-                TokenDistributionRecipientUI::ContractOwner => {
-                    TokenDistributionRecipient::ContractOwner
-                }
-                TokenDistributionRecipientUI::Identity => {
-                    if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
-                        let id_res = Identifier::from_string(id, Encoding::Base58);
-                        TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
-                    } else {
-                        self.token_creator_error_message = Some(
-                            "Invalid base58 identifier for perpetual distribution recipient"
-                                .to_string(),
-                        );
-                        return Err(
-                            "Invalid base58 identifier for perpetual distribution recipient"
-                                .to_string(),
-                        );
-                    }
-                }
-                TokenDistributionRecipientUI::EvonodesByParticipation => {
-                    TokenDistributionRecipient::EvonodesByParticipation
-                }
-            };
-
-            Some(TokenPerpetualDistribution::V0(
-                TokenPerpetualDistributionV0 {
-                    distribution_type: dist_type,
-                    distribution_recipient: recipient,
-                },
-            ))
-        } else {
-            None
-        };
-
-        // 2) Build the distribution rules structure
-        let dist_rules_v0 = TokenDistributionRulesV0 {
-            perpetual_distribution: maybe_perpetual_distribution,
-            perpetual_distribution_rules: self
-                .perpetual_distribution_rules
-                .extract_change_control_rules("Perpetual Distribution")?,
-            pre_programmed_distribution: if self.enable_pre_programmed_distribution {
-                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
-                    match self.parse_pre_programmed_distributions() {
-                        Ok(distributions) => distributions,
-                        Err(err) => {
-                            self.token_creator_error_message = Some(err.clone());
-                            return Err(err.to_string());
-                        }
-                    };
-
-                Some(TokenPreProgrammedDistribution::V0(
-                    TokenPreProgrammedDistributionV0 { distributions },
-                ))
-            } else {
-                None
-            },
-            new_tokens_destination_identity: if self
-                .new_tokens_destination_identity_should_default_to_contract_owner
-            {
-                Some(
-                    self.selected_identity
-                        .as_ref()
-                        .ok_or("No selected identity".to_string())?
-                        .identity
-                        .id(),
-                )
-            } else if self.new_tokens_destination_other_identity_enabled {
-                Some(
-                    Identifier::from_string(
-                        &self.new_tokens_destination_other_identity,
-                        Encoding::Base58,
-                    )
-                    .map_err(|e| e.to_string())?,
-                )
-            } else {
-                None
-            },
-            new_tokens_destination_identity_rules: self
-                .new_tokens_destination_identity_rules
-                .extract_change_control_rules("New Tokens Destination Identity")?,
-            minting_allow_choosing_destination: self.minting_allow_choosing_destination,
-            minting_allow_choosing_destination_rules: self
-                .minting_allow_choosing_destination_rules
-                .extract_change_control_rules("Minting Allow Choosing Destination")?,
-            change_direct_purchase_pricing_rules: self
-                .change_direct_purchase_pricing_rules
-                .extract_change_control_rules("Change Direct Purchase Pricing")?,
-        };
-
-        Ok(dist_rules_v0)
-    }
-
-    /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.
-    /// Returns an error string if any row fails.
-    /// Now supports multiple identities per timestamp.
-    pub fn parse_pre_programmed_distributions(
-        &mut self,
-    ) -> Result<BTreeMap<u64, BTreeMap<Identifier, u64>>, String> {
-        let mut map: BTreeMap<u64, BTreeMap<Identifier, u64>> = BTreeMap::new();
-
-        let now = Utc::now();
-
-        for (i, entry) in self.pre_programmed_distributions.iter().enumerate() {
-            // Convert days/hours/minutes into a timestamp.
-            let offset = Duration::days(entry.days as i64)
-                + Duration::hours(entry.hours as i64)
-                + Duration::minutes(entry.minutes as i64);
-            let timestamp = (now + offset).timestamp_millis() as u64;
-
-            // Parse identity
-            let id =
-                Identifier::from_string(&entry.identity_str, Encoding::Base58).map_err(|_| {
-                    format!(
-                        "Row {}: invalid base58 identity '{}'",
-                        i + 1,
-                        entry.identity_str
-                    )
-                })?;
-
-            // Parse amount
-            let amount = entry.amount_str.parse::<u64>().map_err(|_| {
-                format!(
-                    "Row {}: invalid distribution amount (expected u64). Got '{}'",
-                    i + 1,
-                    entry.amount_str
-                )
-            })?;
-
-            // Insert into the map, supporting multiple identities per timestamp
-            map.entry(timestamp).or_default().insert(id, amount);
-        }
-        Ok(map)
     }
 
     fn reset_token_creator(&mut self) {
@@ -2581,6 +2076,9 @@ mod tests {
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
     use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+    use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+    use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
+    use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
     use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;

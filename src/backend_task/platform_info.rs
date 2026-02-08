@@ -95,6 +95,11 @@ impl PartialEq for PlatformInfoTaskResult {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlatformResult {
+    Info(PlatformInfoTaskResult),
+}
+
 // Helper functions for formatting platform data
 fn format_extended_epoch_info(
     epoch_info: ExtendedEpochInfo,
@@ -366,13 +371,13 @@ impl AppContext {
                     }
                 };
 
-                Ok(BackendTaskSuccessResult::PlatformInfo(
+                Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                     PlatformInfoTaskResult::BasicPlatformInfo {
                         platform_version,
                         core_chain_lock_height,
                         network: self.network,
                     },
-                ))
+                )))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
                 match ExtendedEpochInfo::fetch_current(&sdk).await {
@@ -387,9 +392,9 @@ impl AppContext {
                             "\n\n(Fee multiplier cache updated: {}x)",
                             fee_multiplier as f64 / 1000.0
                         ));
-                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                        Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                             PlatformInfoTaskResult::TextResult(formatted),
-                        ))
+                        )))
                     }
                     Err(e) => Err(format!("Failed to fetch current epoch info: {}", e)),
                 }
@@ -404,9 +409,9 @@ impl AppContext {
                              • Dash Equivalent: {:.4} Dash",
                             total_credits.0, dash_amount
                         );
-                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                        Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                             PlatformInfoTaskResult::TextResult(formatted),
-                        ))
+                        )))
                     }
                     Err(e) => Err(format!("Failed to fetch total credits: {}", e)),
                 }
@@ -430,9 +435,9 @@ impl AppContext {
                             .join("\n");
 
                         let formatted = format!("Protocol Version Voting State:\n\n{}", votes_info);
-                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                        Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                             PlatformInfoTaskResult::TextResult(formatted),
-                        ))
+                        )))
                     }
                     Err(e) => Err(format!("Failed to fetch version voting state: {}", e)),
                 }
@@ -441,15 +446,15 @@ impl AppContext {
                 match CurrentQuorumsInfo::fetch_unproved(&sdk, NoParamQuery {}).await {
                     Ok(Some(current_quorums_info)) => {
                         let formatted = format_current_quorums_info(&current_quorums_info);
-                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                        Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                             PlatformInfoTaskResult::TextResult(formatted),
-                        ))
+                        )))
                     }
-                    Ok(None) => Ok(BackendTaskSuccessResult::PlatformInfo(
+                    Ok(None) => Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                         PlatformInfoTaskResult::TextResult(
                             "No current quorum information available".to_string(),
                         ),
-                    )),
+                    ))),
                     Err(e) => Err(format!("Failed to fetch validator set info: {}", e)),
                 }
             }
@@ -484,9 +489,9 @@ impl AppContext {
                                     total_credits.0,
                                     self.network,
                                 )?;
-                                Ok(BackendTaskSuccessResult::PlatformInfo(
+                                Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                                     PlatformInfoTaskResult::TextResult(formatted),
-                                ))
+                                )))
                             }
                             Err(_) => {
                                 // Fall back to simple format without daily limits
@@ -494,9 +499,9 @@ impl AppContext {
                                     &withdrawal_docs,
                                     self.network,
                                 )?;
-                                Ok(BackendTaskSuccessResult::PlatformInfo(
+                                Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                                     PlatformInfoTaskResult::TextResult(formatted),
-                                ))
+                                )))
                             }
                         }
                     }
@@ -552,11 +557,11 @@ impl AppContext {
                         withdrawal_docs.truncate(50);
 
                         if withdrawal_docs.is_empty() {
-                            Ok(BackendTaskSuccessResult::PlatformInfo(
+                            Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                                 PlatformInfoTaskResult::TextResult(
                                     "No recently completed withdrawals found.".to_string(),
                                 ),
-                            ))
+                            )))
                         } else {
                             let total_amount: Credits = withdrawal_docs
                                 .iter()
@@ -642,9 +647,9 @@ impl AppContext {
                                 amounts.join("\n    ")
                             );
 
-                            Ok(BackendTaskSuccessResult::PlatformInfo(
+                            Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                                 PlatformInfoTaskResult::TextResult(formatted),
-                            ))
+                            )))
                         }
                     }
                     Err(e) => Err(format!(
@@ -668,22 +673,22 @@ impl AppContext {
                         let result: Option<&Option<AddressInfo>> =
                             address_infos.get(&platform_address);
                         if let Some(Some(info)) = result {
-                            Ok(BackendTaskSuccessResult::PlatformInfo(
+                            Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                                 PlatformInfoTaskResult::AddressBalance {
                                     address: address_string,
                                     balance: info.balance,
                                     nonce: info.nonce,
                                 },
-                            ))
+                            )))
                         } else {
                             // Address not found on Platform (zero balance)
-                            Ok(BackendTaskSuccessResult::PlatformInfo(
+                            Ok(BackendTaskSuccessResult::Platform(PlatformResult::Info(
                                 PlatformInfoTaskResult::AddressBalance {
                                     address: address_string,
                                     balance: 0,
                                     nonce: 0,
                                 },
-                            ))
+                            )))
                         }
                     }
                     Err(e) => Err(format!("Failed to fetch address balance: {}", e)),

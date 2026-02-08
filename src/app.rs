@@ -853,7 +853,11 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
-                        BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
+                        BackendTaskSuccessResult::System(
+                            crate::backend_task::system_task::SystemResult::UpdatedThemePreference(
+                                new_theme,
+                            ),
+                        ) => {
                             self.theme_preference = new_theme;
                             self.visible_screen_mut().display_message(
                                 "Theme preference updated successfully",

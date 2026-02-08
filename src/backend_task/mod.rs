@@ -5,8 +5,8 @@ use crate::backend_task::core::{CoreResult, CoreTask};
 use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
 use crate::backend_task::document::{DocumentResult, DocumentTask};
 use crate::backend_task::identity::{IdentityResult, IdentityTask};
-use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
-use crate::backend_task::system_task::SystemTask;
+use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformResult};
+use crate::backend_task::system_task::{SystemResult, SystemTask};
 use crate::backend_task::wallet::{WalletResult, WalletTask};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
@@ -98,8 +98,8 @@ pub enum BackendTaskSuccessResult {
     Contest(contested_names::ContestResult),
 
     // Other domain results
-    UpdatedThemePreference(crate::ui::theme::ThemeMode),
-    PlatformInfo(PlatformInfoTaskResult),
+    System(SystemResult),
+    Platform(PlatformResult),
     DashPay(DashPayResult),
     GroveSTARK(grovestark::GroveSTARKResult),
     MnList(mnlist::MnListResult),

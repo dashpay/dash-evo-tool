@@ -985,7 +985,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producers: `src/backend_task/contested_names/`
   - Consumers: `src/ui/dpns/dpns_contested_names_screen.rs`, `src/ui/dpns/dpns_screen.rs`, `src/app.rs`
 
-- [ ] **3.6i Extract remaining top-level variants into System/Platform sub-enums** (P3)
+- [x] **3.6i Extract remaining top-level variants into System/Platform sub-enums** (P3)
   Create `PlatformResult` with 1 variant: `Info(PlatformInfoTaskResult)`. Create `SystemResult` with 1 variant: `UpdatedThemePreference(ThemeMode)`. Move `BroadcastedStateTransition` into either a top-level kept variant or a `BroadcastResult` sub-enum. Clean up the top-level enum to have only: `None`, `Refresh`, `Message(String)`, plus the domain sub-enum wrappers. Update `app.rs` pre-handling for `UpdatedThemePreference` to use `System(SystemResult::UpdatedThemePreference(...))`.
 
 - [ ] **3.7 [META] Identify and catalog code duplication** (P3)
@@ -1223,7 +1223,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 43 | 27 |
+| 3. Refactoring | 43 | 28 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

@@ -1,5 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
+use crate::backend_task::platform_info::{
+    PlatformInfoTaskRequestType, PlatformInfoTaskResult, PlatformResult,
+};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
@@ -254,7 +256,9 @@ impl ScreenLike for PlatformInfoScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::PlatformInfo(result) = backend_task_success_result {
+        if let BackendTaskSuccessResult::Platform(PlatformResult::Info(result)) =
+            backend_task_success_result
+        {
             match result {
                 PlatformInfoTaskResult::BasicPlatformInfo {
                     platform_version,

@@ -1,5 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
+use crate::backend_task::platform_info::{
+    PlatformInfoTaskRequestType, PlatformInfoTaskResult, PlatformResult,
+};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
@@ -151,11 +153,13 @@ impl ScreenLike for AddressBalanceScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         self.is_loading = false;
 
-        if let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::AddressBalance {
-            address,
-            balance,
-            nonce,
-        }) = backend_task_success_result
+        if let BackendTaskSuccessResult::Platform(PlatformResult::Info(
+            PlatformInfoTaskResult::AddressBalance {
+                address,
+                balance,
+                nonce,
+            },
+        )) = backend_task_success_result
         {
             self.result = Some(AddressBalanceResult {
                 address,

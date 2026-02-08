@@ -10,6 +10,11 @@ pub enum SystemTask {
     UpdateThemePreference(ThemeMode),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SystemResult {
+    UpdatedThemePreference(ThemeMode),
+}
+
 impl AppContext {
     pub async fn run_system_task(
         self: &Arc<Self>,
@@ -54,6 +59,8 @@ impl AppContext {
             .update_theme_preference(theme_mode)
             .map_err(|e| e.to_string())?;
 
-        Ok(BackendTaskSuccessResult::UpdatedThemePreference(theme_mode))
+        Ok(BackendTaskSuccessResult::System(
+            SystemResult::UpdatedThemePreference(theme_mode),
+        ))
     }
 }

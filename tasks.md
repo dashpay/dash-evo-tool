@@ -733,7 +733,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.3a Extract ChangeControlRulesUI into tokens_screen/control_rules.rs** (P2)
   Move the `ChangeControlRulesUI` struct, its `From` impl, and the entire impl block (lines 225-826, ~600 lines) into a new `control_rules.rs` module. This includes `render_control_change_rules_ui()`, `render_mint_control_change_rules_ui()`, and `extract_change_control_rules()`. Also move `ContractDescriptionInfo` struct (line 131) and the `sub_checkbox()` and `tri_state()` helper functions (lines 137-158) that are used by these render methods.
 
-- [ ] **3.3b Deduplicate render_control_change_rules_ui and render_mint_control_change_rules_ui** (P2)
+- [x] **3.3b Deduplicate render_control_change_rules_ui and render_mint_control_change_rules_ui** (P2)
   These two methods share ~200 lines of identical UI code (expand/collapse button, action takers combo, identity/group inputs, admin rules section). Refactor into a single parameterized method with an optional `MintExtras` struct parameter that enables the additional mint-specific sections (new tokens destination, allow choosing destination, sub-rules). This should reduce the combined 542 lines to ~350 lines.
 
 - [ ] **3.3c Move build_distribution_rules() to distributions.rs** (P2)
@@ -1003,7 +1003,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 24 | 13 |
+| 3. Refactoring | 24 | 14 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

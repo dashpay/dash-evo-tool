@@ -434,3 +434,8 @@
 **Task:** 3.3a Extract ChangeControlRulesUI into tokens_screen/control_rules.rs
 **What was done:** Extracted the `ChangeControlRulesUI` struct, its `From<ChangeControlRulesV0>` impl, and the entire impl block (~600 lines) from `tokens_screen/mod.rs` into a new `control_rules.rs` module. Added `mod control_rules;` declaration and `pub use control_rules::ChangeControlRulesUI;` re-export so all external references continue to work. Cleaned up 5 now-unused imports from mod.rs (ChangeControlRulesV0, GroupContractPosition, TextEdit, ComboBox, RichText).
 **Files changed:** src/ui/tokens/tokens_screen/control_rules.rs (new), src/ui/tokens/tokens_screen/mod.rs, tasks.md, activity.md
+
+## Run 66 — 2026-02-07
+**Task:** 3.3b Deduplicate render_control_change_rules_ui and render_mint_control_change_rules_ui
+**What was done:** Unified the two nearly identical render methods (542 combined lines) into a single `render_control_change_rules_ui` method with an optional `MintExtras` parameter. Extracted the duplicated action taker combo box + identity input pattern into a private `render_action_taker_combo` helper. Moved mint-specific UI (destination identity, choosing destination, sub-rules) into a private `render_mint_extras` helper. Removed `render_mint_control_change_rules_ui` entirely. Updated all callers in token_creator.rs and distributions.rs. Reduced control_rules.rs from 612 to 389 lines (~36% reduction).
+**Files changed:** src/ui/tokens/tokens_screen/control_rules.rs, src/ui/tokens/tokens_screen/mod.rs, src/ui/tokens/tokens_screen/token_creator.rs, src/ui/tokens/tokens_screen/distributions.rs, tasks.md, activity.md

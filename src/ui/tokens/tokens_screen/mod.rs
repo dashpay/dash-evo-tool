@@ -8,7 +8,7 @@ mod my_tokens;
 mod structs;
 mod token_creator;
 
-pub use control_rules::ChangeControlRulesUI;
+pub use control_rules::{ChangeControlRulesUI, MintExtras};
 pub use structs::*;
 
 pub use groups::*;

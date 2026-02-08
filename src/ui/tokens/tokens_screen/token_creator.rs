@@ -24,7 +24,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
+use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI, MintExtras};
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
@@ -749,16 +749,32 @@ impl TokensScreen {
                             ui.horizontal(|ui| {
                                 ui.add_space(20.0); // Indentation for action rules
                                 ui.vertical(|ui| {
-                                    self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules, &mut self.token_creator_manual_mint_expanded, &mut self.token_creator_new_tokens_destination_expanded, &mut self.token_creator_minting_allow_choosing_expanded);
-                                    self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None, &mut self.token_creator_manual_burn_expanded);
-                                    self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities), &mut self.token_creator_freeze_expanded);
-                                    self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None, &mut self.token_creator_unfreeze_expanded);
-                                    self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None, &mut self.token_creator_destroy_frozen_expanded);
-                                    self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None, &mut self.token_creator_emergency_action_expanded);
-                                    self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None, &mut self.token_creator_max_supply_change_expanded);
-                                    self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None, &mut self.token_creator_conventions_change_expanded);
-                                    self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None, &mut self.token_creator_marketplace_expanded);
-                                    self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None, &mut self.token_creator_direct_purchase_pricing_expanded);
+                                    self.manual_minting_rules.render_control_change_rules_ui(
+                                        ui,
+                                        &self.groups_ui,
+                                        "Manual Mint",
+                                        None,
+                                        &mut self.token_creator_manual_mint_expanded,
+                                        Some(MintExtras {
+                                            new_tokens_destination_identity_should_default_to_contract_owner: &mut self.new_tokens_destination_identity_should_default_to_contract_owner,
+                                            new_tokens_destination_identity_enabled: &mut self.new_tokens_destination_other_identity_enabled,
+                                            minting_allow_choosing_destination: &mut self.minting_allow_choosing_destination,
+                                            new_tokens_destination_identity_rules: &mut self.new_tokens_destination_identity_rules,
+                                            new_tokens_destination_identity: &mut self.new_tokens_destination_other_identity,
+                                            minting_allow_choosing_destination_rules: &mut self.minting_allow_choosing_destination_rules,
+                                            new_tokens_destination_expanded: &mut self.token_creator_new_tokens_destination_expanded,
+                                            minting_allow_choosing_expanded: &mut self.token_creator_minting_allow_choosing_expanded,
+                                        }),
+                                    );
+                                    self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Manual Burn", None, &mut self.token_creator_manual_burn_expanded, None);
+                                    self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities), &mut self.token_creator_freeze_expanded, None);
+                                    self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None, &mut self.token_creator_unfreeze_expanded, None);
+                                    self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None, &mut self.token_creator_destroy_frozen_expanded, None);
+                                    self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None, &mut self.token_creator_emergency_action_expanded, None);
+                                    self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None, &mut self.token_creator_max_supply_change_expanded, None);
+                                    self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None, &mut self.token_creator_conventions_change_expanded, None);
+                                    self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None, &mut self.token_creator_marketplace_expanded, None);
+                                    self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None, &mut self.token_creator_direct_purchase_pricing_expanded, None);
                                 });
                             });
 

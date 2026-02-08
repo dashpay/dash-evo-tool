@@ -1004,6 +1004,7 @@ Emits tokens in fixed amounts for specific intervals.
                             "Perpetual Distribution Rules",
                             None,
                             &mut self.token_creator_perpetual_distribution_rules_expanded,
+                            None,
                         );
                 });
 

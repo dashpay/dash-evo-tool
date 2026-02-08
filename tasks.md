@@ -1971,7 +1971,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.3a Fix infra-003: Replace expect() on SPV runtime creation** (P1)
   In `src/spv/manager.rs:389`, replace `.expect("Failed to create SPV runtime")` with a `match` that sets `SpvStatus::Error`, writes the error to `last_error`, logs via `tracing::error!`, and returns early. The thread closure needs to propagate this cleanly since it's inside `std::thread::spawn`.
 
-- [ ] **7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop** (P2)
+- [x] **7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop** (P2)
   In `src/backend_task/core/mod.rs:503-544`, add a `const MAX_FEE_ITERATIONS: usize = 50` (or similar) and convert the infinite `loop` to `for _ in 0..MAX_FEE_ITERATIONS`. After exhausting iterations, return `Err("Could not build transaction after maximum fee adjustment attempts")`. This prevents potential infinite loops if fee estimation is unstable.
 
 - [ ] **7.3c Fix infra-016: Add timeout to quorum public key lookup** (P2)
@@ -2074,6 +2074,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 19 | 9 |
+| 7. Features | 19 | 10 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

@@ -493,6 +493,7 @@ impl AppContext {
         request: &WalletPaymentRequest,
     ) -> Result<Transaction, String> {
         const FALLBACK_STEP: u64 = 100;
+        const MAX_FEE_ITERATIONS: usize = 50;
 
         let network = self.wallet_network_key();
         let current_height = wm.current_height();
@@ -500,7 +501,7 @@ impl AppContext {
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
-        loop {
+        for _ in 0..MAX_FEE_ITERATIONS {
             let scaled_recipients: Vec<(Address, u64)> = recipients
                 .iter()
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
@@ -542,6 +543,8 @@ impl AppContext {
                 }
             }
         }
+
+        Err("Could not build transaction after maximum fee adjustment attempts".to_string())
     }
 
     fn estimate_fallback_amount(

@@ -1064,3 +1064,8 @@
 - infra-015 CONFIRMED but deferred to task 2.5 (lock poisoning strategy)
 - SPV lock helper methods (lines 148-246) are well-designed with SpvResult returns
 - PR#525 actively modifies spv/manager.rs — sub-tasks should be coordinated with that PR
+
+## Run 173 — 2026-02-08
+**Task:** 7.3b Fix wallet-013: Add iteration limit to SPV fee calculation loop
+**What was done:** Added `MAX_FEE_ITERATIONS` constant (50) to `build_spv_unsigned_transaction_multi()` in `src/backend_task/core/mod.rs` and converted the infinite `loop` to a bounded `for _ in 0..MAX_FEE_ITERATIONS`. After exhausting iterations, the function returns a descriptive error instead of potentially looping indefinitely. All existing early-return paths (successful build, convergence check, non-InsufficientFunds errors) remain unchanged.
+**Files changed:** src/backend_task/core/mod.rs

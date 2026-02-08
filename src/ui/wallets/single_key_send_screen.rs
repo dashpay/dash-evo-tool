@@ -820,45 +820,43 @@ impl ScreenLike for SingleKeyWalletSendScreen {
     ) {
         self.sending = false;
 
-        match backend_task_success_result {
-            crate::backend_task::BackendTaskSuccessResult::WalletPayment {
+        if let crate::backend_task::BackendTaskSuccessResult::Wallet(
+            crate::backend_task::wallet::WalletResult::Payment {
                 txid,
                 recipients,
                 total_amount,
-            } => {
-                let msg = if recipients.len() == 1 {
-                    let (address, amount) = &recipients[0];
-                    format!(
-                        "Sent {} to {}\nTxID: {}",
-                        format_dash(*amount),
-                        address,
-                        txid
-                    )
-                } else {
-                    let recipient_list: String = recipients
-                        .iter()
-                        .map(|(addr, amt)| format!("  {} to {}", format_dash(*amt), addr))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    format!(
-                        "Sent {} total to {} recipients:\n{}\nTxID: {}",
-                        format_dash(total_amount),
-                        recipients.len(),
-                        recipient_list,
-                        txid
-                    )
-                };
-                self.display_message(&msg, MessageType::Success);
+            },
+        ) = backend_task_success_result
+        {
+            let msg = if recipients.len() == 1 {
+                let (address, amount) = &recipients[0];
+                format!(
+                    "Sent {} to {}\nTxID: {}",
+                    format_dash(*amount),
+                    address,
+                    txid
+                )
+            } else {
+                let recipient_list: String = recipients
+                    .iter()
+                    .map(|(addr, amt)| format!("  {} to {}", format_dash(*amt), addr))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "Sent {} total to {} recipients:\n{}\nTxID: {}",
+                    format_dash(total_amount),
+                    recipients.len(),
+                    recipient_list,
+                    txid
+                )
+            };
+            self.display_message(&msg, MessageType::Success);
 
-                // Clear the form after successful send
-                self.recipients = vec![SendRecipient::new(0)];
-                self.next_recipient_id = 1;
-                self.memo.clear();
-                self.subtract_fee = false;
-            }
-            _ => {
-                // Ignore other results
-            }
+            // Clear the form after successful send
+            self.recipients = vec![SendRecipient::new(0)];
+            self.next_recipient_id = 1;
+            self.memo.clear();
+            self.subtract_fee = false;
         }
     }
 

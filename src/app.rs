@@ -3,7 +3,7 @@ use crate::app_dir::{
     create_app_user_data_directory_if_not_exists,
 };
 use crate::backend_task::contested_names::ContestedResourceTask;
-use crate::backend_task::core::CoreItem;
+use crate::backend_task::core::{CoreItem, CoreResult};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
@@ -928,8 +928,9 @@ impl App for AppState {
                         Ok(utxos) => {
                             let core_item =
                                 CoreItem::InstantLockedTransaction(tx.clone(), utxos, is_lock);
-                            self.visible_screen_mut()
-                                .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
+                            self.visible_screen_mut().display_task_result(
+                                BackendTaskSuccessResult::Core(CoreResult::Item(core_item)),
+                            );
                         }
                         Err(e) => {
                             eprintln!("Failed to store asset lock: {}", e);
@@ -944,11 +945,10 @@ impl App for AppState {
                     }
                 }
                 ZMQMessage::ChainLockedBlock(block, chain_lock) => {
-                    self.visible_screen_mut().display_task_result(
-                        BackendTaskSuccessResult::CoreItem(CoreItem::ChainLockedBlock(
-                            block, chain_lock,
-                        )),
-                    );
+                    self.visible_screen_mut()
+                        .display_task_result(BackendTaskSuccessResult::Core(CoreResult::Item(
+                            CoreItem::ChainLockedBlock(block, chain_lock),
+                        )));
                 }
             }
         }

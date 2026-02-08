@@ -1,6 +1,7 @@
 use super::encryption::decrypt_extended_public_key;
 use super::hd_derivation::derive_payment_address;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -286,7 +287,7 @@ pub async fn send_payment_to_contact_impl(
 
     // Extract txid from result
     let txid = match &result {
-        BackendTaskSuccessResult::WalletPayment { txid, .. } => txid.clone(),
+        BackendTaskSuccessResult::Wallet(WalletResult::Payment { txid, .. }) => txid.clone(),
         _ => "unknown".to_string(),
     };
 

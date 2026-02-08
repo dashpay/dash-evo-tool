@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, WalletSeedHash};
@@ -40,9 +41,11 @@ impl AppContext {
                 .to_string()
         };
 
-        Ok(BackendTaskSuccessResult::GeneratedReceiveAddress {
-            seed_hash,
-            address: address_string,
-        })
+        Ok(BackendTaskSuccessResult::Wallet(
+            WalletResult::GeneratedReceiveAddress {
+                seed_hash,
+                address: address_string,
+            },
+        ))
     }
 }

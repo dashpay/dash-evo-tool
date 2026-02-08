@@ -1479,22 +1479,42 @@ impl ScreenLike for WalletSendScreen {
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
-            crate::backend_task::BackendTaskSuccessResult::WalletPayment {
-                txid: _,
-                recipients,
-                total_amount,
-            } => {
-                let msg = if recipients.len() == 1 {
-                    let (address, amount) = &recipients[0];
-                    format!("Sent {} to {}", format_dash(*amount), address,)
-                } else {
-                    format!(
-                        "Sent {} to {} recipients",
-                        format_dash(total_amount),
-                        recipients.len(),
-                    )
-                };
-                self.send_status = SendStatus::Complete(msg);
+            crate::backend_task::BackendTaskSuccessResult::Wallet(wallet_result) => {
+                use crate::backend_task::wallet::WalletResult;
+                match wallet_result {
+                    WalletResult::Payment {
+                        txid: _,
+                        recipients,
+                        total_amount,
+                    } => {
+                        let msg = if recipients.len() == 1 {
+                            let (address, amount) = &recipients[0];
+                            format!("Sent {} to {}", format_dash(*amount), address,)
+                        } else {
+                            format!(
+                                "Sent {} to {} recipients",
+                                format_dash(total_amount),
+                                recipients.len(),
+                            )
+                        };
+                        self.send_status = SendStatus::Complete(msg);
+                    }
+                    WalletResult::PlatformAddressFunded { .. } => {
+                        self.send_status = SendStatus::Complete(
+                            "Platform address funded successfully!".to_string(),
+                        );
+                    }
+                    WalletResult::PlatformAddressWithdrawal { .. } => {
+                        self.send_status =
+                            SendStatus::Complete("Withdrawal initiated successfully!\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string());
+                    }
+                    WalletResult::PlatformCreditsTransferred { .. } => {
+                        self.send_status = SendStatus::Complete(
+                            "Platform credits transferred successfully!".to_string(),
+                        );
+                    }
+                    _ => {}
+                }
             }
             crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
                 let fee_info = format!(
@@ -1504,20 +1524,6 @@ impl ScreenLike for WalletSendScreen {
                 );
                 self.send_status =
                     SendStatus::Complete(format!("Credits transferred successfully!{}", fee_info));
-            }
-            crate::backend_task::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
-                self.send_status =
-                    SendStatus::Complete("Platform address funded successfully!".to_string());
-            }
-            crate::backend_task::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
-                self.send_status =
-                    SendStatus::Complete("Withdrawal initiated successfully!\n\nNote: It may take a few minutes for funds to appear on the Core chain.".to_string());
-            }
-            crate::backend_task::BackendTaskSuccessResult::PlatformCreditsTransferred {
-                ..
-            } => {
-                self.send_status =
-                    SendStatus::Complete("Platform credits transferred successfully!".to_string());
             }
             _ => {
                 // Ignore other results

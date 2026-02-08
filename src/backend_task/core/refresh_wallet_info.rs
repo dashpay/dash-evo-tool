@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
@@ -249,6 +250,8 @@ impl AppContext {
             .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
             .map_err(|e| format!("Failed to persist wallet balances: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
+        Ok(BackendTaskSuccessResult::Wallet(WalletResult::Refreshed {
+            warning: None,
+        }))
     }
 }

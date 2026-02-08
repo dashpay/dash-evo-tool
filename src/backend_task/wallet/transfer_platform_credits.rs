@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::WalletSeedHash;
@@ -57,6 +58,8 @@ impl AppContext {
         // Update wallet balances from the proof-verified response (no extra fetch needed)
         self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)?;
 
-        Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash })
+        Ok(BackendTaskSuccessResult::Wallet(
+            WalletResult::PlatformCreditsTransferred { seed_hash },
+        ))
     }
 }

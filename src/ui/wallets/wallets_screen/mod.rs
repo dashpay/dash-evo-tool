@@ -1821,117 +1821,125 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
-            crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
-                self.refreshing = false;
-                if let Some(warn_msg) = warning {
-                    self.set_message(
-                        format!("Wallet refreshed with warning: {}", warn_msg),
-                        MessageType::Info,
-                    );
-                } else {
-                    self.set_message(
-                        "Successfully refreshed wallet".to_string(),
-                        MessageType::Success,
-                    );
-                }
-            }
-            crate::ui::BackendTaskSuccessResult::RecoveredAssetLocks {
-                recovered_count,
-                total_amount,
-            } => {
-                let msg = if recovered_count == 0 {
-                    "No additional unused asset locks found".to_string()
-                } else {
-                    format!(
-                        "Found {} unused asset lock(s) worth {} Dash",
+            crate::ui::BackendTaskSuccessResult::Wallet(wallet_result) => {
+                use crate::backend_task::wallet::WalletResult;
+                match wallet_result {
+                    WalletResult::Refreshed { warning } => {
+                        self.refreshing = false;
+                        if let Some(warn_msg) = warning {
+                            self.set_message(
+                                format!("Wallet refreshed with warning: {}", warn_msg),
+                                MessageType::Info,
+                            );
+                        } else {
+                            self.set_message(
+                                "Successfully refreshed wallet".to_string(),
+                                MessageType::Success,
+                            );
+                        }
+                    }
+                    WalletResult::RecoveredAssetLocks {
                         recovered_count,
-                        format_dash(total_amount)
-                    )
-                };
-                self.display_message(&msg, MessageType::Success);
-            }
-            crate::ui::BackendTaskSuccessResult::WalletPayment {
-                txid,
-                recipients,
-                total_amount,
-            } => {
-                let msg = if recipients.len() == 1 {
-                    let (address, amount) = &recipients[0];
-                    format!(
-                        "Sent {} to {}\nTxID: {}",
-                        format_dash(*amount),
-                        address,
-                        txid
-                    )
-                } else {
-                    format!(
-                        "Sent {} total to {} recipients\nTxID: {}",
-                        format_dash(total_amount),
-                        recipients.len(),
-                        txid
-                    )
-                };
-                self.display_message(&msg, MessageType::Success);
-            }
-            crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
-                if let Some(selected) = &self.selected_wallet
-                    && let Ok(wallet) = selected.read()
-                    && wallet.seed_hash() == seed_hash
-                {
-                    // Parse address and get balance
-                    let balance = address
-                        .parse::<Address<_>>()
-                        .ok()
-                        .and_then(|addr| {
-                            wallet.address_balances.get(&addr.assume_checked()).copied()
-                        })
-                        .unwrap_or(0);
-                    self.receive_dialog
-                        .core_addresses
-                        .push((address.clone(), balance));
-                    self.receive_dialog.selected_core_index =
-                        self.receive_dialog.core_addresses.len() - 1;
-                    self.receive_dialog.qr_texture = None;
-                    self.receive_dialog.qr_address = None;
-                    self.receive_dialog.status = None;
-                }
-            }
-            crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
-                self.display_message("Platform withdrawal successful. Note: It may take a few minutes for funds to appear on the Core chain.", MessageType::Success);
-            }
-            crate::ui::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
-                self.fund_platform_dialog.is_processing = false;
-                self.fund_platform_dialog.status = Some("Funding successful!".to_string());
-                self.fund_platform_dialog.status_is_error = false;
-                self.display_message("Platform address funded successfully", MessageType::Success);
-            }
-            crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash } => {
-                self.display_message(
-                    "Platform credits transferred successfully",
-                    MessageType::Success,
-                );
-                // Schedule a refresh of platform address balances to update the UI
-                self.pending_platform_balance_refresh = Some(seed_hash);
-            }
-            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
-                seed_hash,
-                balances,
-            } => {
-                self.refreshing = false;
-                // Update wallet's platform_address_info if this is for the selected wallet
-                if let Some(selected) = &self.selected_wallet
-                    && let Ok(mut wallet) = selected.write()
-                    && wallet.seed_hash() == seed_hash
-                {
-                    // Update balances in the wallet
-                    for (addr, (balance, nonce)) in balances {
-                        wallet.set_platform_address_info(addr, balance, nonce);
+                        total_amount,
+                    } => {
+                        let msg = if recovered_count == 0 {
+                            "No additional unused asset locks found".to_string()
+                        } else {
+                            format!(
+                                "Found {} unused asset lock(s) worth {} Dash",
+                                recovered_count,
+                                format_dash(total_amount)
+                            )
+                        };
+                        self.display_message(&msg, MessageType::Success);
+                    }
+                    WalletResult::Payment {
+                        txid,
+                        recipients,
+                        total_amount,
+                    } => {
+                        let msg = if recipients.len() == 1 {
+                            let (address, amount) = &recipients[0];
+                            format!(
+                                "Sent {} to {}\nTxID: {}",
+                                format_dash(*amount),
+                                address,
+                                txid
+                            )
+                        } else {
+                            format!(
+                                "Sent {} total to {} recipients\nTxID: {}",
+                                format_dash(total_amount),
+                                recipients.len(),
+                                txid
+                            )
+                        };
+                        self.display_message(&msg, MessageType::Success);
+                    }
+                    WalletResult::GeneratedReceiveAddress { seed_hash, address } => {
+                        if let Some(selected) = &self.selected_wallet
+                            && let Ok(wallet) = selected.read()
+                            && wallet.seed_hash() == seed_hash
+                        {
+                            // Parse address and get balance
+                            let balance = address
+                                .parse::<Address<_>>()
+                                .ok()
+                                .and_then(|addr| {
+                                    wallet.address_balances.get(&addr.assume_checked()).copied()
+                                })
+                                .unwrap_or(0);
+                            self.receive_dialog
+                                .core_addresses
+                                .push((address.clone(), balance));
+                            self.receive_dialog.selected_core_index =
+                                self.receive_dialog.core_addresses.len() - 1;
+                            self.receive_dialog.qr_texture = None;
+                            self.receive_dialog.qr_address = None;
+                            self.receive_dialog.status = None;
+                        }
+                    }
+                    WalletResult::PlatformAddressWithdrawal { .. } => {
+                        self.display_message("Platform withdrawal successful. Note: It may take a few minutes for funds to appear on the Core chain.", MessageType::Success);
+                    }
+                    WalletResult::PlatformAddressFunded { .. } => {
+                        self.fund_platform_dialog.is_processing = false;
+                        self.fund_platform_dialog.status = Some("Funding successful!".to_string());
+                        self.fund_platform_dialog.status_is_error = false;
+                        self.display_message(
+                            "Platform address funded successfully",
+                            MessageType::Success,
+                        );
+                    }
+                    WalletResult::PlatformCreditsTransferred { seed_hash } => {
+                        self.display_message(
+                            "Platform credits transferred successfully",
+                            MessageType::Success,
+                        );
+                        // Schedule a refresh of platform address balances to update the UI
+                        self.pending_platform_balance_refresh = Some(seed_hash);
+                    }
+                    WalletResult::PlatformAddressBalances {
+                        seed_hash,
+                        balances,
+                    } => {
+                        self.refreshing = false;
+                        // Update wallet's platform_address_info if this is for the selected wallet
+                        if let Some(selected) = &self.selected_wallet
+                            && let Ok(mut wallet) = selected.write()
+                            && wallet.seed_hash() == seed_hash
+                        {
+                            // Update balances in the wallet
+                            for (addr, (balance, nonce)) in balances {
+                                wallet.set_platform_address_info(addr, balance, nonce);
+                            }
+                        }
+                        self.set_message(
+                            "Successfully synced Platform balances".to_string(),
+                            MessageType::Success,
+                        );
                     }
                 }
-                self.set_message(
-                    "Successfully synced Platform balances".to_string(),
-                    MessageType::Success,
-                );
             }
             crate::ui::BackendTaskSuccessResult::Message(msg) => {
                 self.refreshing = false;

@@ -1,5 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::wallet::PlatformSyncMode;
+use crate::backend_task::wallet::{PlatformSyncMode, WalletResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::{
@@ -317,10 +317,12 @@ impl AppContext {
             addresses_with_balance
         );
 
-        Ok(BackendTaskSuccessResult::PlatformAddressBalances {
-            seed_hash,
-            balances,
-        })
+        Ok(BackendTaskSuccessResult::Wallet(
+            WalletResult::PlatformAddressBalances {
+                seed_hash,
+                balances,
+            },
+        ))
     }
 
     /// Apply recent balance changes (terminal updates) to catch changes after a starting block.

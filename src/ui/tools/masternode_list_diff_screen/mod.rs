@@ -6,7 +6,7 @@ mod quorum_viewer_tab;
 use cache_helpers::CacheState;
 
 use crate::app::AppAction;
-use crate::backend_task::core::CoreItem;
+use crate::backend_task::core::{CoreItem, CoreResult};
 use crate::backend_task::mnlist::{MnListResult, MnListTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
@@ -2229,7 +2229,7 @@ impl ScreenLike for MasternodeListDiffScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::CoreItem(core_item) => {
+            BackendTaskSuccessResult::Core(CoreResult::Item(core_item)) => {
                 self.handle_core_item_result(core_item);
             }
             BackendTaskSuccessResult::MnList(MnListResult::FetchedDiff {

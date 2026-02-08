@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::core::{CoreItem, CoreResult, CoreTask};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
@@ -1827,12 +1827,12 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+        if let BackendTaskSuccessResult::Core(CoreResult::Item(CoreItem::ChainLocks(
             mainnet_chainlock,
             testnet_chainlock,
             devnet_chainlock,
             local_chainlock,
-        )) = backend_task_success_result
+        ))) = backend_task_success_result
         {
             match mainnet_chainlock {
                 Some(_) => self.mainnet_core_status_online = true,

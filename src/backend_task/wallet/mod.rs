@@ -9,9 +9,44 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Address;
+use dash_sdk::dpp::dashcore::address::NetworkChecked;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WalletResult {
+    Payment {
+        txid: String,
+        /// List of (address, amount) pairs for each recipient
+        recipients: Vec<(String, u64)>,
+        total_amount: u64,
+    },
+    Refreshed {
+        /// Optional warning message (e.g., Platform sync failed but Core refresh succeeded)
+        warning: Option<String>,
+    },
+    RecoveredAssetLocks {
+        recovered_count: usize,
+        total_amount: u64,
+    },
+    GeneratedReceiveAddress {
+        seed_hash: WalletSeedHash,
+        address: String,
+    },
+    /// Platform address balances fetched from Platform
+    PlatformAddressBalances {
+        seed_hash: WalletSeedHash,
+        /// Map of address to (balance, nonce)
+        balances: BTreeMap<Address<NetworkChecked>, (u64, u32)>,
+    },
+    /// Platform credits transferred between addresses
+    PlatformCreditsTransferred { seed_hash: WalletSeedHash },
+    /// Platform address funded from asset lock
+    PlatformAddressFunded { seed_hash: WalletSeedHash },
+    /// Withdrawal from Platform address to Core initiated
+    PlatformAddressWithdrawal { seed_hash: WalletSeedHash },
+}
 
 /// Controls how Platform address balance sync is performed
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

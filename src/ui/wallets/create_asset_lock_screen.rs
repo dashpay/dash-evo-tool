@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::core::{CoreItem, CoreResult, CoreTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
@@ -738,9 +738,9 @@ impl ScreenLike for CreateAssetLockScreen {
 
         match current_step {
             WalletFundedScreenStep::WaitingOnFunds => {
-                if let BackendTaskSuccessResult::CoreItem(
+                if let BackendTaskSuccessResult::Core(CoreResult::Item(
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                ) = result
+                )) = result
                 {
                     for utxo in outpoints_with_addresses {
                         let (_, _, address) = &utxo;
@@ -779,9 +779,9 @@ impl ScreenLike for CreateAssetLockScreen {
                             );
                         }
                     }
-                    BackendTaskSuccessResult::CoreItem(
+                    BackendTaskSuccessResult::Core(CoreResult::Item(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
-                    ) => {
+                    )) => {
                         // This is the asset lock transaction from ZMQ
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
@@ -816,9 +816,9 @@ impl ScreenLike for CreateAssetLockScreen {
                             );
                         }
                     }
-                    BackendTaskSuccessResult::CoreItem(
+                    BackendTaskSuccessResult::Core(CoreResult::Item(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
-                    ) => {
+                    )) => {
                         // This is the asset lock transaction from ZMQ
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());

@@ -5,7 +5,7 @@ mod by_wallet_qr_code;
 mod success_screen;
 
 use crate::app::AppAction;
-use crate::backend_task::core::CoreItem;
+use crate::backend_task::core::{CoreItem, CoreResult};
 use crate::backend_task::identity::{
     IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
@@ -1043,9 +1043,9 @@ impl ScreenLike for AddNewIdentityScreen {
             WalletFundedScreenStep::ChooseFundingMethod => {}
             WalletFundedScreenStep::WaitingOnFunds => {
                 if let Some(funding_address) = self.funding_address.as_ref()
-                    && let BackendTaskSuccessResult::CoreItem(
+                    && let BackendTaskSuccessResult::Core(CoreResult::Item(
                         CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                    ) = &backend_task_success_result
+                    )) = &backend_task_success_result
                 {
                     for (outpoint, tx_out, address) in outpoints_with_addresses {
                         if funding_address == address {
@@ -1058,9 +1058,9 @@ impl ScreenLike for AddNewIdentityScreen {
             WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
-                if let BackendTaskSuccessResult::CoreItem(
+                if let BackendTaskSuccessResult::Core(CoreResult::Item(
                     CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
-                ) = &backend_task_success_result
+                )) = &backend_task_success_result
                     && let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
                         &tx.special_transaction_payload
                     && asset_lock_payload.credit_outputs.iter().any(|tx_out| {

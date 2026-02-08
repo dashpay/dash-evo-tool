@@ -2,6 +2,7 @@
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::WalletPaymentRequest;
+use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::single_key::SingleKeyWallet;
@@ -258,10 +259,10 @@ impl AppContext {
             .map(|r| (r.address.clone(), r.amount_duffs))
             .collect();
 
-        Ok(BackendTaskSuccessResult::WalletPayment {
+        Ok(BackendTaskSuccessResult::Wallet(WalletResult::Payment {
             txid: txid.to_string(),
             total_amount: total_sent,
             recipients: recipients_result,
-        })
+        }))
     }
 }

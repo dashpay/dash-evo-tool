@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::wallet::WalletResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
@@ -37,10 +38,12 @@ impl AppContext {
 
         if known_addresses.is_empty() {
             tracing::warn!("No known addresses in wallet - cannot search for asset locks");
-            return Ok(BackendTaskSuccessResult::RecoveredAssetLocks {
-                recovered_count: 0,
-                total_amount: 0,
-            });
+            return Ok(BackendTaskSuccessResult::Wallet(
+                WalletResult::RecoveredAssetLocks {
+                    recovered_count: 0,
+                    total_amount: 0,
+                },
+            ));
         }
 
         let client = self.core_client.read_or_recover();
@@ -378,9 +381,11 @@ impl AppContext {
             total_amount
         );
 
-        Ok(BackendTaskSuccessResult::RecoveredAssetLocks {
-            recovered_count,
-            total_amount,
-        })
+        Ok(BackendTaskSuccessResult::Wallet(
+            WalletResult::RecoveredAssetLocks {
+                recovered_count,
+                total_amount,
+            },
+        ))
     }
 }

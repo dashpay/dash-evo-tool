@@ -2,18 +2,15 @@ use crate::app::TaskResult;
 use crate::lock_helper::RwLockExt;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
-use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::core::{CoreResult, CoreTask};
 use crate::backend_task::dashpay::{DashPayTask, ContactData};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
-use crate::backend_task::wallet::WalletTask;
+use crate::backend_task::wallet::{WalletResult, WalletTask};
 use crate::context::AppContext;
-use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::address::NetworkChecked;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
@@ -99,19 +96,16 @@ pub enum BackendTaskSuccessResult {
     Refresh,
     Message(String), // Used for: progress messages during long operations, placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
-    WalletPayment {
-        txid: String,
-        /// List of (address, amount) pairs for each recipient
-        recipients: Vec<(String, u64)>,
-        total_amount: u64,
-    },
+
+    // Wallet/Core domain results
+    Wallet(WalletResult),
+    Core(CoreResult),
 
     // Specific results
     #[allow(dead_code)] // May be used for individual document operations
     Document(Document),
     Documents(Documents),
     BroadcastedDocument(Document),
-    CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
     #[allow(dead_code)] // May be used for reporting successful votes
@@ -163,28 +157,6 @@ pub enum BackendTaskSuccessResult {
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
     GroveSTARK(grovestark::GroveSTARKResult),
-    GeneratedReceiveAddress {
-        seed_hash: WalletSeedHash,
-        address: String,
-    },
-    /// Platform address balances fetched from Platform
-    PlatformAddressBalances {
-        seed_hash: WalletSeedHash,
-        /// Map of address to (balance, nonce)
-        balances: BTreeMap<Address<NetworkChecked>, (u64, u32)>,
-    },
-    /// Platform credits transferred between addresses
-    PlatformCreditsTransferred {
-        seed_hash: WalletSeedHash,
-    },
-    /// Platform address funded from asset lock
-    PlatformAddressFunded {
-        seed_hash: WalletSeedHash,
-    },
-    /// Withdrawal from Platform address to Core initiated
-    PlatformAddressWithdrawal {
-        seed_hash: WalletSeedHash,
-    },
 
     // MNList-specific results
     MnList(mnlist::MnListResult),
@@ -230,16 +202,6 @@ pub enum BackendTaskSuccessResult {
     ContractNotFound,
     TokenNotFound,
     ProofErrorLogged,
-
-    // Wallet operation results (replacing string messages)
-    RefreshedWallet {
-        /// Optional warning message (e.g., Platform sync failed but Core refresh succeeded)
-        warning: Option<String>,
-    },
-    RecoveredAssetLocks {
-        recovered_count: usize,
-        total_amount: u64,
-    },
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,

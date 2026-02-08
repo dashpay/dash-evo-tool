@@ -1,5 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::wallet::PlatformSyncMode;
+use crate::backend_task::wallet::{PlatformSyncMode, WalletResult};
 use crate::context::AppContext;
 use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -229,6 +229,8 @@ impl AppContext {
         self.fetch_platform_address_balances(seed_hash, PlatformSyncMode::Auto)
             .await?;
 
-        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+        Ok(BackendTaskSuccessResult::Wallet(
+            WalletResult::PlatformAddressFunded { seed_hash },
+        ))
     }
 }

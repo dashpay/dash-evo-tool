@@ -955,7 +955,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producer: `src/backend_task/grovestark.rs`
   - Consumers: `src/ui/tools/grovestark_screen.rs`, `proof_log_screen.rs`, `proof_visualizer_screen.rs`
 
-- [ ] **3.6c Extract Wallet/Core results into WalletResult and CoreResult sub-enums** (P2)
+- [x] **3.6c Extract Wallet/Core results into WalletResult and CoreResult sub-enums** (P2)
   Create `WalletResult` with 7 variants: `Payment`, `Refreshed`, `RecoveredAssetLocks`, `GeneratedReceiveAddress`, `PlatformAddressBalances`, `PlatformCreditsTransferred`, `PlatformAddressFunded`, `PlatformAddressWithdrawal`. Create `CoreResult` with 1 variant: `Item(CoreItem)`. Update:
   - Producers: `src/backend_task/core/`, `src/backend_task/wallet/`
   - Consumers: `src/ui/wallets/wallets_screen/mod.rs`, `send_screen/`, `single_key_send_screen.rs`, `create_asset_lock_screen.rs`, and `app.rs` ZMQ handler

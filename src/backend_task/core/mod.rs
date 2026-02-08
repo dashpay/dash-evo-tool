@@ -7,6 +7,7 @@ mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::wallet::WalletResult;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
@@ -144,6 +145,11 @@ pub enum CoreItem {
     ChainLockedBlock(Block, ChainLock),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum CoreResult {
+    Item(CoreItem),
+}
+
 impl AppContext {
     pub async fn run_core_task(
         self: &Arc<Self>,
@@ -155,10 +161,10 @@ impl AppContext {
                 .read_or_recover()
                 .get_best_chain_lock()
                 .map(|chain_lock| {
-                    BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
+                    BackendTaskSuccessResult::Core(CoreResult::Item(CoreItem::ChainLock(
                         chain_lock,
                         self.network,
-                    ))
+                    )))
                 })
                 .map_err(|e| e.to_string()),
             CoreTask::GetBestChainLocks => {
@@ -195,11 +201,13 @@ impl AppContext {
                 }
 
                 // Otherwise, return the successes we have
-                Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-                    mainnet_chainlock,
-                    testnet_chainlock,
-                    devnet_chainlock,
-                    local_chainlock,
+                Ok(BackendTaskSuccessResult::Core(CoreResult::Item(
+                    CoreItem::ChainLocks(
+                        mainnet_chainlock,
+                        testnet_chainlock,
+                        devnet_chainlock,
+                        local_chainlock,
+                    ),
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, platform_sync_mode) => {
@@ -238,7 +246,9 @@ impl AppContext {
                     None
                 };
 
-                Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
+                Ok(BackendTaskSuccessResult::Wallet(WalletResult::Refreshed {
+                    warning,
+                }))
             }
             CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
                 // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
@@ -247,7 +257,9 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Task join error: {}", e))?
                     .map_err(|e| format!("Error refreshing wallet: {}", e))?;
-                Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
+                Ok(BackendTaskSuccessResult::Wallet(WalletResult::Refreshed {
+                    warning: None,
+                }))
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
@@ -364,11 +376,11 @@ impl AppContext {
             .map(|r| (r.address.clone(), r.amount_duffs))
             .collect();
 
-        Ok(BackendTaskSuccessResult::WalletPayment {
+        Ok(BackendTaskSuccessResult::Wallet(WalletResult::Payment {
             txid: txid.to_string(),
             recipients: recipients_result,
             total_amount,
-        })
+        }))
     }
 
     async fn send_wallet_payment_via_spv(
@@ -429,11 +441,11 @@ impl AppContext {
 
         let total_amount: u64 = recipients_result.iter().map(|(_, amt)| *amt).sum();
 
-        Ok(BackendTaskSuccessResult::WalletPayment {
+        Ok(BackendTaskSuccessResult::Wallet(WalletResult::Payment {
             txid: tx.txid().to_string(),
             recipients: recipients_result,
             total_amount,
-        })
+        }))
     }
 
     fn parse_recipients(

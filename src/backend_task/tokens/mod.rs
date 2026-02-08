@@ -1,6 +1,6 @@
 use super::contract::ContractResult;
 use super::{BackendTaskSuccessResult, FeeResult};
-use crate::ui::tokens::tokens_screen::{
+use crate::model::tokens::{
     ContractDescriptionInfo, IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo,
 };
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};

@@ -13,10 +13,10 @@ use eframe::egui::{self, Color32, Context, RichText, Ui};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contract::{ContractResult, ContractTask};
 use crate::database::contracts::InsertTokensToo;
+use crate::model::tokens::TokenInfo;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::tokens::tokens_screen::TokenInfo;
 use crate::{
     app::AppAction,
     backend_task::{BackendTask, tokens::TokenTask},

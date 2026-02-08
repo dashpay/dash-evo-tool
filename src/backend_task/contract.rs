@@ -7,7 +7,7 @@ use crate::database::contracts::InsertTokensToo;
 use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
+use crate::model::tokens::{ContractDescriptionInfo, TokenInfo};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;

@@ -1529,7 +1529,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created (ordered by impact):**
 
-- [ ] **5.4a Move token data types from UI to model layer** (P2)
+- [x] **5.4a Move token data types from UI to model layer** (P2)
   Move `TokenInfo`, `IdentityTokenInfo`, `IdentityTokenBasicInfo`, `IdentityTokenIdentifier`, `ContractDescriptionInfo`, `TokenInfoWithDataContract`, `IdentityTokenBalance` from `src/ui/tokens/tokens_screen/structs.rs` and `src/ui/tokens/tokens_screen/mod.rs` to `src/model/tokens/` (create new module). Update all imports in `backend_task/tokens/mod.rs`, `backend_task/contract.rs`, `database/tokens.rs`, `context/contract_token_db.rs`, and all UI files that use them. Keep re-exports in the old location if needed for smooth transition.
 
 - [ ] **5.4b Move RootScreenType and ThemeMode from UI to model layer** (P2)

@@ -5,6 +5,8 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::tokens::IdentityTokenBalance;
+use crate::model::tokens::{IdentityTokenBasicInfo, IdentityTokenInfo};
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
@@ -28,7 +30,6 @@ use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
-use crate::ui::tokens::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenInfo};
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
@@ -71,7 +72,7 @@ use tokens::mint_tokens_screen::MintTokensScreen;
 use tokens::pause_tokens_screen::PauseTokensScreen;
 use tokens::resume_tokens_screen::ResumeTokensScreen;
 use tokens::set_token_price_screen::SetTokenPriceScreen;
-use tokens::tokens_screen::{IdentityTokenBalance, TokensScreen, TokensSubscreen};
+use tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;

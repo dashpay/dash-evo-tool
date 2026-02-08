@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use crate::model::qualified_identity::IdentityType;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::model::tokens::IdentityTokenIdentifier;
 use super::TokenResult;
 use crate::{backend_task::BackendTaskSuccessResult, context::AppContext};
 use dash_sdk::{platform::Identifier, Sdk};

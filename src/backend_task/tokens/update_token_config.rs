@@ -1,7 +1,7 @@
 use super::{BackendTaskSuccessResult, TokenResult};
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
-use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+use crate::model::tokens::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;

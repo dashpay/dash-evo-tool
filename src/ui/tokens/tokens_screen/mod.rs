@@ -68,11 +68,8 @@ use token_creator::{
 };
 use token_creator::{sanitize_i64, sanitize_u64};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContractDescriptionInfo {
-    pub data_contract_id: Identifier,
-    pub description: String,
-}
+// ContractDescriptionInfo has been moved to crate::model::tokens
+pub use crate::model::tokens::ContractDescriptionInfo;
 
 /// Which token sub-screen is currently showing.
 #[derive(PartialEq)]

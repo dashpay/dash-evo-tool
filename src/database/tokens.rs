@@ -10,11 +10,11 @@ use rusqlite::OptionalExtension;
 use rusqlite::params;
 
 use super::Database;
+use crate::context::AppContext;
 use crate::lock_helper::{MutexExt, RwLockExt};
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
+use crate::model::tokens::{
+    IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
-use crate::{context::AppContext, ui::tokens::tokens_screen::IdentityTokenBalance};
 
 impl Database {
     pub fn initialize_token_table(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {

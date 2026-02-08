@@ -15,7 +15,6 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::Identifier;
 
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{TokensScreen, sanitize_i64, sanitize_u64};
 use eframe::epaint::Color32;
@@ -1597,35 +1596,5 @@ Emits tokens in fixed amounts for specific intervals.
     }
 }
 
-pub fn validate_perpetual_distribution_recipient(
-    contract_owner_id: Identifier,
-    recipient: TokenDistributionRecipient,
-    identity: &QualifiedIdentity,
-) -> Result<(), String> {
-    match recipient {
-        TokenDistributionRecipient::ContractOwner => {
-            if contract_owner_id != identity.identity.id() {
-                Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::Identity(identifier) => {
-            if identifier != identity.identity.id() {
-                Err(
-                    "This identity is not a valid distribution recipient for this token"
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::EvonodesByParticipation => {
-            if identity.identity_type != IdentityType::Evonode {
-                Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
+// validate_perpetual_distribution_recipient has been moved to crate::model::tokens
+pub use crate::model::tokens::validate_perpetual_distribution_recipient;

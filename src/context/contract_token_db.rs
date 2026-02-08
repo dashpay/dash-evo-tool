@@ -1,6 +1,6 @@
 use crate::model::qualified_contract::QualifiedContract;
+use crate::model::tokens::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::model::wallet::WalletSeedHash;
-use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use bincode::config;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::platform::{DataContract, Identifier};

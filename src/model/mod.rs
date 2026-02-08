@@ -8,4 +8,5 @@ pub mod proof_log_item;
 pub mod qualified_contract;
 pub mod qualified_identity;
 pub mod settings;
+pub mod tokens;
 pub mod wallet;

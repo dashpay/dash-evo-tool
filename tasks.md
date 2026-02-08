@@ -1755,7 +1755,7 @@ These META tasks validate reported bugs against the current codebase before any 
   Write tests that verify configuration can be saved and loaded without data loss.
   Reference: `issues/core-012-config-save-file-not-synced.md`, `issues/core-016-config-file-truncate-danger.md`.
 
-- [ ] **6.6 Add basic wallet payment flow tests** (P2)
+- [x] **6.6 Add basic wallet payment flow tests** (P2)
   Write unit tests for the core wallet payment construction logic:
   - UTXO selection
   - Fee calculation

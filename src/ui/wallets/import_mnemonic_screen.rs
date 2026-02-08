@@ -24,6 +24,7 @@ use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use egui::{Color32, ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use tracing::error;
 use zxcvbn::zxcvbn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +84,7 @@ impl ImportMnemonicScreen {
             parsed_single_key_wallet: None,
 
             // Identity discovery options
-            identity_scan_count: 5,
+            identity_scan_count: 10,
         }
     }
 
@@ -268,7 +269,7 @@ impl ImportMnemonicScreen {
                 wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
                 self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
-                eprintln!("Failed to acquire write lock on wallets");
+                error!("Failed to acquire write lock on wallets");
             }
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
@@ -349,7 +350,7 @@ impl ImportMnemonicScreen {
             self.estimated_time_to_crack = String::new();
             self.error = None;
             self.wallet_imported = false;
-            self.identity_scan_count = 5;
+            self.identity_scan_count = 10;
             return AppAction::None;
         }
 
@@ -563,10 +564,11 @@ impl ScreenLike for ImportMnemonicScreen {
                             ui.horizontal(|ui| {
                                 ui.label("Identity indices to scan:");
                                 ui.add(egui::DragValue::new(&mut self.identity_scan_count)
-                                    .range(0..=20)
+                                    .range(0..=50)
                                     .speed(0.1));
                                 ui.label("(0 to disable)");
                             });
+                            ui.label("If importing a wallet from a mobile Dashpay app, increase this value if your identity is not found.");
                             ui.add_space(10.0);
                             ui.separator();
                             ui.add_space(10.0);

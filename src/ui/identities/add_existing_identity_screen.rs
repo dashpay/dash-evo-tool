@@ -543,11 +543,11 @@ impl AddExistingIdentityScreen {
             return action;
         }
 
-        // In simple mode, default to searching all indices up to 5
+        // In simple mode, default to searching all indices up to 10
         if !self.show_advanced_options {
             self.wallet_search_mode = WalletIdentitySearchMode::UpToIndex;
             if self.identity_index_input.is_empty() {
-                self.identity_index_input = "5".to_string();
+                self.identity_index_input = "10".to_string();
             }
         }
 
@@ -615,7 +615,7 @@ impl AddExistingIdentityScreen {
             let identity_index_label = match self.wallet_search_mode {
                 WalletIdentitySearchMode::SpecificIndex => "Identity index:",
                 WalletIdentitySearchMode::UpToIndex => {
-                    "Highest identity index to search (inclusive, max 29):"
+                    "Highest identity index to search (inclusive):"
                 }
             };
 

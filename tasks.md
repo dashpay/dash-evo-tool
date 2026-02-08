@@ -1804,8 +1804,26 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.1b Implement GH#498: Replace master key** (P2)
   Depends on 7.1a (disable keys infrastructure). Create `src/backend_task/identity/replace_master_key.rs` (~120-150 lines) that generates a new master key and disables the old one in a single `IdentityUpdateTransition`. The transition must pass both `vec![new_master_key]` and `vec![old_master_key_id]`. Create `src/ui/identities/keys/replace_master_key_screen.rs` (~500-600 lines) with: key type selection (ECDSA_SECP256K1 default), random key generation, confirmation dialog showing old→new key details. Add `ReplaceMasterKey(QualifiedIdentity, QualifiedIdentityPublicKey)` task variant and corresponding result variant. Add navigation from `key_info_screen.rs` when viewing a master key.
 
-- [ ] **7.1c Investigate GH#468: Mobile Dashpay wallet identity derivation paths** (P2)
+- [x] **7.1c Investigate GH#468: Mobile Dashpay wallet identity derivation paths** (P2)
   Research the actual derivation paths used by mobile Dashpay (Android/iOS) for identity keys. Check the mobile wallet source code (github.com/dashpay/dashwallet-ios and dashwallet-android) for identity key derivation. Compare with DET's discovery paths in `discover_identities.rs`. Document findings and, if different paths are confirmed, extend `discover_identities.rs` to check alternative derivation paths during wallet import. Also consider adding a "scan depth" option to the import screen for configuring how many identity indices to check.
+
+  **Investigation Results:**
+
+  **Derivation paths are IDENTICAL across all platforms.** Comprehensive review of DIP-13, rust-dashcore (used by DET and Swift SDK), dashsync-iOS, dashj (Android), and wallet-lib (JS SDK) all confirm the same identity authentication key path:
+  - Mainnet: `m/9'/5'/5'/0'/0'/{identity_index}'/{key_index}'`
+  - Testnet: `m/9'/1'/5'/0'/0'/{identity_index}'/{key_index}'`
+  Components: `m / FEATURE_PURPOSE(9)' / coin_type(5|1)' / IDENTITIES(5)' / AUTHENTICATION(0)' / ECDSA(0)' / {identity_index}' / {key_index}'`
+
+  **Root cause of GH#468 is NOT derivation path mismatch.** The actual issue is likely:
+  1. Identity at a higher index than scanned (default was only 5)
+  2. Timing/network issues during scan
+  3. Platform query returning no results due to transient errors
+
+  **Improvements made:**
+  - Increased default identity scan depth from 5 to 10 on both import screen and "Find Identity by Wallet" screen
+  - Increased max scan range from 20 to 50 on import screen
+  - Added helpful hint text for mobile wallet imports: "If importing a wallet from a mobile Dashpay app, increase this value if your identity is not found."
+  - Removed artificial "max 29" label from the search screen
 
 - [ ] **7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration** (P3)
   In `src/ui/contracts_documents/register_contract_screen.rs`, enhance the contract input flow to handle raw dashpay.io schema output. When the user pastes a contract JSON that lacks required metadata fields (no `$format_version`, no `ownerId`), automatically wrap it: inject `$format_version` from current platform version, set `ownerId` from selected identity, add `$id` if missing. Show a notification that metadata was auto-populated. This builds on the existing owner_id injection at line 141-143 and `DataContract::from_json()` parsing.
@@ -1923,6 +1941,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 9 | 2 |
+| 7. Features | 9 | 3 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

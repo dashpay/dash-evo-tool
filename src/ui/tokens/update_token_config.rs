@@ -17,6 +17,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_t
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -1060,7 +1061,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
                         ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
+                            DashColors::WARNING_ORANGE,
                             "Wallet is locked. Please unlock to continue.",
                         );
                         ui.add_space(8.0);

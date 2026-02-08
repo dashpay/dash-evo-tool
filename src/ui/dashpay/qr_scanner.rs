@@ -15,6 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -255,7 +256,7 @@ impl QRScannerScreen {
 
                     if wallet_locked {
                         ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
+                            DashColors::WARNING_ORANGE,
                             "Wallet is locked. Please unlock to add contact.",
                         );
                         ui.add_space(8.0);

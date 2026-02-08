@@ -16,6 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
@@ -528,7 +529,7 @@ impl ScreenLike for RegisterDataContractScreen {
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
                         ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
+                            DashColors::WARNING_ORANGE,
                             "Wallet is locked. Please unlock to continue.",
                         );
                         ui.add_space(8.0);

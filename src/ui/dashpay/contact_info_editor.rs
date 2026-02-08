@@ -256,7 +256,7 @@ impl ContactInfoEditorScreen {
                 if wallet_locked {
                     ui.add_space(10.0);
                     ui.colored_label(
-                        egui::Color32::from_rgb(200, 150, 50),
+                        DashColors::WARNING_ORANGE,
                         "Wallet is locked. Please unlock to save changes.",
                     );
                     ui.add_space(8.0);

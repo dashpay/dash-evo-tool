@@ -57,6 +57,8 @@ impl DashColors {
     // Semantic colors
     pub const SUCCESS: Color32 = Color32::from_rgb(39, 174, 96);
     pub const WARNING: Color32 = Color32::from_rgb(241, 196, 15);
+    /// Golden/amber warning used for wallet-locked messages and similar caution states
+    pub const WARNING_ORANGE: Color32 = Color32::from_rgb(200, 150, 50);
     pub const ERROR: Color32 = Color32::from_rgb(235, 87, 87);
     pub const INFO: Color32 = Color32::from_rgb(52, 152, 219);
 

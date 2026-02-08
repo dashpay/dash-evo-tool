@@ -728,7 +728,7 @@ impl WalletSendScreen {
             ui.add(
                 egui::Label::new(
                     egui::RichText::new("Wallet is locked. Please unlock to continue.")
-                        .color(egui::Color32::from_rgb(200, 150, 50)),
+                        .color(DashColors::WARNING_ORANGE),
                 )
                 .wrap(),
             );

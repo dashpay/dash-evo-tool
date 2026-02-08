@@ -12,6 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -267,7 +268,7 @@ impl AddExistingIdentityScreen {
 
                                 if wallet_needs_unlock(selected_wallet) {
                                     ui.colored_label(
-                                        Color32::from_rgb(200, 150, 50),
+                                        DashColors::WARNING_ORANGE,
                                         "Wallet is locked.",
                                     );
                                     if ui.button("Unlock Wallet").clicked() {
@@ -573,7 +574,7 @@ impl AddExistingIdentityScreen {
         if wallet_needs_unlock(wallet) {
             ui.add_space(10.0);
             ui.colored_label(
-                Color32::from_rgb(200, 150, 50),
+                DashColors::WARNING_ORANGE,
                 "Wallet is locked. Please unlock to continue.",
             );
             ui.add_space(8.0);

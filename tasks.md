@@ -1038,7 +1038,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.7b Extract shared Status enum into a generic OperationStatus** (P2)
   Create a single `OperationStatus` enum (or `TaskStatus`) in `src/ui/tokens/` (or `src/ui/components/`) with variants `NotStarted`, `WaitingForResult(u64)`, `ErrorMessage(String)`, `Complete`. Replace the 13 identical per-screen status enums (`MintTokensStatus`, `BurnTokensStatus`, etc.) with this shared type. Also extract the status rendering logic into a shared `render_operation_status()` helper that handles elapsed time display and error message coloring consistently.
 
-- [ ] **3.7c Extract warning color constant and wallet-locked overlay helper** (P2)
+- [x] **3.7c Extract warning color constant and wallet-locked overlay helper** (P2)
   (1) Add a `WARNING_ORANGE` constant (or `warning_color()` method) to `DashColors` for the `Color32::from_rgb(200, 150, 50)` used in 31 files. Replace all 32 inline occurrences.
   (2) Extract the "Wallet is locked" overlay into a shared helper function in `src/ui/helpers.rs`: `render_wallet_locked_overlay(ui: &mut Ui, action_description: &str)` that takes the action text (e.g., "to send a payment", "to mint tokens") and renders the standardized overlay with the warning color.
 
@@ -1278,7 +1278,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 49 | 30 |
+| 3. Refactoring | 49 | 31 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

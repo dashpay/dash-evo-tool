@@ -27,6 +27,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -649,7 +650,7 @@ impl ScreenLike for TopUpIdentityScreen {
                         if wallet_needs_unlock(wallet) {
                             ui.add_space(10.0);
                             ui.colored_label(
-                                egui::Color32::from_rgb(200, 150, 50),
+                                DashColors::WARNING_ORANGE,
                                 "Wallet is locked. Please unlock to continue.",
                             );
                             ui.add_space(8.0);

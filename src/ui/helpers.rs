@@ -25,11 +25,24 @@ use dash_sdk::{
 };
 use egui::{Color32, ComboBox, Response, Ui};
 
+use super::theme::DashColors;
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
 /// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
 /// This constant provides a constant padding to be used in such cases to ensure proper alignment.
 pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
+
+/// Renders a standardized "Wallet is locked" warning overlay with an Unlock button.
+/// Returns `true` if the "Unlock Wallet" button was clicked (caller should open wallet unlock popup).
+pub fn render_wallet_locked_overlay(ui: &mut Ui, action_description: &str) -> bool {
+    ui.add_space(10.0);
+    ui.colored_label(
+        DashColors::WARNING_ORANGE,
+        format!("Wallet is locked. Please unlock {}.", action_description),
+    );
+    ui.add_space(8.0);
+    ui.button("Unlock Wallet").clicked()
+}
 
 /// Helper function to create a styled info icon button with a circle and "i"
 /// Returns a Response that can be checked for .clicked() to show an info popup

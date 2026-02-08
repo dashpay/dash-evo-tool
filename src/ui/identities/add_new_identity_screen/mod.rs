@@ -22,6 +22,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -1171,7 +1172,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     // Show message and button to unlock
                     ui.add_space(10.0);
                     ui.colored_label(
-                        Color32::from_rgb(200, 150, 50),
+                        DashColors::WARNING_ORANGE,
                         "Wallet is locked. Please unlock to continue.",
                     );
                     ui.add_space(8.0);

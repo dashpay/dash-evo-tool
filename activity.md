@@ -474,3 +474,8 @@
 - Platform fee estimation functions (65 lines) and address allocation (145 lines) are pure computation code that belongs in the model layer
 - FeeConfirmationDialog (128 lines) in single_key_send_screen could be a shared component
 - single_key_send_screen has its own wallet unlock UI (71 lines) that could be replaced by the existing WalletUnlockPopup component
+
+## Run 72 — 2026-02-07
+**Task:** 3.4a Extract shared send utilities into send_utils.rs
+**What was done:** Created `src/ui/wallets/send_utils.rs` with 6 shared items extracted from duplicated code across 3 files: `format_dash()` (duplicated in send_screen.rs, single_key_send_screen.rs, and wallets_screen/mod.rs), `parse_amount_to_duffs()` (duplicated in send_screen.rs and single_key_send_screen.rs), `parse_amount_to_credits()` (from send_screen.rs), `format_credits()` (from send_screen.rs), `detect_address_type()` (from send_screen.rs), and `AddressType` enum (from send_screen.rs). Updated all 3 consuming files to import from the new module and removed their local copies. Converted functions from `Self::` associated methods to free functions.
+**Files changed:** src/ui/wallets/send_utils.rs (new), src/ui/wallets/mod.rs, src/ui/wallets/send_screen.rs, src/ui/wallets/single_key_send_screen.rs, src/ui/wallets/wallets_screen/mod.rs

@@ -776,7 +776,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for incremental extraction:**
 
-- [ ] **3.4a Extract shared send utilities into send_utils.rs** (P2)
+- [x] **3.4a Extract shared send utilities into send_utils.rs** (P2)
   Create `src/ui/wallets/send_utils.rs` with shared utilities used by both send screens:
   - `format_dash(amount_duffs: u64) -> String` — duplicated in both files
   - `parse_amount_to_duffs(input: &str) -> Result<u64, String>` — duplicated in both files

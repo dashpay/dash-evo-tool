@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::amount_input::AmountInput;
@@ -15,6 +15,10 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::theme::DashColors;
+use crate::ui::wallets::send_utils::{
+    AddressType, detect_address_type, format_credits, format_dash, parse_amount_to_credits,
+    parse_amount_to_duffs,
+};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -262,14 +266,6 @@ fn allocate_platform_addresses(
     })
 }
 
-/// Detected address type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddressType {
-    Core,
-    Platform,
-    Unknown,
-}
-
 /// Source selection for sending
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceSelection {
@@ -440,7 +436,7 @@ impl WalletSendScreen {
             return estimate_platform_fee(fee_estimator, 1);
         }
 
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_type = detect_address_type(&self.destination_address);
         if dest_type == AddressType::Core {
             let output_script = self
                 .destination_address
@@ -491,46 +487,6 @@ impl WalletSendScreen {
 
     fn mark_sending(&mut self) {
         self.send_status = SendStatus::WaitingForResult(Self::now_epoch_secs());
-    }
-
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
-    fn format_credits(credits: Credits) -> String {
-        let dash = credits as f64 / 1000.0 / 100_000_000.0;
-        format!("{:.8} DASH", dash)
-    }
-
-    fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
-        let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
-        amount.dash_to_duffs()
-    }
-
-    fn parse_amount_to_credits(input: &str) -> Result<Credits, String> {
-        let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
-        let duffs = amount.dash_to_duffs()?;
-        Ok(duffs as Credits * 1000)
-    }
-
-    /// Detect address type from the address string
-    fn detect_address_type(address: &str) -> AddressType {
-        let trimmed = address.trim();
-        if trimmed.is_empty() {
-            return AddressType::Unknown;
-        }
-
-        // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
-            return AddressType::Platform;
-        }
-
-        // Try to parse as Core address
-        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return AddressType::Core;
-        }
-
-        AddressType::Unknown
     }
 
     fn min_output_amount(
@@ -645,7 +601,7 @@ impl WalletSendScreen {
 
     /// Get description of transaction type based on source and destination
     fn get_transaction_type_description(&self) -> &'static str {
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_type = detect_address_type(&self.destination_address);
         match (&self.selected_source, dest_type) {
             (Some(SourceSelection::CoreWallet), AddressType::Core) => "Core Transaction",
             (Some(SourceSelection::CoreWallet), AddressType::Platform) => "Fund Platform Address",
@@ -677,7 +633,7 @@ impl WalletSendScreen {
             .ok_or("Please select a source")?;
 
         // Validate destination
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_type = detect_address_type(&self.destination_address);
         if dest_type == AddressType::Unknown {
             return Err(
                 "Invalid destination address. Use a Dash address (X.../y...) or Platform address (evo1.../tevo1...)"
@@ -727,8 +683,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_dash(amount_duffs),
+                format_dash(balance)
             ));
         }
 
@@ -780,8 +736,8 @@ impl WalletSendScreen {
         if required > balance {
             return Err(format!(
                 "Insufficient balance. Need {} (including fee) but have {}",
-                Self::format_dash(required),
-                Self::format_dash(balance)
+                format_dash(required),
+                format_dash(balance)
             ));
         }
 
@@ -821,16 +777,16 @@ impl WalletSendScreen {
 
         tracing::debug!(
             "Platform transfer: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
+            format_credits(amount_credits),
+            format_credits(total_balance),
             addresses.len()
         );
 
         if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
+                format_credits(amount_credits),
+                format_credits(total_balance)
             ));
         }
 
@@ -860,8 +816,8 @@ impl WalletSendScreen {
         if amount_credits > available_balance {
             return Err(format!(
                 "Insufficient balance from other addresses. Need {} but have {} (excluding destination address)",
-                Self::format_credits(amount_credits),
-                Self::format_credits(available_balance)
+                format_credits(amount_credits),
+                format_credits(available_balance)
             ));
         }
 
@@ -889,14 +845,14 @@ impl WalletSendScreen {
                  • Estimated fee: {} (for {} inputs)\n\
                  • Shortfall: {}\n\n\
                  Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
+                format_credits(amount_credits),
+                format_credits(max_sendable),
                 addresses_available,
-                Self::format_credits(max_balance),
+                format_credits(max_balance),
                 MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
+                format_credits(allocation.estimated_fee),
                 allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
+                format_credits(allocation.shortfall)
             ));
         }
 
@@ -908,9 +864,9 @@ impl WalletSendScreen {
         tracing::debug!(
             "Platform transfer: {} inputs totaling {}, output {}, fee {} (payer idx {})",
             allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
+            format_credits(total_input),
+            format_credits(amount_credits),
+            format_credits(allocation.estimated_fee),
             allocation.fee_payer_index
         );
 
@@ -947,16 +903,16 @@ impl WalletSendScreen {
 
         tracing::debug!(
             "Platform withdrawal: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
+            format_credits(amount_credits),
+            format_credits(total_balance),
             addresses.len()
         );
 
         if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
+                format_credits(amount_credits),
+                format_credits(total_balance)
             ));
         }
 
@@ -1009,14 +965,14 @@ impl WalletSendScreen {
                  • Estimated fee: {} (for {} inputs)\n\
                  • Shortfall: {}\n\n\
                  Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
+                format_credits(amount_credits),
+                format_credits(max_sendable),
                 addresses_available,
-                Self::format_credits(max_balance),
+                format_credits(max_balance),
                 MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
+                format_credits(allocation.estimated_fee),
                 allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
+                format_credits(allocation.shortfall)
             ));
         }
 
@@ -1025,9 +981,9 @@ impl WalletSendScreen {
         tracing::debug!(
             "Platform withdrawal: {} inputs totaling {}, withdraw {}, fee {} (payer idx {})",
             allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
+            format_credits(total_input),
+            format_credits(amount_credits),
+            format_credits(allocation.estimated_fee),
             allocation.fee_payer_index
         );
 
@@ -1297,7 +1253,7 @@ impl WalletSendScreen {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new(Self::format_dash(core_balance))
+                            RichText::new(format_dash(core_balance))
                                 .color(DashColors::SUCCESS)
                                 .strong(),
                         );
@@ -1353,7 +1309,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(total_platform_balance))
+                                RichText::new(format_credits(total_platform_balance))
                                     .color(DashColors::SUCCESS)
                                     .strong(),
                             );
@@ -1365,7 +1321,7 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_type = detect_address_type(&self.destination_address);
 
         ui.horizontal(|ui| {
             ui.label(
@@ -1437,7 +1393,7 @@ impl WalletSendScreen {
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
-                let dest_type = Self::detect_address_type(&self.destination_address);
+                let dest_type = detect_address_type(&self.destination_address);
                 let hint = if dest_type == AddressType::Platform {
                     let destination =
                         PlatformAddress::from_bech32m_string(self.destination_address.trim())
@@ -1451,7 +1407,7 @@ impl WalletSendScreen {
                         // max = max.map(|amount| amount.saturating_sub(estimated_fee));
                         Some(format!(
                             "Estimated platform fee ~{} (deducted from amount)",
-                            Self::format_credits(estimated_fee)
+                            format_credits(estimated_fee)
                         ))
                     } else {
                         None
@@ -1493,10 +1449,10 @@ impl WalletSendScreen {
                     format!(
                         "Limited to {} input addresses per transaction, ~{} reserved for fees",
                         MAX_PLATFORM_INPUTS,
-                        Self::format_credits(max_fee)
+                        format_credits(max_fee)
                     )
                 } else {
-                    format!("~{} reserved for fees", Self::format_credits(max_fee))
+                    format!("~{} reserved for fees", format_credits(max_fee))
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
@@ -1508,7 +1464,7 @@ impl WalletSendScreen {
             Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
             None => AddressType::Unknown,
         };
-        let output_type = Self::detect_address_type(&self.destination_address);
+        let output_type = detect_address_type(&self.destination_address);
         let min_amount = self.min_output_amount(input_type, output_type);
 
         Frame::group(ui.style())
@@ -1553,7 +1509,7 @@ impl WalletSendScreen {
         }
 
         // Show subtract fee checkbox for Core wallet to Core address transactions
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_type = detect_address_type(&self.destination_address);
         if matches!(self.selected_source, Some(SourceSelection::CoreWallet))
             && dest_type == AddressType::Core
         {
@@ -1637,7 +1593,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(*use_amount))
+                                RichText::new(format_credits(*use_amount))
                                     .color(DashColors::SUCCESS)
                                     .size(11.0),
                             );
@@ -1687,7 +1643,7 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_type = detect_address_type(&self.destination_address);
         let has_destination = dest_type != AddressType::Unknown;
         let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
@@ -1853,7 +1809,7 @@ impl WalletSendScreen {
         // ========== FEE STRATEGY SECTION ==========
         // Only show for platform source or platform outputs
         let has_platform_output = self.advanced_outputs.iter().any(|o| {
-            let addr_type = Self::detect_address_type(&o.address);
+            let addr_type = detect_address_type(&o.address);
             addr_type == AddressType::Platform
         });
 
@@ -1953,7 +1909,7 @@ impl WalletSendScreen {
                                     .monospace(),
                             );
                             ui.label(
-                                RichText::new(format!("({})", Self::format_dash(balance)))
+                                RichText::new(format!("({})", format_dash(balance)))
                                     .color(DashColors::SUCCESS)
                                     .size(12.0),
                             );
@@ -2007,7 +1963,7 @@ impl WalletSendScreen {
                         let display = format!(
                             "{}... ({})",
                             &addr_str[..12.min(addr_str.len())],
-                            Self::format_dash(*balance)
+                            format_dash(*balance)
                         );
                         if ui.selectable_label(false, display).clicked() {
                             self.core_inputs.push(CoreAddressInput {
@@ -2081,7 +2037,7 @@ impl WalletSendScreen {
                                     .monospace(),
                             );
                             ui.label(
-                                RichText::new(format!("({})", Self::format_credits(balance)))
+                                RichText::new(format!("({})", format_credits(balance)))
                                     .color(DashColors::SUCCESS)
                                     .size(12.0),
                             );
@@ -2135,7 +2091,7 @@ impl WalletSendScreen {
                         let display = format!(
                             "{}... ({})",
                             &addr_str[..20.min(addr_str.len())],
-                            Self::format_credits(*balance)
+                            format_credits(*balance)
                         );
                         if ui.selectable_label(false, display).clicked() {
                             self.platform_inputs.push(PlatformAddressInput {
@@ -2165,7 +2121,7 @@ impl WalletSendScreen {
         let addr_types: Vec<AddressType> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type(&o.address))
+            .map(|o| detect_address_type(&o.address))
             .collect();
 
         for (idx, &addr_type) in addr_types.iter().enumerate() {
@@ -2329,7 +2285,7 @@ impl WalletSendScreen {
         let output_types: Vec<AddressType> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type(&o.address))
+            .map(|o| detect_address_type(&o.address))
             .collect();
 
         let has_core_output = output_types.contains(&AddressType::Core);
@@ -2386,7 +2342,7 @@ impl WalletSendScreen {
         // Parse inputs to get total available
         let mut total_input = 0u64;
         for input in &self.core_inputs {
-            let amount_duffs = Self::parse_amount_to_duffs(&input.amount)?;
+            let amount_duffs = parse_amount_to_duffs(&input.amount)?;
             total_input = total_input.saturating_add(amount_duffs);
         }
 
@@ -2399,7 +2355,7 @@ impl WalletSendScreen {
         let mut total_output = 0u64;
 
         for output in &self.advanced_outputs {
-            let amount_duffs = Self::parse_amount_to_duffs(&output.amount)?;
+            let amount_duffs = parse_amount_to_duffs(&output.amount)?;
             if amount_duffs == 0 {
                 continue;
             }
@@ -2418,8 +2374,8 @@ impl WalletSendScreen {
         if total_output > total_input {
             return Err(format!(
                 "Insufficient input amount. Outputs total {} but inputs only {}",
-                Self::format_dash(total_output),
-                Self::format_dash(total_input)
+                format_dash(total_output),
+                format_dash(total_input)
             ));
         }
 
@@ -2454,12 +2410,12 @@ impl WalletSendScreen {
         // Validate core inputs have enough
         let mut total_input = 0u64;
         for input in &self.core_inputs {
-            let amount_duffs = Self::parse_amount_to_duffs(&input.amount)?;
+            let amount_duffs = parse_amount_to_duffs(&input.amount)?;
             total_input = total_input.saturating_add(amount_duffs);
         }
 
         let output = &self.advanced_outputs[0];
-        let amount_duffs = Self::parse_amount_to_duffs(&output.amount)?;
+        let amount_duffs = parse_amount_to_duffs(&output.amount)?;
         if amount_duffs == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
@@ -2467,8 +2423,8 @@ impl WalletSendScreen {
         if amount_duffs > total_input {
             return Err(format!(
                 "Insufficient input amount. Output is {} but inputs only {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(total_input)
+                format_dash(amount_duffs),
+                format_dash(total_input)
             ));
         }
 
@@ -2506,7 +2462,7 @@ impl WalletSendScreen {
         // Build inputs map from platform_inputs
         let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         for input in &self.platform_inputs {
-            let credits = Self::parse_amount_to_credits(&input.amount)?;
+            let credits = parse_amount_to_credits(&input.amount)?;
             if credits > 0 {
                 *inputs.entry(input.platform_address).or_insert(0) += credits;
             }
@@ -2522,7 +2478,7 @@ impl WalletSendScreen {
             let destination = PlatformAddress::from_bech32m_string(output.address.trim())
                 .map(|(addr, _)| addr)
                 .map_err(|e| format!("Invalid platform address: {}", e))?;
-            let credits = Self::parse_amount_to_credits(&output.amount)?;
+            let credits = parse_amount_to_credits(&output.amount)?;
             if credits > 0 {
                 *outputs.entry(destination).or_insert(0) += credits;
             }
@@ -2568,7 +2524,7 @@ impl WalletSendScreen {
         // Build inputs map from platform_inputs
         let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         for input in &self.platform_inputs {
-            let credits = Self::parse_amount_to_credits(&input.amount)?;
+            let credits = parse_amount_to_credits(&input.amount)?;
             if credits > 0 {
                 *inputs.entry(input.platform_address).or_insert(0) += credits;
             }
@@ -2705,11 +2661,11 @@ impl ScreenLike for WalletSendScreen {
             } => {
                 let msg = if recipients.len() == 1 {
                     let (address, amount) = &recipients[0];
-                    format!("Sent {} to {}", Self::format_dash(*amount), address,)
+                    format!("Sent {} to {}", format_dash(*amount), address,)
                 } else {
                     format!(
                         "Sent {} to {} recipients",
-                        Self::format_dash(total_amount),
+                        format_dash(total_amount),
                         recipients.len(),
                     )
                 };

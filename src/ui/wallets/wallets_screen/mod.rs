@@ -8,7 +8,6 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
-use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::CoreBackendMode;
 use crate::ui::components::component_trait::Component;
@@ -22,6 +21,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::wallets::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
+use crate::ui::wallets::send_utils::format_dash;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -445,7 +445,7 @@ impl WalletsBalancesScreen {
 
                     ui.colored_label(
                         DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
-                        format!(" Balance: {}", Self::format_dash(current_balance)),
+                        format!(" Balance: {}", format_dash(current_balance)),
                     );
 
                     ui.separator();
@@ -794,10 +794,6 @@ impl WalletsBalancesScreen {
         self.message = Some((message, message_type, Utc::now()));
     }
 
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
         if tx.is_incoming() {
             "Received"
@@ -809,7 +805,7 @@ impl WalletsBalancesScreen {
     }
 
     fn transaction_amount_display(tx: &WalletTransaction, dark_mode: bool) -> (String, Color32) {
-        let amount = Self::format_dash(tx.amount_abs());
+        let amount = format_dash(tx.amount_abs());
         if tx.is_incoming() {
             (format!("+{}", amount), DashColors::SUCCESS)
         } else if tx.is_outgoing() {
@@ -853,11 +849,11 @@ impl WalletsBalancesScreen {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!(
                 "Core balance: {}",
-                Self::format_dash(total)
+                format_dash(total)
             )));
         });
         ui.label(
-            RichText::new(format!("Platform balance: {}", Self::format_dash(platform)))
+            RichText::new(format!("Platform balance: {}", format_dash(platform)))
                 .color(DashColors::text_primary(dark_mode)),
         );
     }
@@ -928,7 +924,7 @@ impl WalletsBalancesScreen {
                     let credits_as_dash = s.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                     format!("{} - {:.4} DASH", s.label, credits_as_dash)
                 } else {
-                    format!("{} - {}", s.label, Self::format_dash(s.confirmed_balance))
+                    format!("{} - {}", s.label, format_dash(s.confirmed_balance))
                 }
             })
             .unwrap_or_else(|| "Select an account".to_string());
@@ -955,7 +951,7 @@ impl WalletsBalancesScreen {
                         format!(
                             "{} - {}",
                             summary.label,
-                            Self::format_dash(summary.confirmed_balance)
+                            format_dash(summary.confirmed_balance)
                         )
                     };
 
@@ -1849,7 +1845,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     format!(
                         "Found {} unused asset lock(s) worth {} Dash",
                         recovered_count,
-                        Self::format_dash(total_amount)
+                        format_dash(total_amount)
                     )
                 };
                 self.display_message(&msg, MessageType::Success);
@@ -1863,14 +1859,14 @@ impl ScreenLike for WalletsBalancesScreen {
                     let (address, amount) = &recipients[0];
                     format!(
                         "Sent {} to {}\nTxID: {}",
-                        Self::format_dash(*amount),
+                        format_dash(*amount),
                         address,
                         txid
                     )
                 } else {
                     format!(
                         "Sent {} total to {} recipients\nTxID: {}",
-                        Self::format_dash(total_amount),
+                        format_dash(total_amount),
                         recipients.len(),
                         txid
                     )

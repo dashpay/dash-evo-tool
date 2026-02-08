@@ -4,5 +4,6 @@ pub mod asset_lock_detail_screen;
 pub mod create_asset_lock_screen;
 pub mod import_mnemonic_screen;
 pub mod send_screen;
+pub mod send_utils;
 pub mod single_key_send_screen;
 pub mod wallets_screen;

@@ -4,12 +4,12 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::context::AppContext;
-use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
+use crate::ui::wallets::send_utils::{format_dash, parse_amount_to_duffs};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
@@ -106,15 +106,6 @@ impl SingleKeyWalletSendScreen {
         }
     }
 
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
-    fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
-        let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
-        amount.dash_to_duffs()
-    }
-
     /// Estimate transaction size for P2PKH transactions
     fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
         fn varint_size(value: usize) -> usize {
@@ -146,7 +137,7 @@ impl SingleKeyWalletSendScreen {
         let total_output: u64 = self
             .recipients
             .iter()
-            .filter_map(|r| Self::parse_amount_to_duffs(&r.amount).ok())
+            .filter_map(|r| parse_amount_to_duffs(&r.amount).ok())
             .sum();
 
         if total_output == 0 {
@@ -235,7 +226,7 @@ impl SingleKeyWalletSendScreen {
             if recipient.address.trim().is_empty() {
                 return Err(format!("Recipient {} has an empty address", index + 1));
             }
-            let amount = Self::parse_amount_to_duffs(&recipient.amount)
+            let amount = parse_amount_to_duffs(&recipient.amount)
                 .map_err(|e| format!("Recipient {}: {}", index + 1, e))?;
             if amount == 0 {
                 return Err(format!("Recipient {} has zero amount", index + 1));
@@ -254,8 +245,8 @@ impl SingleKeyWalletSendScreen {
             if total_amount > wallet_guard.total_balance {
                 return Err(format!(
                     "Insufficient balance. Need {} but only have {}",
-                    Self::format_dash(total_amount),
-                    Self::format_dash(wallet_guard.total_balance)
+                    format_dash(total_amount),
+                    format_dash(wallet_guard.total_balance)
                 ));
             }
         }
@@ -736,7 +727,7 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                         ui.label(
-                            RichText::new(Self::format_dash(balance))
+                            RichText::new(format_dash(balance))
                                 .color(DashColors::SUCCESS)
                                 .strong()
                                 .size(14.0),
@@ -1019,19 +1010,19 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     let (address, amount) = &recipients[0];
                     format!(
                         "Sent {} to {}\nTxID: {}",
-                        Self::format_dash(*amount),
+                        format_dash(*amount),
                         address,
                         txid
                     )
                 } else {
                     let recipient_list: String = recipients
                         .iter()
-                        .map(|(addr, amt)| format!("  {} to {}", Self::format_dash(*amt), addr))
+                        .map(|(addr, amt)| format!("  {} to {}", format_dash(*amt), addr))
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!(
                         "Sent {} total to {} recipients:\n{}\nTxID: {}",
-                        Self::format_dash(total_amount),
+                        format_dash(total_amount),
                         recipients.len(),
                         recipient_list,
                         txid

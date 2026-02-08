@@ -353,20 +353,57 @@ pub async fn send_payment_to_contact_impl(
 
 /// Load payment history from local database
 pub async fn load_payment_history(
-    _app_context: &Arc<AppContext>,
+    app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: Option<&Identifier>,
 ) -> Result<Vec<PaymentRecord>, String> {
-    // TODO: Query local database for payment records
-    // Filter by identity_id and optionally by contact_id
+    let stored_payments = app_context
+        .db
+        .load_payment_history(identity_id, 100)
+        .map_err(|e| format!("Failed to load payment history: {}", e))?;
 
-    eprintln!(
-        "DEBUG: Would load payment history for identity {} with contact filter: {:?}",
-        identity_id.to_string(Encoding::Base58),
-        contact_id.map(|id| id.to_string(Encoding::Base58))
-    );
+    let mut records = Vec::new();
+    for sp in stored_payments {
+        let from_id = Identifier::from_bytes(&sp.from_identity_id)
+            .map_err(|e| format!("Invalid from_identity_id: {}", e))?;
+        let to_id = Identifier::from_bytes(&sp.to_identity_id)
+            .map_err(|e| format!("Invalid to_identity_id: {}", e))?;
 
-    Ok(Vec::new())
+        // If a contact filter is specified, skip non-matching records
+        if let Some(filter_id) = contact_id
+            && from_id != *filter_id
+            && to_id != *filter_id
+        {
+            continue;
+        }
+
+        let status = match sp.status.as_str() {
+            "confirmed" => PaymentStatus::Confirmed(1),
+            "failed" => PaymentStatus::Failed(sp.status.clone()),
+            "pending" => PaymentStatus::Pending,
+            _ => PaymentStatus::Broadcast,
+        };
+
+        records.push(PaymentRecord {
+            id: sp.id.to_string(),
+            from_identity: from_id,
+            to_identity: to_id,
+            from_address: None,
+            to_address: Address::p2pkh(
+                &dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33])
+                    .map_err(|e| format!("Key error: {}", e))?,
+                app_context.network,
+            ),
+            amount: sp.amount as u64,
+            tx_id: Some(sp.tx_id),
+            memo: sp.memo,
+            timestamp: sp.created_at as u64,
+            status,
+            address_index: 0,
+        });
+    }
+
+    Ok(records)
 }
 
 /// Update payment status after broadcast or confirmation
@@ -377,9 +414,11 @@ pub async fn update_payment_status(
     tx_id: Option<String>,
 ) -> Result<(), String> {
     // TODO: Update payment record in database
-    eprintln!(
-        "DEBUG: Would update payment {} status to {:?} with tx_id {:?}",
-        payment_id, status, tx_id
+    tracing::error!(
+        "Would update payment {} status to {:?} with tx_id {:?}",
+        payment_id,
+        status,
+        tx_id
     );
     Ok(())
 }

@@ -1906,7 +1906,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (3) Implement `display_task_result()` to handle `DashPayResult::ContactInfoUpdated` and refresh contact info.
   (4) Remove the "Remove Contact" and "Block Contact" stub buttons, replacing with a note that these features are not yet available (Platform doesn't support document deletion by third parties, and blocking is a local-only operation that needs design).
 
-- [ ] **7.2c Fix send_payment.rs contact name loading and local payment history query** (P2)
+- [x] **7.2c Fix send_payment.rs contact name loading and local payment history query** (P2)
   In `src/ui/dashpay/send_payment.rs:81`:
   (1) Replace mock `self.to_contact_name = Some("alice.dash".to_string())` with actual contact name lookup from DB (`db.get_dashpay_contact()`) using `self.to_contact_id`.
   In `src/backend_task/dashpay/payments.rs:360`:

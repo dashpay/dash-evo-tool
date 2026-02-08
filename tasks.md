@@ -739,7 +739,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.3c Move build_distribution_rules() to distributions.rs** (P2)
   Move the `build_distribution_rules()` method (lines 2015-2334, 320 lines) from the main `TokensScreen` impl to the existing `distributions.rs` module. Also move `parse_pre_programmed_distributions()` (lines 2339-2376, 38 lines). These are the parsing counterparts to the distribution rendering code already in distributions.rs. Move the distribution-related enums (`PerpetualDistributionIntervalTypeUI`, `DistributionFunctionUI`, `TokenDistributionRecipientUI`, `DistributionEntry`, `IntervalTimeUnit`, `TokenNameLanguage`) to either distributions.rs or structs.rs as appropriate.
 
-- [ ] **3.3d Move TokenBuildArgs and estimate_registration_cost to token_creator.rs** (P2)
+- [x] **3.3d Move TokenBuildArgs and estimate_registration_cost to token_creator.rs** (P2)
   Move the `TokenBuildArgs` struct (lines 1121-1157) and `estimate_registration_cost()` method (lines 1971-2013) to the existing `token_creator.rs` module, which already contains all the token creator rendering logic. Also move `render_base_supply_input()` (line 2689) and `render_max_supply_input()` (line 2705) since they are only used by the token creator.
 
 - [ ] **3.3e Move history_row() and reset_token_creator() to token_creator.rs** (P3)
@@ -1003,7 +1003,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 24 | 14 |
+| 3. Refactoring | 24 | 15 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

@@ -1,17 +1,23 @@
 use std::collections::{BTreeMap, HashSet};
 use chrono::Utc;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::data_contract::group::Group;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
+use crate::model::amount::Amount;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::theme::DashColors;
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
@@ -19,12 +25,47 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::Component;
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI, MintExtras};
+use crate::ui::tokens::tokens_screen::{TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI, MintExtras};
+
+#[derive(Clone, Debug)]
+/// All arguments needed by `build_data_contract_v1_with_one_token`.
+pub struct TokenBuildArgs {
+    pub identity_id: Identifier,
+
+    pub token_names: Vec<(String, String, String)>,
+    pub contract_keywords: Vec<String>,
+    pub token_description: Option<String>,
+    pub should_capitalize: bool,
+    pub decimals: u8,
+    pub base_supply: u64,
+    pub max_supply: Option<u64>,
+    pub start_paused: bool,
+    pub allow_transfers_to_frozen_identities: bool,
+    pub keeps_history: TokenKeepsHistoryRules,
+    pub main_control_group: Option<u16>,
+
+    pub manual_minting_rules: ChangeControlRules,
+    pub manual_burning_rules: ChangeControlRules,
+    pub freeze_rules: ChangeControlRules,
+    pub unfreeze_rules: ChangeControlRules,
+    pub destroy_frozen_funds_rules: ChangeControlRules,
+    pub emergency_action_rules: ChangeControlRules,
+    pub max_supply_change_rules: ChangeControlRules,
+    pub conventions_change_rules: ChangeControlRules,
+    pub main_control_group_change_authorized: AuthorizedActionTakers,
+
+    pub distribution_rules: TokenDistributionRules,
+    pub groups: BTreeMap<u16, Group>,
+    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
+    pub marketplace_trade_mode: u8,
+    pub marketplace_rules: ChangeControlRules,
+    pub change_direct_purchase_pricing_rules: ChangeControlRules,
+}
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
@@ -1689,5 +1730,89 @@ impl TokensScreen {
                 self.reset_token_creator();
             }
         });
+    }
+
+    pub(super) fn estimate_registration_cost(&self) -> Credits {
+        let registration_fees = &self
+            .app_context
+            .platform_version()
+            .fee_version
+            .data_contract_registration;
+        let mut fee = registration_fees.base_contract_registration_fee;
+        fee += registration_fees.token_registration_fee;
+        if self.enable_perpetual_distribution {
+            fee += registration_fees.token_uses_perpetual_distribution_fee;
+        }
+        if self.enable_pre_programmed_distribution {
+            fee += registration_fees.token_uses_pre_programmed_distribution_fee;
+        }
+        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.contract_keywords_input
+                .split(',')
+                .filter_map(|s| {
+                    let trimmed = s.trim().to_string();
+                    if trimmed.len() < 3 || trimmed.len() > 50 {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect::<Vec<String>>()
+        };
+
+        fee += registration_fees.search_keyword_fee * contract_keywords.len() as u64;
+        let searchable_count = self
+            .token_names_input
+            .iter()
+            .filter(|(_, _, _, searchable)| *searchable) // or `.is_searchable()` if it's a method
+            .count();
+
+        fee += registration_fees.search_keyword_fee * searchable_count as u64;
+
+        fee += 200_000_000; //just an extra estimate
+
+        fee
+    }
+
+    /// Renders the base supply amount input using AmountInput component
+    pub(super) fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+        let input = self
+            .base_supply_input
+            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.base_supply_amount);
+    }
+
+    /// Renders the max supply amount input using AmountInput component
+    pub(super) fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+
+        let input = self.max_supply_input.get_or_insert_with(|| {
+            let initial_amount = Amount::new(
+                TokenConfigurationV0::default_most_restrictive()
+                    .max_supply()
+                    .unwrap_or(0),
+                decimals,
+            );
+
+            AmountInput::new(initial_amount)
+        });
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.max_supply_amount);
     }
 }

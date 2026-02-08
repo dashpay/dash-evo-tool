@@ -14,6 +14,7 @@ pub use distributions::{
     PerpetualDistributionIntervalTypeUI, TokenDistributionRecipientUI,
 };
 pub use structs::*;
+pub use token_creator::TokenBuildArgs;
 
 pub use groups::*;
 
@@ -25,17 +26,11 @@ use crate::lock_helper::MutexExt;
 use serde_json;
 
 use chrono::{DateTime, Utc};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
-use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
@@ -56,6 +51,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::info_popup::InfoPopup;
@@ -64,7 +60,6 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
-use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -449,41 +444,6 @@ impl TokenNameLanguage {
             TokenNameLanguage::Yoruba,
         ]
     }
-}
-
-#[derive(Clone, Debug)]
-/// All arguments needed by `build_data_contract_v1_with_one_token`.
-pub struct TokenBuildArgs {
-    pub identity_id: Identifier,
-
-    pub token_names: Vec<(String, String, String)>,
-    pub contract_keywords: Vec<String>,
-    pub token_description: Option<String>,
-    pub should_capitalize: bool,
-    pub decimals: u8,
-    pub base_supply: u64,
-    pub max_supply: Option<u64>,
-    pub start_paused: bool,
-    pub allow_transfers_to_frozen_identities: bool,
-    pub keeps_history: TokenKeepsHistoryRules,
-    pub main_control_group: Option<u16>,
-
-    pub manual_minting_rules: ChangeControlRules,
-    pub manual_burning_rules: ChangeControlRules,
-    pub freeze_rules: ChangeControlRules,
-    pub unfreeze_rules: ChangeControlRules,
-    pub destroy_frozen_funds_rules: ChangeControlRules,
-    pub emergency_action_rules: ChangeControlRules,
-    pub max_supply_change_rules: ChangeControlRules,
-    pub conventions_change_rules: ChangeControlRules,
-    pub main_control_group_change_authorized: AuthorizedActionTakers,
-
-    pub distribution_rules: TokenDistributionRules,
-    pub groups: BTreeMap<u16, Group>,
-    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    pub marketplace_trade_mode: u8,
-    pub marketplace_rules: ChangeControlRules,
-    pub change_direct_purchase_pricing_rules: ChangeControlRules,
 }
 
 pub type TokenSearchable = bool;
@@ -1225,50 +1185,6 @@ impl TokensScreen {
         }
     }
 
-    fn estimate_registration_cost(&self) -> Credits {
-        let registration_fees = &self
-            .app_context
-            .platform_version()
-            .fee_version
-            .data_contract_registration;
-        let mut fee = registration_fees.base_contract_registration_fee;
-        fee += registration_fees.token_registration_fee;
-        if self.enable_perpetual_distribution {
-            fee += registration_fees.token_uses_perpetual_distribution_fee;
-        }
-        if self.enable_pre_programmed_distribution {
-            fee += registration_fees.token_uses_pre_programmed_distribution_fee;
-        }
-        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
-            Vec::new()
-        } else {
-            self.contract_keywords_input
-                .split(',')
-                .filter_map(|s| {
-                    let trimmed = s.trim().to_string();
-                    if trimmed.len() < 3 || trimmed.len() > 50 {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .collect::<Vec<String>>()
-        };
-
-        fee += registration_fees.search_keyword_fee * contract_keywords.len() as u64;
-        let searchable_count = self
-            .token_names_input
-            .iter()
-            .filter(|(_, _, _, searchable)| *searchable) // or `.is_searchable()` if it's a method
-            .count();
-
-        fee += registration_fees.search_keyword_fee * searchable_count as u64;
-
-        fee += 200_000_000; //just an extra estimate
-
-        fee
-    }
-
     fn reset_token_creator(&mut self) {
         self.identity_id_string = String::new();
         self.selected_identity = None;
@@ -1577,46 +1493,6 @@ impl TokensScreen {
                 }
             }
         }
-    }
-
-    /// Renders the base supply amount input using AmountInput component
-    fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
-        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
-        let input = self
-            .base_supply_input
-            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
-
-        if decimals != input.decimal_places() {
-            // Update decimals; it will change actual value but I guess this is what user expects
-            input.set_decimal_places(decimals);
-        }
-
-        let response = input.show(ui);
-        response.inner.update(&mut self.base_supply_amount);
-    }
-
-    /// Renders the max supply amount input using AmountInput component
-    fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
-        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
-
-        let input = self.max_supply_input.get_or_insert_with(|| {
-            let initial_amount = Amount::new(
-                TokenConfigurationV0::default_most_restrictive()
-                    .max_supply()
-                    .unwrap_or(0),
-                decimals,
-            );
-
-            AmountInput::new(initial_amount)
-        });
-
-        if decimals != input.decimal_places() {
-            // Update decimals; it will change actual value but I guess this is what user expects
-            input.set_decimal_places(decimals);
-        }
-
-        let response = input.show(ui);
-        response.inner.update(&mut self.max_supply_amount);
     }
 }
 
@@ -2075,6 +1951,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
     use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
     use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
     use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;

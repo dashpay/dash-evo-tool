@@ -61,6 +61,74 @@ impl Config {
         }
     }
 
+    /// Write the configuration in `.env` format to the given writer.
+    ///
+    /// This is the core serialization logic used by [`save()`]. Extracted
+    /// so it can also be used in tests without touching the filesystem.
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<(), ConfigError> {
+        let write_network_config =
+            |w: &mut W, prefix: &str, config: &NetworkConfig| -> Result<(), ConfigError> {
+                writeln!(w, "{}dapi_addresses={}", prefix, config.dapi_addresses)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                writeln!(w, "{}core_host={}", prefix, config.core_host)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                writeln!(w, "{}core_rpc_port={}", prefix, config.core_rpc_port)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                writeln!(w, "{}core_rpc_user={}", prefix, config.core_rpc_user)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                writeln!(
+                    w,
+                    "{}core_rpc_password={}",
+                    prefix, config.core_rpc_password
+                )
+                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                writeln!(w, "{}insight_api_url={}", prefix, config.insight_api_url)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+                if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
+                    writeln!(w, "{}core_zmq_endpoint={}", prefix, core_zmq_endpoint)
+                        .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                }
+
+                if let Some(devnet_name) = &config.devnet_name {
+                    writeln!(w, "{}devnet_name={}", prefix, devnet_name)
+                        .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                }
+                if let Some(wallet_private_key) = &config.wallet_private_key {
+                    writeln!(w, "{}wallet_private_key={}", prefix, wallet_private_key)
+                        .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                }
+
+                writeln!(w, "{}show_in_ui={}", prefix, config.show_in_ui)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+                // Blank line after each config block
+                writeln!(w).map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+                Ok(())
+            };
+
+        if let Some(ref mainnet_config) = self.mainnet_config {
+            write_network_config(writer, "MAINNET_", mainnet_config)?;
+        }
+        if let Some(ref testnet_config) = self.testnet_config {
+            write_network_config(writer, "TESTNET_", testnet_config)?;
+        }
+        if let Some(ref devnet_config) = self.devnet_config {
+            write_network_config(writer, "DEVNET_", devnet_config)?;
+        }
+        if let Some(ref local_config) = self.local_config {
+            write_network_config(writer, "LOCAL_", local_config)?;
+        }
+
+        if let Some(developer_mode) = self.developer_mode {
+            writeln!(writer, "DEVELOPER_MODE={}", developer_mode)
+                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
     /// Write the current configuration back to the `.env` file so that
     /// subsequent calls to `Config::load()` will reflect changes.
     ///
@@ -77,100 +145,7 @@ impl Config {
         let mut env_file =
             File::create(&tmp_file_path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        // Helper function to write a single network config to the `.env` file
-        let mut write_network_config = |prefix: &str, config: &NetworkConfig| {
-            // Each line becomes e.g.  MAINNET_dapi_addresses=...
-            // For "local" (regtest), you'll see LOCAL_dapi_addresses=...
-            //
-            // Use the environment variable scheme you prefer. Make sure it
-            // matches what `load()` expects (i.e. `envy::prefixed("MAINNET_")`,
-            // etc.).
-
-            writeln!(
-                env_file,
-                "{}dapi_addresses={}",
-                prefix, config.dapi_addresses
-            )
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            writeln!(env_file, "{}core_host={}", prefix, config.core_host)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            writeln!(env_file, "{}core_rpc_port={}", prefix, config.core_rpc_port)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            writeln!(env_file, "{}core_rpc_user={}", prefix, config.core_rpc_user)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            writeln!(
-                env_file,
-                "{}core_rpc_password={}",
-                prefix, config.core_rpc_password
-            )
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            writeln!(
-                env_file,
-                "{}insight_api_url={}",
-                prefix, config.insight_api_url
-            )
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-
-            if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
-                writeln!(
-                    env_file,
-                    "{}core_zmq_endpoint={}",
-                    prefix, core_zmq_endpoint
-                )
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            }
-
-            if let Some(devnet_name) = &config.devnet_name {
-                // Only write devnet name if it exists
-                writeln!(env_file, "{}devnet_name={}", prefix, devnet_name)
-                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            }
-            if let Some(wallet_private_key) = &config.wallet_private_key {
-                writeln!(
-                    env_file,
-                    "{}wallet_private_key={}",
-                    prefix, wallet_private_key
-                )
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            }
-
-            // Whether or not to show in UI
-            writeln!(env_file, "{}show_in_ui={}", prefix, config.show_in_ui)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-
-            // Add a blank line after each config block
-            writeln!(env_file).map_err(|e| ConfigError::LoadError(e.to_string()))?;
-
-            Ok(())
-        };
-
-        // Mainnet
-        if let Some(ref mainnet_config) = self.mainnet_config {
-            // `envy::prefixed("MAINNET_")` expects these lines to start with "MAINNET_"
-            write_network_config("MAINNET_", mainnet_config)?;
-        }
-
-        // Testnet
-        if let Some(ref testnet_config) = self.testnet_config {
-            write_network_config("TESTNET_", testnet_config)?;
-        }
-
-        // Devnet
-        if let Some(ref devnet_config) = self.devnet_config {
-            write_network_config("DEVNET_", devnet_config)?;
-        }
-
-        // Local (Regtest)
-        if let Some(ref local_config) = self.local_config {
-            // `envy::prefixed("LOCAL_")` expects "LOCAL_..."
-            write_network_config("LOCAL_", local_config)?;
-        }
-
-        // Save global developer mode
-        if let Some(developer_mode) = self.developer_mode {
-            writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-        }
+        self.write_to(&mut env_file)?;
 
         // Flush all buffered data to disk before renaming
         env_file
@@ -888,5 +863,395 @@ mod tests {
             config.mainnet_config.as_ref().unwrap().core_rpc_port,
         );
         assert_eq!(cloned.developer_mode, config.developer_mode);
+    }
+
+    // ── Config write_to + roundtrip tests ─────────────────────────
+
+    /// Helper: write a Config to a buffer, parse individual lines as
+    /// `KEY=VALUE` pairs into a HashMap, and then use `envy::prefixed()`
+    /// to deserialize back into `NetworkConfig`.
+    fn parse_env_lines(env_text: &str) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for line in env_text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                map.insert(key.to_string(), value.to_string());
+            }
+        }
+        map
+    }
+
+    /// Roundtrip: write a Config with all networks → buffer → parse back
+    /// via envy → verify all fields are preserved.
+    #[test]
+    fn test_write_to_roundtrip_all_networks() {
+        let config = Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: "https://1.1.1.1:443".to_string(),
+                core_host: "10.0.0.1".to_string(),
+                core_rpc_port: 9998,
+                core_rpc_user: "mainuser".to_string(),
+                core_rpc_password: "mainpass".to_string(),
+                insight_api_url: "https://insight.dash.org/api".to_string(),
+                core_zmq_endpoint: Some("tcp://10.0.0.1:23708".to_string()),
+                devnet_name: None,
+                wallet_private_key: None,
+                show_in_ui: true,
+            }),
+            testnet_config: Some(NetworkConfig {
+                dapi_addresses: "https://2.2.2.2:1443".to_string(),
+                core_host: "10.0.0.2".to_string(),
+                core_rpc_port: 19998,
+                core_rpc_user: "testuser".to_string(),
+                core_rpc_password: "testpass".to_string(),
+                insight_api_url: "https://testnet-insight.dash.org/api".to_string(),
+                core_zmq_endpoint: Some("tcp://10.0.0.2:29998".to_string()),
+                devnet_name: None,
+                wallet_private_key: Some("cVtest1234".to_string()),
+                show_in_ui: true,
+            }),
+            devnet_config: Some(NetworkConfig {
+                dapi_addresses: "http://3.3.3.3:1443".to_string(),
+                core_host: "10.0.0.3".to_string(),
+                core_rpc_port: 29998,
+                core_rpc_user: "devuser".to_string(),
+                core_rpc_password: "devpass".to_string(),
+                insight_api_url: "http://devnet-insight.example.com/api".to_string(),
+                core_zmq_endpoint: None,
+                devnet_name: Some("devnet-alpha".to_string()),
+                wallet_private_key: Some("cVdev5678".to_string()),
+                show_in_ui: false,
+            }),
+            local_config: Some(NetworkConfig {
+                dapi_addresses: "http://127.0.0.1:2443".to_string(),
+                core_host: "127.0.0.1".to_string(),
+                core_rpc_port: 20302,
+                core_rpc_user: "localuser".to_string(),
+                core_rpc_password: "localpass".to_string(),
+                insight_api_url: "http://localhost:3001".to_string(),
+                core_zmq_endpoint: Some("tcp://127.0.0.1:30000".to_string()),
+                devnet_name: None,
+                wallet_private_key: None,
+                show_in_ui: true,
+            }),
+            developer_mode: Some(true),
+        };
+
+        let mut buf = Vec::new();
+        config.write_to(&mut buf).expect("write_to should succeed");
+        let env_text = String::from_utf8(buf).expect("should be valid UTF-8");
+        let env_map = parse_env_lines(&env_text);
+
+        // Parse each network back via envy
+        let mainnet: NetworkConfig = envy::prefixed("MAINNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("mainnet parse");
+        assert_eq!(mainnet.dapi_addresses, "https://1.1.1.1:443");
+        assert_eq!(mainnet.core_host, "10.0.0.1");
+        assert_eq!(mainnet.core_rpc_port, 9998);
+        assert_eq!(mainnet.core_rpc_user, "mainuser");
+        assert_eq!(mainnet.core_rpc_password, "mainpass");
+        assert_eq!(mainnet.insight_api_url, "https://insight.dash.org/api");
+        assert_eq!(
+            mainnet.core_zmq_endpoint,
+            Some("tcp://10.0.0.1:23708".to_string())
+        );
+        assert!(mainnet.devnet_name.is_none());
+        assert!(mainnet.wallet_private_key.is_none());
+        assert!(mainnet.show_in_ui);
+
+        let testnet: NetworkConfig = envy::prefixed("TESTNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("testnet parse");
+        assert_eq!(testnet.dapi_addresses, "https://2.2.2.2:1443");
+        assert_eq!(testnet.core_rpc_port, 19998);
+        assert_eq!(testnet.core_rpc_user, "testuser");
+        assert_eq!(testnet.core_rpc_password, "testpass");
+        assert_eq!(testnet.wallet_private_key, Some("cVtest1234".to_string()));
+
+        let devnet: NetworkConfig = envy::prefixed("DEVNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("devnet parse");
+        assert_eq!(devnet.dapi_addresses, "http://3.3.3.3:1443");
+        assert_eq!(devnet.core_rpc_port, 29998);
+        assert!(devnet.core_zmq_endpoint.is_none());
+        assert_eq!(devnet.devnet_name, Some("devnet-alpha".to_string()));
+        assert_eq!(devnet.wallet_private_key, Some("cVdev5678".to_string()));
+        assert!(!devnet.show_in_ui);
+
+        let local: NetworkConfig = envy::prefixed("LOCAL_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("local parse");
+        assert_eq!(local.dapi_addresses, "http://127.0.0.1:2443");
+        assert_eq!(local.core_rpc_port, 20302);
+        assert_eq!(local.core_rpc_user, "localuser");
+        assert!(local.wallet_private_key.is_none());
+
+        // Verify developer_mode roundtrip
+        assert!(env_map.contains_key("DEVELOPER_MODE"));
+        assert_eq!(env_map["DEVELOPER_MODE"], "true");
+    }
+
+    /// Roundtrip: write a Config with only mainnet → buffer → parse back.
+    #[test]
+    fn test_write_to_roundtrip_single_network() {
+        let config = Config {
+            mainnet_config: Some(make_network_config(
+                "https://1.2.3.4:443",
+                "https://insight.example.com/api",
+                9998,
+            )),
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+            developer_mode: None,
+        };
+
+        let mut buf = Vec::new();
+        config.write_to(&mut buf).expect("write_to should succeed");
+        let env_text = String::from_utf8(buf).expect("should be valid UTF-8");
+        let env_map = parse_env_lines(&env_text);
+
+        // Mainnet should parse successfully
+        let mainnet: NetworkConfig = envy::prefixed("MAINNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("mainnet parse");
+        assert_eq!(mainnet.dapi_addresses, "https://1.2.3.4:443");
+        assert_eq!(mainnet.core_rpc_port, 9998);
+        assert_eq!(mainnet.core_rpc_user, "dashrpc");
+        assert_eq!(mainnet.core_rpc_password, "password");
+
+        // No other networks should have keys
+        let has_testnet = env_map.keys().any(|k| k.starts_with("TESTNET_"));
+        assert!(!has_testnet, "No testnet keys should be in the output");
+        let has_devnet = env_map.keys().any(|k| k.starts_with("DEVNET_"));
+        assert!(!has_devnet, "No devnet keys should be in the output");
+        let has_local = env_map.keys().any(|k| k.starts_with("LOCAL_"));
+        assert!(!has_local, "No local keys should be in the output");
+
+        // No DEVELOPER_MODE key
+        assert!(!env_map.contains_key("DEVELOPER_MODE"));
+    }
+
+    /// Roundtrip: write an empty Config (no networks) → buffer → verify empty.
+    #[test]
+    fn test_write_to_empty_config() {
+        let config = Config {
+            mainnet_config: None,
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+            developer_mode: None,
+        };
+
+        let mut buf = Vec::new();
+        config.write_to(&mut buf).expect("write_to should succeed");
+        let env_text = String::from_utf8(buf).expect("should be valid UTF-8");
+        assert!(
+            env_text.trim().is_empty(),
+            "Empty config should produce empty output"
+        );
+    }
+
+    /// File roundtrip: write to a temp file via write_to, read back
+    /// the file contents, and parse via the same mechanism as load().
+    #[test]
+    fn test_file_roundtrip() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let env_path = dir.path().join(".env");
+
+        let config = Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: "https://5.6.7.8:443".to_string(),
+                core_host: "192.168.1.50".to_string(),
+                core_rpc_port: 9998,
+                core_rpc_user: "fileuser".to_string(),
+                core_rpc_password: "filepass".to_string(),
+                insight_api_url: "https://file-insight.dash.org/api".to_string(),
+                core_zmq_endpoint: Some("tcp://192.168.1.50:23708".to_string()),
+                devnet_name: None,
+                wallet_private_key: None,
+                show_in_ui: true,
+            }),
+            testnet_config: Some(NetworkConfig {
+                dapi_addresses: "https://9.10.11.12:1443".to_string(),
+                core_host: "192.168.1.51".to_string(),
+                core_rpc_port: 19998,
+                core_rpc_user: "tfileuser".to_string(),
+                core_rpc_password: "tfilepass".to_string(),
+                insight_api_url: "https://tfile-insight.dash.org/api".to_string(),
+                core_zmq_endpoint: None,
+                devnet_name: None,
+                wallet_private_key: Some("cVfile9999".to_string()),
+                show_in_ui: false,
+            }),
+            devnet_config: None,
+            local_config: None,
+            developer_mode: Some(false),
+        };
+
+        // Write to file
+        let mut file = File::create(&env_path).expect("create .env file");
+        config.write_to(&mut file).expect("write_to file");
+        file.flush().expect("flush");
+
+        // Read file back and parse
+        let file_contents = std::fs::read_to_string(&env_path).expect("read .env file");
+        let env_map = parse_env_lines(&file_contents);
+
+        // Parse each network from the file contents
+        let loaded_mainnet: NetworkConfig = envy::prefixed("MAINNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("parse mainnet");
+        assert_eq!(loaded_mainnet.dapi_addresses, "https://5.6.7.8:443");
+        assert_eq!(loaded_mainnet.core_host, "192.168.1.50");
+        assert_eq!(loaded_mainnet.core_rpc_port, 9998);
+        assert_eq!(loaded_mainnet.core_rpc_user, "fileuser");
+        assert_eq!(loaded_mainnet.core_rpc_password, "filepass");
+        assert_eq!(
+            loaded_mainnet.insight_api_url,
+            "https://file-insight.dash.org/api"
+        );
+        assert_eq!(
+            loaded_mainnet.core_zmq_endpoint,
+            Some("tcp://192.168.1.50:23708".to_string())
+        );
+        assert!(loaded_mainnet.show_in_ui);
+
+        let loaded_testnet: NetworkConfig = envy::prefixed("TESTNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("parse testnet");
+        assert_eq!(loaded_testnet.dapi_addresses, "https://9.10.11.12:1443");
+        assert_eq!(loaded_testnet.core_rpc_port, 19998);
+        assert_eq!(loaded_testnet.core_rpc_user, "tfileuser");
+        assert_eq!(
+            loaded_testnet.wallet_private_key,
+            Some("cVfile9999".to_string())
+        );
+        assert!(!loaded_testnet.show_in_ui);
+
+        // Check developer_mode roundtrip
+        assert_eq!(
+            env_map.get("DEVELOPER_MODE").map(|s| s.as_str()),
+            Some("false")
+        );
+    }
+
+    /// Verify that optional fields (devnet_name, wallet_private_key,
+    /// core_zmq_endpoint) survive a write → parse roundtrip.
+    #[test]
+    fn test_write_to_roundtrip_optional_fields_present() {
+        let config = Config {
+            mainnet_config: None,
+            testnet_config: None,
+            devnet_config: Some(NetworkConfig {
+                dapi_addresses: "http://devnet.example.com:1443".to_string(),
+                core_host: "devnet-host".to_string(),
+                core_rpc_port: 29998,
+                core_rpc_user: "devusr".to_string(),
+                core_rpc_password: "devpwd".to_string(),
+                insight_api_url: "http://devnet-insight.example.com".to_string(),
+                core_zmq_endpoint: Some("tcp://devnet-host:33333".to_string()),
+                devnet_name: Some("my-devnet".to_string()),
+                wallet_private_key: Some("cVdevKeyXYZ".to_string()),
+                show_in_ui: true,
+            }),
+            local_config: None,
+            developer_mode: None,
+        };
+
+        let mut buf = Vec::new();
+        config.write_to(&mut buf).expect("write_to should succeed");
+        let env_text = String::from_utf8(buf).expect("should be valid UTF-8");
+        let env_map = parse_env_lines(&env_text);
+
+        let devnet: NetworkConfig = envy::prefixed("DEVNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("devnet parse");
+        assert_eq!(devnet.devnet_name, Some("my-devnet".to_string()));
+        assert_eq!(devnet.wallet_private_key, Some("cVdevKeyXYZ".to_string()));
+        assert_eq!(
+            devnet.core_zmq_endpoint,
+            Some("tcp://devnet-host:33333".to_string())
+        );
+    }
+
+    /// Verify that optional fields omitted in write produce None on parse.
+    #[test]
+    fn test_write_to_roundtrip_optional_fields_absent() {
+        let config = Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: "https://1.1.1.1:443".to_string(),
+                core_host: "127.0.0.1".to_string(),
+                core_rpc_port: 9998,
+                core_rpc_user: "user".to_string(),
+                core_rpc_password: "pass".to_string(),
+                insight_api_url: "https://insight.example.com".to_string(),
+                core_zmq_endpoint: None,
+                devnet_name: None,
+                wallet_private_key: None,
+                show_in_ui: false,
+            }),
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+            developer_mode: None,
+        };
+
+        let mut buf = Vec::new();
+        config.write_to(&mut buf).expect("write_to should succeed");
+        let env_text = String::from_utf8(buf).expect("should be valid UTF-8");
+        let env_map = parse_env_lines(&env_text);
+
+        let mainnet: NetworkConfig = envy::prefixed("MAINNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("mainnet parse");
+        assert!(mainnet.core_zmq_endpoint.is_none());
+        assert!(mainnet.devnet_name.is_none());
+        assert!(mainnet.wallet_private_key.is_none());
+        assert!(!mainnet.show_in_ui);
+    }
+
+    /// Verify that special characters in values survive the roundtrip.
+    #[test]
+    fn test_write_to_roundtrip_special_characters() {
+        let config = Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: "https://node.example.com:443".to_string(),
+                core_host: "my-host.local".to_string(),
+                core_rpc_port: 9998,
+                core_rpc_user: "user_with-dash.dot".to_string(),
+                core_rpc_password: "p@ss!w0rd#with$pecial".to_string(),
+                insight_api_url: "https://insight.example.com/api/v1?key=val".to_string(),
+                core_zmq_endpoint: None,
+                devnet_name: None,
+                wallet_private_key: None,
+                show_in_ui: true,
+            }),
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+            developer_mode: None,
+        };
+
+        let mut buf = Vec::new();
+        config.write_to(&mut buf).expect("write_to should succeed");
+        let env_text = String::from_utf8(buf).expect("should be valid UTF-8");
+        let env_map = parse_env_lines(&env_text);
+
+        let mainnet: NetworkConfig = envy::prefixed("MAINNET_")
+            .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .expect("mainnet parse");
+        assert_eq!(mainnet.core_rpc_user, "user_with-dash.dot");
+        assert_eq!(mainnet.core_rpc_password, "p@ss!w0rd#with$pecial");
+        assert_eq!(
+            mainnet.insight_api_url,
+            "https://insight.example.com/api/v1?key=val"
+        );
     }
 }

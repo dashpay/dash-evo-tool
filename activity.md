@@ -936,3 +936,9 @@
 **What was done:** Made `next_identity_id()` more reliable by consulting both the wallet's in-memory identities map AND the database's identity table. Added `used_identity_indices_for_wallet()` method to `Database` that queries the identity table for all `wallet_index` values associated with a given wallet seed hash and network. Updated `next_identity_id()` in `add_new_identity_screen/mod.rs` to take the maximum of both sources (wallet map and DB) before adding 1. Also updated `render_identity_index_input()` to merge used indices from both sources when displaying the "(used)" indicator in the identity index selector. Previously, both functions relied solely on the wallet's in-memory `identities` map, which could be stale or incomplete if identities were registered from another device, if the wallet map hadn't been refreshed, or if DB entries existed that weren't yet loaded into memory. Removed the TODO comment.
 **Files changed:** src/database/identities.rs, src/ui/identities/add_new_identity_screen/mod.rs
 **Sub-tasks created:** 0
+
+## Run 156 — 2026-02-08
+**Task:** 6.5 Add config save/load roundtrip tests
+**What was done:** Added 7 config save/load roundtrip tests to `src/config.rs`. Extracted the core serialization logic from `save()` into a new `write_to<W: Write>()` method to enable testing without filesystem dependency on `app_user_data_file_path()`. Tests cover: (1) full roundtrip with all 4 networks and all fields, (2) single network roundtrip, (3) empty config, (4) file I/O roundtrip via tempfile, (5) optional fields present roundtrip, (6) optional fields absent roundtrip, (7) special characters in values. Each test writes a Config to a buffer or file, parses back via `envy::prefixed().from_iter()`, and verifies all fields are preserved exactly. The `save()` method now delegates to `write_to()` for the actual serialization.
+**Files changed:** src/config.rs
+**Sub-tasks created:** 0

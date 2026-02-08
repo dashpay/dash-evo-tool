@@ -1751,7 +1751,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **6.4f Fix TODO: Make next_identity_id() reliable** (P2)
   In `src/ui/identities/add_new_identity_screen/mod.rs:409`, the `next_identity_id()` function is unreliable because it relies on the wallet's identities map which may be out of sync with Platform. Consider querying Platform directly or using a different approach.
 
-- [ ] **6.5 Add config save/load roundtrip tests** (P2)
+- [x] **6.5 Add config save/load roundtrip tests** (P2)
   Write tests that verify configuration can be saved and loaded without data loss.
   Reference: `issues/core-012-config-save-file-not-synced.md`, `issues/core-016-config-file-truncate-danger.md`.
 
@@ -1888,7 +1888,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 19 | 14 |
+| 6. Testing | 19 | 15 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

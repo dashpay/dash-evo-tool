@@ -465,13 +465,19 @@ impl Database {
         Ok(())
     }
 
-    /// Loads the user’s custom identity order (the entire list).
+    /// Loads the user's custom identity order (the entire list).
     /// If an identity in the order doesn't exist in the identity table, it is removed.
     pub fn load_identity_order(&self) -> rusqlite::Result<Vec<Identifier>> {
         let conn = self.conn.lock().unwrap();
 
-        // Read all rows sorted by pos
-        let mut stmt = conn.prepare("SELECT identity_id FROM identity_order ORDER BY pos ASC")?;
+        // Use a LEFT JOIN to get all order entries and detect dangling references
+        // in a single query instead of per-row EXISTS checks.
+        let mut stmt = conn.prepare(
+            "SELECT io.identity_id, i.id IS NOT NULL AS exists_in_identity
+             FROM identity_order io
+             LEFT JOIN identity i ON io.identity_id = i.id
+             ORDER BY io.pos ASC",
+        )?;
 
         let mut rows = stmt.query([])?;
         let mut final_list = Vec::new();
@@ -479,7 +485,8 @@ impl Database {
 
         while let Some(row) = rows.next()? {
             let id_bytes: Vec<u8> = row.get(0)?;
-            // Convert from raw bytes to an Identifier
+            let exists: bool = row.get(1)?;
+
             let identifier = match Identifier::from_vec(id_bytes.clone()) {
                 Ok(id) => id,
                 Err(_) => {
@@ -489,12 +496,7 @@ impl Database {
                 }
             };
 
-            // Check if the identity is still in 'identity' table
-            let mut check_stmt =
-                conn.prepare("SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)")?;
-            let exists: i64 = check_stmt.query_row(params![identifier.to_vec()], |r| r.get(0))?;
-            if exists == 1 {
-                // Keep it
+            if exists {
                 final_list.push(identifier);
             } else {
                 // Queue for removal because it doesn't exist in the identity table
@@ -502,7 +504,7 @@ impl Database {
             }
         }
 
-        // Remove any “dangling” references
+        // Remove any "dangling" references
         for id in to_remove {
             conn.execute(
                 "DELETE FROM identity_order WHERE identity_id = ?",

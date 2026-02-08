@@ -1563,13 +1563,113 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Section 6: Testing & Quality [Throughout]
 
-- [ ] **6.1 [META] Assess test coverage gaps** (P1)
+- [x] **6.1 [META] Assess test coverage gaps** (P1)
   Run existing tests, identify what's covered vs. not. Focus on:
   - Backend task flows (identity, wallet, document operations)
   - Error paths
   - Edge cases in fee calculations
   - Database operations
   Create specific test-writing tasks ordered by risk.
+
+  **Assessment Results:**
+
+  **Current test counts:** 155 unit tests (lib), 10 e2e tests, 14 kittest UI smoke tests, 1 doctest = 180 total. All pass. Tests exist in 25 source files out of ~250+ (10% file coverage).
+
+  **Well-tested areas (55+ tests):**
+  - `backend_task/dashpay/` — avatar processing (17), encryption (8+4), DIP-14 derivation (5), HD derivation (10), incoming payments (1), payments (10). Cryptographic primitives well covered.
+
+  **Partially-tested areas (32 tests):**
+  - `database/` — contacts (8), settings (8), utxo (5), wallet (9), initialization (2). Only 7 of 17 database files have tests. Critical CRUD tables (identities, contracts, tokens, asset_lock_transaction, dashpay, proof_log, scheduled_votes, single_key_wallet, top_ups, contested_names) have ZERO tests.
+
+  **Minimally-tested areas:**
+  - `model/` — amount (15), fee_estimation (7), wallet/single_key (3), wallet/encryption (2) = 27 tests. Core wallet model (2396 lines) untested. All token models untested. qualified_identity/ untested. platform_address_allocation untested.
+  - `ui/components/` — amount_input (7), confirmation_dialog (4), fee_confirmation_dialog (4) = 15 tests. Error display, identity selector, and all other components untested.
+  - `ui/screens/` — create_asset_lock_screen (9), add_new_identity_screen (7), tokens_screen (3), direct_token_purchase_screen (1) = 20 tests total for all screens. ~50+ screen files with zero tests.
+
+  **ZERO-coverage critical areas:**
+  1. **backend_task/identity/** (13 files) — All identity operations: register, top-up, transfer, withdraw, add key, discover, load, refresh. No tests.
+  2. **backend_task/core/** (7 files) — Asset lock creation, wallet refresh, send payment, recover locks, start Dash-Qt. No tests.
+  3. **backend_task/wallet/** (7 files) — Platform address funding, balance fetching, credit transfers, receive address generation. No tests.
+  4. **backend_task/tokens/** (17 files) — All 16 token operations + queries. No tests.
+  5. **backend_task/contested_names/** (5 files) — DPNS voting and contest queries. No tests.
+  6. **backend_task/{contract,document,dashpay,grovestark,mnlist,platform_info,register_contract,update_data_contract}** — All untested.
+  7. **context/** (6 files) — Application context, initialization, lifecycle, transaction processing. No tests.
+  8. **config.rs** — Configuration parsing/saving. No tests.
+  9. **spv/** (3 files) — SPV mode. No tests.
+  10. **components/** (3 files) — ZMQ listener, P2P handler. No tests.
+  11. **app.rs, app_dir.rs, logging.rs, sdk_wrapper.rs, lock_helper.rs** — All untested.
+
+  **Test infrastructure observations:**
+  - Good test helper infrastructure exists (database/test_helpers.rs, temp databases)
+  - kittest UI tests are "smoke tests" — verify rendering doesn't crash, not actual user interactions
+  - No mocking framework visible (makes backend_task testing difficult since they require SDK/network)
+  - No property-based testing (quickcheck/proptest)
+  - Doc tests mostly ignored (5 of 6)
+
+  **Key constraint:** Most backend_task/ code requires SDK/network access and can't be unit-tested without mocking infrastructure. Database tests are the most practical to add since test_helpers.rs already provides in-memory test databases. Model tests are also practical since they're pure computation. UI component tests using kittest can be expanded.
+
+  **Sub-tasks created by feasibility and risk:**
+
+- [ ] **6.1a Add database tests for untested tables** (P1)
+  Write tests for the 10 untested database files using the existing `test_helpers::test_db()` infrastructure. Priority order:
+  - `identities.rs` — insert, update, load, delete local qualified identities. Verify wallet association and alias handling.
+  - `contracts.rs` — insert, get by ID, remove, replace contracts. Test system contract injection in get_contracts.
+  - `tokens.rs` — insert token, insert balance, get by token ID, remove. Test bincode serialization roundtrip.
+  - `asset_lock_transaction.rs` — insert, query, status update for asset lock transactions.
+  - `single_key_wallet.rs` — CRUD for single-key wallets, balance queries.
+  - `contested_names.rs` — insert/query contested names, Identifier serialization from DB blobs.
+  - `scheduled_votes.rs` — insert, get, clear, mark executed. Test vote scheduling lifecycle.
+  - `top_ups.rs` — insert and query top-up records.
+  - `dashpay.rs` — payment records, contact persistence.
+  - `proof_log.rs` — proof log entry creation and retrieval.
+  Each file needs 5-8 tests covering happy path CRUD and edge cases (empty results, duplicate keys, wrong network).
+
+- [ ] **6.1b Add model tests for wallet/mod.rs core operations** (P1)
+  Write tests for `src/model/wallet/mod.rs` (2396 lines, 0 tests). Focus on:
+  - `receive_address()` — test skip_known_addresses_with_no_funds=true/false behavior
+  - `take_unspent_utxos_for()` — test UTXO selection algorithm, coin selection, amount thresholds
+  - `add_utxos()` / `remove_utxo()` — test balance tracking consistency
+  - `confirmed_balance_duffs()` / `unconfirmed_balance_duffs()` — test balance calculations
+  - Derivation path handling and address generation
+  These are pure data structure operations that don't require SDK/network access.
+
+- [ ] **6.1c Add config.rs roundtrip and parsing tests** (P2)
+  Write tests for `src/config.rs`:
+  - Save/load roundtrip: create config → save → load → verify all fields preserved
+  - `dapi_address_list()` parsing: valid addresses, empty list, malformed entries
+  - `insight_api_uri()` parsing: valid URLs, missing config, invalid URLs
+  - Atomic save (temp file + rename): verify no corruption on partial write
+  - Default config generation and network-specific settings
+  Reference: issues/core-012, core-016 (both fixed, need tests to prevent regression).
+
+- [ ] **6.1d Add model/platform_address_allocation.rs tests** (P2)
+  Write tests for `allocate_platform_addresses_with_fee()` and `allocate_platform_addresses()`:
+  - Single recipient, multiple recipients
+  - Fee estimation edge cases (very small amounts, amounts close to balance)
+  - Insufficient balance handling
+  - Platform address with zero balance
+
+- [ ] **6.1e Add fee_estimation.rs edge case tests** (P2)
+  Expand existing 7 tests in `src/model/fee_estimation.rs` with:
+  - `apply_fee_safety_margin()` — test 20% margin calculation, overflow protection
+  - `estimate_p2pkh_tx_size()` — test with various input/output counts, verify against known tx sizes
+  - Zero-input/zero-output edge cases
+  - Very large transaction sizes
+  - Platform fee estimation functions (moved from send_screen)
+
+- [ ] **6.1f Add lock_helper.rs tests** (P2)
+  Write tests for `src/lock_helper.rs` extension traits:
+  - `lock_or_recover()` — test normal lock acquisition, test poisoned mutex recovery
+  - `read_or_recover()` / `write_or_recover()` — test normal RwLock access, test poisoned lock recovery
+  - Verify that recovery returns the inner value from the poisoned guard
+
+- [ ] **6.1g Expand kittest UI interaction tests** (P3)
+  Current 14 kittest tests only verify rendering doesn't crash. Expand to test actual interactions:
+  - Wallet creation flow: fill name, generate mnemonic, set password, verify creation
+  - Network selection: switch between Mainnet/Testnet/Devnet, verify UI updates
+  - Navigation: verify screen transitions work correctly
+  - Input validation: test amount input with invalid values, address fields with bad input
+  This requires understanding the kittest framework's interaction capabilities (click, type, etc.).
 
 - [ ] **6.2 Run clippy and fix all warnings** (P2)
   Run `cargo clippy --all-features --all-targets -- -D warnings` and fix everything.
@@ -1713,7 +1813,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 153 (24 META + 129 direct)
+**Total tasks:** 160 (24 META + 136 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1723,7 +1823,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 6 | 0 |
+| 6. Testing | 13 | 1 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

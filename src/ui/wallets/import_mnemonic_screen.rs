@@ -74,7 +74,7 @@ impl ImportMnemonicScreen {
 
             // Mnemonic-specific fields
             seed_phrase_words: vec!["".to_string(); 24],
-            selected_seed_phrase_length: 12,
+            selected_seed_phrase_length: 24,
             seed_phrase: None,
 
             // Private key-specific fields
@@ -585,32 +585,48 @@ impl ScreenLike for ImportMnemonicScreen {
 
                             // Check seed phrase validity whenever all words are filled
                             if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                                match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                                let phrase = self.seed_phrase_words.join(" ");
+                                match Mnemonic::parse_normalized(phrase.as_str()) {
                                     Ok(mnemonic) => {
                                         self.seed_phrase = Some(mnemonic);
                                         // Clear any existing seed phrase error
-                                        if let Some(ref mut error) = self.error
-                                            && error.contains("Invalid seed phrase") {
+                                        if let Some(ref error) = self.error
+                                            && error.starts_with("Seed phrase error") {
                                                 self.error = None;
                                             }
                                     }
-                                    Err(_) => {
+                                    Err(e) => {
                                         self.seed_phrase = None;
-                                        self.error = Some("Invalid seed phrase. Please check that all words are spelled correctly and are valid BIP39 words.".to_string());
+                                        let msg = match &e {
+                                            bip39::Error::UnknownWord(idx) => {
+                                                let word = phrase.split_whitespace().nth(*idx).unwrap_or("?");
+                                                format!("Seed phrase error: Word {} (\"{}\") is not a valid BIP39 word. Please check the spelling.", idx + 1, word)
+                                            }
+                                            bip39::Error::InvalidChecksum => {
+                                                "Seed phrase error: Checksum verification failed. All words appear valid, but the combination is incorrect. Please double-check each word and its position.".to_string()
+                                            }
+                                            bip39::Error::BadWordCount(count) => {
+                                                format!("Seed phrase error: Invalid word count ({}). Must be 12, 15, 18, 21, or 24 words.", count)
+                                            }
+                                            _ => {
+                                                format!("Seed phrase error: {}", e)
+                                            }
+                                        };
+                                        self.error = Some(msg);
                                     }
                                 }
                             } else {
                                 // Clear seed phrase and error if not all words are filled
                                 self.seed_phrase = None;
-                                if let Some(ref mut error) = self.error
-                                    && error.contains("Invalid seed phrase") {
+                                if let Some(ref error) = self.error
+                                    && error.starts_with("Seed phrase error") {
                                         self.error = None;
                                     }
                             }
 
                             // Display error message if seed phrase is invalid
                             if let Some(ref error_msg) = self.error
-                                && error_msg.contains("Invalid seed phrase") {
+                                && error_msg.starts_with("Seed phrase error") {
                                     ui.add_space(10.0);
                                     ui.add(egui::Label::new(egui::RichText::new(error_msg.as_str()).color(Color32::from_rgb(255, 100, 100))).wrap());
                                 }

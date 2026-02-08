@@ -1130,7 +1130,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (6) Show identity balance in credits and estimated DASH equivalent.
   Note: Identity-to-identity transfers (Phase 2) deferred to task 7.1 feature triage.
 
-- [ ] **4.1d Improve import wallet validation feedback** (P2)
+- [x] **4.1d Improve import wallet validation feedback** (P2)
   In `src/ui/wallets/import_mnemonic_screen.rs`:
   (1) Change default word count from 12 to 24 to match wallet creation default (~line 77).
   (2) Pattern-match on `Mnemonic::parse_normalized()` error type to show specific messages: "Word N is not a valid BIP39 word" for invalid words, "Checksum verification failed — please check all words" for checksum errors, instead of the generic "Invalid seed phrase" message.

@@ -995,13 +995,13 @@ impl ContactRequests {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui.button("Cancel").clicked() {
-                                                // TODO: Cancel outgoing request
-                                                self.display_message(
-                                                    "Request cancelled",
-                                                    MessageType::Info,
-                                                );
-                                            }
+                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                            ui.label(
+                                                RichText::new("Cannot be cancelled once sent")
+                                                    .small()
+                                                    .italics()
+                                                    .color(DashColors::text_secondary(dark_mode)),
+                                            );
                                         },
                                     );
                                 });

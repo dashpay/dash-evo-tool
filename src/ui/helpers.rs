@@ -248,6 +248,115 @@ pub fn translate_backend_error(raw: &str) -> (String, String) {
     ("Operation failed.".to_string(), raw.to_string())
 }
 
+/// Returns a contextual recovery suggestion for a given error message.
+///
+/// Analyzes the error summary or raw error string and returns an actionable suggestion
+/// the user can follow to resolve the issue. Returns an empty string if no specific
+/// suggestion applies.
+pub fn recovery_suggestion(error: &str) -> &'static str {
+    let lower = error.to_lowercase();
+
+    // Connection / network errors
+    if lower.contains("connection")
+        || lower.contains("connect")
+        || lower.contains("unavailable")
+        || lower.contains("network")
+    {
+        return "Check your internet connection and ensure Dash Core is running, then try again.";
+    }
+
+    // Timeout errors
+    if lower.contains("timed out") || lower.contains("timeout") || lower.contains("deadline") {
+        return "The operation timed out. You can try again — the Platform may be busy.";
+    }
+
+    // Insufficient funds / balance
+    if lower.contains("insufficient") && lower.contains("balance") {
+        return "Verify you have sufficient funds and consider topping up your identity balance.";
+    }
+    if lower.contains("insufficient") {
+        return "Verify you have sufficient funds and try again.";
+    }
+
+    // Fee errors
+    if lower.contains("fee") && (lower.contains("low") || lower.contains("not met")) {
+        return "Try increasing the fee and submitting again.";
+    }
+
+    // Key / authentication errors
+    if lower.contains("key") && (lower.contains("not found") || lower.contains("no eligible")) {
+        return "Ensure your wallet is unlocked and a valid key is selected.";
+    }
+    if lower.contains("authentication")
+        || lower.contains("cookie")
+        || lower.contains("unauthorized")
+    {
+        return "Check your Dash Core RPC credentials or cookie file configuration.";
+    }
+
+    // Wallet-related
+    if lower.contains("wallet") && lower.contains("locked") {
+        return "Unlock your wallet and try again.";
+    }
+    if lower.contains("wallet file not specified") || lower.contains("multiple wallets") {
+        return "Ensure only one wallet is loaded in Dash Core.";
+    }
+
+    // Identity not found
+    if lower.contains("identity") && lower.contains("not found") {
+        return "The identity may not exist on this network. Verify the identity ID and network.";
+    }
+
+    // Contract / document not found
+    if lower.contains("contract") && lower.contains("not found") {
+        return "Verify the contract ID is correct and exists on this network.";
+    }
+    if lower.contains("not found") {
+        return "Verify the item exists on the current network and try again.";
+    }
+
+    // Already exists
+    if lower.contains("already exists") {
+        return "This item is already registered on Platform. No further action is needed.";
+    }
+
+    // Invalid contract / protocol
+    if lower.contains("invalid contract") || lower.contains("failed to load token contract") {
+        return "The contract may have been updated on Platform. Try refreshing your contracts.";
+    }
+
+    // Database errors
+    if lower.contains("database") || lower.contains("sqlite") || lower.contains("rusqlite") {
+        return "Try restarting the application. If the problem persists, the database may need to be reset.";
+    }
+
+    // Broadcast / state transition errors
+    if lower.contains("broadcast") || lower.contains("state transition") {
+        return "The transaction could not be broadcast. Check your connection and try again.";
+    }
+
+    // Frozen / paused token
+    if lower.contains("frozen") {
+        return "This token or identity is frozen. Contact the token issuer for assistance.";
+    }
+    if lower.contains("paused") {
+        return "This token is currently paused. Wait for the token issuer to resume it.";
+    }
+
+    // Consensus / validation
+    if lower.contains("consensus") || lower.contains("validation") {
+        return "The transaction failed validation. Check your inputs and try again.";
+    }
+
+    // Platform internal error
+    if lower.contains("internal error") || lower.contains("platform returned") {
+        return "This is a Platform-side issue. Try again later.";
+    }
+
+    // No specific suggestion
+    ""
+}
+
 /// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
 /// This constant provides a constant padding to be used in such cases to ensure proper alignment.
 pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;

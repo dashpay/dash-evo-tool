@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::recovery_suggestion;
 use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -336,17 +337,36 @@ impl ScreenLike for AddContractsScreen {
                     if let AddContractsStatus::ErrorMessage(msg) = &self.add_contracts_status {
                         let error_color = DashColors::ERROR;
                         let msg = msg.clone();
+                        let suggestion = recovery_suggestion(&msg);
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))
                             .inner_margin(Margin::symmetric(10, 8))
                             .corner_radius(5.0)
                             .stroke(egui::Stroke::new(1.0, error_color))
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!("Error: {}", msg))
+                                                .color(error_color),
+                                        )
+                                        .wrap(),
                                     );
-                                    ui.add_space(10.0);
+                                });
+                                if !suggestion.is_empty() {
+                                    ui.add_space(4.0);
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(suggestion)
+                                                .color(DashColors::text_secondary(dark_mode))
+                                                .italics(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
                                     if ui.small_button("Dismiss").clicked() {
                                         self.add_contracts_status = AddContractsStatus::NotStarted;
                                     }

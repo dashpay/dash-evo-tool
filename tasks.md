@@ -1287,7 +1287,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.3d Improve "Invalid contract" error messages in token screens** (P2)
   In 7 token screen files (destroy_frozen_funds, freeze, unfreeze, mint, burn, set_price, update_config), replace `format!("Invalid contract: {}", e)` with a user-friendly message like "Failed to load token contract. It may have been modified on Platform." and store the raw DPP error as optional details. These 14 locations share the same pattern and can use the ErrorDisplay component from 4.3a.
 
-- [ ] **4.3e Add recovery suggestions to common error displays** (P3)
+- [x] **4.3e Add recovery suggestions to common error displays** (P3)
   Audit the `OperationStatus::ErrorMessage` display in `token_operation_base.rs:445` and add contextual recovery suggestions based on error content:
   - Connection errors → "Check your internet connection and try again."
   - Balance errors → "Verify you have sufficient funds and try again."
@@ -1495,7 +1495,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 20 | 15 |
+| 4. UI/UX | 20 | 16 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

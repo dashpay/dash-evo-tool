@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::{TransactionType, add_key_chooser, recovery_suggestion};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -628,17 +628,36 @@ impl ScreenLike for WithdrawalScreen {
                     WithdrawFromIdentityStatus::ErrorMessage(msg) => {
                         let error_color = DashColors::ERROR;
                         let msg = msg.clone();
+                        let suggestion = recovery_suggestion(&msg);
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))
                             .inner_margin(Margin::symmetric(10, 8))
                             .corner_radius(5.0)
                             .stroke(egui::Stroke::new(1.0, error_color))
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!("Error: {}", msg))
+                                                .color(error_color),
+                                        )
+                                        .wrap(),
                                     );
-                                    ui.add_space(10.0);
+                                });
+                                if !suggestion.is_empty() {
+                                    ui.add_space(4.0);
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(suggestion)
+                                                .color(DashColors::text_secondary(dark_mode))
+                                                .italics(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
                                     if ui.small_button("Dismiss").clicked() {
                                         self.withdraw_from_identity_status =
                                             WithdrawFromIdentityStatus::NotStarted;

@@ -3,17 +3,19 @@ use egui::{Frame, Margin, RichText, Ui};
 use crate::ui::theme::DashColors;
 
 /// A reusable component for displaying error messages with an optional expandable
-/// "Show details" section for raw technical errors.
+/// "Show details" section for raw technical errors and an optional recovery suggestion.
 ///
 /// # Usage
 /// ```ignore
 /// ErrorDisplay::new("Connection to Platform failed.")
 ///     .with_details("Transport(Status { code: Unavailable, ... })")
+///     .with_suggestion("Check your internet connection and try again.")
 ///     .show(ui, &mut self.details_expanded);
 /// ```
 pub struct ErrorDisplay<'a> {
     summary: &'a str,
     details: Option<&'a str>,
+    suggestion: Option<&'a str>,
 }
 
 impl<'a> ErrorDisplay<'a> {
@@ -22,6 +24,7 @@ impl<'a> ErrorDisplay<'a> {
         Self {
             summary,
             details: None,
+            suggestion: None,
         }
     }
 
@@ -29,6 +32,14 @@ impl<'a> ErrorDisplay<'a> {
     pub fn with_details(mut self, details: &'a str) -> Self {
         if !details.is_empty() {
             self.details = Some(details);
+        }
+        self
+    }
+
+    /// Add an optional recovery suggestion shown below the error summary.
+    pub fn with_suggestion(mut self, suggestion: &'a str) -> Self {
+        if !suggestion.is_empty() {
+            self.suggestion = Some(suggestion);
         }
         self
     }
@@ -54,6 +65,20 @@ impl<'a> ErrorDisplay<'a> {
                         .wrap(),
                     );
                 });
+
+                // Show recovery suggestion if available
+                if let Some(suggestion) = self.suggestion {
+                    ui.add_space(4.0);
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(suggestion)
+                                .color(DashColors::text_secondary(dark_mode))
+                                .italics(),
+                        )
+                        .wrap(),
+                    );
+                }
 
                 // Show details toggle if details are available
                 if let Some(details) = self.details {

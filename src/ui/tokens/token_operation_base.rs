@@ -11,7 +11,9 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::helpers::{TransactionType, add_key_chooser, render_wallet_locked_overlay};
+use crate::ui::helpers::{
+    TransactionType, add_key_chooser, recovery_suggestion, render_wallet_locked_overlay,
+};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -441,15 +443,35 @@ pub fn render_operation_status(ui: &mut Ui, status: &mut OperationStatus, waitin
         OperationStatus::ErrorMessage(msg) => {
             let error_color = DashColors::ERROR;
             let msg = msg.clone();
+            let suggestion = recovery_suggestion(&msg);
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
                 .corner_radius(5.0)
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("Error: {}", msg)).color(error_color),
+                            )
+                            .wrap(),
+                        );
+                    });
+                    if !suggestion.is_empty() {
+                        ui.add_space(4.0);
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(suggestion)
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .italics(),
+                            )
+                            .wrap(),
+                        );
+                    }
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                        ui.add_space(10.0);
                         if ui.small_button("Dismiss").clicked() {
                             *status = OperationStatus::NotStarted;
                         }

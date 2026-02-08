@@ -814,7 +814,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `allocate_platform_addresses()` (17 lines, line 247)
   These are pure computation functions with no UI dependencies, making them good candidates for the model layer.
 
-- [ ] **3.4e Unify wallet unlock approach in single_key_send_screen** (P3)
+- [x] **3.4e Unify wallet unlock approach in single_key_send_screen** (P3)
   Replace the custom inline `render_wallet_unlock()` (71 lines) in `single_key_send_screen.rs` with the existing `WalletUnlockPopup` component that `send_screen.rs` already uses. This eliminates duplicate password input UI, show/hide toggle, and zeroization logic. The `WalletUnlockPopup` component in `src/ui/components/wallet_unlock_popup.rs` already handles all these cases for HD wallets; need to verify it works for single-key wallets or adapt it.
 
 - [ ] **3.5 [META] Review context.rs (1754 lines, 40+ fields)** (P2)
@@ -1067,7 +1067,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 29 | 17 |
+| 3. Refactoring | 29 | 18 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

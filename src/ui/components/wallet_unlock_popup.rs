@@ -1,6 +1,7 @@
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::styled::StyledCheckbox;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use egui;
@@ -63,13 +64,70 @@ impl WalletUnlockPopup {
         self.is_open
     }
 
-    /// Show the popup and handle wallet unlock
+    /// Show the popup and handle HD wallet unlock
     /// Returns the result of the unlock attempt
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         wallet: &Arc<RwLock<Wallet>>,
         app_context: &Arc<AppContext>,
+    ) -> WalletUnlockResult {
+        let wallet_alias = wallet
+            .read()
+            .ok()
+            .and_then(|w| w.alias.clone())
+            .unwrap_or_else(|| "Wallet".to_string());
+
+        self.show_inner(ctx, &wallet_alias, |password| {
+            let mut wallet_guard = wallet.write_or_recover();
+            match wallet_guard.wallet_seed.open(password) {
+                Ok(_) => {
+                    // Notify app context that wallet was unlocked
+                    drop(wallet_guard); // Release write lock before calling handle_wallet_unlocked
+                    app_context.handle_wallet_unlocked(wallet);
+                    Ok(())
+                }
+                Err(_) => {
+                    // Return error with hint if available
+                    if let Some(hint) = wallet_guard.password_hint() {
+                        Err(format!("Incorrect password. Hint: {}", hint))
+                    } else {
+                        Err("Incorrect password".to_string())
+                    }
+                }
+            }
+        })
+    }
+
+    /// Show the popup and handle single-key wallet unlock
+    /// Returns the result of the unlock attempt
+    pub fn show_single_key(
+        &mut self,
+        ctx: &egui::Context,
+        wallet: &Arc<RwLock<SingleKeyWallet>>,
+    ) -> WalletUnlockResult {
+        let wallet_alias = wallet
+            .read()
+            .ok()
+            .and_then(|w| w.alias.clone())
+            .unwrap_or_else(|| "Wallet".to_string());
+
+        self.show_inner(ctx, &wallet_alias, |password| {
+            let mut wallet_guard = wallet.write_or_recover();
+            wallet_guard
+                .open(password)
+                .map_err(|e| format!("Failed to unlock: {}", e))
+        })
+    }
+
+    /// Shared popup UI for both HD and single-key wallets.
+    /// The `try_unlock` closure attempts to unlock the wallet with the given password,
+    /// returning `Ok(())` on success or `Err(message)` on failure.
+    fn show_inner(
+        &mut self,
+        ctx: &egui::Context,
+        wallet_alias: &str,
+        try_unlock: impl FnOnce(&str) -> Result<(), String>,
     ) -> WalletUnlockResult {
         if !self.is_open {
             return WalletUnlockResult::Pending;
@@ -88,13 +146,6 @@ impl WalletUnlockPopup {
         );
 
         let mut result = WalletUnlockResult::Pending;
-
-        // Get wallet alias for display
-        let wallet_alias = wallet
-            .read()
-            .ok()
-            .and_then(|w| w.alias.clone())
-            .unwrap_or_else(|| "Wallet".to_string());
 
         let mut is_open = true;
 
@@ -215,23 +266,13 @@ impl WalletUnlockPopup {
 
                 // Attempt unlock if requested
                 if attempt_unlock {
-                    let mut wallet_guard = wallet.write_or_recover();
-                    match wallet_guard.wallet_seed.open(&self.password) {
-                        Ok(_) => {
-                            // Notify app context that wallet was unlocked
-                            drop(wallet_guard); // Release write lock before calling handle_wallet_unlocked
-                            app_context.handle_wallet_unlocked(wallet);
+                    match try_unlock(&self.password) {
+                        Ok(()) => {
                             result = WalletUnlockResult::Unlocked;
                             self.close();
                         }
-                        Err(_) => {
-                            // Show error with hint if available
-                            if let Some(hint) = wallet_guard.password_hint() {
-                                self.error_message =
-                                    Some(format!("Incorrect password. Hint: {}", hint));
-                            } else {
-                                self.error_message = Some("Incorrect password".to_string());
-                            }
+                        Err(msg) => {
+                            self.error_message = Some(msg);
                             self.password.zeroize();
                         }
                     }
@@ -271,6 +312,24 @@ pub fn try_open_wallet_no_password(wallet: &Arc<RwLock<Wallet>>) -> Result<(), S
     let mut wallet_guard = wallet.write_or_recover();
     if !wallet_guard.uses_password {
         wallet_guard.wallet_seed.open_no_password()
+    } else {
+        Ok(())
+    }
+}
+
+/// Helper function to check if a single-key wallet needs unlocking
+pub fn single_key_wallet_needs_unlock(wallet: &Arc<RwLock<SingleKeyWallet>>) -> bool {
+    let wallet_guard = wallet.read_or_recover();
+    wallet_guard.uses_password && !wallet_guard.is_open()
+}
+
+/// Helper function to try opening a single-key wallet without password
+pub fn try_open_single_key_wallet_no_password(
+    wallet: &Arc<RwLock<SingleKeyWallet>>,
+) -> Result<(), String> {
+    let mut wallet_guard = wallet.write_or_recover();
+    if !wallet_guard.uses_password {
+        wallet_guard.open_no_password()
     } else {
         Ok(())
     }

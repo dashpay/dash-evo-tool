@@ -11,6 +11,9 @@ use crate::ui::components::fee_confirmation_dialog::{
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, single_key_wallet_needs_unlock, try_open_single_key_wallet_no_password,
+};
 use crate::ui::theme::DashColors;
 use crate::ui::wallets::send_utils::{format_dash, parse_amount_to_duffs};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -19,7 +22,6 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroize;
 
 /// A single recipient entry with address and amount
 #[derive(Debug, Clone)]
@@ -58,9 +60,7 @@ pub struct SingleKeyWalletSendScreen {
     message: Option<(String, MessageType, DateTime<Utc>)>,
 
     // Wallet unlock
-    wallet_password: String,
-    show_password: bool,
-    error_message: Option<String>,
+    wallet_unlock_popup: WalletUnlockPopup,
 
     // Fee confirmation dialog
     fee_dialog: FeeConfirmationDialog,
@@ -81,9 +81,7 @@ impl SingleKeyWalletSendScreen {
             memo: String::new(),
             sending: false,
             message: None,
-            wallet_password: String::new(),
-            show_password: false,
-            error_message: None,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             fee_dialog: FeeConfirmationDialog::default(),
             pending_request: None,
             show_advanced_options: false,
@@ -579,76 +577,43 @@ impl SingleKeyWalletSendScreen {
         }
     }
 
-    fn render_wallet_unlock(&mut self, ui: &mut Ui) -> AppAction {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+    /// Returns true if the wallet is unlocked and ready for use.
+    /// Shows an unlock prompt if the wallet needs unlocking.
+    fn render_unlock_gate(&mut self, ui: &mut Ui) -> bool {
+        let wallet_is_open = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        Frame::group(ui.style())
-            .fill(DashColors::surface(dark_mode))
-            .inner_margin(Margin::symmetric(12, 10))
-            .corner_radius(5.0)
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("Unlock Wallet")
-                        .color(DashColors::text_primary(dark_mode))
-                        .strong()
-                        .size(14.0),
-                );
+        if wallet_is_open {
+            return true;
+        }
 
-                ui.add_space(8.0);
+        let Some(wallet) = &self.selected_wallet else {
+            return true;
+        };
 
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Password:")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
-                    ui.add_space(5.0);
+        if let Err(e) = try_open_single_key_wallet_no_password(wallet) {
+            tracing::warn!("Failed to open single-key wallet without password: {}", e);
+        }
+        if single_key_wallet_needs_unlock(wallet) {
+            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Wallet is locked. Please unlock to continue.")
+                        .color(egui::Color32::from_rgb(200, 150, 50)),
+                )
+                .wrap(),
+            );
+            ui.add_space(8.0);
+            if ui.button("Unlock Wallet").clicked() {
+                self.wallet_unlock_popup.open();
+            }
+            ui.add_space(10.0);
+            return false;
+        }
 
-                    let password_field = if self.show_password {
-                        egui::TextEdit::singleline(&mut self.wallet_password)
-                    } else {
-                        egui::TextEdit::singleline(&mut self.wallet_password).password(true)
-                    };
-                    ui.add(password_field.desired_width(200.0));
-
-                    ui.checkbox(&mut self.show_password, "Show");
-
-                    ui.add_space(10.0);
-
-                    if ui.button("Unlock").clicked()
-                        && let Some(wallet) = &self.selected_wallet
-                    {
-                        match wallet.write() {
-                            Ok(mut wallet_guard) => {
-                                match wallet_guard.open(&self.wallet_password) {
-                                    Ok(_) => {
-                                        self.error_message = None;
-                                        self.wallet_password.zeroize();
-                                    }
-                                    Err(e) => {
-                                        self.error_message =
-                                            Some(format!("Failed to unlock: {}", e));
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                self.error_message =
-                                    Some("Wallet lock error, please try again".to_string());
-                            }
-                        }
-                    }
-                });
-
-                if let Some(error) = &self.error_message {
-                    ui.add_space(5.0);
-                    ui.add(
-                        egui::Label::new(RichText::new(error).color(DashColors::ERROR).size(12.0))
-                            .wrap(),
-                    );
-                }
-            });
-
-        AppAction::None
+        true
     }
 
     fn render_send_button(&mut self, ui: &mut Ui) -> AppAction {
@@ -700,12 +665,6 @@ impl SingleKeyWalletSendScreen {
 
     fn dismiss_message(&mut self) {
         self.message = None;
-    }
-}
-
-impl Drop for SingleKeyWalletSendScreen {
-    fn drop(&mut self) {
-        self.wallet_password.zeroize();
     }
 }
 
@@ -782,16 +741,8 @@ impl ScreenLike for SingleKeyWalletSendScreen {
 
                     ui.add_space(10.0);
 
-                    // Wallet unlock if needed
-                    let wallet_is_open = self
-                        .selected_wallet
-                        .as_ref()
-                        .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-
-                    if !wallet_is_open {
-                        inner_action |= self.render_wallet_unlock(ui);
-                        ui.add_space(10.0);
-                    }
+                    // Wallet unlock gate (shows prompt if locked)
+                    self.render_unlock_gate(ui);
 
                     if self.show_advanced_options {
                         // Advanced mode: multiple recipients, memo, subtract fee, detailed info
@@ -830,6 +781,13 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     self.sending = false;
                 }
             }
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let _result = self.wallet_unlock_popup.show_single_key(ctx, wallet);
         }
 
         action

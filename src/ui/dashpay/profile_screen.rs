@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
     Display names can include any UTF-8 characters (emojis, symbols, etc.).\n\n\
     Display names are limited to 25 characters.\n\n\
-    Bios are limited to 250 characters.\n\n\
+    Bios are limited to 140 characters.\n\n\
     Avatar URLs should point to publicly accessible images (max 500 chars).\n\n\
     Profiles are public and visible to all DashPay users.";
 

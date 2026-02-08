@@ -1331,7 +1331,7 @@ These META tasks validate reported bugs against the current codebase before any 
   **Fee Inputs:**
   - No user-editable fee inputs found — fees are calculated automatically. GOOD design.
 
-- [ ] **4.4a Fix ui-identity-009: Profile bio length guideline mismatch** (P2)
+- [x] **4.4a Fix ui-identity-009: Profile bio length guideline mismatch** (P2)
   In `src/ui/dashpay/profile_screen.rs:24`, change "Bios are limited to 250 characters" to "Bios are limited to 140 characters" in the `PROFILE_GUIDELINES_INFO_TEXT` constant. The code enforces 140 (line 231) and the error message says 140 (line 61), but the guideline text misleads users by saying 250.
 
 - [ ] **4.4b Fix single_key_send_screen address validation: Add real-time format checking** (P2)

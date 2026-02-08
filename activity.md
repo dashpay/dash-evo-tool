@@ -738,3 +738,8 @@
 - Fee inputs: None user-editable (all auto-calculated). Good design.
 - Withdraw address: Confirmed ui-identity-011 — validation timing allows confirmation dialog to open with invalid address, then dismisses itself.
 - 15+ fields audited across all form screens
+
+## Run 120 — 2026-02-08
+**Task:** 4.4a Fix ui-identity-009: Profile bio length guideline mismatch
+**What was done:** Changed PROFILE_GUIDELINES_INFO_TEXT in profile_screen.rs from "Bios are limited to 250 characters" to "Bios are limited to 140 characters" to match the actual code enforcement (140-char limit at line 231, error message at line 61, and character counter at line 804).
+**Files changed:** src/ui/dashpay/profile_screen.rs

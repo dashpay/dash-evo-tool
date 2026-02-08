@@ -1,11 +1,31 @@
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
+use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::dashcore::{BlockHash, Network};
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum MnListResult {
+    FetchedDiff {
+        base_height: u32,
+        height: u32,
+        diff: MnListDiff,
+    },
+    FetchedQrInfo {
+        qr_info: QRInfo,
+    },
+    ChainLockSigs {
+        entries: Vec<((u32, BlockHash), Option<BLSSignature>)>,
+    },
+    FetchedDiffs {
+        items: Vec<((u32, u32), MnListDiff)>,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MnListTask {
@@ -35,10 +55,7 @@ pub enum MnListTask {
     },
 }
 
-pub async fn run_mnlist_task(
-    app: &AppContext,
-    task: MnListTask,
-) -> Result<BackendTaskSuccessResult, String> {
+pub async fn run_mnlist_task(app: &AppContext, task: MnListTask) -> Result<MnListResult, String> {
     match task {
         MnListTask::FetchEndDmlDiff {
             base_block_height,
@@ -50,7 +67,7 @@ pub async fn run_mnlist_task(
             let network = app.network;
             let mut p2p = CoreP2PHandler::new(network, None)?;
             let diff = p2p.get_dml_diff(base_block_hash, block_hash)?;
-            Ok(BackendTaskSuccessResult::MnListFetchedDiff {
+            Ok(MnListResult::FetchedDiff {
                 base_height: base_block_height,
                 height: block_height,
                 diff,
@@ -63,7 +80,7 @@ pub async fn run_mnlist_task(
             let network = app.network;
             let mut p2p = CoreP2PHandler::new(network, None)?;
             let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
-            Ok(BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info })
+            Ok(MnListResult::FetchedQrInfo { qr_info })
         }
         MnListTask::FetchEndQrInfoWithDmls {
             known_block_hashes,
@@ -73,7 +90,7 @@ pub async fn run_mnlist_task(
             let network = app.network;
             let mut p2p = CoreP2PHandler::new(network, None)?;
             let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
-            Ok(BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info })
+            Ok(MnListResult::FetchedQrInfo { qr_info })
         }
         MnListTask::FetchChainLocks {
             base_block_height,
@@ -113,7 +130,7 @@ pub async fn run_mnlist_task(
                     }
                 }
             }
-            Ok(BackendTaskSuccessResult::MnListChainLockSigs { entries: out })
+            Ok(MnListResult::ChainLockSigs { entries: out })
         }
         MnListTask::FetchDiffsChain { chain } => {
             let network = app.network;
@@ -123,7 +140,7 @@ pub async fn run_mnlist_task(
                 let diff = p2p.get_dml_diff(base_hash, hash)?;
                 items.push(((base_h, h), diff));
             }
-            Ok(BackendTaskSuccessResult::MnListFetchedDiffs { items })
+            Ok(MnListResult::FetchedDiffs { items })
         }
     }
 }

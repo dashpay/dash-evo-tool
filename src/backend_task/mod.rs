@@ -12,9 +12,6 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::dashcore::address::NetworkChecked;
-use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
-use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
-use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::grovestark_prover::ProofDataOutput;
@@ -24,7 +21,6 @@ use crate::ui::tokens::tokens_screen::{
 use crate::utils::egui_mpsc::SenderAsync;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
@@ -193,20 +189,7 @@ pub enum BackendTaskSuccessResult {
     },
 
     // MNList-specific results
-    MnListFetchedDiff {
-        base_height: u32,
-        height: u32,
-        diff: MnListDiff,
-    },
-    MnListFetchedQrInfo {
-        qr_info: QRInfo,
-    },
-    MnListChainLockSigs {
-        entries: Vec<((u32, BlockHash), Option<BLSSignature>)>,
-    },
-    MnListFetchedDiffs {
-        items: Vec<((u32, u32), MnListDiff)>,
-    },
+    MnList(mnlist::MnListResult),
 
     // Token operation results (replacing string messages)
     PausedTokens(FeeResult),
@@ -342,9 +325,9 @@ impl AppContext {
                 self.run_token_task(*token_task, &sdk, sender).await
             }
             BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
-            BackendTask::MnListTask(mnlist_task) => {
-                mnlist::run_mnlist_task(self, mnlist_task).await
-            }
+            BackendTask::MnListTask(mnlist_task) => mnlist::run_mnlist_task(self, mnlist_task)
+                .await
+                .map(BackendTaskSuccessResult::MnList),
             BackendTask::PlatformInfo(platform_info_task) => {
                 self.run_platform_info_task(platform_info_task).await
             }

@@ -944,7 +944,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Execution plan:** Extract one domain at a time, starting with the most self-contained (MnList, GroveSTARK) and progressing to the largest (Tokens, DashPay). Each sub-task creates the sub-enum, moves variants, and updates all producers and consumers.
 
-- [ ] **3.6a Extract MnList results into MnListResult sub-enum** (P2)
+- [x] **3.6a Extract MnList results into MnListResult sub-enum** (P2)
   Create `MnListResult` enum with 4 variants: `FetchedDiff`, `FetchedQrInfo`, `ChainLockSigs`, `FetchedDiffs`. Add `MnList(MnListResult)` to `BackendTaskSuccessResult`. Update:
   - Producer: `src/backend_task/mnlist.rs`
   - Consumer: `src/ui/tools/masternode_list_diff_screen/mod.rs`
@@ -1223,7 +1223,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 43 | 23 |
+| 3. Refactoring | 43 | 24 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

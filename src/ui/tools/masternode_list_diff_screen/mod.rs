@@ -7,7 +7,7 @@ use cache_helpers::CacheState;
 
 use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
-use crate::backend_task::mnlist::MnListTask;
+use crate::backend_task::mnlist::{MnListResult, MnListTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
@@ -2232,20 +2232,20 @@ impl ScreenLike for MasternodeListDiffScreen {
             BackendTaskSuccessResult::CoreItem(core_item) => {
                 self.handle_core_item_result(core_item);
             }
-            BackendTaskSuccessResult::MnListFetchedDiff {
+            BackendTaskSuccessResult::MnList(MnListResult::FetchedDiff {
                 base_height,
                 height,
                 diff,
-            } => {
+            }) => {
                 self.handle_mn_list_fetched_diff(base_height, height, diff);
             }
-            BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info } => {
+            BackendTaskSuccessResult::MnList(MnListResult::FetchedQrInfo { qr_info }) => {
                 self.handle_mn_list_fetched_qr_info(qr_info);
             }
-            BackendTaskSuccessResult::MnListFetchedDiffs { items } => {
+            BackendTaskSuccessResult::MnList(MnListResult::FetchedDiffs { items }) => {
                 self.handle_mn_list_fetched_diffs(items);
             }
-            BackendTaskSuccessResult::MnListChainLockSigs { entries } => {
+            BackendTaskSuccessResult::MnList(MnListResult::ChainLockSigs { entries }) => {
                 self.handle_mn_list_chain_lock_sigs(entries);
             }
             _ => {}

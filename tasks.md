@@ -1500,12 +1500,64 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **No sub-tasks created.** The workspace split is not recommended. Task 5.4 will address the type-boundary issues as a simpler alternative.
 
-- [ ] **5.4 [META] Review module boundaries and shared utility opportunities** (P3)
+- [x] **5.4 [META] Review module boundaries and shared utility opportunities** (P3)
   Identify code that's currently scattered across modules but could be centralized:
   - Common UI widgets/helpers
   - Shared validation logic
   - Platform protocol helpers
   Create extraction tasks.
+
+  **Review Results:**
+
+  **A. Type Boundary Violations (reverse dependencies UI→backend/model/database/context):**
+  Task 5.3 identified 13 reverse-dependency imports across 9 files. The following types are defined in `ui/` but imported by backend_task, model, database, or context:
+  - `TokenInfo`, `IdentityTokenInfo`, `IdentityTokenIdentifier`, `ContractDescriptionInfo`, `TokenInfoWithDataContract`, `IdentityTokenBalance` — defined in `ui/tokens/tokens_screen/structs.rs` and `mod.rs`, used by `backend_task/tokens/mod.rs`, `backend_task/contract.rs`, `database/tokens.rs`, `context/contract_token_db.rs`
+  - `RootScreenType` — defined in `ui/mod.rs:95-121`, used by `model/settings.rs`, `database/settings.rs`, `context/settings_db.rs`
+  - `ThemeMode` — defined in `ui/theme.rs:5-10`, used by `model/settings.rs`, `database/settings.rs`, `backend_task/system_task/mod.rs`
+  - `MAX_IDENTITY_INDEX` — defined in `ui/identities/add_new_identity_screen/mod.rs:50`, used by `backend_task/identity/load_identity.rs:16`
+  - `egui::Color32` in `model/qualified_identity/mod.rs:28,143-153` (From<IdentityStatus> for Color32 impl)
+  - `egui::ahash::HashMap` in `backend_task/identity/load_identity.rs:32`
+
+  **B. Duplicated UI Patterns:**
+  - **Error bubble rendering** — `render_error_bubble()` duplicated in `register_contract_screen.rs` and `update_contract_screen.rs`, while `ErrorDisplay` component already exists. Token screens use a separate `render_operation_status()` pattern.
+  - **Operation status display** — Token screens use `OperationStatus` enum + `render_operation_status()` in `token_operation_base.rs`. Wallet send uses separate `SendStatus` enum. Contract screens calculate elapsed time inline. No shared pattern.
+  - **Modal overlay** — Nearly identical `painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay())` appears in 7+ places. `wallets_screen/dialogs.rs` has a `draw_modal_overlay()` helper but other modules duplicate inline.
+
+  **C. Platform Protocol Helper Duplication:**
+  - **State transition sign+broadcast** — Identical 15-20 line sign→broadcast→proof-error-logging pattern appears in 17+ backend_task files (all token ops, identity ops, contract ops). Each duplicates the `DriveProofError` → `insert_proof_log_item` error path.
+  - **Asset lock proof resolution** — Identical logic for converting InstantAssetLockProof to ChainAssetLockProof (checking confirmations > 8, height > 0, Platform block validation) in `register_identity.rs:66-96` and `top_up_identity.rs:60-94`.
+
+  **Sub-tasks created (ordered by impact):**
+
+- [ ] **5.4a Move token data types from UI to model layer** (P2)
+  Move `TokenInfo`, `IdentityTokenInfo`, `IdentityTokenBasicInfo`, `IdentityTokenIdentifier`, `ContractDescriptionInfo`, `TokenInfoWithDataContract`, `IdentityTokenBalance` from `src/ui/tokens/tokens_screen/structs.rs` and `src/ui/tokens/tokens_screen/mod.rs` to `src/model/tokens/` (create new module). Update all imports in `backend_task/tokens/mod.rs`, `backend_task/contract.rs`, `database/tokens.rs`, `context/contract_token_db.rs`, and all UI files that use them. Keep re-exports in the old location if needed for smooth transition.
+
+- [ ] **5.4b Move RootScreenType and ThemeMode from UI to model layer** (P2)
+  Move `RootScreenType` from `src/ui/mod.rs:95-121` and `ThemeMode` from `src/ui/theme.rs:5-10` to `src/model/` (e.g., `src/model/app_settings.rs` or existing `src/model/settings.rs`). Update imports in `model/settings.rs`, `database/settings.rs`, `context/settings_db.rs`, `backend_task/system_task/mod.rs`, and all UI files. Add re-exports in `ui/mod.rs` and `ui/theme.rs` for backward compatibility if needed.
+
+- [ ] **5.4c Move MAX_IDENTITY_INDEX to model layer** (P3)
+  Move `MAX_IDENTITY_INDEX` from `src/ui/identities/add_new_identity_screen/mod.rs:50` to `src/model/` (e.g., `src/model/constants.rs` or `src/model/qualified_identity/mod.rs`). Update imports in `backend_task/identity/load_identity.rs:16` and `ui/identities/add_new_identity_screen/mod.rs`.
+
+- [ ] **5.4d Replace egui::Color32 in model with framework-agnostic type** (P3)
+  In `src/model/qualified_identity/mod.rs:28,143-153`, replace the `impl From<IdentityStatus> for egui::Color32` with either:
+  (a) a method on `IdentityStatus` returning `(u8, u8, u8)` tuple, with the Color32 conversion moved to UI code, or
+  (b) a custom `IdentityColor` enum with `to_color32()` in UI.
+  This removes the `egui` dependency from the model layer.
+
+- [ ] **5.4e Replace egui::ahash::HashMap with std HashMap in backend_task** (P3)
+  In `src/backend_task/identity/load_identity.rs:32`, replace `egui::ahash::HashMap` import with `std::collections::HashMap` (or `ahash::HashMap` with a direct dependency if performance is needed). The backend layer should not depend on egui types.
+
+- [ ] **5.4f Extract state transition sign-and-broadcast helper** (P2)
+  Create a helper function in `src/backend_task/mod.rs` (or a new `src/backend_task/broadcast_helper.rs`) that encapsulates the repeated sign→broadcast→proof-error-logging pattern. Signature approximately: `async fn sign_and_broadcast(sdk, state_transition_builder, signing_key, identity, context, operation_name) -> Result<StateTransitionProofResult, String>`. Apply to token operations (pause, resume, burn, mint, freeze, unfreeze, transfer, destroy_frozen, emergency_action, set_price, purchase) and identity/contract operations. This eliminates ~15-20 lines of duplicated error-handling per file across 17+ files.
+
+- [ ] **5.4g Extract asset lock proof resolution helper** (P3)
+  Extract the duplicated InstantAssetLockProof→ChainAssetLockProof conversion logic from `src/backend_task/identity/register_identity.rs:66-96` and `src/backend_task/identity/top_up_identity.rs:60-94` into a shared function in `src/backend_task/identity/mod.rs`. Both files have identical logic for checking confirmations, height, and Platform block validation.
+
+- [ ] **5.4h Standardize error display in contract screens** (P3)
+  Replace the duplicated `render_error_bubble()` methods in `src/ui/contracts_documents/register_contract_screen.rs` and `src/ui/contracts_documents/update_contract_screen.rs` with the existing `ErrorDisplay` component from `src/ui/components/error_display.rs`. Verify the component supports the same styling (error color, rounded frame, expandable details).
+
+- [ ] **5.4i Centralize modal overlay helper** (P3)
+  Move the `draw_modal_overlay()` helper from `src/ui/wallets/wallets_screen/dialogs.rs` to a shared location (e.g., `src/ui/components/modal_overlay.rs` or `src/ui/helpers.rs`). Update the 7+ places that duplicate the `painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay())` pattern to use the shared helper: `confirmation_dialog.rs`, `wallet_unlock_popup.rs`, `info_popup.rs`, `identities_screen.rs`, `add_new_wallet_screen.rs`, `asset_lock_detail_screen.rs`.
 
 ---
 
@@ -1661,7 +1713,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 144 (24 META + 120 direct)
+**Total tasks:** 153 (24 META + 129 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1669,8 +1721,8 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 26 | 20 |
-| 5. Architecture | 4 | 3 |
+| 4. UI/UX | 26 | 26 |
+| 5. Architecture | 13 | 4 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |

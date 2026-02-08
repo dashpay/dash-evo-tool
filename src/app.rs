@@ -700,7 +700,7 @@ impl AppState {
 
             // Send the result back to the main thread
             if let Err(e) = sender.send(result.into()).await {
-                eprintln!("Failed to send task result: {}", e);
+                tracing::error!("Failed to send task result: {}", e);
             }
         });
     }
@@ -727,7 +727,7 @@ impl AppState {
             // Send the results back to the main thread
             for result in results {
                 if let Err(e) = sender.send(result.into()).await {
-                    eprintln!("Failed to send task result: {}", e);
+                    tracing::error!("Failed to send task result: {}", e);
                 }
             }
         });
@@ -865,7 +865,7 @@ impl App for AppState {
                     if let Some(context) = self.testnet_app_context.as_ref() {
                         context
                     } else {
-                        eprintln!("No testnet app context available for Testnet");
+                        tracing::error!("No testnet app context available for Testnet");
                         continue;
                     }
                 }
@@ -873,7 +873,7 @@ impl App for AppState {
                     if let Some(context) = self.devnet_app_context.as_ref() {
                         context
                     } else {
-                        eprintln!("No devnet app context available");
+                        tracing::error!("No devnet app context available");
                         continue;
                     }
                 }
@@ -881,7 +881,7 @@ impl App for AppState {
                     if let Some(context) = self.local_app_context.as_ref() {
                         context
                     } else {
-                        eprintln!("No local app context available");
+                        tracing::error!("No local app context available");
                         continue;
                     }
                 }
@@ -902,7 +902,7 @@ impl App for AppState {
                                 .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
                         }
                         Err(e) => {
-                            eprintln!("Failed to store asset lock: {}", e);
+                            tracing::error!("Failed to store asset lock: {}", e);
                         }
                     }
                 }
@@ -910,7 +910,7 @@ impl App for AppState {
                     if let Err(e) =
                         app_context.received_transaction_finality(&tx, None, Some(height))
                     {
-                        eprintln!("Failed to store asset lock: {}", e);
+                        tracing::error!("Failed to store asset lock: {}", e);
                     }
                 }
                 ZMQMessage::ChainLockedBlock(block, chain_lock) => {
@@ -933,7 +933,7 @@ impl App for AppState {
             let db_votes = match app_context.get_scheduled_votes() {
                 Ok(votes) => votes,
                 Err(e) => {
-                    eprintln!("Error querying scheduled votes: {}", e);
+                    tracing::error!("Error querying scheduled votes: {}", e);
                     return;
                 }
             };
@@ -957,7 +957,7 @@ impl App for AppState {
                 let local_identities = match app_context.load_local_voting_identities() {
                     Ok(identities) => identities,
                     Err(e) => {
-                        eprintln!("Error querying local voting identities: {}", e);
+                        tracing::error!("Error querying local voting identities: {}", e);
                         return;
                     }
                 };
@@ -988,7 +988,7 @@ impl App for AppState {
                         );
                         self.handle_backend_task(task);
                     } else {
-                        eprintln!("Voter not found for scheduled vote: {:?}", vote);
+                        tracing::warn!("Voter not found for scheduled vote: {:?}", vote);
                     }
                 }
             }

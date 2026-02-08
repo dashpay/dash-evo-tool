@@ -120,7 +120,7 @@ impl Database {
                     }
                     Err(e) => {
                         // Handle deserialization errors
-                        eprintln!("Deserialization error: {}", e);
+                        tracing::error!("Deserialization error: {}", e);
                         Ok(None)
                     }
                 }
@@ -159,7 +159,7 @@ impl Database {
                     Ok(contract) => Ok(Some(contract)),
                     Err(e) => {
                         // Handle deserialization errors
-                        eprintln!("Deserialization error: {}", e);
+                        tracing::error!("Deserialization error: {}", e);
                         Ok(None)
                     }
                 }
@@ -242,7 +242,7 @@ impl Database {
                     }
                     Err(e) => {
                         // Handle deserialization errors
-                        eprintln!("Deserialization error: {}", e);
+                        tracing::error!("Deserialization error: {}", e);
                         Ok(None)
                     }
                 }
@@ -305,7 +305,7 @@ impl Database {
                     contracts.push(QualifiedContract { contract, alias });
                 }
                 Err(e) => {
-                    eprintln!("Deserialization error: {}", e);
+                    tracing::error!("Deserialization error: {}", e);
                     // Optionally skip this entry instead of returning an error
                     continue;
                 }

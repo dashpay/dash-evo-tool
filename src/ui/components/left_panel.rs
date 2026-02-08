@@ -9,6 +9,7 @@ use egui::{Color32, Context, Frame, Image, RichText, SidePanel, TextureHandle};
 use egui_extras::{Size, StripBuilder};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
+use tracing::error;
 
 #[derive(RustEmbed)]
 #[folder = "icons/"] // Folder containing embedded assets
@@ -38,11 +39,11 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
                     Some(texture)
                 } else {
-                    eprintln!("Failed to load image from embedded data at path: {}", path);
+                    error!("Failed to load image from embedded data at path: {}", path);
                     None
                 }
             } else {
-                eprintln!("Image not found in embedded assets at path: {}", path);
+                error!("Image not found in embedded assets at path: {}", path);
                 None
             }
         })
@@ -61,7 +62,7 @@ pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Opti
                 let tree = match resvg::usvg::Tree::from_data(&content.data, &options) {
                     Ok(tree) => tree,
                     Err(e) => {
-                        eprintln!("Failed to parse SVG at {}: {}", path, e);
+                        error!("Failed to parse SVG at {}: {}", path, e);
                         return None;
                     }
                 };
@@ -101,7 +102,7 @@ pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Opti
 
                 Some(texture)
             } else {
-                eprintln!("SVG not found in embedded assets at path: {}", path);
+                error!("SVG not found in embedded assets at path: {}", path);
                 None
             }
         })

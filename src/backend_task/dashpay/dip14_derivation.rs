@@ -364,7 +364,7 @@ mod tests {
 
         // Print the error if it fails
         if let Err(ref e) = xpub {
-            eprintln!("DashPay derivation error: {}", e);
+            tracing::error!("DashPay derivation error: {}", e);
         }
 
         assert!(xpub.is_ok());

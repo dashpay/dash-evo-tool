@@ -1663,7 +1663,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - `read_or_recover()` / `write_or_recover()` — test normal RwLock access, test poisoned lock recovery
   - Verify that recovery returns the inner value from the poisoned guard
 
-- [ ] **6.1g Expand kittest UI interaction tests** (P3)
+- [x] **6.1g Expand kittest UI interaction tests** (P3)
   Current 14 kittest tests only verify rendering doesn't crash. Expand to test actual interactions:
   - Wallet creation flow: fill name, generate mnemonic, set password, verify creation
   - Network selection: switch between Mainnet/Testnet/Devnet, verify UI updates
@@ -1823,7 +1823,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 13 | 6 |
+| 6. Testing | 13 | 7 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

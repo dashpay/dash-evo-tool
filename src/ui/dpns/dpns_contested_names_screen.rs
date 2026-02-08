@@ -13,7 +13,9 @@ use itertools::Itertools;
 
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
-use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
+use crate::backend_task::contested_names::{
+    ContestResult, ContestedResourceTask, ScheduledDPNSVote,
+};
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
@@ -1857,69 +1859,70 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            // If immediate cast finished, see if we have pending to schedule next
-            BackendTaskSuccessResult::DPNSVoteResults(results) => {
-                let errors: Vec<String> = results
-                    .iter()
-                    .filter_map(|(_, _, r)| r.as_ref().err().cloned())
-                    .collect();
-                let successes: Vec<String> = results
-                    .iter()
-                    .filter_map(|(name, _, r)| r.as_ref().ok().map(|_| name.clone()))
-                    .collect();
+        if let BackendTaskSuccessResult::Contest(contest_result) = backend_task_success_result {
+            match contest_result {
+                // If immediate cast finished, see if we have pending to schedule next
+                ContestResult::DPNSVoteResults(results) => {
+                    let errors: Vec<String> = results
+                        .iter()
+                        .filter_map(|(_, _, r)| r.as_ref().err().cloned())
+                        .collect();
+                    let successes: Vec<String> = results
+                        .iter()
+                        .filter_map(|(name, _, r)| r.as_ref().ok().map(|_| name.clone()))
+                        .collect();
 
-                if !errors.is_empty() {
-                    let errors_string = errors.join("\n\n");
-                    if !successes.is_empty() {
-                        // partial success
-                        self.bulk_schedule_message = Some((
-                            MessageType::Error,
-                            format!(
-                                "Successes: {}/{}\n\nErrors:\n\n{:?}",
-                                successes.len(),
-                                successes.len() + errors.len(),
-                                errors_string
-                            ),
-                        ));
+                    if !errors.is_empty() {
+                        let errors_string = errors.join("\n\n");
+                        if !successes.is_empty() {
+                            // partial success
+                            self.bulk_schedule_message = Some((
+                                MessageType::Error,
+                                format!(
+                                    "Successes: {}/{}\n\nErrors:\n\n{:?}",
+                                    successes.len(),
+                                    successes.len() + errors.len(),
+                                    errors_string
+                                ),
+                            ));
+                        } else {
+                            // all failed
+                            self.bulk_schedule_message =
+                                Some((MessageType::Error, format!("Errors:\n\n{}", errors_string)));
+                        }
                     } else {
-                        // all failed
-                        self.bulk_schedule_message =
-                            Some((MessageType::Error, format!("Errors:\n\n{}", errors_string)));
+                        // no errors => all success
+                        self.bulk_schedule_message = Some((
+                            MessageType::Success,
+                            "Votes all cast successfully.".to_string(),
+                        ));
                     }
-                } else {
-                    // no errors => all success
-                    self.bulk_schedule_message = Some((
-                        MessageType::Success,
-                        "Votes all cast successfully.".to_string(),
-                    ));
-                }
 
-                self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-            }
-            // If scheduling succeeded
-            BackendTaskSuccessResult::ScheduledVotes => {
-                if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
                     self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                 }
-                self.bulk_schedule_message =
-                    Some((MessageType::Success, "Votes scheduled".to_string()));
-            }
-            BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                self.scheduled_vote_cast_in_progress = false;
-                if let Ok(mut guard) = self.scheduled_votes.lock()
-                    && let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
-                        v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
-                    })
-                {
-                    *status = ScheduledVoteCastingStatus::Completed;
+                // If scheduling succeeded
+                ContestResult::ScheduledVotes => {
+                    if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
+                    }
+                    self.bulk_schedule_message =
+                        Some((MessageType::Success, "Votes scheduled".to_string()));
                 }
+                ContestResult::CastScheduledVote(vote) => {
+                    self.scheduled_vote_cast_in_progress = false;
+                    if let Ok(mut guard) = self.scheduled_votes.lock()
+                        && let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
+                            v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
+                        })
+                    {
+                        *status = ScheduledVoteCastingStatus::Completed;
+                    }
+                }
+                ContestResult::RefreshedDpnsContests | ContestResult::RefreshedOwnedDpnsNames => {
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                }
+                _ => {}
             }
-            BackendTaskSuccessResult::RefreshedDpnsContests
-            | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-            }
-            _ => {}
         }
     }
 

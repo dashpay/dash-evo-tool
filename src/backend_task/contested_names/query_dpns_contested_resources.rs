@@ -1,5 +1,6 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::contested_names::ContestResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Sdk;
@@ -273,7 +274,7 @@ impl AppContext {
 
         sender
             .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::RefreshedDpnsContests,
+                BackendTaskSuccessResult::Contest(ContestResult::RefreshedDpnsContests),
             )))
             .await
             .map_err(|e| {

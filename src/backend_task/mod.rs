@@ -11,10 +11,7 @@ use crate::backend_task::wallet::{WalletResult, WalletTask};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::utils::egui_mpsc::SenderAsync;
-use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::votes::Vote;
 use futures::future::join_all;
 use grovestark::GroveSTARKTask;
 use std::sync::Arc;
@@ -98,13 +95,7 @@ pub enum BackendTaskSuccessResult {
     Contract(ContractResult),
 
     // DPNS/Contest results
-    #[allow(dead_code)] // May be used for reporting successful votes
-    SuccessfulVotes(Vec<Vote>),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
-    CastScheduledVote(ScheduledDPNSVote),
-    ScheduledVotes,
-    RefreshedDpnsContests,
-    RefreshedOwnedDpnsNames,
+    Contest(contested_names::ContestResult),
 
     // Other domain results
     UpdatedThemePreference(crate::ui::theme::ThemeMode),

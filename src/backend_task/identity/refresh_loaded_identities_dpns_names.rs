@@ -1,5 +1,6 @@
 use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
+use crate::backend_task::contested_names::ContestResult;
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::DPNSNameInfo;
@@ -89,6 +90,8 @@ impl AppContext {
             )
         })?;
 
-        Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
+        Ok(BackendTaskSuccessResult::Contest(
+            ContestResult::RefreshedOwnedDpnsNames,
+        ))
     }
 }

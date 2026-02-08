@@ -9,6 +9,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::Identifier;
 use futures::future::join_all;
 use std::sync::Arc;
@@ -31,6 +32,17 @@ pub struct ScheduledDPNSVote {
     pub choice: ResourceVoteChoice,
     pub unix_timestamp: u64,
     pub executed_successfully: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContestResult {
+    #[allow(dead_code)]
+    SuccessfulVotes(Vec<Vote>),
+    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
+    CastScheduledVote(ScheduledDPNSVote),
+    ScheduledVotes,
+    RefreshedDpnsContests,
+    RefreshedOwnedDpnsNames,
 }
 
 impl AppContext {
@@ -70,7 +82,9 @@ impl AppContext {
                     .into_iter()
                     .flat_map(|(name, vote_choice, det_execution_result)| {
                         match det_execution_result {
-                            Ok(BackendTaskSuccessResult::DPNSVoteResults(platform_results)) => {
+                            Ok(BackendTaskSuccessResult::Contest(
+                                ContestResult::DPNSVoteResults(platform_results),
+                            )) => {
                                 // Voting succeeded in DET, return the Platform results
                                 platform_results
                             }
@@ -86,11 +100,13 @@ impl AppContext {
                     })
                     .collect::<Vec<_>>();
 
-                Ok(BackendTaskSuccessResult::DPNSVoteResults(final_results))
+                Ok(BackendTaskSuccessResult::Contest(
+                    ContestResult::DPNSVoteResults(final_results),
+                ))
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
                 .insert_scheduled_votes(scheduled_votes)
-                .map(|_| BackendTaskSuccessResult::ScheduledVotes)
+                .map(|_| BackendTaskSuccessResult::Contest(ContestResult::ScheduledVotes))
                 .map_err(|e| format!("Error inserting scheduled votes: {}", e)),
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => self
                 .vote_on_dpns_name(
@@ -101,7 +117,11 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map(|_| BackendTaskSuccessResult::CastScheduledVote(scheduled_vote.clone()))
+                .map(|_| {
+                    BackendTaskSuccessResult::Contest(ContestResult::CastScheduledVote(
+                        scheduled_vote.clone(),
+                    ))
+                })
                 .map_err(|e| format!("Error casting scheduled vote: {}", e)),
             ContestedResourceTask::ClearAllScheduledVotes => self
                 .clear_all_scheduled_votes()

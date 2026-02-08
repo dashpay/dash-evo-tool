@@ -860,7 +860,11 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                         }
-                        BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
+                        BackendTaskSuccessResult::Contest(
+                            crate::backend_task::contested_names::ContestResult::CastScheduledVote(
+                                ref vote,
+                            ),
+                        ) => {
                             let _ = self.current_app_context().mark_vote_executed(
                                 vote.voter_id.as_slice(),
                                 vote.contested_name.clone(),

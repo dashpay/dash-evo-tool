@@ -980,7 +980,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producers: `src/backend_task/document.rs`, `src/backend_task/contract.rs`, `register_contract.rs`, `update_data_contract.rs`
   - Consumers: `src/ui/contracts_documents/` (6+ screens), `src/ui/tokens/tokens_screen/mod.rs`
 
-- [ ] **3.6h Extract Contest/DPNS results into ContestResult sub-enum** (P2)
+- [x] **3.6h Extract Contest/DPNS results into ContestResult sub-enum** (P2)
   Create `ContestResult` with 5 variants: `VoteResults`, `CastScheduledVote`, `ScheduledVotes`, `RefreshedContests`, `RefreshedOwnedNames`, `SuccessfulVotes`. Update `app.rs` to handle `CastScheduledVote` via the sub-enum. Update:
   - Producers: `src/backend_task/contested_names/`
   - Consumers: `src/ui/dpns/dpns_contested_names_screen.rs`, `src/ui/dpns/dpns_screen.rs`, `src/app.rs`

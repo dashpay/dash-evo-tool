@@ -1,5 +1,6 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::contested_names::ContestResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -87,6 +88,8 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::DPNSVoteResults(vote_results))
+        Ok(BackendTaskSuccessResult::Contest(
+            ContestResult::DPNSVoteResults(vote_results),
+        ))
     }
 }

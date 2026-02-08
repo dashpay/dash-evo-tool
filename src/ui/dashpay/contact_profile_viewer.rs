@@ -458,7 +458,7 @@ impl ContactProfileViewerScreen {
                     if self.app_context.is_developer_mode() {
                         let pay_button =
                             egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                .fill(DashColors::DASH_BLUE);
 
                         if ui.add(pay_button).clicked() {
                             action = AppAction::AddScreen(
@@ -490,7 +490,7 @@ impl ContactProfileViewerScreen {
                         if self.app_context.is_developer_mode() {
                             let pay_button =
                                 egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                    .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                    .fill(DashColors::DASH_BLUE);
 
                             if ui.add(pay_button).clicked() {
                                 action = AppAction::AddScreen(

@@ -1211,7 +1211,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **4.2d Centralize inline colors in wallet screens to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in `src/ui/wallets/` files (~35 instances across wallets_screen/mod.rs, wallets_screen/dialogs.rs, send_screen/mod.rs, send_screen/advanced.rs, single_key_send_screen.rs, import_mnemonic_screen.rs, add_new_wallet_screen.rs, create_asset_lock_screen.rs, asset_lock_detail_screen.rs). Same color mapping approach.
 
-- [ ] **4.2e Centralize inline colors in token, dashpay, dpns, contracts, and tools screens to DashColors** (P3)
+- [x] **4.2e Centralize inline colors in token, dashpay, dpns, contracts, and tools screens to DashColors** (P3)
   Replace hardcoded `Color32::from_rgb(...)` in remaining UI modules (~100 instances across tokens/, dashpay/, dpns/, contracts_documents/, tools/ directories). This is the largest batch but most instances follow the same 4-5 color patterns. Can be done file-by-file with search-and-replace within each file.
 
 - [ ] **4.3 [META] Review error display patterns across all screens** (P2)
@@ -1418,7 +1418,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
 | 3. Refactoring | 49 | 49 |
-| 4. UI/UX | 15 | 10 |
+| 4. UI/UX | 15 | 11 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |
 | 7. Features | 5 | 0 |

@@ -539,7 +539,7 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.add_space(10.0);
 
                 let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 0))
+                    .fill(DashColors::SUCCESS)
                     .corner_radius(3.0);
 
                 if ui.add(button).clicked() {

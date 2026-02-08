@@ -742,7 +742,7 @@ impl UpdateTokenConfigScreen {
         );
 
         let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .frame(true)
             .corner_radius(3.0);
 
@@ -1106,7 +1106,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
                         MessageType::Error => {
-                            let error_color = Color32::from_rgb(255, 100, 100);
+                            let error_color = DashColors::ERROR;
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))
                                 .inner_margin(Margin::symmetric(10, 8))

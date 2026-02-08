@@ -75,6 +75,8 @@ impl DashColors {
     pub const PLATFORM_PURPLE: Color32 = Color32::from_rgb(130, 80, 220);
     /// Blue for primary action buttons (Generate, Save, Import)
     pub const ACTION_BUTTON_BLUE: Color32 = Color32::from_rgb(0, 128, 255);
+    /// Gold/amber for text highlighting (e.g., matched hashes in proof logs)
+    pub const HIGHLIGHT_GOLD: Color32 = Color32::from_rgb(0x9b, 0x87, 0x0c);
     /// Light pink for very weak password strength
     pub const STRENGTH_WEAK: Color32 = Color32::from_rgb(255, 182, 193);
     /// Light yellow for fair password strength

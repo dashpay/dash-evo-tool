@@ -706,7 +706,7 @@ impl ContactsList {
                                 let add_button = egui::Button::new(
                                     RichText::new("Add Contact").color(egui::Color32::WHITE),
                                 )
-                                .fill(egui::Color32::from_rgb(0, 141, 228));
+                                .fill(DashColors::DASH_BLUE);
                                 if ui.add(add_button).clicked() {
                                     action = AppAction::AddScreen(
                                         ScreenType::DashPayAddContact

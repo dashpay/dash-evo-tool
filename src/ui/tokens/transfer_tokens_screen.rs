@@ -487,7 +487,7 @@ impl ScreenLike for TransferTokensScreen {
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
                 let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
                 let hover_text = if !has_enough_balance {

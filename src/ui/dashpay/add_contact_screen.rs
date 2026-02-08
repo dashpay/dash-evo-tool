@@ -357,7 +357,7 @@ impl ScreenLike for AddContactScreen {
             if let ContactRequestStatus::Error(ref err) = self.status {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let error_color = if dark_mode {
-                    egui::Color32::from_rgb(255, 100, 100)
+                    DashColors::ERROR
                 } else {
                     egui::Color32::DARK_RED
                 };
@@ -559,7 +559,7 @@ impl ScreenLike for AddContactScreen {
                                 RichText::new("Add Contact").color(egui::Color32::WHITE),
                             )
                             .fill(if send_button_enabled {
-                                egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                                DashColors::DASH_BLUE
                             } else {
                                 egui::Color32::GRAY
                             });

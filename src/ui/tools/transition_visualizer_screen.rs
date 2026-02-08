@@ -6,6 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -228,7 +229,7 @@ impl TransitionVisualizerScreen {
                     let button = egui::Button::new(
                         RichText::new("Broadcast Transition to Platform").color(Color32::WHITE),
                     )
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
 

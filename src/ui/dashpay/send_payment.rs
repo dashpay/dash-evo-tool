@@ -342,7 +342,7 @@ impl SendPaymentScreen {
                             RichText::new("Send Payment").color(egui::Color32::WHITE),
                         )
                         .fill(if send_enabled {
-                            egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                            DashColors::DASH_BLUE
                         } else {
                             egui::Color32::GRAY
                         });

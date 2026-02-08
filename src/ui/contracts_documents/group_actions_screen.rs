@@ -20,6 +20,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
@@ -237,7 +238,7 @@ impl GroupActionsScreen {
                                             egui::Button::new(
                                                 RichText::new("Take Action").color(Color32::WHITE),
                                             )
-                                            .fill(Color32::from_rgb(0, 128, 255))
+                                            .fill(DashColors::ACTION_BUTTON_BLUE)
                                             .frame(true),
                                         )
                                         .clicked()
@@ -555,7 +556,7 @@ impl ScreenLike for GroupActionsScreen {
                 ui.add_space(10.0);
                 let button =
                     egui::Button::new(RichText::new("Fetch Group Actions").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 128, 255))
+                        .fill(DashColors::ACTION_BUTTON_BLUE)
                         .frame(true)
                         .corner_radius(3.0);
 
@@ -573,7 +574,7 @@ impl ScreenLike for GroupActionsScreen {
             match &self.fetch_group_actions_status {
                 FetchGroupActionsStatus::ErrorMessage(msg) => {
                     ui.add_space(10.0);
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::ERROR;
                     let msg = msg.clone();
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))

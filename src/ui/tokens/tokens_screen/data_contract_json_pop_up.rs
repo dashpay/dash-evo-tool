@@ -17,7 +17,7 @@ impl TokensScreen {
             painter.rect_filled(
                 screen_rect,
                 0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120), // Semi-transparent black overlay
+                DashColors::modal_overlay(), // Semi-transparent black overlay
             );
 
             egui::Window::new("Data Contract JSON")
@@ -36,13 +36,10 @@ impl TokensScreen {
                         offset: [0, 8],
                         blur: 16,
                         spread: 0,
-                        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                        color: DashColors::popup_shadow(),
                     },
                     fill: ui.style().visuals.window_fill,
-                    stroke: egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                    ),
+                    stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
                 })
                 .show(ui.ctx(), |ui| {
                     // Display the JSON in a multiline text box

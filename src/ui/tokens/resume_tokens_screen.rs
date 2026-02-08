@@ -10,6 +10,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::render_group_action_text;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use eframe::egui::{self, Color32, Context};
@@ -171,7 +172,7 @@ impl ScreenLike for ResumeTokensScreen {
             if self.base.app_context.is_developer_mode() || !button_text.contains("Test") {
                 ui.add_space(10.0);
                 let button = egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .corner_radius(3.0);
 
                 if ui.add(button).clicked() && self.base.confirmation_dialog.is_none() {

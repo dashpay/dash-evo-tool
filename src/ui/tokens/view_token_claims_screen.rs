@@ -138,7 +138,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
             let fetch_button =
                 egui::Button::new(RichText::new("Fetch claims").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
 

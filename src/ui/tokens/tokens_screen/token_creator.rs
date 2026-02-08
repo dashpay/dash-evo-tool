@@ -292,7 +292,7 @@ impl TokensScreen {
                             if self.selected_identity.is_some() && self.selected_key.is_none() {
                                 ui.add_space(5.0);
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(200, 100, 100),
+                                    DashColors::DANGER_RED,
                                     "No eligible key found for this identity. Please use Advanced Options or add a suitable key.",
                                 );
                                 return;
@@ -1088,7 +1088,7 @@ impl TokensScreen {
         // Show an error if we have one
         if let Some(err_msg) = self.token_creator_error_message.clone() {
             ui.add_space(10.0);
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -1691,7 +1691,7 @@ impl TokensScreen {
                     ui.add(egui::Hyperlink::from_label_and_url(
                         RichText::new("dashpay.io")
                             .underline()
-                            .color(Color32::from_rgb(0, 128, 255)),
+                            .color(DashColors::ACTION_BUTTON_BLUE),
                         "https://dashpay.io",
                     ));
                 });

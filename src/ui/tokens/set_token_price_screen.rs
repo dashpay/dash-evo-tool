@@ -507,7 +507,7 @@ impl SetTokenPriceScreen {
                 self.render_tiered_pricing_preview(ui);
             }
             PricingType::RemovePricing => {
-                ui.colored_label(Color32::from_rgb(180, 100, 0), "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.");
+                ui.colored_label(DashColors::WARNING_ORANGE, "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.");
                 ui.label("Users will no longer be able to buy this token directly.");
             }
         }
@@ -1102,9 +1102,9 @@ impl ScreenLike for SetTokenPriceScreen {
                 let button_active = validation_result.is_ok() && !matches!(self.status, OperationStatus::WaitingForResult(_));
 
                 let button_color = if validation_result.is_ok() {
-                    Color32::from_rgb(0, 128, 255)
+                    DashColors::ACTION_BUTTON_BLUE
                 } else {
-                    Color32::from_rgb(100, 100, 100)
+                    DashColors::BUTTON_DISABLED
                 };
 
                 let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))

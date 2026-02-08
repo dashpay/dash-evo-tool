@@ -399,7 +399,7 @@ impl ContactRequests {
         if let Some(err) = self.error.clone() {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             let error_color = if dark_mode {
-                egui::Color32::from_rgb(255, 100, 100)
+                DashColors::ERROR
             } else {
                 egui::Color32::DARK_RED
             };
@@ -606,14 +606,14 @@ impl ContactRequests {
                                                 // Show checkmark and "Accepted" text
                                                 ui.label(
                                                     RichText::new("Accepted")
-                                                        .color(egui::Color32::from_rgb(0, 150, 0))
+                                                        .color(DashColors::SUCCESS)
                                                         .strong()
                                                 );
                                             } else if self.rejected_requests.contains(&request.request_id) {
                                                 // Show X and "Rejected" text
                                                 ui.label(
                                                     RichText::new("Rejected")
-                                                        .color(egui::Color32::from_rgb(150, 0, 0))
+                                                        .color(DashColors::DANGER_RED)
                                                         .strong()
                                                 );
                                             } else {
@@ -727,7 +727,7 @@ impl ContactRequests {
                                     let add_button = egui::Button::new(
                                         RichText::new("Add Contact").color(egui::Color32::WHITE),
                                     )
-                                    .fill(egui::Color32::from_rgb(0, 141, 228));
+                                    .fill(DashColors::DASH_BLUE);
                                     if ui.add(add_button).clicked() {
                                         action = AppAction::AddScreen(
                                             ScreenType::DashPayAddContact.create_screen(&self.app_context),

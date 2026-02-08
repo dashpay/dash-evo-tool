@@ -572,7 +572,7 @@ impl ScreenLike for UnfreezeTokensScreen {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
+                            .fill(DashColors::ACTION_BUTTON_BLUE)
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {

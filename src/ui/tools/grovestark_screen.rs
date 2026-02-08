@@ -807,7 +807,7 @@ impl GroveSTARKScreen {
 
         // Error Display
         if let Some(error) = &self.gen_error_message {
-            let error_color = egui::Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             let error = error.clone();
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
@@ -887,7 +887,7 @@ impl GroveSTARKScreen {
 
         // Error Display (above the button)
         if let Some(error) = &self.verify_error_message {
-            let error_color = egui::Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             let error = error.clone();
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))

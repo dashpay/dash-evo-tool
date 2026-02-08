@@ -496,7 +496,7 @@ impl DPNSScreen {
                             // LOCK button
                             row.col(|ui| {
                                 let label_text = format!("{}", locked_votes);
-                                let dark_green = Color32::from_rgb(0, 100, 0);
+                                let dark_green = Color32::DARK_GREEN;
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 let normal_color = DashColors::text_primary(dark_mode);
                                 let text_widget = if is_locked_votes_bold {
@@ -512,7 +512,7 @@ impl DPNSScreen {
                                 });
 
                                 let button = if is_selected {
-                                    Button::new(text_widget).fill(Color32::from_rgb(0, 150, 255))
+                                    Button::new(text_widget).fill(DashColors::ACTION_BUTTON_BLUE)
                                 } else {
                                     Button::new(text_widget)
                                 };
@@ -560,7 +560,7 @@ impl DPNSScreen {
                                 });
 
                                 let button = if is_selected {
-                                    Button::new(label_text).fill(Color32::from_rgb(0, 150, 255))
+                                    Button::new(label_text).fill(DashColors::ACTION_BUTTON_BLUE)
                                 } else {
                                     Button::new(label_text)
                                 };
@@ -1230,7 +1230,7 @@ impl DPNSScreen {
                 let text = if contestant.votes == max_contestant_votes && !is_locked_votes_bold {
                     RichText::new(button_text)
                         .strong()
-                        .color(Color32::from_rgb(0, 100, 0))
+                        .color(Color32::DARK_GREEN)
                 } else {
                     RichText::new(button_text)
                 };
@@ -1242,7 +1242,7 @@ impl DPNSScreen {
                 });
 
                 let button = if is_selected {
-                    Button::new(text).fill(Color32::from_rgb(0, 150, 255))
+                    Button::new(text).fill(DashColors::ACTION_BUTTON_BLUE)
                 } else {
                     Button::new(text)
                 };
@@ -1553,7 +1553,7 @@ impl DPNSScreen {
 
         // "Apply Votes" button
         let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .corner_radius(3.0);
         if ui.add(button).clicked() {
             action = self.bulk_apply_votes();

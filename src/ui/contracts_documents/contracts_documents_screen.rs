@@ -196,7 +196,7 @@ impl DocumentQueryScreen {
 
             let button_fetch =
                 egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0)
                     .min_size(egui::vec2(button_width - spacing, 0.0));

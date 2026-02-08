@@ -433,7 +433,7 @@ pub fn render_operation_status(ui: &mut Ui, status: &mut OperationStatus, waitin
             ui.label(format!("{}... elapsed: {}s", waiting_message, elapsed));
         }
         OperationStatus::ErrorMessage(msg) => {
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             let msg = msg.clone();
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))

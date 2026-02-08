@@ -961,7 +961,7 @@ impl ProfileScreen {
                                                 .color(egui::Color32::WHITE),
                                         )
                                         .fill(if can_save {
-                                            egui::Color32::from_rgb(0, 141, 228) // Dash blue
+                                            DashColors::DASH_BLUE
                                         } else {
                                             egui::Color32::GRAY
                                         });
@@ -1191,7 +1191,7 @@ impl ProfileScreen {
                                             RichText::new("Edit Profile")
                                                 .color(egui::Color32::WHITE),
                                         )
-                                        .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                        .fill(DashColors::DASH_BLUE);
 
                                         if ui.add(edit_button).clicked() {
                                             self.start_editing();
@@ -1251,7 +1251,7 @@ impl ProfileScreen {
                                     let create_button = egui::Button::new(
                                         RichText::new("Create Profile").color(egui::Color32::WHITE),
                                     )
-                                    .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                    .fill(DashColors::DASH_BLUE);
 
                                     if ui.add(create_button).clicked() {
                                         self.start_editing();

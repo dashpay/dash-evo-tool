@@ -132,7 +132,7 @@ impl AddTokenByIdScreen {
             && ui
                 .add(
                     egui::Button::new(RichText::new("Add Token").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 120, 0)),
+                        .fill(DashColors::SUCCESS),
                 )
                 .clicked()
         {

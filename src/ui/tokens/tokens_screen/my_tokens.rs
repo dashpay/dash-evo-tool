@@ -427,7 +427,7 @@ impl TokensScreen {
                                             if itb.identity_id == token_info.data_contract.owner_id() {
                                                 ui.label(
                                                     RichText::new(itb.identity_id.to_string(Encoding::Base58))
-                                                        .color(Color32::from_rgb(0, 100, 0)) // Dark green
+                                                        .color(Color32::DARK_GREEN)
                                                 ).on_hover_text("Owner of the contract");
                                             } else {
                                                 ui.label(itb.identity_id.to_string(Encoding::Base58));

@@ -601,8 +601,25 @@ impl ScreenLike for FreezeTokensScreen {
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
-                        // Initialize confirmation dialog when button is clicked
-                        self.confirmation_dialog = None; // Reset for fresh dialog
+                        // Create confirmation dialog on button click
+                        if self.confirmation_dialog.is_none() {
+                            if self.freeze_identity_id.trim().is_empty() {
+                                self.error_message =
+                                    Some("Please enter an identity ID to freeze.".into());
+                                return AppAction::None;
+                            }
+
+                            self.confirmation_dialog = Some(
+                                ConfirmationDialog::new(
+                                    "Confirm Freeze",
+                                    format!(
+                                        "Are you sure you want to freeze identity {}?",
+                                        self.freeze_identity_id
+                                    ),
+                                )
+                                .danger_mode(true),
+                            );
+                        }
                     }
                 }
 

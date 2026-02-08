@@ -2045,7 +2045,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - **contracts-015 (marketplace trade mode)** — CONFIRMED, sub-task created below.
   - **contracts-016** — LOW PRIORITY.
 
-- [ ] **7.4a Fix freeze_tokens_screen: Create confirmation dialog on button click** (P0)
+- [x] **7.4a Fix freeze_tokens_screen: Create confirmation dialog on button click** (P0)
   In `src/ui/tokens/freeze_tokens_screen.rs:603-606`, the Freeze button click handler sets `self.confirmation_dialog = None` instead of creating a new `ConfirmationDialog`. Replace with the correct pattern from `burn_tokens_screen.rs:625-651`: validate the freeze identity ID input, then create `Some(ConfirmationDialog::new("Confirm Freeze", message).confirm_text(Some("Confirm")).cancel_text(Some("Cancel")).danger_mode(true))`. The `show_confirmation_popup()` at line 224 already handles dialog rendering and task dispatch — it just never gets called because the dialog is never created. **This is a complete loss-of-function bug — the Freeze feature is non-operational.**
 
 - [ ] **7.4b Fix GH#224: Add key selection in token creator simple mode** (P2)

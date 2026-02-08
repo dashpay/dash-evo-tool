@@ -1,4 +1,6 @@
 use crate::app::AppAction;
+use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -10,6 +12,7 @@ use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -55,6 +58,7 @@ pub struct ContactDetailsScreen {
     message: Option<(String, MessageType)>,
     loading: bool,
     show_info_popup: bool,
+    needs_backend_fetch: bool,
 }
 
 impl ContactDetailsScreen {
@@ -76,22 +80,94 @@ impl ContactDetailsScreen {
             message: None,
             loading: false,
             show_info_popup: false,
+            needs_backend_fetch: true,
         };
-        screen.refresh();
+        screen.load_from_database();
         screen
     }
 
-    pub fn refresh(&mut self) {
-        // Don't set loading here - only when actually making backend requests
-        self.loading = false;
+    /// Load contact data from local database for immediate display.
+    fn load_from_database(&mut self) {
+        let identity_id = self.identity.identity.id();
+        let network_str = self.app_context.network.to_string();
 
-        // Clear any existing data - real data should be loaded from backend when needed
-        self.contact_info = None;
-        self.payment_history.clear();
-        self.message = None;
+        // Try to load the contact's public info from the dashpay_contacts table
+        let mut username = None;
+        let mut display_name = None;
+        let mut avatar_url = None;
+        let mut bio = None;
 
-        // TODO: Implement real backend fetching of contact info and payment history
-        // This should be triggered by user actions or specific backend tasks
+        if let Ok(stored_contacts) = self
+            .app_context
+            .db
+            .load_dashpay_contacts(&identity_id, &network_str)
+        {
+            for stored_contact in stored_contacts {
+                if let Ok(contact_id) = Identifier::from_bytes(&stored_contact.contact_identity_id)
+                    && contact_id == self.contact_id
+                {
+                    username = stored_contact.username;
+                    display_name = stored_contact.display_name;
+                    avatar_url = stored_contact.avatar_url;
+                    // bio is stored in profiles, not contacts table
+                    break;
+                }
+            }
+        }
+
+        // Load the profile for bio if available
+        if let Ok(Some(profile)) = self
+            .app_context
+            .db
+            .load_dashpay_profile(&self.contact_id, &network_str)
+        {
+            bio = profile.bio;
+            // Also prefer profile display_name and avatar_url if not already set
+            if display_name.is_none() {
+                display_name = profile.display_name;
+            }
+            if avatar_url.is_none() {
+                avatar_url = profile.avatar_url;
+            }
+        }
+
+        // Load private contact info (nickname, notes, hidden)
+        let (nickname, note, is_hidden) = self
+            .app_context
+            .db
+            .load_contact_private_info(&identity_id, &self.contact_id)
+            .unwrap_or_default();
+
+        let nickname = if nickname.is_empty() {
+            None
+        } else {
+            Some(nickname)
+        };
+        let note = if note.is_empty() { None } else { Some(note) };
+
+        self.contact_info = Some(ContactInfo {
+            identity_id: self.contact_id,
+            username,
+            display_name,
+            bio,
+            avatar_url,
+            nickname,
+            note,
+            is_hidden,
+            account_reference: 0,
+        });
+    }
+
+    /// Trigger a backend fetch to refresh contact profile data from Platform.
+    fn trigger_backend_fetch(&mut self) -> AppAction {
+        self.loading = true;
+
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::FetchContactProfile {
+                identity: self.identity.clone(),
+                contact_id: self.contact_id,
+            },
+        )))
     }
 
     fn start_editing(&mut self) {
@@ -103,8 +179,8 @@ impl ContactDetailsScreen {
         }
     }
 
-    fn save_contact_info(&mut self) {
-        // TODO: Save contact info via backend
+    fn save_contact_info(&mut self) -> AppAction {
+        // Update local state immediately for responsive UI
         if let Some(info) = &mut self.contact_info {
             info.nickname = if self.edit_nickname.is_empty() {
                 None
@@ -119,8 +195,40 @@ impl ContactDetailsScreen {
             info.is_hidden = self.edit_hidden;
         }
 
+        // Save to local database immediately
+        let identity_id = self.identity.identity.id();
+        if let Err(e) = self.app_context.db.save_contact_private_info(
+            &identity_id,
+            &self.contact_id,
+            &self.edit_nickname,
+            &self.edit_note,
+            self.edit_hidden,
+        ) {
+            tracing::warn!("Failed to save contact private info to database: {}", e);
+        }
+
         self.editing_info = false;
-        self.display_message("Contact info updated", MessageType::Success);
+        self.loading = true;
+
+        // Dispatch backend task to persist to Platform (encrypted)
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::UpdateContactInfo {
+                identity: self.identity.clone(),
+                contact_id: self.contact_id,
+                nickname: if self.edit_nickname.is_empty() {
+                    None
+                } else {
+                    Some(self.edit_nickname.clone())
+                },
+                note: if self.edit_note.is_empty() {
+                    None
+                } else {
+                    Some(self.edit_note.clone())
+                },
+                is_hidden: self.edit_hidden,
+                accepted_accounts: vec![],
+            },
+        )))
     }
 
     fn cancel_editing(&mut self) {
@@ -132,6 +240,12 @@ impl ContactDetailsScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        // Dispatch deferred backend fetch if flagged
+        if self.needs_backend_fetch {
+            self.needs_backend_fetch = false;
+            action = self.trigger_backend_fetch();
+        }
 
         // Header
         ui.horizontal(|ui| {
@@ -146,9 +260,9 @@ impl ContactDetailsScreen {
         // Show message if any
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
+                MessageType::Success => DashColors::SUCCESS,
+                MessageType::Error => DashColors::ERROR,
+                MessageType::Info => DashColors::INFO,
             };
             ui.colored_label(color, message);
             ui.separator();
@@ -180,7 +294,8 @@ impl ContactDetailsScreen {
                                 .nickname
                                 .as_ref()
                                 .or(info.display_name.as_ref())
-                                .or(info.username.as_ref()).cloned()
+                                .or(info.username.as_ref())
+                                .cloned()
                                 .unwrap_or_else(|| "Unknown".to_string());
                             ui.label(RichText::new(name).heading());
 
@@ -205,15 +320,16 @@ impl ContactDetailsScreen {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                             // Send Payment requires SPV which is dev mode only
                             if self.app_context.is_developer_mode()
-                                && ui.button("Send Payment").clicked() {
-                                    action = AppAction::AddScreen(
-                                        ScreenType::DashPaySendPayment(
-                                            self.identity.clone(),
-                                            self.contact_id,
-                                        )
-                                        .create_screen(&self.app_context),
-                                    );
-                                }
+                                && ui.button("Send Payment").clicked()
+                            {
+                                action = AppAction::AddScreen(
+                                    ScreenType::DashPaySendPayment(
+                                        self.identity.clone(),
+                                        self.contact_id,
+                                    )
+                                    .create_screen(&self.app_context),
+                                );
+                            }
                         });
                     });
                 });
@@ -236,7 +352,7 @@ impl ContactDetailsScreen {
                                     self.cancel_editing();
                                 }
                                 if ui.button("Save").clicked() {
-                                    self.save_contact_info();
+                                    action = self.save_contact_info();
                                 }
                             } else if ui.button("Edit").clicked() {
                                 self.start_editing();
@@ -294,7 +410,16 @@ impl ContactDetailsScreen {
                         if info.is_hidden {
                             ui.label(
                                 RichText::new("⚠️ This contact is hidden")
-                                    .color(egui::Color32::YELLOW),
+                                    .color(DashColors::WARNING_ORANGE),
+                            );
+                        }
+
+                        if info.nickname.is_none() && info.note.is_none() && !info.is_hidden {
+                            ui.label(
+                                RichText::new(
+                                    "No private info set. Click Edit to add a nickname or note.",
+                                )
+                                .weak(),
                             );
                         }
                     }
@@ -315,42 +440,44 @@ impl ContactDetailsScreen {
                             ui.horizontal(|ui| {
                                 // Direction indicator
                                 if payment.is_incoming {
-                                    ui.label(RichText::new("⬇").color(egui::Color32::DARK_GREEN));
+                                    ui.label(RichText::new("⬇").color(DashColors::SUCCESS));
                                 } else {
-                                    ui.label(RichText::new("⬆").color(egui::Color32::DARK_RED));
+                                    ui.label(RichText::new("⬆").color(DashColors::ERROR));
                                 }
 
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         // Amount
-                                        let amount_str =
-                                            format!("{} Dash", payment.amount);
+                                        let amount_str = format!("{} Dash", payment.amount);
                                         if payment.is_incoming {
                                             ui.label(
                                                 RichText::new(format!("+{}", amount_str))
-                                                    .color(egui::Color32::DARK_GREEN),
+                                                    .color(DashColors::SUCCESS),
                                             );
                                         } else {
                                             ui.label(
                                                 RichText::new(format!("-{}", amount_str))
-                                                    .color(egui::Color32::DARK_RED),
+                                                    .color(DashColors::ERROR),
                                             );
                                         }
 
                                         // Memo
                                         if let Some(memo) = &payment.memo {
                                             ui.label(
-                                                RichText::new(format!("\"{}\"", memo)).italics().color(DashColors::text_secondary(dark_mode)),
+                                                RichText::new(format!("\"{}\"", memo))
+                                                    .italics()
+                                                    .color(DashColors::text_secondary(dark_mode)),
                                             );
                                         }
                                     });
 
                                     ui.horizontal(|ui| {
                                         // Transaction ID
-                                        ui.label(RichText::new(&payment.tx_id).small().color(DashColors::text_secondary(dark_mode)));
-
-                                        // Timestamp
-                                        ui.label(RichText::new("• 2 days ago").small().color(DashColors::text_secondary(dark_mode)));
+                                        ui.label(
+                                            RichText::new(&payment.tx_id)
+                                                .small()
+                                                .color(DashColors::text_secondary(dark_mode)),
+                                        );
                                     });
                                 });
                             });
@@ -366,23 +493,13 @@ impl ContactDetailsScreen {
                     ui.label(RichText::new("Actions").strong());
                     ui.separator();
 
-                    ui.horizontal(|ui| {
-                        if ui.button("Remove Contact").clicked() {
-                            // TODO: Implement contact removal
-                            self.display_message(
-                                "Contact removal not yet implemented",
-                                MessageType::Info,
-                            );
-                        }
-
-                        if ui.button("Block Contact").clicked() {
-                            // TODO: Implement contact blocking
-                            self.display_message(
-                                "Contact blocking not yet implemented",
-                                MessageType::Info,
-                            );
-                        }
-                    });
+                    ui.label(
+                        RichText::new(
+                            "Contact removal and blocking are not yet available. \
+                             Contact requests cannot be revoked once sent on Platform.",
+                        )
+                        .weak(),
+                    );
                 });
             } else {
                 // No contact info loaded
@@ -391,11 +508,12 @@ impl ContactDetailsScreen {
                     ui.separator();
                     ui.label(format!("Contact ID: {}", self.contact_id));
                     ui.add_space(10.0);
-                    ui.label("Contact information will be loaded automatically when available from the backend.");
+                    if ui.button("Refresh from Platform").clicked() {
+                        action = self.trigger_backend_fetch();
+                    }
                 });
 
                 ui.add_space(10.0);
-
             }
         });
 
@@ -409,7 +527,15 @@ impl ContactDetailsScreen {
 
 impl ScreenLike for ContactDetailsScreen {
     fn refresh(&mut self) {
-        self.refresh();
+        self.load_from_database();
+        self.message = None;
+    }
+
+    fn refresh_on_arrival(&mut self) {
+        self.load_from_database();
+        self.message = None;
+        // Flag that we need a backend fetch; it will be dispatched from render()
+        self.needs_backend_fetch = true;
     }
 
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
@@ -462,5 +588,103 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.display_message(message, message_type);
+    }
+
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        self.loading = false;
+
+        match result {
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactProfile(Some(doc))) => {
+                // Update contact info with fresh profile data from Platform
+                use dash_sdk::dpp::document::DocumentV0Getters;
+                let properties = doc.properties();
+
+                let display_name = properties
+                    .get("displayName")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
+
+                let bio = properties
+                    .get("bio")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
+
+                let avatar_url = properties
+                    .get("avatarUrl")
+                    .and_then(|v| v.as_text())
+                    .map(|s| s.to_string());
+
+                // Save profile to local database for future offline access
+                let network_str = self.app_context.network.to_string();
+                if let Err(e) = self.app_context.db.save_dashpay_profile(
+                    &self.contact_id,
+                    &network_str,
+                    display_name.as_deref(),
+                    bio.as_deref(),
+                    avatar_url.as_deref(),
+                    None, // public_message
+                ) {
+                    tracing::warn!("Failed to save dashpay profile to database: {}", e);
+                }
+
+                // Update the in-memory contact info
+                if let Some(info) = &mut self.contact_info {
+                    if display_name.is_some() {
+                        info.display_name = display_name;
+                    }
+                    if bio.is_some() {
+                        info.bio = bio;
+                    }
+                    if avatar_url.is_some() {
+                        info.avatar_url = avatar_url;
+                    }
+                } else {
+                    // No existing info — create one with the profile data
+                    self.contact_info = Some(ContactInfo {
+                        identity_id: self.contact_id,
+                        username: None,
+                        display_name,
+                        bio,
+                        avatar_url,
+                        nickname: None,
+                        note: None,
+                        is_hidden: false,
+                        account_reference: 0,
+                    });
+                }
+            }
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactInfoUpdated(contact_id)) => {
+                if contact_id == self.contact_id {
+                    self.display_message("Contact info saved to Platform", MessageType::Success);
+                }
+            }
+            BackendTaskSuccessResult::DashPay(DashPayResult::ContactsWithInfo(contacts_data)) => {
+                // If a full contacts reload happened, update our contact if present
+                for contact_data in contacts_data {
+                    if contact_data.identity_id == self.contact_id {
+                        if let Some(info) = &mut self.contact_info {
+                            if contact_data.username.is_some() {
+                                info.username = contact_data.username;
+                            }
+                            if contact_data.display_name.is_some() {
+                                info.display_name = contact_data.display_name;
+                            }
+                            if contact_data.avatar_url.is_some() {
+                                info.avatar_url = contact_data.avatar_url;
+                            }
+                            if contact_data.bio.is_some() {
+                                info.bio = contact_data.bio;
+                            }
+                            info.nickname = contact_data.nickname;
+                            info.note = contact_data.note;
+                            info.is_hidden = contact_data.is_hidden;
+                            info.account_reference = contact_data.account_reference;
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }

@@ -860,7 +860,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **3.5b Extract identity/DPNS database facade into context/identity_db.rs** (P2)
   Move ~170 lines of identity and DPNS database facade methods (lines 1171-1363) into a new `src/context/identity_db.rs` as a separate `impl AppContext` block. Methods: `insert_local_qualified_identity`, `update_local_qualified_identity`, `set_identity_alias`, `set_contract_alias`, `get_identity_alias`, `load_local_qualified_identities`, `load_local_qualified_identities_in_wallets`, `get_identity_by_id`, `load_local_voting_identities`, `load_local_user_identities`, `load_wallet_for_identity`, `all_contested_names`, `ongoing_contested_names`, `insert_scheduled_votes`, `get_scheduled_votes`, `clear_all_scheduled_votes`, `clear_executed_scheduled_votes`, `delete_scheduled_vote`, `mark_vote_executed`, `local_dpns_names`.
 
-- [ ] **3.5c Extract contract/token database facade into context/contract_token_db.rs** (P2)
+- [x] **3.5c Extract contract/token database facade into context/contract_token_db.rs** (P2)
   Move ~160 lines of contract and token CRUD methods (lines 1444-1817) into a new `src/context/contract_token_db.rs` as a separate `impl AppContext` block. Methods: `get_contracts`, `get_contract_by_id`, `get_unqualified_contract_by_id`, `remove_contract`, `replace_contract`, `identity_token_balances`, `remove_token_balance`, `insert_token`, `remove_token`, `remove_wallet`, `insert_token_identity_balance`, `get_contract_by_token_id`.
 
 - [ ] **3.5d Extract transaction/asset lock processing into context/transaction_processing.rs** (P2)

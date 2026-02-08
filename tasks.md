@@ -1135,7 +1135,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (1) Change default word count from 12 to 24 to match wallet creation default (~line 77).
   (2) Pattern-match on `Mnemonic::parse_normalized()` error type to show specific messages: "Word N is not a valid BIP39 word" for invalid words, "Checksum verification failed — please check all words" for checksum errors, instead of the generic "Invalid seed phrase" message.
 
-- [ ] **4.1e Wallet creation UX polish** (P3)
+- [x] **4.1e Wallet creation UX polish** (P3)
   In `src/ui/wallets/add_new_wallet_screen.rs`:
   (1) Default password field to masked (show dots), with toggle to reveal. Currently shows plain text by default.
   (2) Stop entropy animation after mnemonic is generated — set a flag in the generation callback to freeze the randomness grid.

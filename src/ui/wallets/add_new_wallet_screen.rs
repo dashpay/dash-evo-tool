@@ -82,6 +82,7 @@ impl WordCount {
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
     password: String,
+    show_password: bool,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     selected_word_count: WordCount,
@@ -107,6 +108,7 @@ impl AddNewWalletScreen {
         Self {
             seed_phrase: None,
             password: String::new(),
+            show_password: false,
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             selected_word_count: WordCount::Words24, // Default to 24 words for maximum security
@@ -642,6 +644,7 @@ impl AddNewWalletScreen {
 
                 if ui.add(generate_button).clicked() {
                     self.generate_seed_phrase();
+                    self.entropy_grid.freeze();
                 }
             });
 
@@ -649,18 +652,25 @@ impl AddNewWalletScreen {
             if let Some(mnemonic) = &self.seed_phrase {
                 ui.add_space(10.0);
 
-                // Calculate grid dimensions based on word count
+                // Calculate grid dimensions based on word count and available width
                 let word_count = mnemonic.word_count();
-                let columns = if word_count <= 12 { 3 } else { 4 };
-                let rows = word_count.div_ceil(columns); // Ceiling division
-
-                // Create a container with a fixed width (limited to 600px max to prevent overflow)
                 let available_width = ui.available_width();
-                let frame_width = (available_width * 0.65).min(600.0);
-                let frame_height = (rows as f32 * 40.0).max(120.0); // Dynamic height based on rows
+                // Use more width on small screens, cap at 600px
+                let frame_width = (available_width - 40.0).clamp(200.0, 600.0);
+                // Adapt columns to available width: use fewer columns on narrow screens
+                let columns = if frame_width < 300.0 {
+                    2
+                } else if word_count <= 12 {
+                    3
+                } else {
+                    4
+                };
+                let rows = word_count.div_ceil(columns); // Ceiling division
+                let row_height = 36.0_f32;
+                let frame_height = (rows as f32 * row_height).max(120.0);
 
                 ui.allocate_ui_with_layout(
-                    Vec2::new(frame_width, frame_height + 20.0), // Set width and height of the container
+                    Vec2::new(frame_width, frame_height + 20.0),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
                         Frame::new()
@@ -669,30 +679,27 @@ impl AddNewWalletScreen {
                             .corner_radius(5.0)
                             .inner_margin(Margin::same(10))
                             .show(ui, |ui| {
-                                // Calculate the size of each grid cell with padding
-                                let column_width = (frame_width - 20.0) / columns as f32; // Account for inner margin
-                                let row_height = frame_height / rows as f32;
+                                let column_width = (frame_width - 20.0) / columns as f32;
 
                                 Grid::new("seed_phrase_grid")
                                     .num_columns(columns)
-                                    .spacing((0.0, 0.0))
+                                    .spacing((0.0, 4.0))
                                     .min_col_width(column_width)
                                     .min_row_height(row_height)
                                     .show(ui, |ui| {
                                         for (i, word) in mnemonic.words().enumerate() {
                                             let number_text = RichText::new(format!("{} ", i + 1))
-                                                .size(row_height * 0.3)
+                                                .size(11.0)
                                                 .color(text_secondary);
 
-                                            let word_text = RichText::new(word)
-                                                .size(row_height * 0.5)
-                                                .color(text_primary);
+                                            let word_text =
+                                                RichText::new(word).size(14.0).color(text_primary);
 
                                             ui.with_layout(
                                                 Layout::left_to_right(Align::Min),
                                                 |ui| {
-                                                    ui.label(number_text); // Add the number with the vertical offset
-                                                    ui.label(word_text); // Add the word
+                                                    ui.label(number_text);
+                                                    ui.label(word_text);
                                                 },
                                             );
 
@@ -791,6 +798,12 @@ impl ScreenLike for AddNewWalletScreen {
                         ui.label("Wallet Name:");
                         ui.text_edit_singleline(&mut self.alias_input);
                     });
+                    ui.label(
+                        RichText::new("This can be edited later and is not recorded publicly.")
+                            .weak()
+                            .italics()
+                            .size(12.0),
+                    );
 
                     ui.add_space(10.0);
                     ui.separator();
@@ -802,7 +815,9 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Optional Password:");
-                        if ui.text_edit_singleline(&mut self.password).changed() {
+                        let password_edit = egui::TextEdit::singleline(&mut self.password)
+                            .password(!self.show_password);
+                        if ui.add(password_edit).changed() {
                             if !self.password.is_empty() {
                                 let estimate = zxcvbn(&self.password, &[]);
 
@@ -822,6 +837,10 @@ impl ScreenLike for AddNewWalletScreen {
                                 self.estimated_time_to_crack = String::new();
                             }
                         }
+                        let toggle_text = if self.show_password { "Hide" } else { "Show" };
+                        if ui.small_button(toggle_text).clicked() {
+                            self.show_password = !self.show_password;
+                        }
                     });
 
                     ui.add_space(10.0);
@@ -836,25 +855,31 @@ impl ScreenLike for AddNewWalletScreen {
                             51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
                             _ => Color32::from_rgb(90, 200, 90),           // Medium green
                         };
+                        let strength_label = match self.password_strength as i32 {
+                            0 => "None",
+                            1..=25 => "Very Weak",
+                            26..=50 => "Weak",
+                            51..=75 => "Strong",
+                            _ => "Very Strong",
+                        };
                         ui.add(
                             egui::ProgressBar::new(strength_percentage as f32)
-                                .desired_width(200.0)
+                                .desired_width(250.0)
                                 .show_percentage()
-                                .text(match self.password_strength as i32 {
-                                    0 => "None".to_string(),
-                                    1..=25 => "Very Weak".to_string(),
-                                    26..=50 => "Weak".to_string(),
-                                    51..=75 => "Strong".to_string(),
-                                    _ => "Very Strong".to_string(),
-                                })
+                                .text(strength_label)
                                 .fill(fill_color),
                         );
                     });
 
                     ui.add_space(10.0);
+                    let crack_time = if self.estimated_time_to_crack == "less than a second" {
+                        "<1 second"
+                    } else {
+                        &self.estimated_time_to_crack
+                    };
                     ui.label(format!(
                         "Estimated time to crack: {}",
-                        self.estimated_time_to_crack
+                        crack_time
                     ));
 
                     ui.add_space(10.0);

@@ -5,6 +5,7 @@ use egui::{Button, Color32, Grid, Ui, Vec2};
 pub struct U256EntropyGrid {
     random_number: [u8; 32], // Current 256-bit number (32 bytes)
     last_bit_changed: u8,    // Store the last bit position changed
+    frozen: bool,            // When true, grid is displayed but not interactive
 }
 
 impl Default for U256EntropyGrid {
@@ -23,6 +24,7 @@ impl U256EntropyGrid {
         Self {
             random_number,
             last_bit_changed: 0, // Initialize to 0
+            frozen: false,
         }
     }
 
@@ -85,8 +87,9 @@ impl U256EntropyGrid {
                             // Render the button and handle interactions.
                             let response = ui.add(button);
 
-                            if response.hovered() && self.was_bit_different(bit_position)
-                                || response.clicked()
+                            if !self.frozen
+                                && (response.hovered() && self.was_bit_different(bit_position)
+                                    || response.clicked())
                             {
                                 self.toggle_bit(byte_index, bit_in_byte); // Toggle the bit.
                             }
@@ -99,6 +102,11 @@ impl U256EntropyGrid {
         });
 
         self.random_number
+    }
+
+    /// Freeze the grid so it displays but doesn't respond to interaction
+    pub fn freeze(&mut self) {
+        self.frozen = true;
     }
 
     /// Check if the bit at the given position is the same as the last changed bit

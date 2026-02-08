@@ -1828,13 +1828,112 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration** (P3)
   In `src/ui/contracts_documents/register_contract_screen.rs`, enhance the contract input flow to handle raw dashpay.io schema output. When the user pastes a contract JSON that lacks required metadata fields (no `$format_version`, no `ownerId`), automatically wrap it: inject `$format_version` from current platform version, set `ownerId` from selected identity, add `$id` if missing. Show a notification that metadata was auto-populated. This builds on the existing owner_id injection at line 141-143 and `DataContract::from_json()` parsing.
 
-- [ ] **7.2 [META] Review DashPay subsystem completeness** (P2)
+- [x] **7.2 [META] Review DashPay subsystem completeness** (P2)
   Check `src/ui/dashpay/` for unfinished features. Known TODOs:
   - Cancel outgoing contact request
   - Resolve username from identity
   - Fetch display name from profile
   Reference: `issues/dashpay-*.md` files.
   Create tasks for completing or properly deferring each feature.
+
+  **Triage Results:**
+
+  **Subsystem overview:** 33 files, ~17,550 lines (13 UI files/8,444 lines + 15 backend files/6,403 lines + 5 database/related files/2,703 lines). The DashPay subsystem is the largest feature area in the app. Core functionality is implemented: profile create/edit, contact requests (send/accept/reject with QR-based auto-accept), contacts list with search/filter/sort, profile search, encrypted contact info, DIP-14/DIP-15 key derivation, and basic payment sending. However, ~20 TODO comments indicate significant unfinished areas.
+
+  **Category 1: Contact Request Display — Username/Profile Resolution (4 TODOs)**
+  - `contact_requests.rs:897` — `from_username: None, // TODO: Resolve username from identity`
+  - `contact_requests.rs:898` — `from_display_name: None, // TODO: Fetch from profile`
+  - `contact_requests.rs:900,951` — `account_label: None, // TODO: Decrypt if present`
+  **Status:** Incoming contact requests show only identity IDs instead of usernames/display names. The identity ID is a hex string, making requests unrecognizable. This is a significant UX gap — users can't tell who sent them a contact request. The backend already has `profile.rs` with profile fetching and `contacts.rs` with contact resolution. Fix: after loading requests, batch-fetch profiles for each `from_identity` to populate username/display_name. For `account_label`, use the existing `encryption.rs` decryption logic. **Sub-task created.**
+
+  **Category 2: Contact Details Screen — Stub Implementation (3 TODOs)**
+  - `contact_details.rs:93` — `// TODO: Implement real backend fetching of contact info and payment history`
+  - `contact_details.rs:107` — `// TODO: Save contact info via backend`
+  - `contact_details.rs:371,379` — `// TODO: Implement contact removal` / `// TODO: Implement contact blocking`
+  **Status:** The ContactDetailsScreen is largely a UI shell with placeholder rendering. `refresh()` clears all data and does nothing. `save_contact_info()` only updates the local struct, never persists. Contact removal and blocking buttons display "not yet implemented" messages. The screen's data flow is disconnected from the backend — it never triggers `DashPayTask` operations. The database layer (`dashpay.rs`) has full CRUD for contacts, profiles, and contact info. The backend (`contact_info.rs`) has `create_or_update_contact_info()` with Platform document persistence. Fix: connect `refresh()` to load from DB + trigger backend fetch, connect `save_contact_info()` to `UpdateContactInfo` task, implement removal via `remove_contact` backend task. **Sub-task created.**
+
+  **Category 3: Payment History — Not Implemented (5 TODOs)**
+  - `dashpay.rs:190` — `// TODO: Implement payment history loading according to DIP-0015`
+  - `payments.rs:360` — `// TODO: Query local database for payment records`
+  - `payments.rs:379` — `// TODO: Update payment record in database`
+  - `payments.rs:394` — `// TODO: This would need to query Core or check transaction history`
+  - `send_payment.rs:81` — `// TODO: Load contact info from backend/database`
+  **Status:** The `LoadPaymentHistory` task returns an empty Vec with a detailed comment explaining the dependency on SPV for blockchain address scanning. The `load_payment_history()` function returns empty results. The `update_payment_status()` function does nothing. The PaymentHistory UI screen triggers the fetch but always gets empty results. The SendPaymentScreen `send_payment()` method does successfully send payments via `payments::send_payment_to_contact_impl()` and saves records via `db.save_dashpay_payment()`. The `send_payment.rs:81` TODO is a mock that hardcodes "alice.dash" as the contact name. **DEFERRED** — this requires SPV support (PR#525) to scan blockchain for payment addresses. The comment at line 190 documents the full implementation plan. However, `send_payment.rs:81` (load contact name) and `payments.rs:360` (query local DB) can be partially fixed since the DB already stores payment records and contact info. **Sub-task created for partial fix.**
+
+  **Category 4: Cancel Outgoing Contact Request (1 TODO)**
+  - `contact_requests.rs:782` — `// TODO: Cancel outgoing request`
+  **Status:** The "Cancel" button on outgoing requests shows "Request cancelled" but does nothing. DashPay protocol doesn't have a native "cancel request" operation — once a contactRequest document is broadcast to Platform, it cannot be deleted by the sender (only the recipient can accept/reject). The current behavior is misleading. Fix: either (a) remove the Cancel button entirely with a tooltip explaining requests can't be cancelled, or (b) implement local hiding (mark as "cancelled" in local DB, filter from display, but note it's still visible to the recipient). Option (a) is simpler and more honest. **Sub-task created.**
+
+  **Category 5: Contacts List Sorting/Filtering — Timestamp Data Missing (4 TODOs)**
+  - `contacts_list.rs:37,46` — `// TODO: needs database timestamp` for Recent and DateAdded
+  - `contacts_list.rs:578,673` — `// TODO: Implement when we have timestamp data`
+  **Status:** The `SearchFilter::Recent` and `SortOrder::DateAdded` enum variants exist but fall back to "All" filter and identity ID sorting respectively. The database already has `created_at` timestamps in `dashpay_contacts` and `dashpay_contact_requests` tables. The `StoredContact` struct has `created_at: i64` and `last_seen: Option<i64>` fields. Fix: when loading contacts, include the `created_at` timestamp from the DB and use it for Recent filter (e.g., last 7 days) and DateAdded sort. Add a `created_at: Option<u64>` field to the UI `Contact` struct. **Sub-task created.**
+
+  **Category 6: autoAcceptProof Processing (1 TODO)**
+  - `contact_requests.rs:96` — `// TODO: Process autoAcceptProof for incoming requests`
+  **Status:** ALREADY IMPLEMENTED. The `auto_accept_handler.rs` (121 lines) fully implements auto-accept proof processing with `process_auto_accept_requests()`. The `auto_accept_proof.rs` (331 lines) implements DIP-0015 proof verification including ECDH shared key derivation and HMAC validation. The TODO in the contact_requests.rs file-level function is stale — the auto-accept flow is called through a separate `DashPayTask::ProcessAutoAcceptRequests` task variant. Fix: remove or update the stale TODO comment. **Sub-task created (trivial).**
+
+  **Category 7: DashPay Issue Files (dashpay-001 through dashpay-014)**
+  - **dashpay-001 (unwrap panic contacts.rs)** — ALREADY FIXED by task 2.2e. Both `.unwrap()` calls replaced with graceful `let Ok(...) = ... else { continue }`.
+  - **dashpay-002 (key reuse encryption)** — CONFIRMED but LOW PRIORITY. Sender's private key used directly as HD derivation seed. Acknowledged as temporary code. DIP-15 specifies proper key derivation paths. This is a design decision, not a bug — the current approach works but doesn't follow DIP-15's recommended key separation. Deferring to comprehensive DIP-15 compliance review.
+  - **dashpay-003 (unvalidated array access)** — REJECTED by validator. Bounds checking is correct.
+  - **dashpay-004 (nonce reuse CBC)** — REJECTED by validator. `StdRng::from_entropy()` is cryptographically secure.
+  - **dashpay-005 (private key exposure via debug logging)** — ALREADY FIXED by task 6.3. All `eprintln!` replaced with `tracing` macros (though some still use `tracing::error!` for non-error messages — see sub-task).
+  - **dashpay-006 (time check TOCTOU)** — REJECTED by validator. Time cannot be modified between check and use.
+  - **dashpay-007 (payment amount overflow)** — LOW PRIORITY. Max Dash supply (~18.9M) × 100M = ~1.89×10^15, well within u64 range (~1.84×10^19). Precision loss at realistic amounts is < 1 duff.
+  - **dashpay-008 (database errors swallowed)** — ALREADY FIXED by task 1.2g. Silent `.ok()` and `let _ =` patterns replaced with `tracing::warn!`.
+  - **dashpay-009 (unbounded loop contacts)** — CONFIRMED. Sequential network queries for each contact (up to 200) cause slow performance. Should use concurrent queries. **Sub-task created.**
+  - **dashpay-010 (expect on entropy)** — LOW PRIORITY. `Bytes32` is always 32 bytes; the `.expect()` at `contact_info.rs:495` cannot fail. Covered by general audit tasks.
+  - **dashpay-011 (revision conflict retry)** — LOW PRIORITY. Current 3 retries with 500ms delay is bounded and functional.
+  - **dashpay-012 (account reference validation)** — REJECTED by validator. High values are valid protocol values.
+  - **dashpay-013 (URL length validation mismatch)** — LOW PRIORITY. `chars().count()` vs `len()` inconsistency on ASCII URLs is negligible.
+  - **dashpay-014 (HTTP avatar timeout no retry)** — LOW PRIORITY. Avatar fetching is optional and gracefully handled. 30-second timeout is reasonable.
+
+  **Summary:** Core DashPay functionality works (profiles, contact requests with auto-accept, contact list, basic payments). Main gaps: (1) contact requests show identity IDs not usernames, (2) contact details screen is disconnected from backend, (3) payment history depends on SPV, (4) contact list sorting by date needs DB timestamp integration, (5) sequential contact loading is slow. Issue files are mostly already fixed or low priority.
+
+- [ ] **7.2a Resolve usernames/profiles for contact request display** (P2)
+  In `src/ui/dashpay/contact_requests.rs`, after loading incoming/outgoing requests, fetch profiles/usernames for each identity:
+  (1) Collect unique `from_identity` IDs from incoming requests and `to_identity` IDs from outgoing requests.
+  (2) Batch-query the local DB (`db.get_dashpay_profile()`) for cached profiles. For cache misses, trigger a `DashPayTask::SearchProfile` or a new batch profile fetch task.
+  (3) Populate `from_username` and `from_display_name` on `ContactRequest` structs from the fetched profile data.
+  (4) For `account_label` decryption (lines 900, 951), use the existing `encryption::decrypt_data()` with the identity's encryption key to decrypt the account label field from the contact request document.
+  This makes incoming requests show "alice.dash sent you a contact request" instead of "2fG7x9... sent you a contact request".
+
+- [ ] **7.2b Connect ContactDetailsScreen to backend data flow** (P2)
+  In `src/ui/dashpay/contact_details.rs`:
+  (1) Implement `refresh()` to load contact info from local DB via `db.get_dashpay_contact()` and trigger a `DashPayTask::FetchContacts` or `FetchContactProfile` for fresh Platform data.
+  (2) Implement `save_contact_info()` to trigger `DashPayTask::UpdateContactInfo` with the edited nickname, note, and hidden status, instead of only updating the local struct.
+  (3) Implement `display_task_result()` to handle `DashPayResult::ContactInfoUpdated` and refresh contact info.
+  (4) Remove the "Remove Contact" and "Block Contact" stub buttons, replacing with a note that these features are not yet available (Platform doesn't support document deletion by third parties, and blocking is a local-only operation that needs design).
+
+- [ ] **7.2c Fix send_payment.rs contact name loading and local payment history query** (P2)
+  In `src/ui/dashpay/send_payment.rs:81`:
+  (1) Replace mock `self.to_contact_name = Some("alice.dash".to_string())` with actual contact name lookup from DB (`db.get_dashpay_contact()`) using `self.to_contact_id`.
+  In `src/backend_task/dashpay/payments.rs:360`:
+  (2) Implement `load_payment_history()` to query the `dashpay_payments` table using `db.get_dashpay_payments()`. The DB schema already stores payment records including tx_id, amount, memo, status, and timestamps.
+  Note: Full blockchain-based payment history (scanning DIP-15 addresses via SPV) remains deferred until SPV support is available.
+
+- [ ] **7.2d Fix misleading "Cancel" button on outgoing contact requests** (P2)
+  In `src/ui/dashpay/contact_requests.rs:781-787`:
+  Replace the non-functional "Cancel" button with either:
+  (a) Remove the button and add a small info label: "Contact requests cannot be cancelled once sent" (simpler, more honest), or
+  (b) Change to "Hide" button that marks the request as locally hidden in the DB but notes it's still visible to the recipient.
+  Option (a) recommended. The current behavior of showing "Request cancelled" with no actual cancellation is misleading.
+
+- [ ] **7.2e Add timestamp data to contacts list for Recent filter and DateAdded sort** (P2)
+  In `src/ui/dashpay/contacts_list.rs`:
+  (1) Add `created_at: Option<u64>` field to the `Contact` struct (line 20).
+  (2) When loading contacts from DB or from `DashPayResult::ContactsWithInfo`, populate `created_at` from the `StoredContact.created_at` field.
+  (3) Implement `SearchFilter::Recent` (line 577-580): filter to contacts with `created_at` within the last 7 days (or configurable).
+  (4) Implement `SortOrder::DateAdded` (line 672-676): sort by `created_at` descending instead of identity ID.
+
+- [ ] **7.2f Remove stale autoAcceptProof TODO and fix tracing log levels in DashPay backend** (P3)
+  (1) In `src/backend_task/dashpay/contact_requests.rs:96-100`, remove or update the stale TODO comment — auto-accept processing is fully implemented in `auto_accept_handler.rs`.
+  (2) In `src/backend_task/dashpay/auto_accept_handler.rs`, replace `tracing::error!` calls at lines 58, 83, 103 with appropriate levels (`tracing::info!` for proof found/accepted, `tracing::warn!` for invalid proof). These are informational messages incorrectly logged at error level.
+  (3) In `src/backend_task/dashpay/payments.rs:363,380`, replace `tracing::error!` with `tracing::debug!` or `tracing::info!` — these are "would do X" placeholder messages, not actual errors.
+
+- [ ] **7.2g Parallelize contact loading for performance** (P3)
+  In `src/backend_task/dashpay/contacts.rs`, the `load_contacts_with_info()` function (or equivalent) makes sequential network queries for each contact's profile. With 200 contacts, this causes significant delays. Refactor to use `tokio::spawn` with a semaphore (concurrency limit of 10-20) to parallelize profile fetches, similar to the pattern already used in `query_dpns_contested_resources.rs`. Alternatively, batch-query Platform for multiple identities at once if the SDK supports it.
 
 - [ ] **7.3 [META] Review SPV manager for production readiness** (P2)
   Note: PR#525 is active SPV work. Review current SPV code for:
@@ -1930,7 +2029,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ## Progress Tracking
 
-**Total tasks:** 170 (24 META + 146 direct)
+**Total tasks:** 177 (24 META + 153 direct)
 **Note:** META tasks will expand this list significantly as they produce sub-tasks.
 
 | Section | Tasks | Completed |
@@ -1941,6 +2040,6 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 9 | 4 |
+| 7. Features | 16 | 5 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

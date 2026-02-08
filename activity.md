@@ -982,3 +982,22 @@
 **Task:** 7.1d Implement GH#491: Auto-wrap dashpay.io contract schemas for registration
 **What was done:** Enhanced the Register Contract screen to auto-detect and wrap raw document schemas (e.g. dashpay.io output) into a full contract JSON. When the user pastes JSON that lacks contract metadata fields (`$format_version`, `id`, `version`, `documentSchemas`) but contains entries that look like document schemas, the code automatically wraps them with `$format_version: "0"`, a random placeholder `id`, the selected identity's `ownerId`, default config, and `version: 1`. A green notification banner informs the user that metadata was auto-populated. The detection logic checks for absence of contract-level keys and presence of schema-like entries (with `type`, `properties`, or `indices` fields).
 **Files changed:** src/ui/contracts_documents/register_contract_screen.rs
+
+## Run 163 — 2026-02-08
+**Task:** 7.2 [META] Review DashPay subsystem completeness
+**What was done:** Comprehensive review of the DashPay subsystem (33 files, ~17,550 lines across UI, backend, and database layers). Cataloged ~20 TODO comments across 8 files and verified 14 issue files (dashpay-001 through dashpay-014). Identified 7 categories of unfinished work: (1) contact requests show identity IDs instead of usernames/display names (4 TODOs), (2) ContactDetailsScreen is disconnected from backend (3 TODOs), (3) payment history depends on SPV and is not implemented (5 TODOs), (4) cancel outgoing request button is non-functional (1 TODO), (5) contacts list sorting/filtering by date lacks timestamp data (4 TODOs), (6) stale TODO about auto-accept which is already implemented, (7) sequential contact loading causes poor performance. Of 14 issue files: 4 already fixed by prior tasks (001, 005, 008), 4 rejected as false positives (003, 004, 006, 012), 5 low priority (002, 007, 010, 013, 014), and 1 confirmed (009 — sequential loading). Created 7 sub-tasks.
+**Files changed:** tasks.md, activity.md
+**Sub-tasks created:** 7 (7.2a through 7.2g)
+
+**Summary of findings:**
+- Core DashPay functionality works: profiles, contact requests with QR auto-accept, contacts list, basic payment sending
+- Contact requests show raw identity IDs — need username/profile resolution (P2)
+- ContactDetailsScreen UI shell disconnected from backend data flow (P2)
+- Payment history fully depends on SPV (PR#525) — partial fix possible for local DB records (P2)
+- "Cancel" button on outgoing requests is misleading — Platform doesn't support request deletion (P2)
+- Contacts list has "Recent" and "DateAdded" sort/filter stubs — DB already has timestamps, needs wiring (P2)
+- autoAcceptProof fully implemented in auto_accept_handler.rs — stale TODO in contact_requests.rs (P3)
+- Sequential contact profile loading confirmed as performance issue — needs parallelization (P3)
+- dashpay-001 ALREADY FIXED, dashpay-005 ALREADY FIXED, dashpay-008 ALREADY FIXED
+- dashpay-003, 004, 006, 012 REJECTED as false positives
+- dashpay-002, 007, 010, 011, 013, 014 LOW PRIORITY

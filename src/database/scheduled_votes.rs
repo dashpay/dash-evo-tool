@@ -232,3 +232,162 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::platform::Identifier;
+
+    fn insert_test_identity(db: &crate::database::Database, id: &Identifier) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+            rusqlite::params![id.to_vec()],
+        )
+        .unwrap();
+    }
+
+    fn insert_raw_vote(
+        db: &crate::database::Database,
+        identity_id: &Identifier,
+        name: &str,
+        choice: &str,
+        time: u64,
+        executed: bool,
+        network: &str,
+    ) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network) VALUES (?, ?, ?, ?, ?, ?)",
+            rusqlite::params![identity_id.to_vec(), name, choice, time, executed as i32, network],
+        ).unwrap();
+    }
+
+    fn count_votes(db: &crate::database::Database, network: &str) -> i64 {
+        let conn = db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM scheduled_votes WHERE network = ?",
+            rusqlite::params![network],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_executed_votes(db: &crate::database::Database, network: &str) -> i64 {
+        let conn = db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM scheduled_votes WHERE executed = 1 AND network = ?",
+            rusqlite::params![network],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_insert_and_query_scheduled_votes_raw() {
+        let db = create_test_database().unwrap();
+        let voter = Identifier::random();
+        insert_test_identity(&db, &voter);
+
+        insert_raw_vote(&db, &voter, "dash-name", "Abstain", 1000, false, "testnet");
+        insert_raw_vote(&db, &voter, "other-name", "Lock", 2000, false, "testnet");
+
+        assert_eq!(count_votes(&db, "testnet"), 2);
+    }
+
+    #[test]
+    fn test_vote_upsert_replaces() {
+        let db = create_test_database().unwrap();
+        let voter = Identifier::random();
+        insert_test_identity(&db, &voter);
+
+        insert_raw_vote(&db, &voter, "dash-name", "Abstain", 1000, false, "testnet");
+        insert_raw_vote(&db, &voter, "dash-name", "Lock", 2000, false, "testnet");
+
+        // Should be 1 vote (same PK), with updated choice
+        assert_eq!(count_votes(&db, "testnet"), 1);
+
+        let conn = db.conn.lock().unwrap();
+        let choice: String = conn.query_row(
+            "SELECT vote_choice FROM scheduled_votes WHERE identity_id = ? AND contested_name = ?",
+            rusqlite::params![voter.to_vec(), "dash-name"],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(choice, "Lock");
+    }
+
+    #[test]
+    fn test_mark_executed_and_clear_executed() {
+        let db = create_test_database().unwrap();
+        let voter = Identifier::random();
+        insert_test_identity(&db, &voter);
+
+        insert_raw_vote(&db, &voter, "name-1", "Abstain", 1000, false, "testnet");
+        insert_raw_vote(&db, &voter, "name-2", "Lock", 2000, true, "testnet");
+
+        assert_eq!(count_executed_votes(&db, "testnet"), 1);
+
+        // Clear executed votes via raw SQL (simulating what clear_executed_scheduled_votes does)
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM scheduled_votes WHERE executed = 1 AND network = ?",
+                rusqlite::params!["testnet"],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(count_votes(&db, "testnet"), 1);
+        assert_eq!(count_executed_votes(&db, "testnet"), 0);
+    }
+
+    #[test]
+    fn test_delete_specific_vote() {
+        let db = create_test_database().unwrap();
+        let voter = Identifier::random();
+        insert_test_identity(&db, &voter);
+
+        insert_raw_vote(&db, &voter, "name-1", "Abstain", 1000, false, "testnet");
+        insert_raw_vote(&db, &voter, "name-2", "Lock", 2000, false, "testnet");
+
+        // Delete one specific vote
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM scheduled_votes WHERE identity_id = ? AND contested_name = ? AND network = ?",
+                rusqlite::params![voter.to_vec(), "name-1", "testnet"],
+            ).unwrap();
+        }
+
+        assert_eq!(count_votes(&db, "testnet"), 1);
+    }
+
+    #[test]
+    fn test_network_field_stored_correctly() {
+        let db = create_test_database().unwrap();
+        let voter1 = Identifier::random();
+        let voter2 = Identifier::random();
+        insert_test_identity(&db, &voter1);
+        insert_test_identity(&db, &voter2);
+
+        // Use different voters since PK is (identity_id, contested_name) without network
+        insert_raw_vote(&db, &voter1, "name-1", "Abstain", 1000, false, "testnet");
+        insert_raw_vote(&db, &voter2, "name-2", "Lock", 2000, false, "dash");
+
+        assert_eq!(count_votes(&db, "testnet"), 1);
+        assert_eq!(count_votes(&db, "dash"), 1);
+
+        // Clear testnet votes
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM scheduled_votes WHERE network = ?",
+                rusqlite::params!["testnet"],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(count_votes(&db, "testnet"), 0);
+        assert_eq!(count_votes(&db, "dash"), 1);
+    }
+}

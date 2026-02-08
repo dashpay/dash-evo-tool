@@ -23,8 +23,8 @@ use crate::spv::{CoreBackendMode, SpvManager};
 use crate::utils::tasks::TaskManager;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::{Network, Txid};
+use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
+use dash_sdk::dpp::dashcore::{Network, Transaction, Txid};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -560,6 +560,22 @@ impl AppContext {
             })
         } else {
             None
+        }
+    }
+
+    /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
+    pub(crate) async fn broadcast_raw_transaction(&self, tx: &Transaction) -> Result<Txid, String> {
+        match self.core_backend_mode() {
+            CoreBackendMode::Rpc => self
+                .core_client
+                .read()
+                .map_err(|e| format!("core client lock poisoned: {}", e))?
+                .send_raw_transaction(tx)
+                .map_err(|e| e.to_string()),
+            CoreBackendMode::Spv => {
+                self.spv_manager.broadcast_transaction(tx).await?;
+                Ok(tx.txid())
+            }
         }
     }
 

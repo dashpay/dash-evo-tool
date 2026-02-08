@@ -587,3 +587,144 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::platform::Identifier;
+
+    fn insert_test_contract(db: &crate::database::Database, id: &Identifier) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'testnet')",
+            rusqlite::params![id.to_vec(), vec![0u8; 16]],
+        ).unwrap();
+    }
+
+    fn insert_test_token(
+        db: &crate::database::Database,
+        token_id: &Identifier,
+        contract_id: &Identifier,
+    ) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network) VALUES (?, 'Test Token', ?, ?, 0, 'testnet')",
+            rusqlite::params![token_id.to_vec(), vec![0u8; 32], contract_id.to_vec()],
+        ).unwrap();
+    }
+
+    fn insert_test_identity(db: &crate::database::Database, id: &Identifier) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+            rusqlite::params![id.to_vec()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_save_and_load_token_order() {
+        let db = create_test_database().unwrap();
+
+        let contract_id = Identifier::random();
+        insert_test_contract(&db, &contract_id);
+
+        let token1 = Identifier::random();
+        let token2 = Identifier::random();
+        let id1 = Identifier::random();
+        let id2 = Identifier::random();
+
+        insert_test_token(&db, &token1, &contract_id);
+        insert_test_token(&db, &token2, &contract_id);
+        insert_test_identity(&db, &id1);
+        insert_test_identity(&db, &id2);
+
+        let order = vec![(token1, id1), (token2, id2)];
+        db.save_token_order(order.clone()).unwrap();
+
+        let loaded = db.load_token_order().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], order[0]);
+        assert_eq!(loaded[1], order[1]);
+    }
+
+    #[test]
+    fn test_save_token_order_replaces_previous() {
+        let db = create_test_database().unwrap();
+
+        let contract_id = Identifier::random();
+        insert_test_contract(&db, &contract_id);
+
+        let t1 = Identifier::random();
+        let t2 = Identifier::random();
+        let i1 = Identifier::random();
+        let i2 = Identifier::random();
+
+        insert_test_token(&db, &t1, &contract_id);
+        insert_test_token(&db, &t2, &contract_id);
+        insert_test_identity(&db, &i1);
+        insert_test_identity(&db, &i2);
+
+        db.save_token_order(vec![(t1, i1), (t2, i2)]).unwrap();
+        db.save_token_order(vec![(t2, i2)]).unwrap();
+
+        let loaded = db.load_token_order().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], (t2, i2));
+    }
+
+    #[test]
+    fn test_load_empty_token_order() {
+        let db = create_test_database().unwrap();
+        let loaded = db.load_token_order().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_all_tokens_in_devnets_and_regtest() {
+        let db = create_test_database().unwrap();
+
+        let testnet_contract = Identifier::random();
+        let devnet_contract = Identifier::random();
+        let testnet_token = Identifier::random();
+        let devnet_token = Identifier::random();
+
+        // Insert contracts for different networks
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'testnet')",
+                rusqlite::params![testnet_contract.to_vec(), vec![0u8; 16]],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'devnet-test')",
+                rusqlite::params![devnet_contract.to_vec(), vec![0u8; 16]],
+            ).unwrap();
+        }
+
+        // Insert tokens for different networks
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network) VALUES (?, 'T1', ?, ?, 0, 'testnet')",
+                rusqlite::params![testnet_token.to_vec(), vec![0u8; 16], testnet_contract.to_vec()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network) VALUES (?, 'T2', ?, ?, 0, 'devnet-test')",
+                rusqlite::params![devnet_token.to_vec(), vec![0u8; 16], devnet_contract.to_vec()],
+            ).unwrap();
+        }
+
+        {
+            let conn = db.conn.lock().unwrap();
+            db.delete_all_local_tokens_in_all_devnets_and_regtest(&conn)
+                .unwrap();
+        }
+
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM token", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1); // Only testnet token remains
+    }
+}

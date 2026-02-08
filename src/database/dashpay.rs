@@ -933,3 +933,368 @@ impl crate::database::Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::platform::Identifier;
+
+    fn random_id() -> Identifier {
+        Identifier::random()
+    }
+
+    // ── Profile tests ──
+
+    #[test]
+    fn test_save_and_load_profile() {
+        let db = create_test_database().unwrap();
+        let id = random_id();
+
+        db.save_dashpay_profile(
+            &id,
+            "testnet",
+            Some("Alice"),
+            Some("Hello world"),
+            Some("https://example.com/avatar.png"),
+            Some("Public msg"),
+        )
+        .unwrap();
+
+        let profile = db
+            .load_dashpay_profile(&id, "testnet")
+            .unwrap()
+            .expect("Profile should exist");
+        assert_eq!(profile.display_name.as_deref(), Some("Alice"));
+        assert_eq!(profile.bio.as_deref(), Some("Hello world"));
+        assert_eq!(
+            profile.avatar_url.as_deref(),
+            Some("https://example.com/avatar.png")
+        );
+        assert_eq!(profile.public_message.as_deref(), Some("Public msg"));
+    }
+
+    #[test]
+    fn test_load_nonexistent_profile() {
+        let db = create_test_database().unwrap();
+        let profile = db.load_dashpay_profile(&random_id(), "testnet").unwrap();
+        assert!(profile.is_none());
+    }
+
+    #[test]
+    fn test_profile_update_preserves_avatar_bytes() {
+        let db = create_test_database().unwrap();
+        let id = random_id();
+
+        db.save_dashpay_profile(&id, "testnet", Some("Alice"), None, None, None)
+            .unwrap();
+        db.save_dashpay_profile_avatar_bytes(&id, "testnet", Some(&[1, 2, 3]))
+            .unwrap();
+
+        // Update profile metadata — should NOT overwrite avatar_bytes
+        db.save_dashpay_profile(&id, "testnet", Some("Bob"), None, None, None)
+            .unwrap();
+
+        let profile = db.load_dashpay_profile(&id, "testnet").unwrap().unwrap();
+        assert_eq!(profile.display_name.as_deref(), Some("Bob"));
+        assert_eq!(profile.avatar_bytes, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_profile_network_isolation() {
+        let db = create_test_database().unwrap();
+        let id = random_id();
+
+        db.save_dashpay_profile(&id, "testnet", Some("TestAlice"), None, None, None)
+            .unwrap();
+        db.save_dashpay_profile(&id, "dash", Some("MainAlice"), None, None, None)
+            .unwrap();
+
+        let testnet = db.load_dashpay_profile(&id, "testnet").unwrap().unwrap();
+        let mainnet = db.load_dashpay_profile(&id, "dash").unwrap().unwrap();
+        assert_eq!(testnet.display_name.as_deref(), Some("TestAlice"));
+        assert_eq!(mainnet.display_name.as_deref(), Some("MainAlice"));
+    }
+
+    // ── Contact tests ──
+
+    #[test]
+    fn test_save_and_load_contacts() {
+        let db = create_test_database().unwrap();
+        let owner = random_id();
+        let contact = random_id();
+
+        db.save_dashpay_contact(
+            &owner,
+            &contact,
+            "testnet",
+            Some("bob"),
+            Some("Bob"),
+            None,
+            None,
+            "accepted",
+        )
+        .unwrap();
+
+        let contacts = db.load_dashpay_contacts(&owner, "testnet").unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].username.as_deref(), Some("bob"));
+        assert_eq!(contacts[0].contact_status, "accepted");
+    }
+
+    #[test]
+    fn test_clear_contacts() {
+        let db = create_test_database().unwrap();
+        let owner = random_id();
+
+        db.save_dashpay_contact(
+            &owner,
+            &random_id(),
+            "testnet",
+            None,
+            None,
+            None,
+            None,
+            "pending",
+        )
+        .unwrap();
+        db.save_dashpay_contact(
+            &owner,
+            &random_id(),
+            "testnet",
+            None,
+            None,
+            None,
+            None,
+            "pending",
+        )
+        .unwrap();
+
+        db.clear_dashpay_contacts(&owner, "testnet").unwrap();
+        assert!(
+            db.load_dashpay_contacts(&owner, "testnet")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // ── Contact request tests ──
+
+    #[test]
+    fn test_save_and_load_contact_requests() {
+        let db = create_test_database().unwrap();
+        let from = random_id();
+        let to = random_id();
+
+        let request_id = db
+            .save_contact_request(&from, &to, "testnet", Some("bob"), Some("Default"), "sent")
+            .unwrap();
+        assert!(request_id > 0);
+
+        let pending = db
+            .load_pending_contact_requests(&from, "testnet", "sent")
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].to_username.as_deref(), Some("bob"));
+        assert_eq!(pending[0].status, "pending");
+    }
+
+    #[test]
+    fn test_update_contact_request_status() {
+        let db = create_test_database().unwrap();
+        let from = random_id();
+        let to = random_id();
+
+        let request_id = db
+            .save_contact_request(&from, &to, "testnet", None, None, "sent")
+            .unwrap();
+        db.update_contact_request_status(request_id, "accepted")
+            .unwrap();
+
+        let pending = db
+            .load_pending_contact_requests(&from, "testnet", "sent")
+            .unwrap();
+        assert!(pending.is_empty());
+    }
+
+    // ── Payment tests ──
+
+    #[test]
+    fn test_save_and_load_payments() {
+        let db = create_test_database().unwrap();
+        let from = random_id();
+        let to = random_id();
+
+        let payment_id = db
+            .save_payment("tx_abc123", &from, &to, 500_000, Some("Coffee"), "sent")
+            .unwrap();
+        assert!(payment_id > 0);
+
+        let history = db.load_payment_history(&from, 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].tx_id, "tx_abc123");
+        assert_eq!(history[0].amount, 500_000);
+        assert_eq!(history[0].memo.as_deref(), Some("Coffee"));
+        assert_eq!(history[0].payment_type, "sent");
+        assert_eq!(history[0].status, "pending");
+    }
+
+    #[test]
+    fn test_update_payment_status_confirmed() {
+        let db = create_test_database().unwrap();
+        let from = random_id();
+        let to = random_id();
+
+        let payment_id = db
+            .save_payment("tx_001", &from, &to, 100, None, "sent")
+            .unwrap();
+        db.update_payment_status(payment_id, "confirmed").unwrap();
+
+        let history = db.load_payment_history(&from, 10).unwrap();
+        assert_eq!(history[0].status, "confirmed");
+        assert!(history[0].confirmed_at.is_some());
+    }
+
+    #[test]
+    fn test_payment_history_limit() {
+        let db = create_test_database().unwrap();
+        let from = random_id();
+        let to = random_id();
+
+        for i in 0..5 {
+            db.save_payment(&format!("tx_{}", i), &from, &to, i * 100, None, "sent")
+                .unwrap();
+        }
+
+        let limited = db.load_payment_history(&from, 3).unwrap();
+        assert_eq!(limited.len(), 3);
+    }
+
+    // ── Contact address index tests ──
+
+    #[test]
+    fn test_get_contact_address_indices_default() {
+        let db = create_test_database().unwrap();
+        let indices = db
+            .get_contact_address_indices(&random_id(), &random_id())
+            .unwrap();
+        assert_eq!(indices.next_send_index, 0);
+        assert_eq!(indices.highest_receive_index, 0);
+        assert_eq!(indices.bloom_registered_count, 0);
+    }
+
+    #[test]
+    fn test_get_and_increment_send_index() {
+        let db = create_test_database().unwrap();
+        let owner = random_id();
+        let contact = random_id();
+
+        assert_eq!(
+            db.get_and_increment_send_index(&owner, &contact).unwrap(),
+            0
+        );
+        assert_eq!(
+            db.get_and_increment_send_index(&owner, &contact).unwrap(),
+            1
+        );
+        assert_eq!(
+            db.get_and_increment_send_index(&owner, &contact).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_update_highest_receive_index_only_increases() {
+        let db = create_test_database().unwrap();
+        let owner = random_id();
+        let contact = random_id();
+
+        db.update_highest_receive_index(&owner, &contact, 5)
+            .unwrap();
+        assert_eq!(
+            db.get_contact_address_indices(&owner, &contact)
+                .unwrap()
+                .highest_receive_index,
+            5
+        );
+
+        // Should not decrease
+        db.update_highest_receive_index(&owner, &contact, 3)
+            .unwrap();
+        assert_eq!(
+            db.get_contact_address_indices(&owner, &contact)
+                .unwrap()
+                .highest_receive_index,
+            5
+        );
+
+        // Should increase
+        db.update_highest_receive_index(&owner, &contact, 10)
+            .unwrap();
+        assert_eq!(
+            db.get_contact_address_indices(&owner, &contact)
+                .unwrap()
+                .highest_receive_index,
+            10
+        );
+    }
+
+    #[test]
+    fn test_update_bloom_registered_count() {
+        let db = create_test_database().unwrap();
+        let owner = random_id();
+        let contact = random_id();
+
+        db.update_bloom_registered_count(&owner, &contact, 50)
+            .unwrap();
+        assert_eq!(
+            db.get_contact_address_indices(&owner, &contact)
+                .unwrap()
+                .bloom_registered_count,
+            50
+        );
+    }
+
+    #[test]
+    fn test_get_all_contact_address_indices() {
+        let db = create_test_database().unwrap();
+        let owner = random_id();
+
+        db.get_and_increment_send_index(&owner, &random_id())
+            .unwrap();
+        db.get_and_increment_send_index(&owner, &random_id())
+            .unwrap();
+
+        let all = db.get_all_contact_address_indices(&owner).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    // ── Delete data test ──
+
+    #[test]
+    fn test_delete_dashpay_data_for_identity() {
+        let db = create_test_database().unwrap();
+        let id = random_id();
+        let other = random_id();
+
+        db.save_dashpay_profile(&id, "testnet", Some("Alice"), None, None, None)
+            .unwrap();
+        db.save_dashpay_contact(&id, &other, "testnet", None, None, None, None, "pending")
+            .unwrap();
+        db.save_contact_request(&id, &other, "testnet", None, None, "sent")
+            .unwrap();
+        db.save_payment("tx_1", &id, &other, 100, None, "sent")
+            .unwrap();
+        db.get_and_increment_send_index(&id, &other).unwrap();
+
+        db.delete_dashpay_data_for_identity(&id).unwrap();
+
+        assert!(db.load_dashpay_profile(&id, "testnet").unwrap().is_none());
+        assert!(db.load_dashpay_contacts(&id, "testnet").unwrap().is_empty());
+        assert!(
+            db.load_pending_contact_requests(&id, "testnet", "sent")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(db.load_payment_history(&id, 10).unwrap().is_empty());
+    }
+}

@@ -274,8 +274,8 @@ impl Encode for QualifiedIdentity {
 }
 
 // Implement Decode manually for QualifiedIdentity, excluding decrypted_wallets
-impl<Context> Decode<Context> for QualifiedIdentity {
-    fn decode<D: bincode::de::Decoder>(
+impl<C> Decode<C> for QualifiedIdentity {
+    fn decode<D: bincode::de::Decoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
         Ok(Self {

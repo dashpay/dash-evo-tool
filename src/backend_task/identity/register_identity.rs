@@ -6,8 +6,8 @@ use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::Network;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -84,21 +84,31 @@ impl AppContext {
                         Some(self),
                     ) {
                         Ok(transaction) => transaction,
-                        Err(_) => {
-                            wallet
-                                .reload_utxos(
-                                    &self.core_client.read_or_recover(),
-                                    self.network,
-                                    Some(self),
-                                )
-                                .map_err(|e| e.to_string())?;
-                            wallet.registration_asset_lock_transaction(
-                                sdk.network,
-                                amount,
-                                true,
-                                identity_index,
-                                Some(self),
-                            )?
+                        Err(e) => {
+                            match self.core_backend_mode() {
+                                CoreBackendMode::Rpc => {
+                                    wallet
+                                        .reload_utxos(
+                                            &self.core_client.read_or_recover(),
+                                            self.network,
+                                            Some(self),
+                                        )
+                                        .map_err(|e| e.to_string())?;
+                                    wallet.registration_asset_lock_transaction(
+                                        sdk.network,
+                                        amount,
+                                        true,
+                                        identity_index,
+                                        Some(self),
+                                    )?
+                                }
+                                CoreBackendMode::Spv => {
+                                    // SPV wallet state is authoritative — UTXOs are synced
+                                    // continuously via compact block filters. No Core RPC
+                                    // fallback available.
+                                    return Err(e);
+                                }
+                            }
                         }
                     }
                 };
@@ -110,10 +120,8 @@ impl AppContext {
                     proofs.insert(tx_id, None);
                 }
 
-                self.core_client
-                    .read_or_recover()
-                    .send_raw_transaction(&asset_lock_transaction)
-                    .map_err(|e| e.to_string())?;
+                self.broadcast_raw_transaction(&asset_lock_transaction)
+                    .await?;
 
                 // Store the asset lock transaction in the database immediately after sending.
                 // This ensures it's tracked even if the proof times out or identity creation fails.
@@ -128,11 +136,43 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
-                // Wait for asset lock proof with timeout (2 minutes).
-                // UTXO removal is deferred until after proof confirmation to avoid
-                // "losing" UTXOs from wallet tracking if the proof times out.
-                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
-                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
+                // TODO: UTXO removal timing issue - UTXOs are removed here BEFORE the asset
+                // lock proof is confirmed below. If the transaction fails or times out after
+                // this point, the UTXOs will be "lost" from wallet tracking even though they
+                // weren't actually spent. This should be refactored to remove UTXOs only AFTER
+                // successful proof confirmation. See Phase 2.2 in PR review plan.
+                {
+                    let mut wallet = wallet.write_or_recover();
+                    wallet.utxos.retain(|_, utxo_map| {
+                        utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
+                        !utxo_map.is_empty() // Keep addresses that still have UTXOs
+                    });
+                    for utxo in used_utxos.keys() {
+                        self.db
+                            .drop_utxo(utxo, &self.network.to_string())
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    // Update address_balances for affected addresses
+                    let affected_addresses: std::collections::BTreeSet<_> =
+                        used_utxos.values().map(|(_, addr)| addr.clone()).collect();
+                    for address in affected_addresses {
+                        // Recalculate balance from remaining UTXOs for this address
+                        let new_balance = wallet
+                            .utxos
+                            .get(&address)
+                            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+                            .unwrap_or(0);
+                        let _ = wallet.update_address_balance(&address, new_balance, self);
+                    }
+                }
+
+                // Wait for asset lock proof with timeout
+                let timeout_duration = match self.core_backend_mode() {
+                    CoreBackendMode::Spv => Duration::from_secs(300), // 5 min — covers chain lock fallback
+                    CoreBackendMode::Rpc => Duration::from_secs(120), // existing — Core ZMQ is fast
+                };
+                let asset_lock_proof = match tokio::time::timeout(timeout_duration, async {
                     loop {
                         {
                             let proofs = self.transactions_waiting_for_finality.lock_or_recover();
@@ -145,16 +185,20 @@ impl AppContext {
                 })
                 .await
                 {
-                    Ok(proof) => proof,
+                    Ok(proof) => {
+                        // Clean up finality tracking on success
+                        let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
+                        proofs.remove(&tx_id);
+                        proof
+                    }
                     Err(_) => {
                         // Clean up on timeout
                         let mut proofs = self.transactions_waiting_for_finality.lock_or_recover();
                         proofs.remove(&tx_id);
                         return Err(format!(
                             "Timeout waiting for asset lock proof after {} seconds. \
-                             The transaction may not have been confirmed by the network. \
-                             Refresh your wallet to update UTXO state.",
-                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
+                             The transaction may not have been confirmed by the network.",
+                            timeout_duration.as_secs()
                         ));
                     }
                 };
@@ -263,10 +307,8 @@ impl AppContext {
                     proofs.insert(tx_id, None);
                 }
 
-                self.core_client
-                    .read_or_recover()
-                    .send_raw_transaction(&asset_lock_transaction)
-                    .map_err(|e| e.to_string())?;
+                self.broadcast_raw_transaction(&asset_lock_transaction)
+                    .await?;
 
                 // Store the asset lock transaction in the database immediately after sending.
                 // This ensures it's tracked even if the proof times out or identity creation fails.

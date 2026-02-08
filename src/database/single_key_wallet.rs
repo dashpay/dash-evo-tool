@@ -264,3 +264,175 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use crate::model::wallet::single_key::SingleKeyWallet;
+    use dash_sdk::dpp::dashcore::Network;
+
+    fn create_test_wallet() -> SingleKeyWallet {
+        // Generate a deterministic test key
+        let private_key_bytes: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        SingleKeyWallet::new(
+            private_key_bytes,
+            Network::Testnet,
+            None,
+            Some("Test Wallet".to_string()),
+        )
+        .expect("Failed to create test wallet")
+    }
+
+    fn create_test_wallet_with_password() -> SingleKeyWallet {
+        let private_key_bytes: [u8; 32] = [
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
+            0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c,
+            0x3d, 0x3e, 0x3f, 0x40,
+        ];
+        SingleKeyWallet::new(
+            private_key_bytes,
+            Network::Testnet,
+            Some("test_password"),
+            Some("Password Wallet".to_string()),
+        )
+        .expect("Failed to create test wallet with password")
+    }
+
+    #[test]
+    fn test_store_and_retrieve_wallet() {
+        let db = create_test_database().unwrap();
+        let wallet = create_test_wallet();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert_eq!(wallets.len(), 1);
+
+        let retrieved = &wallets[0];
+        assert_eq!(retrieved.key_hash, wallet.key_hash);
+        assert_eq!(retrieved.public_key, wallet.public_key);
+        assert_eq!(retrieved.address, wallet.address);
+        assert_eq!(retrieved.alias, Some("Test Wallet".to_string()));
+        assert!(!retrieved.uses_password);
+    }
+
+    #[test]
+    fn test_store_wallet_with_password() {
+        let db = create_test_database().unwrap();
+        let wallet = create_test_wallet_with_password();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert!(wallets[0].uses_password);
+        assert_eq!(wallets[0].alias, Some("Password Wallet".to_string()));
+    }
+
+    #[test]
+    fn test_network_isolation() {
+        let db = create_test_database().unwrap();
+        let wallet = create_test_wallet();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+
+        let testnet = db.get_single_key_wallets(Network::Testnet).unwrap();
+        let mainnet = db.get_single_key_wallets(Network::Dash).unwrap();
+        assert_eq!(testnet.len(), 1);
+        assert_eq!(mainnet.len(), 0);
+    }
+
+    #[test]
+    fn test_update_balances() {
+        let db = create_test_database().unwrap();
+        let wallet = create_test_wallet();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+        db.update_single_key_wallet_balances(&wallet.key_hash, 1_000_000, 500_000, 1_500_000)
+            .unwrap();
+
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert_eq!(wallets[0].confirmed_balance, 1_000_000);
+        assert_eq!(wallets[0].unconfirmed_balance, 500_000);
+        assert_eq!(wallets[0].total_balance, 1_500_000);
+    }
+
+    #[test]
+    fn test_update_alias() {
+        let db = create_test_database().unwrap();
+        let wallet = create_test_wallet();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+        db.update_single_key_wallet_alias(&wallet.key_hash, Some("Renamed Wallet"))
+            .unwrap();
+
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert_eq!(wallets[0].alias, Some("Renamed Wallet".to_string()));
+
+        // Set alias to None
+        db.update_single_key_wallet_alias(&wallet.key_hash, None)
+            .unwrap();
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert!(wallets[0].alias.is_none());
+    }
+
+    #[test]
+    fn test_remove_wallet() {
+        let db = create_test_database().unwrap();
+        let wallet = create_test_wallet();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+        assert_eq!(
+            db.get_single_key_wallets(Network::Testnet).unwrap().len(),
+            1
+        );
+
+        db.remove_single_key_wallet(&wallet.key_hash, Network::Testnet)
+            .unwrap();
+        assert_eq!(
+            db.get_single_key_wallets(Network::Testnet).unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_upsert_replaces_existing() {
+        let db = create_test_database().unwrap();
+        let mut wallet = create_test_wallet();
+
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+
+        // Update alias and re-store (INSERT OR REPLACE)
+        wallet.alias = Some("Updated Alias".to_string());
+        db.store_single_key_wallet(&wallet, Network::Testnet)
+            .unwrap();
+
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert_eq!(wallets[0].alias, Some("Updated Alias".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_wallets() {
+        let db = create_test_database().unwrap();
+        let w1 = create_test_wallet();
+        let w2 = create_test_wallet_with_password();
+
+        db.store_single_key_wallet(&w1, Network::Testnet).unwrap();
+        db.store_single_key_wallet(&w2, Network::Testnet).unwrap();
+
+        let wallets = db.get_single_key_wallets(Network::Testnet).unwrap();
+        assert_eq!(wallets.len(), 2);
+    }
+}

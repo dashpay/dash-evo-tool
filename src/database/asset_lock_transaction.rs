@@ -395,3 +395,227 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::dpp::dashcore::consensus::serialize;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use dash_sdk::dpp::dashcore::{Network, Transaction};
+
+    fn create_test_wallet(db: &crate::database::Database) -> [u8; 32] {
+        let seed_hash = [0xABu8; 32];
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
+            rusqlite::params![
+                seed_hash.as_slice(),
+                vec![0u8; 64],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 78],
+            ],
+        ).unwrap();
+        seed_hash
+    }
+
+    fn create_test_tx(value: u64) -> Transaction {
+        // Create a minimal valid transaction using consensus deserialization
+        // This avoids needing to construct Transaction struct fields manually
+        // which may differ between Bitcoin and Dash
+        use dash_sdk::dpp::dashcore::consensus::deserialize;
+
+        // Minimal Dash transaction: version 1, 1 input, 1 output, no special payload
+        let mut tx_bytes = vec![];
+        // version (4 bytes LE) - standard transaction type 0
+        tx_bytes.extend_from_slice(&1u32.to_le_bytes());
+        // input count (varint: 1)
+        tx_bytes.push(1);
+        // prev_hash (32 bytes - null for coinbase-like)
+        tx_bytes.extend_from_slice(&[0u8; 32]);
+        // prev_index (4 bytes)
+        tx_bytes.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+        // script_sig length (varint: 0)
+        tx_bytes.push(0);
+        // sequence (4 bytes)
+        tx_bytes.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+        // output count (varint: 1)
+        tx_bytes.push(1);
+        // value (8 bytes LE)
+        tx_bytes.extend_from_slice(&value.to_le_bytes());
+        // script_pubkey length (varint: 0)
+        tx_bytes.push(0);
+        // lock_time (4 bytes)
+        tx_bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        deserialize::<Transaction>(&tx_bytes).expect("Failed to create test transaction")
+    }
+
+    #[test]
+    fn test_store_and_get_asset_lock() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+        let tx = create_test_tx(1_000_000);
+        let txid = tx.txid().to_byte_array();
+
+        db.store_asset_lock_transaction(&tx, 1_000_000, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+
+        let result = db.get_asset_lock_transaction(&txid).unwrap();
+        assert!(result.is_some());
+
+        let (retrieved_tx, amount, islock, retrieved_wallet, network) = result.unwrap();
+        assert_eq!(serialize(&retrieved_tx), serialize(&tx));
+        assert_eq!(amount, 1_000_000);
+        assert!(islock.is_none());
+        assert_eq!(retrieved_wallet, wallet_hash);
+        assert_eq!(network, "testnet");
+    }
+
+    #[test]
+    fn test_get_nonexistent_asset_lock() {
+        let db = create_test_database().unwrap();
+        let result = db.get_asset_lock_transaction(&[0u8; 32]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_update_chain_locked_height() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+        let tx = create_test_tx(500_000);
+        let txid = tx.txid().to_byte_array();
+
+        db.store_asset_lock_transaction(&tx, 500_000, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+        db.update_asset_lock_chain_locked_height(&txid, Some(12345))
+            .unwrap();
+
+        let all = db
+            .get_all_asset_lock_transactions(Network::Testnet)
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].3, Some(12345)); // chain_locked_height
+    }
+
+    #[test]
+    fn test_set_identity_id() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+        let tx = create_test_tx(100_000);
+        let txid = tx.txid().to_byte_array();
+        let identity_id = [0x42u8; 32];
+
+        // Insert identity for FK reference
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+                rusqlite::params![identity_id.as_slice()],
+            )
+            .unwrap();
+        }
+
+        db.store_asset_lock_transaction(&tx, 100_000, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+        db.set_asset_lock_identity_id(&txid, &identity_id).unwrap();
+
+        let all = db
+            .get_all_asset_lock_transactions(Network::Testnet)
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].4, Some(identity_id.to_vec())); // identity_id
+    }
+
+    #[test]
+    fn test_set_identity_id_before_confirmation() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+        let tx = create_test_tx(200_000);
+        let txid = tx.txid().to_byte_array();
+        let identity_id = [0x43u8; 32];
+
+        // Insert identity for FK reference
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO identity (id, is_local, network) VALUES (?, 1, 'testnet')",
+                rusqlite::params![identity_id.as_slice()],
+            )
+            .unwrap();
+        }
+
+        db.store_asset_lock_transaction(&tx, 200_000, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+        db.set_asset_lock_identity_id_before_confirmation_by_network(&txid, &identity_id)
+            .unwrap();
+
+        // Verify via raw query since get_all doesn't return this column directly
+        let conn = db.conn.lock().unwrap();
+        let potential_id: Option<Vec<u8>> = conn.query_row(
+            "SELECT identity_id_potentially_in_creation FROM asset_lock_transaction WHERE tx_id = ?",
+            rusqlite::params![txid.as_slice()],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(potential_id, Some(identity_id.to_vec()));
+    }
+
+    #[test]
+    fn test_delete_asset_lock() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+        let tx = create_test_tx(300_000);
+        let txid = tx.txid().to_byte_array();
+
+        db.store_asset_lock_transaction(&tx, 300_000, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+        assert!(db.get_asset_lock_transaction(&txid).unwrap().is_some());
+
+        db.delete_asset_lock_transaction(&txid).unwrap();
+        assert!(db.get_asset_lock_transaction(&txid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_all_filters_by_network() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+
+        let tx1 = create_test_tx(100);
+        let tx2 = create_test_tx(200);
+
+        db.store_asset_lock_transaction(&tx1, 100, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+        db.store_asset_lock_transaction(&tx2, 200, None, &wallet_hash, Network::Dash)
+            .unwrap();
+
+        let testnet = db
+            .get_all_asset_lock_transactions(Network::Testnet)
+            .unwrap();
+        assert_eq!(testnet.len(), 1);
+        assert_eq!(testnet[0].1, 100);
+
+        let mainnet = db.get_all_asset_lock_transactions(Network::Dash).unwrap();
+        assert_eq!(mainnet.len(), 1);
+        assert_eq!(mainnet[0].1, 200);
+    }
+
+    #[test]
+    fn test_upsert_preserves_instant_lock() {
+        let db = create_test_database().unwrap();
+        let wallet_hash = create_test_wallet(&db);
+        let tx = create_test_tx(100);
+        let txid = tx.txid().to_byte_array();
+
+        // First insert with no islock
+        db.store_asset_lock_transaction(&tx, 100, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+
+        // Re-insert with no islock (COALESCE should preserve NULL)
+        db.store_asset_lock_transaction(&tx, 100, None, &wallet_hash, Network::Testnet)
+            .unwrap();
+
+        let result = db.get_asset_lock_transaction(&txid).unwrap().unwrap();
+        assert!(result.2.is_none()); // islock still None
+    }
+}

@@ -4,19 +4,22 @@ use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dash_spv::client::interface::{DashSpvClientCommand, DashSpvClientInterface};
+use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
-use dash_sdk::dash_spv::types::{
-    DetailedSyncProgress, SpvEvent, SyncProgress, SyncStage, ValidationMode,
-};
+use dash_sdk::dash_spv::sync::SyncEvent;
+use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
-use dash_sdk::dpp::dashcore::{Address, Network, Transaction};
+use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
     wallet_info_interface::WalletInfoInterface,
 };
+use dash_sdk::dpp::key_wallet_manager::WalletEvent;
+use dash_sdk::dpp::key_wallet_manager::wallet_interface::WalletInterface;
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
 // use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey; // not needed directly here
 use std::fmt;
@@ -86,11 +89,23 @@ pub struct SpvStatusSnapshot {
     pub last_error: Option<String>,
     pub started_at: Option<SystemTime>,
     pub last_updated: Option<SystemTime>,
+    pub connected_peers: usize,
 }
 
 /// Type alias for the SPV client with our specific configuration
 type SpvClient =
     DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>;
+
+/// Events forwarded from SPV to AppContext for asset lock proof construction.
+pub(crate) enum AssetLockFinalityEvent {
+    InstantLock {
+        txid: Txid,
+        instant_lock: Box<InstantLock>,
+    },
+    ChainLock {
+        height: u32,
+    },
+}
 
 /// Manages SPV client lifecycle and exposes status updates.
 /// Uses dash-spv's built-in state management while maintaining a dedicated runtime for performance.
@@ -117,6 +132,8 @@ pub struct SpvManager {
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
     // signal channel to trigger external reconcile on wallet-related events
     reconcile_tx: Mutex<Option<mpsc::Sender<()>>>,
+    // signal channel to forward instant lock / chain lock events for asset lock proof construction
+    finality_tx: Mutex<Option<mpsc::Sender<AssetLockFinalityEvent>>>,
     // Whether to use local Dash Core node instead of DNS seed discovery
     use_local_node: Arc<std::sync::atomic::AtomicBool>,
     // Cancellation token for clean shutdown
@@ -125,6 +142,8 @@ pub struct SpvManager {
     request_tx: Mutex<Option<mpsc::Sender<SpvRequest>>>,
     // Network manager clone for broadcasting transactions (set when client is running)
     network_manager: Arc<AsyncRwLock<Option<PeerNetworkManager>>>,
+    // Number of currently connected SPV peers
+    connected_peers: Arc<RwLock<usize>>,
 }
 
 /// Requests that can be sent to the SPV runtime thread
@@ -275,10 +294,12 @@ impl SpvManager {
             progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
+            finality_tx: Mutex::new(None),
             use_local_node: Arc::new(AtomicBool::new(false)),
             stop_token: Mutex::new(None),
             request_tx: Mutex::new(None),
             network_manager: Arc::new(AsyncRwLock::new(None)),
+            connected_peers: Arc::new(RwLock::new(0)),
         });
 
         Ok(manager)
@@ -307,6 +328,7 @@ impl SpvManager {
             .read_progress_updated_at()
             .unwrap_or(None)
             .or(Some(SystemTime::now()));
+        let connected_peers = self.connected_peers.read().map(|g| *g).unwrap_or(0);
 
         SpvStatusSnapshot {
             status,
@@ -315,6 +337,7 @@ impl SpvManager {
             last_error,
             started_at,
             last_updated,
+            connected_peers,
         }
     }
 
@@ -330,6 +353,7 @@ impl SpvManager {
             .read_progress_updated_at()
             .unwrap_or(None)
             .or(Some(SystemTime::now()));
+        let connected_peers = self.connected_peers.read().map(|g| *g).unwrap_or(0);
 
         SpvStatusSnapshot {
             status,
@@ -338,10 +362,11 @@ impl SpvManager {
             last_error,
             started_at,
             last_updated,
+            connected_peers,
         }
     }
 
-    pub fn start(self: &Arc<Self>) -> Result<(), String> {
+    pub fn start(self: &Arc<Self>, expected_wallet_count: usize) -> Result<(), String> {
         // Check if already running
         {
             let stop_token_guard = self
@@ -399,7 +424,7 @@ impl SpvManager {
 
                 rt.block_on(async move {
                     let manager_for_loop = Arc::clone(&manager);
-                    if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel).await {
+                    if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel, expected_wallet_count).await {
                         tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
                         if let Err(e) = manager.write_last_error(Some(err.clone())) {
                             tracing::error!("Failed to write SPV error: {}", e);
@@ -505,6 +530,16 @@ impl SpvManager {
         rx
     }
 
+    /// Create a finality event channel for external listeners.
+    /// Returns a receiver that will get events when SPV detects instant locks or chain locks.
+    pub(crate) fn register_finality_channel(&self) -> mpsc::Receiver<AssetLockFinalityEvent> {
+        let (tx, rx) = mpsc::channel(64);
+        if let Ok(mut guard) = self.finality_tx.lock() {
+            *guard = Some(tx);
+        }
+        rx
+    }
+
     /// Remove all cached SPV data on disk for the current network.
     ///
     /// This requires the SPV runtime to be stopped first; otherwise the
@@ -531,6 +566,17 @@ impl SpvManager {
             wallet_map.clear();
         }
 
+        // Reset the in-memory WalletManager's synced_height so the next SPV session
+        // scans filters from genesis instead of the stale height from the previous run.
+        match self.wallet.try_write() {
+            Ok(mut wm) => {
+                wm.update_synced_height(0);
+            }
+            Err(_) => {
+                tracing::warn!("Failed to reset WalletManager synced_height during SPV data clear");
+            }
+        }
+
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
         self.write_detailed_progress(None)
             .map_err(|e| e.to_string())?;
@@ -540,6 +586,9 @@ impl SpvManager {
         self.write_last_error(None).map_err(|e| e.to_string())?;
         self.write_status(SpvStatus::Idle)
             .map_err(|e| e.to_string())?;
+        if let Ok(mut guard) = self.connected_peers.write() {
+            *guard = 0;
+        }
 
         if self.data_dir.exists() {
             fs::remove_dir_all(&self.data_dir).map_err(|e| {
@@ -747,9 +796,49 @@ impl SpvManager {
         self: Arc<Self>,
         stop_token: CancellationToken,
         global_cancel: CancellationToken,
+        expected_wallet_count: usize,
     ) -> Result<(), String> {
+        // Wait for all expected wallets to be fully loaded into the WalletManager
+        // before building the client.  Wallet loading happens via queue_spv_wallet_load
+        // which calls import_wallet_from_extended_priv_key (derives all accounts and
+        // addresses) under a write lock.  Once wallet_count() reaches the expected
+        // value, all addresses are derived and monitored_addresses() is populated.
+        if expected_wallet_count > 0 {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                {
+                    let wm = self.wallet.read().await;
+                    let loaded = wm.wallet_count();
+                    if loaded >= expected_wallet_count {
+                        let addr_count = wm.monitored_addresses().len();
+                        tracing::info!(
+                            expected = expected_wallet_count,
+                            loaded,
+                            addresses = addr_count,
+                            "SPV: all wallets loaded with monitored addresses, proceeding"
+                        );
+                        break;
+                    }
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    let wm = self.wallet.read().await;
+                    tracing::warn!(
+                        expected = expected_wallet_count,
+                        loaded = wm.wallet_count(),
+                        "SPV: timed out waiting for all wallets to load, proceeding anyway"
+                    );
+                    break;
+                }
+                if stop_token.is_cancelled() || global_cancel.is_cancelled() {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+
         // Build and start the client
-        let mut client = self.build_client().await?;
+        let has_wallets = expected_wallet_count > 0;
+        let mut client = self.build_client(has_wallets).await?;
         client
             .start()
             .await
@@ -763,15 +852,24 @@ impl SpvManager {
             }
         }
 
-        // Set up progress handler
-        if let Some(progress_rx) = client.take_progress_receiver() {
-            self.spawn_progress_handler(progress_rx);
+        // Subscribe to sync events (broadcast)
+        let sync_rx = client.subscribe_sync_events();
+        self.spawn_sync_event_handler(sync_rx);
+
+        // Subscribe to wallet events (broadcast from WalletManager)
+        {
+            let wm = self.wallet.read().await;
+            let wallet_rx = wm.subscribe_events();
+            self.spawn_wallet_event_handler(wallet_rx);
         }
 
-        // Set up event handler
-        if let Some(event_rx) = client.take_event_receiver() {
-            self.spawn_event_handler(event_rx);
-        }
+        // Subscribe to network events (broadcast)
+        let net_rx = client.subscribe_network_events();
+        self.spawn_network_event_handler(net_rx);
+
+        // Set up progress handler using watch channel
+        let progress_rx = client.subscribe_progress();
+        self.spawn_progress_watcher(progress_rx);
 
         // Set up request handler with access to shared components
         let (request_tx, request_rx) = mpsc::channel(32);
@@ -816,6 +914,9 @@ impl SpvManager {
         {
             let mut nm_guard = self.network_manager.write().await;
             *nm_guard = None;
+        }
+        if let Ok(mut guard) = self.connected_peers.write() {
+            *guard = 0;
         }
         {
             // Drop shared storage/request handles so the disk lock is released before restart.
@@ -943,73 +1044,133 @@ impl SpvManager {
         });
     }
 
-    fn spawn_progress_handler(
+    fn spawn_progress_watcher(
         &self,
-        mut progress_rx: tokio::sync::mpsc::UnboundedReceiver<DetailedSyncProgress>,
+        mut progress_rx: tokio::sync::watch::Receiver<WatchSyncProgress>,
     ) {
         let status = Arc::clone(&self.status);
-        let last_error = Arc::clone(&self.last_error);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
-        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync(async move {
-            let mut last_update = std::time::Instant::now();
-            let min_interval = std::time::Duration::from_millis(500);
-
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    msg = progress_rx.recv() => {
-                        match msg {
-                            Some(detailed) => {
-                                if let Ok(mut stored_detailed) = detailed_progress_state.write() {
-                                    *stored_detailed = Some(detailed.clone());
-                                }
-                                if let Ok(mut stored_sync) = sync_progress_state.write() {
-                                    *stored_sync = Some(detailed.sync_progress.clone());
-                                }
-                                if let Ok(mut updated_at) = progress_updated_at.write() {
-                                    *updated_at = Some(detailed.last_update_time);
-                                }
+                    result = progress_rx.changed() => {
+                        if result.is_err() {
+                            break; // Channel closed
+                        }
+                        let watch_progress = progress_rx.borrow();
 
-                                if last_update.elapsed() >= min_interval {
-                                    // Update status based on progress stage and completeness
-                                    if let Ok(mut status_guard) = status.write() {
-                                        let current = *status_guard;
-                                        match &detailed.sync_stage {
-                                            SyncStage::Complete => {
-                                                *status_guard = SpvStatus::Running;
-                                            }
-                                            SyncStage::Failed(message) => {
-                                                *status_guard = SpvStatus::Error;
-                                                if let Ok(mut err_guard) = last_error.write() {
-                                                    *err_guard = Some(format!("SPV sync failed: {message}"));
-                                                }
-                                            }
-                                            _ => {
-                                                if !matches!(
-                                                    current,
-                                                    SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error
-                                                ) {
-                                                    *status_guard = SpvStatus::Syncing;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    last_update = std::time::Instant::now();
-                                }
+                        // Convert sync::SyncProgress to types::SyncProgress for UI
+                        let header_height = watch_progress
+                            .headers()
+                            .map(|h| h.current_height())
+                            .unwrap_or(0);
+
+                        let sync_progress = SyncProgress {
+                            header_height,
+                            ..Default::default()
+                        };
+
+                        // Update sync progress state
+                        if let Ok(mut stored_sync) = sync_progress_state.write() {
+                            *stored_sync = Some(sync_progress);
+                        }
+                        if let Ok(mut updated_at) = progress_updated_at.write() {
+                            *updated_at = Some(std::time::SystemTime::now());
+                        }
+
+                        // Update status based on progress
+                        if let Ok(mut status_guard) = status.write() {
+                            if watch_progress.is_synced() {
+                                *status_guard = SpvStatus::Running;
+                            } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
+                                *status_guard = SpvStatus::Syncing;
                             }
-                            None => break,
                         }
                     }
                 }
             }
+            tracing::info!("SPV progress watcher exiting");
         });
     }
 
-    fn spawn_event_handler(&self, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SpvEvent>) {
+    fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {
+        let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
+        let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
+        let status = Arc::clone(&self.status);
+        let cancel = self.subtasks.cancellation_token.clone();
+
+        self.subtasks.spawn_sync(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = sync_rx.recv() => {
+                        match result {
+                            Ok(event) => {
+                                let should_signal = matches!(
+                                    event,
+                                    SyncEvent::BlockProcessed { .. }
+                                    | SyncEvent::ChainLockReceived { .. }
+                                    | SyncEvent::InstantLockReceived { .. }
+                                    | SyncEvent::SyncComplete { .. }
+                                );
+
+                                // Forward finality-relevant events for asset lock proof construction
+                                if let Some(ref ftx) = finality_tx {
+                                    match &event {
+                                        SyncEvent::InstantLockReceived { instant_lock, .. } => {
+                                            if let Err(e) = ftx.try_send(AssetLockFinalityEvent::InstantLock {
+                                                txid: instant_lock.txid,
+                                                instant_lock: Box::new(instant_lock.clone()),
+                                            }) {
+                                                tracing::warn!("Failed to forward InstantLock finality event for txid {}: {}", instant_lock.txid, e);
+                                            }
+                                        }
+                                        SyncEvent::ChainLockReceived { chain_lock, .. } => {
+                                            if let Err(e) = ftx.try_send(AssetLockFinalityEvent::ChainLock {
+                                                height: chain_lock.block_height,
+                                            }) {
+                                                tracing::warn!("Failed to forward ChainLock finality event for height {}: {}", chain_lock.block_height, e);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                if matches!(event, SyncEvent::SyncComplete { .. })
+                                    && let Ok(mut guard) = status.write()
+                                {
+                                    *guard = SpvStatus::Running;
+                                }
+                                if should_signal
+                                    && let Some(ref tx) = reconcile_tx
+                                {
+                                    let _ = tx.try_send(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("Sync event handler lagged by {} events", n);
+                                // Trigger reconcile to catch up on any missed state changes
+                                if let Some(ref tx) = reconcile_tx {
+                                    let _ = tx.try_send(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+            tracing::info!("SPV sync event handler exiting");
+        });
+    }
+
+    fn spawn_wallet_event_handler(
+        &self,
+        mut wallet_rx: tokio::sync::broadcast::Receiver<WalletEvent>,
+    ) {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let cancel = self.subtasks.cancellation_token.clone();
 
@@ -1017,41 +1178,79 @@ impl SpvManager {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    evt = event_rx.recv() => {
-                        match evt {
-                            Some(event) => {
-                                // Push reconcile signal for wallet-related updates
-                                let should_signal = matches!(event,
-                                    SpvEvent::TransactionDetected { .. } |
-                                    SpvEvent::BalanceUpdate { .. } |
-                                    SpvEvent::BlockProcessed { .. }
-                                );
-                                if should_signal
-                                    && let Some(ref tx) = reconcile_tx {
+                    result = wallet_rx.recv() => {
+                        match result {
+                            Ok(_event) => {
+                                // All wallet events trigger reconcile
+                                if let Some(ref tx) = reconcile_tx {
                                     let _ = tx.try_send(());
                                 }
                             }
-                            None => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("Wallet event handler lagged by {} events", n);
+                                // Still trigger reconcile to catch up
+                                if let Some(ref tx) = reconcile_tx {
+                                    let _ = tx.try_send(());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
             }
+            tracing::info!("SPV wallet event handler exiting");
+        });
+    }
+
+    fn spawn_network_event_handler(
+        &self,
+        mut net_rx: tokio::sync::broadcast::Receiver<NetworkEvent>,
+    ) {
+        let connected_peers = Arc::clone(&self.connected_peers);
+        let cancel = self.subtasks.cancellation_token.clone();
+
+        self.subtasks.spawn_sync(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = net_rx.recv() => {
+                        match result {
+                            Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
+                                if let Ok(mut guard) = connected_peers.write() {
+                                    *guard = connected_count;
+                                }
+                            }
+                            Ok(_) => {
+                                // PeerConnected / PeerDisconnected — PeersUpdated follows
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("Network event handler lagged by {} events", n);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+            tracing::info!("SPV network event handler exiting");
         });
     }
 
     async fn build_client(
         &self,
+        has_wallets: bool,
     ) -> Result<
         DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>,
         String,
     > {
-        let start_height = {
-            let guard = self.wallet.read().await;
-            if guard.wallet_count() == 0 {
-                u32::MAX
-            } else {
-                0
-            }
+        // When wallets exist, scan from genesis so historical transactions are found via
+        // compact block filters.  When no wallets are loaded, skip to chain tip (u32::MAX)
+        // to avoid unnecessary work.  We check both the caller hint and the actual wallet
+        // count (the wait loop in run_spv_loop should have ensured loading completed).
+        let wallet_count = self.wallet.read().await.wallet_count();
+        let start_height = if has_wallets || wallet_count > 0 {
+            0
+        } else {
+            u32::MAX
         };
         let mut config = ClientConfig::new(self.network)
             .with_storage_path(self.data_dir.clone())
@@ -1084,7 +1283,7 @@ impl SpvManager {
             *nm_guard = Some(network_manager.clone());
         }
 
-        let storage_manager = DiskStorageManager::new(self.data_dir.clone())
+        let storage_manager = DiskStorageManager::new(&config)
             .await
             .map_err(|e| format!("Failed to initialize SPV storage: {e}"))?;
 

@@ -823,3 +823,120 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+    use dash_sdk::platform::Identifier;
+
+    fn insert_test_contest(db: &crate::database::Database, name: &str, network: &str) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contested_name (normalized_contested_name, locked_votes, abstain_votes, network)
+             VALUES (?, 0, 0, ?)",
+            rusqlite::params![name, network],
+        ).unwrap();
+    }
+
+    fn insert_test_contestant(
+        db: &crate::database::Database,
+        name: &str,
+        identity_id: &Identifier,
+        network: &str,
+    ) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contestant (normalized_contested_name, identity_id, votes, network)
+             VALUES (?, ?, 0, ?)",
+            rusqlite::params![name, identity_id.to_vec(), network],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_update_vote_count_towards_identity() {
+        let db = create_test_database().unwrap();
+        let contestant_id = Identifier::random();
+
+        insert_test_contest(&db, "dash-name", "testnet");
+        insert_test_contestant(&db, "dash-name", &contestant_id, "testnet");
+
+        db.update_vote_count(
+            "dash-name",
+            "testnet",
+            10,
+            ResourceVoteChoice::TowardsIdentity(contestant_id),
+        )
+        .unwrap();
+
+        // Verify vote count
+        let conn = db.conn.lock().unwrap();
+        let votes: i64 = conn.query_row(
+            "SELECT votes FROM contestant WHERE normalized_contested_name = ? AND identity_id = ?",
+            rusqlite::params!["dash-name", contestant_id.to_vec()],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(votes, 10);
+    }
+
+    #[test]
+    fn test_update_vote_count_abstain() {
+        let db = create_test_database().unwrap();
+        insert_test_contest(&db, "dash-name", "testnet");
+
+        db.update_vote_count("dash-name", "testnet", 5, ResourceVoteChoice::Abstain)
+            .unwrap();
+        db.update_vote_count("dash-name", "testnet", 3, ResourceVoteChoice::Abstain)
+            .unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let abstain: i64 = conn.query_row(
+            "SELECT abstain_votes FROM contested_name WHERE normalized_contested_name = ? AND network = ?",
+            rusqlite::params!["dash-name", "testnet"],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(abstain, 8); // 5 + 3
+    }
+
+    #[test]
+    fn test_update_vote_count_lock() {
+        let db = create_test_database().unwrap();
+        insert_test_contest(&db, "dash-name", "testnet");
+
+        db.update_vote_count("dash-name", "testnet", 7, ResourceVoteChoice::Lock)
+            .unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let locked: i64 = conn.query_row(
+            "SELECT locked_votes FROM contested_name WHERE normalized_contested_name = ? AND network = ?",
+            rusqlite::params!["dash-name", "testnet"],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(locked, 7);
+    }
+
+    #[test]
+    fn test_network_isolation() {
+        let db = create_test_database().unwrap();
+        insert_test_contest(&db, "dash-name", "testnet");
+        insert_test_contest(&db, "dash-name", "dash");
+
+        db.update_vote_count("dash-name", "testnet", 10, ResourceVoteChoice::Abstain)
+            .unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let testnet_abstain: i64 = conn.query_row(
+            "SELECT abstain_votes FROM contested_name WHERE normalized_contested_name = ? AND network = ?",
+            rusqlite::params!["dash-name", "testnet"],
+            |row| row.get(0),
+        ).unwrap();
+        let mainnet_abstain: i64 = conn.query_row(
+            "SELECT abstain_votes FROM contested_name WHERE normalized_contested_name = ? AND network = ?",
+            rusqlite::params!["dash-name", "dash"],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(testnet_abstain, 10);
+        assert_eq!(mainnet_abstain, 0);
+    }
+}

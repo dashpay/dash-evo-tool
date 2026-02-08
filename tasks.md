@@ -1977,7 +1977,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.3c Fix infra-016: Add timeout to quorum public key lookup** (P2)
   In `src/spv/manager.rs:591-617`, wrap the `interface.get_quorum_by_height()` call with `tokio::time::timeout(Duration::from_secs(30), ...)`. Return a descriptive timeout error if the quorum lookup doesn't complete within 30 seconds. This prevents the calling thread from blocking indefinitely.
 
-- [ ] **7.3d Merge `feat/working-spv` into `ralph/improvements`** (P1)
+- [x] **7.3d Merge `feat/working-spv` into `ralph/improvements`** (P1)
   Merge `origin/feat/working-spv` (8 commits, 16 files, +995/-485 lines) into `ralph/improvements` to avoid divergence and conflicts before PR submission. Key overlapping files that will need conflict resolution:
   - `src/context.rs` — ralph extracted to `context/` modules; feat/working-spv adds SPV asset lock logic to monolithic file
   - `src/backend_task/identity/register_identity.rs` — ralph extracted broadcast helpers + proof resolution; feat rewrites asset lock flow for SPV/DAPI
@@ -2076,72 +2076,6 @@ These META tasks validate reported bugs against the current codebase before any 
 
 ---
 
-## Section 8: Security Hardening [Week 6-8]
-
-- [ ] **8.1 [META] Security audit** (P1)
-  Review these security-sensitive areas:
-  - DashPay encryption implementation
-  - Private key handling and zeroization (`issues/ui-core-012-password-field-zeroize-timing.md`)
-  - SQL construction (any raw SQL that could be injectable?)
-  - Credential storage
-  - External data parsing (could malicious Platform data crash the app?)
-  Create specific fix tasks for each finding.
-
-- [ ] **8.2 Add HTTP timeout for all external fetches** (P1)
-  Avatar loading and any other HTTP requests should have reasonable timeouts to prevent hangs.
-  Reference: `issues/ui-identity-006-avatar-loading-memory-leak.md`.
-
----
-
-## Section 9: Upstream PR Submission [When Ready]
-
-> **Goal:** Cherry-pick completed work from `ralph/improvements` into clean branches off `v1.0-dev` and open draft PRs upstream. Limit to 5-10 PRs max. Prioritize changes that are important, easy to review, trivial, and merge cleanly.
-
-- [ ] **9.1 [META] Review all changes on `ralph/improvements` and select PR candidates** (P1)
-  Compare `ralph/improvements` against `v1.0-dev` (`git log --oneline v1.0-dev..ralph/improvements`).
-  For each commit or logical group of commits, evaluate:
-  1. **Importance:** Does it fix a real bug, improve stability, or add clear value?
-  2. **Reviewability:** Is the diff small and self-contained? Can a reviewer understand it quickly?
-  3. **Merge cleanliness:** Does it apply cleanly to `v1.0-dev` HEAD without conflicts?
-  4. **Risk:** Could it introduce regressions? Lower risk = higher priority for PR.
-  Select 5-10 candidates and create a numbered sub-task (9.2, 9.3, ...) for each one below.
-  For each candidate, note: commit hash(es), summary, estimated diff size, and target PR title.
-
-- [ ] **9.2–9.N PR submission tasks** *(created by 9.1)*
-  Each sub-task follows this exact process:
-  1. `git fetch origin && git checkout -b pr/<short-name> origin/v1.0-dev`
-  2. `git cherry-pick <commit-hash>` (resolve conflicts if any; if conflicts are non-trivial, skip this PR and note why)
-  3. **Review the diff carefully** before pushing:
-     - `git diff origin/v1.0-dev..HEAD` — verify only intended changes are included
-     - No task-management files (tasks.md, activity.md, prompt.md, ralph.sh) should be in the diff
-     - No unrelated changes leaked in
-     - Code compiles (`cargo build 2>&1 | tail -5`)
-     - Clippy passes (`cargo clippy --all-features --all-targets -- -D warnings 2>&1 | tail -5`)
-  4. `git push -u origin pr/<short-name>`
-  5. Create draft PR:
-     ```
-     gh pr create --draft --base v1.0-dev \
-       --title "<concise title>" \
-       --body "$(cat <<'EOF'
-     ## Summary
-     <1-3 bullet points describing the change>
-
-     ## Review Notes
-     - Cherry-picked from branch `ralph/improvements` (commit `<hash>`)
-     - This PR was created via an automated process by Claude Code
-     - Please review carefully before merging
-
-     ## Test Plan
-     <How to verify this change>
-
-     🤖 Generated with [Claude Code](https://claude.com/claude-code)
-     EOF
-     )"
-     ```
-  6. Record the PR URL in this file next to the task checkbox.
-
----
-
 ## Progress Tracking
 
 **Total tasks:** 177 (24 META + 153 direct)
@@ -2157,4 +2091,3 @@ These META tasks validate reported bugs against the current codebase before any 
 | 6. Testing | 19 | 15 |
 | 7. Features | 26 | 12 |
 | 8. Security | 2 | 0 |
-| 9. Upstream PRs | 2+ | 0 |

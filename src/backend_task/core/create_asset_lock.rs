@@ -1,14 +1,13 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::lock_helper::{MutexExt, RwLockExt};
+use crate::lock_helper::MutexExt;
 use crate::model::wallet::Wallet;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::fee::Credits;
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
-    pub fn create_registration_asset_lock(
+    pub async fn create_registration_asset_lock(
         &self,
         wallet: Arc<RwLock<Wallet>>,
         amount: Credits,
@@ -40,9 +39,8 @@ impl AppContext {
         }
 
         // Broadcast the transaction
-        self.core_client
-            .read_or_recover()
-            .send_raw_transaction(&asset_lock_transaction)
+        self.broadcast_raw_transaction(&asset_lock_transaction)
+            .await
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
         // Update wallet UTXOs
@@ -59,6 +57,19 @@ impl AppContext {
                     .drop_utxo(utxo, &self.network.to_string())
                     .map_err(|e| e.to_string())?;
             }
+
+            // Update address_balances for affected addresses
+            let affected_addresses: std::collections::BTreeSet<_> =
+                used_utxos.values().map(|(_, addr)| addr.clone()).collect();
+            for address in affected_addresses {
+                // Recalculate balance from remaining UTXOs for this address
+                let new_balance = wallet_guard
+                    .utxos
+                    .get(&address)
+                    .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+                    .unwrap_or(0);
+                wallet_guard.update_address_balance(&address, new_balance, self)?;
+            }
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(
@@ -67,7 +78,7 @@ impl AppContext {
         )))
     }
 
-    pub fn create_top_up_asset_lock(
+    pub async fn create_top_up_asset_lock(
         &self,
         wallet: Arc<RwLock<Wallet>>,
         amount: Credits,
@@ -101,9 +112,8 @@ impl AppContext {
         }
 
         // Broadcast the transaction
-        self.core_client
-            .read_or_recover()
-            .send_raw_transaction(&asset_lock_transaction)
+        self.broadcast_raw_transaction(&asset_lock_transaction)
+            .await
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
         // Update wallet UTXOs
@@ -119,6 +129,19 @@ impl AppContext {
                 self.db
                     .drop_utxo(utxo, &self.network.to_string())
                     .map_err(|e| e.to_string())?;
+            }
+
+            // Update address_balances for affected addresses
+            let affected_addresses: std::collections::BTreeSet<_> =
+                used_utxos.values().map(|(_, addr)| addr.clone()).collect();
+            for address in affected_addresses {
+                // Recalculate balance from remaining UTXOs for this address
+                let new_balance = wallet_guard
+                    .utxos
+                    .get(&address)
+                    .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+                    .unwrap_or(0);
+                wallet_guard.update_address_balance(&address, new_balance, self)?;
             }
         }
 

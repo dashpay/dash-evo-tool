@@ -416,3 +416,91 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::platform::Identifier;
+
+    fn insert_test_contract(db: &crate::database::Database, id: &Identifier, alias: Option<&str>) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, 'testnet')",
+            rusqlite::params![id.to_vec(), vec![0u8; 32], alias],
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_set_and_get_contract_alias() {
+        let db = create_test_database().unwrap();
+        let id = Identifier::random();
+        insert_test_contract(&db, &id, None);
+
+        // Initially no alias
+        let alias = db.get_contract_alias(&id).unwrap();
+        assert!(alias.is_none());
+
+        // Set alias
+        db.set_contract_alias(&id, Some("My Contract")).unwrap();
+        let alias = db.get_contract_alias(&id).unwrap();
+        assert_eq!(alias, Some("My Contract".to_string()));
+
+        // Update alias
+        db.set_contract_alias(&id, Some("Renamed Contract"))
+            .unwrap();
+        assert_eq!(
+            db.get_contract_alias(&id).unwrap(),
+            Some("Renamed Contract".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_alias_nonexistent_contract_fails() {
+        let db = create_test_database().unwrap();
+        let id = Identifier::random();
+
+        let result = db.set_contract_alias(&id, Some("Alias"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_alias_nonexistent_contract() {
+        let db = create_test_database().unwrap();
+        let id = Identifier::random();
+
+        let alias = db.get_contract_alias(&id).unwrap();
+        assert!(alias.is_none());
+    }
+
+    #[test]
+    fn test_remove_all_contracts_in_devnets_and_regtest() {
+        let db = create_test_database().unwrap();
+
+        let testnet_id = Identifier::random();
+        let devnet_id = Identifier::random();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'testnet')",
+                rusqlite::params![testnet_id.to_vec(), vec![0u8; 16]],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, NULL, 'devnet-test')",
+                rusqlite::params![devnet_id.to_vec(), vec![0u8; 16]],
+            ).unwrap();
+        }
+
+        {
+            let conn = db.conn.lock().unwrap();
+            db.remove_all_contracts_in_all_devnets_and_regtest(&conn)
+                .unwrap();
+        }
+
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contract", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}

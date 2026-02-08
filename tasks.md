@@ -854,7 +854,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created for incremental extraction:**
 
-- [ ] **3.5a Extract SPV & wallet lifecycle into context/wallet_lifecycle.rs** (P2)
+- [x] **3.5a Extract SPV & wallet lifecycle into context/wallet_lifecycle.rs** (P2)
   Move ~480 lines of SPV and wallet lifecycle methods (lines 486-1043) into a new `src/context/wallet_lifecycle.rs` as a separate `impl AppContext` block. Methods to move: `spv_manager`, `clear_spv_data`, `start_spv`, `bootstrap_wallet_addresses`, `handle_wallet_unlocked`, `handle_wallet_locked`, `wallet_seed_snapshot`, `queue_spv_wallet_load`, `queue_spv_wallet_unload`, `queue_wallet_identity_discovery`, `bootstrap_loaded_wallets`, `update_wallet_platform_address_info_from_sdk`, `register_spv_address`, `wallet_network_key`, `sync_spv_account_addresses`, `spv_account_metadata`, `classify_derivation_metadata`, `spv_setup_reconcile_listener`, `reconcile_spv_wallets`, `stop_spv`, `clear_network_database`. This is the largest self-contained group and will reduce context/mod.rs by ~25%.
 
 - [ ] **3.5b Extract identity/DPNS database facade into context/identity_db.rs** (P2)
@@ -1111,7 +1111,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 34 | 19 |
+| 3. Refactoring | 34 | 20 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

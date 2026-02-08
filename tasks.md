@@ -1538,7 +1538,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4c Move MAX_IDENTITY_INDEX to model layer** (P3)
   Move `MAX_IDENTITY_INDEX` from `src/ui/identities/add_new_identity_screen/mod.rs:50` to `src/model/` (e.g., `src/model/constants.rs` or `src/model/qualified_identity/mod.rs`). Update imports in `backend_task/identity/load_identity.rs:16` and `ui/identities/add_new_identity_screen/mod.rs`.
 
-- [ ] **5.4d Replace egui::Color32 in model with framework-agnostic type** (P3)
+- [x] **5.4d Replace egui::Color32 in model with framework-agnostic type** (P3)
   In `src/model/qualified_identity/mod.rs:28,143-153`, replace the `impl From<IdentityStatus> for egui::Color32` with either:
   (a) a method on `IdentityStatus` returning `(u8, u8, u8)` tuple, with the Color32 conversion moved to UI code, or
   (b) a custom `IdentityColor` enum with `to_color32()` in UI.

@@ -586,7 +586,8 @@ impl IdentitiesScreen {
                                                     if is_active {
                                                         ui.label(type_text);
                                                     } else{
-                                                        ui.label(RichText::new(status.to_string()).color(status));
+                                                        let (r, g, b) = status.status_color_rgb();
+                                                        ui.label(RichText::new(status.to_string()).color(egui::Color32::from_rgb(r, g, b)));
                                                     };
                                                 });
                                             });

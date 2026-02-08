@@ -27,7 +27,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{ProtocolError, bls_signatures, ed25519_dalek};
 use dash_sdk::platform::IdentityPublicKey;
-use egui::Color32;
+
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
@@ -142,16 +142,18 @@ impl Display for IdentityStatus {
     }
 }
 
-impl From<IdentityStatus> for Color32 {
-    fn from(value: IdentityStatus) -> Self {
-        match value {
-            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
-            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
-            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
-            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
-            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
+impl IdentityStatus {
+    /// Returns the RGB color associated with this identity status.
+    /// Use this to convert to a framework-specific color type in UI code.
+    pub fn status_color_rgb(&self) -> (u8, u8, u8) {
+        match self {
+            IdentityStatus::Active => (0, 128, 0),            // Green
+            IdentityStatus::Unknown => (128, 128, 128),       // Gray
+            IdentityStatus::PendingCreation => (255, 165, 0), // Orange
+            IdentityStatus::NotFound => (255, 0, 0),          // Red
+            IdentityStatus::FailedCreation => (255, 0, 0),    // Red
         }
-    } //
+    }
 }
 
 impl IdentityStatus {

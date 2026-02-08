@@ -2134,7 +2134,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.5c Fix silent error masking in contacts.rs load_contact_private_info** (P2)
   In `src/database/contacts.rs:76-79`, replace `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` (or simply `row.get(0)?`). The closure returns `rusqlite::Result`, so `?` properly propagates SQL type errors instead of silently converting them to empty strings. The `unwrap_or_default()` should only handle SQL NULL values (which are distinct from type errors). Same fix for lines 78 and 79.
 
-- [ ] **7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback** (P2)
+- [x] **7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback** (P2)
   In `src/database/scheduled_votes.rs:159`, replace `_ => unreachable!()` with `_ => false` (treating any unexpected value as not-executed). Add a `tracing::warn!` for unexpected values. Database corruption or manual editing could trigger the unreachable and panic the app.
 
 - [ ] **7.5e Optimize identity loading N+1 query with JOIN** (P3)
@@ -2174,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 21 |
+| 7. Features | 33 | 22 |
 | 8. Security | 2 | 0 |

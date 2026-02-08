@@ -1147,3 +1147,8 @@
 **Task:** 7.5c Fix silent error masking in contacts.rs load_contact_private_info
 **What was done:** In `load_contact_private_info()`, replaced `row.get::<_, String>(0).unwrap_or_default()` with `row.get::<_, Option<String>>(0)?.unwrap_or_default()` for both nickname and notes fields, and `row.get::<_, i32>(2).unwrap_or(0)` with `row.get::<_, Option<i32>>(2)?.unwrap_or(0)` for is_hidden. Previously, SQL type conversion errors (e.g., from database corruption where a non-TEXT value is stored in a TEXT column) were silently masked as empty strings or zero. Now, type errors are properly propagated via `?` while SQL NULL values are still handled gracefully via `unwrap_or_default()`.
 **Files changed:** src/database/contacts.rs
+
+## Run 187 — 2026-02-08
+**Task:** 7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback
+**What was done:** Replaced `_ => unreachable!()` in `get_scheduled_votes()` at `scheduled_votes.rs:163` with a safe fallback that treats unexpected `executed` column values as `false` (not executed) and logs a `tracing::warn!` with the unexpected value and contested name for debugging. The `executed` column is an INTEGER constrained to 0/1 by INSERT logic, but database corruption or manual editing could produce other values. Previously this would panic the app; now it degrades gracefully.
+**Files changed:** src/database/scheduled_votes.rs

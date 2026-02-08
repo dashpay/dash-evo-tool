@@ -1035,3 +1035,9 @@
 **What was done:** Removed stale TODO comment about autoAcceptProof processing in contact_requests.rs (the functionality is fully implemented in auto_accept_handler.rs). Fixed tracing log levels in auto_accept_handler.rs: changed "Found contact request with autoAcceptProof" and "Valid autoAcceptProof! Auto-accepting" from error to info level, and changed "Invalid or expired autoAcceptProof" and "Failed to verify autoAcceptProof" from error to warn level. In payments.rs, changed the placeholder "Would update payment" message from error to debug level.
 **Files changed:** src/backend_task/dashpay/contact_requests.rs, src/backend_task/dashpay/auto_accept_handler.rs, src/backend_task/dashpay/payments.rs
 **Sub-tasks created:** 0
+
+## Run 170 — 2026-02-08
+**Task:** 7.2g Parallelize contact loading for performance
+**What was done:** Refactored the sequential contact profile/username fetching loop in `load_contacts()` to use `futures::future::join_all` with chunked concurrency (10 contacts per batch). Previously, each contact's DashPay profile and DPNS username were fetched one at a time in a sequential loop — with N contacts, this meant 2N sequential network round-trips. Now contacts are processed in chunks of 10, with all fetches within a chunk running concurrently via `join_all`. This reduces total fetch time from O(2N) sequential round-trips to O(2*ceil(N/10)) batched round-trips, roughly a 10x improvement for large contact lists.
+**Files changed:** src/backend_task/dashpay/contacts.rs
+**Sub-tasks created:** 0

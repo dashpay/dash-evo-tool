@@ -1932,7 +1932,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (2) In `src/backend_task/dashpay/auto_accept_handler.rs`, replace `tracing::error!` calls at lines 58, 83, 103 with appropriate levels (`tracing::info!` for proof found/accepted, `tracing::warn!` for invalid proof). These are informational messages incorrectly logged at error level.
   (3) In `src/backend_task/dashpay/payments.rs:363,380`, replace `tracing::error!` with `tracing::debug!` or `tracing::info!` — these are "would do X" placeholder messages, not actual errors.
 
-- [ ] **7.2g Parallelize contact loading for performance** (P3)
+- [x] **7.2g Parallelize contact loading for performance** (P3)
   In `src/backend_task/dashpay/contacts.rs`, the `load_contacts_with_info()` function (or equivalent) makes sequential network queries for each contact's profile. With 200 contacts, this causes significant delays. Refactor to use `tokio::spawn` with a semaphore (concurrency limit of 10-20) to parallelize profile fetches, similar to the pattern already used in `query_dpns_contested_resources.rs`. Alternatively, batch-query Platform for multiple identities at once if the SDK supports it.
 
 - [ ] **7.3 [META] Review SPV manager for production readiness** (P2)

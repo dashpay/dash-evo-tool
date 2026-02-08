@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
+use crate::backend_task::document::DocumentResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -1636,18 +1637,20 @@ impl ScreenLike for DocumentActionScreen {
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+            BackendTaskSuccessResult::Document(DocumentResult::Broadcasted(_)) => {
                 self.broadcast_status = BroadcastStatus::Broadcasted;
             }
-            BackendTaskSuccessResult::DeletedDocument(_, fee_result)
-            | BackendTaskSuccessResult::ReplacedDocument(_, fee_result)
-            | BackendTaskSuccessResult::TransferredDocument(_, fee_result)
-            | BackendTaskSuccessResult::PurchasedDocument(_, fee_result)
-            | BackendTaskSuccessResult::SetDocumentPrice(_, fee_result) => {
+            BackendTaskSuccessResult::Document(
+                DocumentResult::Deleted(_, fee_result)
+                | DocumentResult::Replaced(_, fee_result)
+                | DocumentResult::Transferred(_, fee_result)
+                | DocumentResult::Purchased(_, fee_result)
+                | DocumentResult::SetPrice(_, fee_result),
+            ) => {
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Broadcasted;
             }
-            BackendTaskSuccessResult::Documents(documents) => {
+            BackendTaskSuccessResult::Document(DocumentResult::Fetched(documents)) => {
                 self.broadcast_status = BroadcastStatus::Fetched;
 
                 match self.action_type {

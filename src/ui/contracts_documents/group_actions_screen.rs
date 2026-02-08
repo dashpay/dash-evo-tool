@@ -9,7 +9,7 @@
 //! and details about the action like mint amount, transfer amount, mint recipient ID, and public note.
 
 use crate::app::AppAction;
-use crate::backend_task::contract::ContractTask;
+use crate::backend_task::contract::{ContractResult, ContractTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -466,7 +466,7 @@ impl ScreenLike for GroupActionsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ActiveGroupActions(actions_map) =
+        if let BackendTaskSuccessResult::Contract(ContractResult::ActiveGroupActions(actions_map)) =
             backend_task_success_result
         {
             self.fetch_group_actions_status =

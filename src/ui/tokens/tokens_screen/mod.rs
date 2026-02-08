@@ -46,6 +46,7 @@ use crate::backend_task::tokens::{TokenResult, TokenTask};
 use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
+use crate::backend_task::contract::ContractResult;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -1576,7 +1577,9 @@ impl ScreenLike for TokensScreen {
                 self.contract_search_status = ContractSearchStatus::Complete;
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
-            BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
+            BackendTaskSuccessResult::Contract(ContractResult::WithDescriptions(
+                contracts_with_descriptions,
+            )) => {
                 let default_info = (None, vec![]);
                 let info = contracts_with_descriptions
                     .get(&self.selected_contract_id.unwrap())

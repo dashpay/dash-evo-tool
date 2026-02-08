@@ -1,5 +1,5 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::document::DocumentTask;
+use crate::backend_task::document::{DocumentResult, DocumentTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
@@ -87,7 +87,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::Documents(documents) = backend_task_success_result {
+        if let BackendTaskSuccessResult::Document(DocumentResult::Fetched(documents)) =
+            backend_task_success_result
+        {
             self.fetch_status = FetchStatus::NotFetching;
             self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
 

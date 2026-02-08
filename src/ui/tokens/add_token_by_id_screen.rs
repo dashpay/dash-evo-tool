@@ -11,7 +11,7 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Color32, Context, RichText, Ui};
 
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::contract::ContractTask;
+use crate::backend_task::contract::{ContractResult, ContractTask};
 use crate::database::contracts::InsertTokensToo;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -285,13 +285,13 @@ impl ScreenLike for AddTokenByIdScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::FetchedContract(contract) => {
+            BackendTaskSuccessResult::Contract(ContractResult::Fetched(contract)) => {
                 self.handle_fetched_contract(contract, None);
             }
-            BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+            BackendTaskSuccessResult::Contract(ContractResult::FetchedWithTokenPosition(
                 contract,
                 token_position,
-            ) => {
+            )) => {
                 self.handle_fetched_contract(contract, Some(token_position));
             }
             _ => {}

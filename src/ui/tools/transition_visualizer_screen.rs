@@ -428,14 +428,18 @@ impl ScreenLike for TransitionVisualizerScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
-            crate::ui::BackendTaskSuccessResult::FetchedContract(contract) => {
+            crate::ui::BackendTaskSuccessResult::Contract(
+                crate::backend_task::contract::ContractResult::Fetched(contract),
+            ) => {
                 let contract_id = contract.id().to_string(Encoding::Base58);
                 self.contract_fetch_message = Some((
                     format!("✅ Contract {} fetched successfully", contract_id),
                     Instant::now(),
                 ));
             }
-            crate::ui::BackendTaskSuccessResult::FetchedContracts(contracts) => {
+            crate::ui::BackendTaskSuccessResult::Contract(
+                crate::backend_task::contract::ContractResult::FetchedMultiple(contracts),
+            ) => {
                 let count = contracts.iter().filter(|c| c.is_some()).count();
                 self.contract_fetch_message = Some((
                     format!("✅ {} contract(s) fetched successfully", count),

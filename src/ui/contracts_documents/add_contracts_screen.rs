@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::contract::ContractResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
@@ -284,7 +285,9 @@ impl ScreenLike for AddContractsScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::FetchedContracts(maybe_found_contracts) => {
+            BackendTaskSuccessResult::Contract(ContractResult::FetchedMultiple(
+                maybe_found_contracts,
+            )) => {
                 let maybe_contracts: Vec<_> = self
                     .contract_ids_input
                     .iter()

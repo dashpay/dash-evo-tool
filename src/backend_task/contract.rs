@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::database::contracts::InsertTokensToo;
@@ -26,6 +26,25 @@ use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::IndexMap;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContractResult {
+    Fetched(DataContract),
+    FetchedWithTokenPosition(
+        DataContract,
+        dash_sdk::dpp::data_contract::TokenContractPosition,
+    ),
+    FetchedMultiple(Vec<Option<DataContract>>),
+    WithDescriptions(BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>),
+    ActiveGroupActions(IndexMap<Identifier, GroupAction>),
+    Registered(FeeResult),
+    Updated(FeeResult),
+    Saved,
+    Removed,
+    FetchedNonce,
+    NotFound,
+    ProofErrorLogged,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContractTask {
@@ -67,7 +86,9 @@ impl AppContext {
                                 results.push(None);
                             }
                         }
-                        Ok(BackendTaskSuccessResult::FetchedContracts(results))
+                        Ok(BackendTaskSuccessResult::Contract(
+                            ContractResult::FetchedMultiple(results),
+                        ))
                     }
                     Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
@@ -150,7 +171,9 @@ impl AppContext {
                                 );
                             }
                         }
-                        Ok(BackendTaskSuccessResult::ContractsWithDescriptions(results))
+                        Ok(BackendTaskSuccessResult::Contract(
+                            ContractResult::WithDescriptions(results),
+                        ))
                     }
                     Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
@@ -185,7 +208,9 @@ impl AppContext {
                     }
                 }
 
-                Ok(BackendTaskSuccessResult::ActiveGroupActions(actions))
+                Ok(BackendTaskSuccessResult::Contract(
+                    ContractResult::ActiveGroupActions(actions),
+                ))
             }
             ContractTask::RegisterDataContract(data_contract, alias, identity, signing_key) => {
                 AppContext::register_data_contract(
@@ -212,7 +237,7 @@ impl AppContext {
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
-                .map(|_| BackendTaskSuccessResult::RemovedContract)
+                .map(|_| BackendTaskSuccessResult::Contract(ContractResult::Removed))
                 .map_err(|e| format!("Error removing contract: {}", e)),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
                 self.db
@@ -223,7 +248,7 @@ impl AppContext {
                         self,
                     )
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::SavedContract)
+                Ok(BackendTaskSuccessResult::Contract(ContractResult::Saved))
             }
         }
     }

@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::FeeResult;
+use crate::backend_task::contract::ContractResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -351,7 +352,7 @@ impl ScreenLike for RegisterDataContractScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::FetchedNonce => {
+            BackendTaskSuccessResult::Contract(ContractResult::FetchedNonce) => {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -359,11 +360,11 @@ impl ScreenLike for RegisterDataContractScreen {
                         .as_secs(),
                 );
             }
-            BackendTaskSuccessResult::RegisteredContract(fee_result) => {
+            BackendTaskSuccessResult::Contract(ContractResult::Registered(fee_result)) => {
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
-            BackendTaskSuccessResult::ProofErrorLogged => {
+            BackendTaskSuccessResult::Contract(ContractResult::ProofErrorLogged) => {
                 self.broadcast_status = BroadcastStatus::ProofError(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)

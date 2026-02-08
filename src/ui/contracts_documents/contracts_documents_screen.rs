@@ -1,6 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::document::DocumentResult;
 use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // Updated import
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
@@ -572,14 +573,14 @@ impl ScreenLike for DocumentQueryScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::Documents(documents) => {
+            BackendTaskSuccessResult::Document(DocumentResult::Fetched(documents)) => {
                 self.matching_documents = documents
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())
                     .collect();
                 self.document_query_status = DocumentQueryStatus::Complete;
             }
-            BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
+            BackendTaskSuccessResult::Document(DocumentResult::Page(page_docs, next_cursor)) => {
                 self.matching_documents = page_docs
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())

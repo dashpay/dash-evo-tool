@@ -1,29 +1,22 @@
 use crate::app::TaskResult;
 use crate::backend_task::contested_names::ContestedResourceTask;
-use crate::backend_task::contract::ContractTask;
+use crate::backend_task::contract::{ContractResult, ContractTask};
 use crate::backend_task::core::{CoreResult, CoreTask};
 use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
-use crate::backend_task::document::DocumentTask;
+use crate::backend_task::document::{DocumentResult, DocumentTask};
 use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::{WalletResult, WalletTask};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
-use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
 use crate::utils::egui_mpsc::SenderAsync;
 use contested_names::ScheduledDPNSVote;
-use dash_sdk::dpp::group::group_action::GroupAction;
-use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::votes::Vote;
-use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{Document, Identifier};
-use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use grovestark::GroveSTARKTask;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
 
@@ -98,61 +91,28 @@ pub enum BackendTaskSuccessResult {
     // Identity domain results
     Identity(IdentityResult),
 
-    // Specific results
-    #[allow(dead_code)] // May be used for individual document operations
-    Document(Document),
-    Documents(Documents),
-    BroadcastedDocument(Document),
+    // Document domain results
+    Document(DocumentResult),
+
+    // Contract domain results
+    Contract(ContractResult),
+
+    // DPNS/Contest results
     #[allow(dead_code)] // May be used for reporting successful votes
     SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
-    FetchedContract(DataContract),
-    FetchedContractWithTokenPosition(
-        DataContract,
-        dash_sdk::dpp::data_contract::TokenContractPosition,
-    ),
-    FetchedContracts(Vec<Option<DataContract>>),
-    PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
-    #[allow(dead_code)] // May be used for token search results
-    TokensByKeyword(Vec<TokenInfo>, Option<Start>),
-    ContractsWithDescriptions(
-        BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
-    ),
-    ActiveGroupActions(IndexMap<Identifier, GroupAction>),
-    UpdatedThemePreference(crate::ui::theme::ThemeMode),
-    PlatformInfo(PlatformInfoTaskResult),
-
-    // DashPay domain results
-    DashPay(DashPayResult),
-    GroveSTARK(grovestark::GroveSTARKResult),
-
-    // MNList-specific results
-    MnList(mnlist::MnListResult),
-
-    // Token domain results
-    Token(tokens::TokenResult),
-
-    // Document operation results (replacing string messages)
-    DeletedDocument(Identifier, FeeResult),
-    ReplacedDocument(Identifier, FeeResult),
-    TransferredDocument(Identifier, FeeResult),
-    PurchasedDocument(Identifier, FeeResult),
-    SetDocumentPrice(Identifier, FeeResult),
-
-    // Contract operation results (replacing string messages)
-    UpdatedContract(FeeResult),
-    RemovedContract,
-    FetchedNonce,
-    RegisteredContract(FeeResult),
-    SavedContract,
-    ContractNotFound,
-    ProofErrorLogged,
-
-    // DPNS operation results (replacing string messages)
     ScheduledVotes,
     RefreshedDpnsContests,
     RefreshedOwnedDpnsNames,
+
+    // Other domain results
+    UpdatedThemePreference(crate::ui::theme::ThemeMode),
+    PlatformInfo(PlatformInfoTaskResult),
+    DashPay(DashPayResult),
+    GroveSTARK(grovestark::GroveSTARKResult),
+    MnList(mnlist::MnListResult),
+    Token(tokens::TokenResult),
 
     // Broadcast results
     BroadcastedStateTransition,

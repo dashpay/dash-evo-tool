@@ -1,3 +1,4 @@
+use super::contract::ContractResult;
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo,
@@ -551,10 +552,10 @@ impl AppContext {
                 .map_err(|e| format!("Failed to fetch token balance: {e}")),
             TokenTask::FetchTokenByContractId(contract_id) => {
                 match DataContract::fetch_by_identifier(sdk, *contract_id).await {
-                    Ok(Some(data_contract)) => {
-                        Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
-                    }
-                    Ok(None) => Ok(BackendTaskSuccessResult::ContractNotFound),
+                    Ok(Some(data_contract)) => Ok(BackendTaskSuccessResult::Contract(
+                        ContractResult::Fetched(data_contract),
+                    )),
+                    Ok(None) => Ok(BackendTaskSuccessResult::Contract(ContractResult::NotFound)),
                     Err(e) => Err(format!("Error fetching contracts: {}", e)),
                 }
             }
@@ -575,12 +576,16 @@ impl AppContext {
                         match DataContract::fetch_by_identifier(sdk, contract_id).await {
                             Ok(Some(data_contract)) => {
                                 // Return the contract with the specific token position
-                                Ok(BackendTaskSuccessResult::FetchedContractWithTokenPosition(
-                                    data_contract,
-                                    token_position,
+                                Ok(BackendTaskSuccessResult::Contract(
+                                    ContractResult::FetchedWithTokenPosition(
+                                        data_contract,
+                                        token_position,
+                                    ),
                                 ))
                             }
-                            Ok(None) => Ok(BackendTaskSuccessResult::ContractNotFound),
+                            Ok(None) => {
+                                Ok(BackendTaskSuccessResult::Contract(ContractResult::NotFound))
+                            }
                             Err(e) => Err(format!("Error fetching contract for token: {}", e)),
                         }
                     }

@@ -975,7 +975,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producers: `src/backend_task/dashpay/` (5 files)
   - Consumers: `src/ui/dashpay/` (8+ screens)
 
-- [ ] **3.6g Extract Document and Contract results into DocumentResult and ContractResult sub-enums** (P2)
+- [x] **3.6g Extract Document and Contract results into DocumentResult and ContractResult sub-enums** (P2)
   Create `DocumentResult` with 8 variants: `Single`, `Multiple`, `Broadcasted`, `Page`, `Deleted`, `Replaced`, `Transferred`, `Purchased`, `SetPrice`. Create `ContractResult` with 11 variants: `Fetched`, `FetchedWithTokenPosition`, `FetchedMultiple`, `WithDescriptions`, `ActiveGroupActions`, `Registered`, `RegisteredToken`, `Saved`, `Updated`, `Removed`, `FetchedNonce`, `NotFound`, `ProofErrorLogged`. Update:
   - Producers: `src/backend_task/document.rs`, `src/backend_task/contract.rs`, `register_contract.rs`, `update_data_contract.rs`
   - Consumers: `src/ui/contracts_documents/` (6+ screens), `src/ui/tokens/tokens_screen/mod.rs`

@@ -25,9 +25,23 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
-use dash_sdk::query_types::IndexMap;
+use dash_sdk::query_types::{Documents, IndexMap};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocumentResult {
+    #[allow(dead_code)] // May be used for individual document operations
+    Single(Document),
+    Fetched(Documents),
+    Broadcasted(Document),
+    Page(IndexMap<Identifier, Option<Document>>, Option<Start>),
+    Deleted(Identifier, FeeResult),
+    Replaced(Identifier, FeeResult),
+    Transferred(Identifier, FeeResult),
+    Purchased(Identifier, FeeResult),
+    SetPrice(Identifier, FeeResult),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocumentTask {
@@ -97,7 +111,7 @@ impl AppContext {
             DocumentTask::FetchDocuments(document_query) => {
                 Document::fetch_many(sdk, document_query)
                     .await
-                    .map(BackendTaskSuccessResult::Documents)
+                    .map(|docs| BackendTaskSuccessResult::Document(DocumentResult::Fetched(docs)))
                     .map_err(|e| format!("Error fetching documents: {}", e))
             }
             DocumentTask::FetchDocumentsPage(mut document_query) => {
@@ -132,10 +146,10 @@ impl AppContext {
                     None
                 };
 
-                Ok(BackendTaskSuccessResult::PageDocuments(
+                Ok(BackendTaskSuccessResult::Document(DocumentResult::Page(
                     page_docs,
                     next_cursor,
-                ))
+                )))
             }
             DocumentTask::BroadcastDocument(
                 document,
@@ -188,9 +202,9 @@ impl AppContext {
 
                 // Handle the result - DocumentCreateResult contains the created document
                 match result {
-                    DocumentCreateResult::Document(document) => {
-                        Ok(BackendTaskSuccessResult::BroadcastedDocument(document))
-                    }
+                    DocumentCreateResult::Document(document) => Ok(
+                        BackendTaskSuccessResult::Document(DocumentResult::Broadcasted(document)),
+                    ),
                 }
             }
             DocumentTask::DeleteDocument(
@@ -245,9 +259,11 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentDeleteResult::Deleted(deleted_id) => Ok(
-                        BackendTaskSuccessResult::DeletedDocument(deleted_id, fee_result),
-                    ),
+                    DocumentDeleteResult::Deleted(deleted_id) => {
+                        Ok(BackendTaskSuccessResult::Document(DocumentResult::Deleted(
+                            deleted_id, fee_result,
+                        )))
+                    }
                 }
             }
             DocumentTask::ReplaceDocument(
@@ -301,9 +317,11 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentReplaceResult::Document(document) => Ok(
-                        BackendTaskSuccessResult::ReplacedDocument(document.id(), fee_result),
-                    ),
+                    DocumentReplaceResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Document(
+                            DocumentResult::Replaced(document.id(), fee_result),
+                        ))
+                    }
                 }
             }
             DocumentTask::TransferDocument(
@@ -375,9 +393,11 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentTransferResult::Document(document) => Ok(
-                        BackendTaskSuccessResult::TransferredDocument(document.id(), fee_result),
-                    ),
+                    DocumentTransferResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Document(
+                            DocumentResult::Transferred(document.id(), fee_result),
+                        ))
+                    }
                 }
             }
             DocumentTask::PurchaseDocument(
@@ -450,9 +470,11 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentPurchaseResult::Document(document) => Ok(
-                        BackendTaskSuccessResult::PurchasedDocument(document.id(), fee_result),
-                    ),
+                    DocumentPurchaseResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Document(
+                            DocumentResult::Purchased(document.id(), fee_result),
+                        ))
+                    }
                 }
             }
             DocumentTask::SetDocumentPrice(
@@ -524,9 +546,11 @@ impl AppContext {
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 match result {
-                    DocumentSetPriceResult::Document(document) => Ok(
-                        BackendTaskSuccessResult::SetDocumentPrice(document.id(), fee_result),
-                    ),
+                    DocumentSetPriceResult::Document(document) => {
+                        Ok(BackendTaskSuccessResult::Document(
+                            DocumentResult::SetPrice(document.id(), fee_result),
+                        ))
+                    }
                 }
             }
         }

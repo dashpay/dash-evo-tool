@@ -77,7 +77,9 @@ impl AppContext {
         // Update UI
         sender
             .send(TaskResult::Success(Box::new(
-                BackendTaskSuccessResult::FetchedNonce,
+                BackendTaskSuccessResult::Contract(
+                    crate::backend_task::contract::ContractResult::FetchedNonce,
+                ),
             )))
             .await
             .map_err(|e| format!("Failed to send message: {}", e))?;
@@ -115,7 +117,9 @@ impl AppContext {
                     .replace_contract(data_contract.id(), &returned_contract, self)
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-                Ok(BackendTaskSuccessResult::UpdatedContract(fee_result))
+                Ok(BackendTaskSuccessResult::Contract(
+                    crate::backend_task::contract::ContractResult::Updated(fee_result),
+                ))
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
@@ -134,7 +138,9 @@ impl AppContext {
 
                     sender
                         .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::ProofErrorLogged,
+                            BackendTaskSuccessResult::Contract(
+                                crate::backend_task::contract::ContractResult::ProofErrorLogged,
+                            ),
                         )))
                         .await
                         .map_err(|e| format!("Failed to send message: {}", e))?;

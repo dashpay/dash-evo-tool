@@ -14,7 +14,6 @@ use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::dashcore::address::NetworkChecked;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
-use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
@@ -163,8 +162,7 @@ pub enum BackendTaskSuccessResult {
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
-    GeneratedZKProof(ProofDataOutput),
-    VerifiedZKProof(bool, ProofDataOutput),
+    GroveSTARK(grovestark::GroveSTARKResult),
     GeneratedReceiveAddress {
         seed_hash: WalletSeedHash,
         address: String,
@@ -332,7 +330,9 @@ impl AppContext {
                 self.run_platform_info_task(platform_info_task).await
             }
             BackendTask::GroveSTARKTask(grovestark_task) => {
-                grovestark::run_grovestark_task(grovestark_task, &sdk).await
+                grovestark::run_grovestark_task(grovestark_task, &sdk)
+                    .await
+                    .map(BackendTaskSuccessResult::GroveSTARK)
             }
             BackendTask::WalletTask(wallet_task) => self.run_wallet_task(wallet_task).await,
             BackendTask::None => Ok(BackendTaskSuccessResult::None),

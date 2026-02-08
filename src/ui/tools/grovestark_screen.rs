@@ -1018,9 +1018,10 @@ impl ScreenLike for GroveSTARKScreen {
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
         use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::grovestark::GroveSTARKResult;
 
         match backend_task_success_result {
-            BackendTaskSuccessResult::GeneratedZKProof(proof_data) => {
+            BackendTaskSuccessResult::GroveSTARK(GroveSTARKResult::GeneratedProof(proof_data)) => {
                 self.is_generating = false;
                 let proof_size = proof_data.proof.len();
                 self.generated_proof = Some(ProofData {
@@ -1037,7 +1038,10 @@ impl ScreenLike for GroveSTARKScreen {
                 ));
                 self.gen_error_message = None;
             }
-            BackendTaskSuccessResult::VerifiedZKProof(is_valid, proof_data) => {
+            BackendTaskSuccessResult::GroveSTARK(GroveSTARKResult::VerifiedProof(
+                is_valid,
+                proof_data,
+            )) => {
                 self.is_verifying = false;
                 // Get contract ID from the proof data itself
                 let contract_id = hex::encode(proof_data.public_inputs.contract_id);

@@ -950,7 +950,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Consumer: `src/ui/tools/masternode_list_diff_screen/mod.rs`
   Start here because MnList is the most self-contained domain (1 producer, 1 consumer).
 
-- [ ] **3.6b Extract GroveSTARK results into GroveSTARKResult sub-enum** (P2)
+- [x] **3.6b Extract GroveSTARK results into GroveSTARKResult sub-enum** (P2)
   Create `GroveSTARKResult` enum with 2 variants: `GeneratedProof(ProofDataOutput)`, `VerifiedProof(bool, ProofDataOutput)`. Add `GroveSTARK(GroveSTARKResult)` to `BackendTaskSuccessResult`. Update:
   - Producer: `src/backend_task/grovestark.rs`
   - Consumers: `src/ui/tools/grovestark_screen.rs`, `proof_log_screen.rs`, `proof_visualizer_screen.rs`
@@ -1223,7 +1223,7 @@ These META tasks validate reported bugs against the current codebase before any 
 |---------|-------|-----------|
 | 1. Bug Triage | 30 | 30 |
 | 2. Stability | 20 | 20 |
-| 3. Refactoring | 43 | 24 |
+| 3. Refactoring | 43 | 25 |
 | 4. UI/UX | 4 | 0 |
 | 5. Architecture | 4 | 0 |
 | 6. Testing | 6 | 0 |

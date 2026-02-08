@@ -888,3 +888,9 @@
 **What was done:** Ran `cargo clippy --all-features --all-targets -- -D warnings` and confirmed zero warnings. All prior tasks maintained clippy compliance throughout development (each task's Step 4 verification includes clippy). No code changes needed — the codebase is already fully clippy-clean. All four checks (fmt, build, clippy, test) pass.
 **Files changed:** tasks.md, activity.md
 **Sub-tasks created:** 0
+
+## Run 148 — 2026-02-08
+**Task:** 6.3 Replace println!/eprintln! with tracing macros
+**What was done:** Replaced the 2 production println!/eprintln! calls in src/ with tracing macros. In main.rs, moved `initialize_logger()` to run earlier (right after data dir creation) and replaced `println!` startup message with `tracing::info!` with structured version and data_dir fields. In logging.rs, replaced `eprintln!` (log file creation failure fallback) with `tracing::warn!` since the stderr subscriber is already active at that point. All remaining println!/eprintln! calls in src/ are in test code (#[test] / #[cfg(test)]) or commented out — these were left as-is.
+**Files changed:** src/main.rs, src/logging.rs
+**Sub-tasks created:** 0

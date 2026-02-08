@@ -2,16 +2,18 @@ use dash_evo_tool::*;
 
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
 use crate::cpu_compatibility::check_cpu_compatibility;
+use crate::logging::initialize_logger;
 
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
         .expect("Failed to create app user_data directory");
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to get app user_data directory path");
-    println!(
-        "Starting dash-evo-tool, version: {}, data dir: {}",
-        VERSION,
-        app_data_dir.display()
+    initialize_logger();
+    tracing::info!(
+        version = VERSION,
+        data_dir = %app_data_dir.display(),
+        "Starting dash-evo-tool"
     );
     check_cpu_compatibility();
     // Initialize the Tokio runtime

@@ -1676,7 +1676,7 @@ These META tasks validate reported bugs against the current codebase before any 
   This may be a large task - if so, split by module.
   **Result:** Clippy already passes cleanly with zero warnings. All prior tasks maintained clippy compliance throughout.
 
-- [ ] **6.3 Replace println!/eprintln! with tracing macros** (P3)
+- [x] **6.3 Replace println!/eprintln! with tracing macros** (P3)
   Find all `println!` and `eprintln!` in `src/` and replace with appropriate `tracing::info!`, `tracing::warn!`, `tracing::error!`, etc.
   Reference: `issues/core-014-logging-panic-on-failure.md`.
 

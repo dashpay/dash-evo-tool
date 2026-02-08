@@ -42,9 +42,9 @@ fn initialize_logger_internal() {
                 .finish();
             let set = tracing::subscriber::set_global_default(subscriber).is_ok();
             if set {
-                eprintln!(
-                    "Warning: Could not create log file, logging to stderr: {}",
-                    e
+                tracing::warn!(
+                    error = %e,
+                    "Could not create log file, logging to stderr"
                 );
             }
             (set, None)

@@ -151,7 +151,7 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        let _ = domain_document
+        let _returned_domain_document = domain_document
             .put_to_platform_and_wait_for_response(
                 sdk,
                 domain_document_type.to_owned_document_type(),
@@ -164,8 +164,21 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
+        // Determine if the name is contested based on DPNS rules:
+        // Names < 20 chars that contain no digits (or only 0/1) are contested
+        let normalized_name = convert_to_homograph_safe_chars(&input.name_input).to_lowercase();
+        let contested = normalized_name.len() < 20
+            && normalized_name
+                .chars()
+                .all(|c| !c.is_ascii_digit() || c == '0' || c == '1');
+        if contested {
+            tracing::info!(
+                "DPNS name '{}' is contested — it will enter a voting period",
+                input.name_input
+            );
+        }
+
         // Re-fetch the identity's DPNS names from Platform
-        // TODO: Use the proof in the response to see if the name is contested or not (document is returned whether it's contested or not)
         let dpns_names_document_query = DocumentQuery {
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -256,7 +269,10 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::Identity(
-            IdentityResult::RegisteredDpnsName(fee_result),
+            IdentityResult::RegisteredDpnsName {
+                fee_result,
+                contested,
+            },
         ))
     }
 }

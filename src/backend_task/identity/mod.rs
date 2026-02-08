@@ -49,7 +49,10 @@ pub enum IdentityResult {
     AddedKeyToIdentity(FeeResult),
     TransferredCredits(FeeResult),
     WithdrewFromIdentity(FeeResult),
-    RegisteredDpnsName(FeeResult),
+    RegisteredDpnsName {
+        fee_result: FeeResult,
+        contested: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

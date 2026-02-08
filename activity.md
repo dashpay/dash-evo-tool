@@ -912,3 +912,9 @@
 **What was done:** Added a confirmation dialog to the profile screen's Cancel button when there are unsaved changes. When the user clicks Cancel with `has_unsaved_changes` true, a `ConfirmationDialog` with "Discard Changes?" title and danger mode is shown, giving options to "Discard" (confirms cancel) or "Keep Editing" (returns to editing). Uses the existing `ConfirmationDialog` component pattern with `Option<ConfirmationDialog>` field, matching the approach used in token screens like `destroy_frozen_funds_screen.rs`.
 **Files changed:** src/ui/dashpay/profile_screen.rs
 **Sub-tasks created:** 0
+
+## Run 152 — 2026-02-08
+**Task:** 6.4c Fix TODO: Use proof response to detect contested DPNS names
+**What was done:** Captured the domain document response from `put_to_platform_and_wait_for_response()` instead of discarding it with `let _ =`. Added contested name detection after the domain document submission using DPNS rules (names < 20 chars with no digits or only 0/1 are contested). Added `contested: bool` field to the `IdentityResult::RegisteredDpnsName` enum variant so the UI can display contested status. Updated the register DPNS name success screen to show "DPNS Name Submitted (Contested)" title with an explanatory info section about the voting period when the name is contested, versus the normal "DPNS Name Registered!" for non-contested names. Added tracing::info log when a contested name is submitted. Removed the TODO comment.
+**Files changed:** src/backend_task/identity/mod.rs, src/backend_task/identity/register_dpns_name.rs, src/ui/identities/register_dpns_name_screen.rs
+**Sub-tasks created:** 0

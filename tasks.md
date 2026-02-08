@@ -1739,7 +1739,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **6.4b Fix TODO: Add confirmation dialog for unsaved profile changes** (P2)
   In `src/ui/dashpay/profile_screen.rs:949`, add a confirmation dialog when the user cancels profile editing with unsaved changes, similar to the existing `ConfirmationDialog` pattern used elsewhere in the codebase.
 
-- [ ] **6.4c Fix TODO: Use proof response to detect contested DPNS names** (P3)
+- [x] **6.4c Fix TODO: Use proof response to detect contested DPNS names** (P3)
   In `src/backend_task/identity/register_dpns_name.rs:168`, use the proof returned in the document submission response to determine if the registered name is contested, and update the UI accordingly.
 
 - [ ] **6.4d Fix TODO: UTXO removal timing in identity registration** (P1)
@@ -1888,7 +1888,7 @@ These META tasks validate reported bugs against the current codebase before any 
 | 3. Refactoring | 49 | 49 |
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
-| 6. Testing | 19 | 11 |
+| 6. Testing | 19 | 12 |
 | 7. Features | 5 | 0 |
 | 8. Security | 2 | 0 |
 | 9. Upstream PRs | 2+ | 0 |

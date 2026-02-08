@@ -59,6 +59,8 @@ pub struct RegisterDpnsNameScreen {
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Whether the registered name is contested (enters a voting period)
+    registered_name_contested: bool,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
 }
@@ -121,6 +123,7 @@ impl RegisterDpnsNameScreen {
             error_message,
             show_advanced_options: false,
             completed_fee_result: None,
+            registered_name_contested: false,
             source,
         }
     }
@@ -266,9 +269,22 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let title = if self.registered_name_contested {
+            "DPNS Name Submitted (Contested)"
+        } else {
+            "DPNS Name Registered!"
+        };
+        let info = if self.registered_name_contested {
+            Some((
+                "Contested Name",
+                "This name is contested and has entered a voting period. Masternodes will vote on whether to award the name. The contest lasts approximately two weeks.",
+            ))
+        } else {
+            None
+        };
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "DPNS Name Registered!".to_string(),
+            title.to_string(),
             vec![
                 ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
@@ -276,7 +292,7 @@ impl RegisterDpnsNameScreen {
                     AppAction::Custom("register_another".to_string()),
                 ),
             ],
-            None,
+            info,
         );
 
         // Handle the custom action to reset the form
@@ -286,6 +302,7 @@ impl RegisterDpnsNameScreen {
             self.name_input = String::new();
             self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
             self.completed_fee_result = None;
+            self.registered_name_contested = false;
             return AppAction::None;
         }
 
@@ -302,10 +319,13 @@ impl ScreenLike for RegisterDpnsNameScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::Identity(IdentityResult::RegisteredDpnsName(fee_result)) =
-            backend_task_success_result
+        if let BackendTaskSuccessResult::Identity(IdentityResult::RegisteredDpnsName {
+            fee_result,
+            contested,
+        }) = backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
+            self.registered_name_contested = contested;
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }

@@ -2137,7 +2137,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback** (P2)
   In `src/database/scheduled_votes.rs:159`, replace `_ => unreachable!()` with `_ => false` (treating any unexpected value as not-executed). Add a `tracing::warn!` for unexpected values. Database corruption or manual editing could trigger the unreachable and panic the app.
 
-- [ ] **7.5e Optimize identity loading N+1 query with JOIN** (P3)
+- [x] **7.5e Optimize identity loading N+1 query with JOIN** (P3)
   In `src/database/identities.rs:166-204`, replace the per-identity `top_up_stmt.query()` pattern with a single query using a LEFT JOIN:
   ```sql
   SELECT i.data, i.alias, i.wallet_index, i.status, t.top_up_index, t.amount
@@ -2174,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 22 |
+| 7. Features | 33 | 23 |
 | 8. Security | 2 | 0 |

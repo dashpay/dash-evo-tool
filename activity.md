@@ -1152,3 +1152,8 @@
 **Task:** 7.5d Replace unreachable!() in scheduled_votes.rs with safe fallback
 **What was done:** Replaced `_ => unreachable!()` in `get_scheduled_votes()` at `scheduled_votes.rs:163` with a safe fallback that treats unexpected `executed` column values as `false` (not executed) and logs a `tracing::warn!` with the unexpected value and contested name for debugging. The `executed` column is an INTEGER constrained to 0/1 by INSERT logic, but database corruption or manual editing could produce other values. Previously this would panic the app; now it degrades gracefully.
 **Files changed:** src/database/scheduled_votes.rs
+
+## Run 188 — 2026-02-08
+**Task:** 7.5e Optimize identity loading N+1 query with JOIN
+**What was done:** Replaced the N+1 query pattern in three identity loading functions in `identities.rs` with single LEFT JOIN queries. Previously, `get_local_qualified_identities()`, `get_local_qualified_identities_in_wallets()`, and `get_identity_by_id()` each prepared a separate `top_up_stmt` and executed it per identity inside the `query_map` closure, resulting in O(n) additional queries for n identities. Now each function uses a single `SELECT ... FROM identity i LEFT JOIN top_up t ON i.id = t.identity_id` query and groups results by identity ID in Rust code. For identities with no top-ups, the LEFT JOIN produces NULL values which are handled gracefully. This reduces database round-trips from O(n+1) to O(1) per call.
+**Files changed:** src/database/identities.rs

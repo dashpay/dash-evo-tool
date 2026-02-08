@@ -1657,7 +1657,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Very large transaction sizes
   - Platform fee estimation functions (moved from send_screen)
 
-- [ ] **6.1f Add lock_helper.rs tests** (P2)
+- [x] **6.1f Add lock_helper.rs tests** (P2)
   Write tests for `src/lock_helper.rs` extension traits:
   - `lock_or_recover()` — test normal lock acquisition, test poisoned mutex recovery
   - `read_or_recover()` / `write_or_recover()` — test normal RwLock access, test poisoned lock recovery

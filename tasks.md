@@ -2147,7 +2147,7 @@ These META tasks validate reported bugs against the current codebase before any 
   ```
   Then group the results by identity in Rust code. This reduces O(n) queries to O(1). Apply the same pattern to `get_local_qualified_identities_in_wallets()` (lines 226-260) and `get_identity_by_id()` (lines 282-316).
 
-- [ ] **7.5f Optimize load_identity_order N+1 existence check** (P3)
+- [x] **7.5f Optimize load_identity_order N+1 existence check** (P3)
   In `src/database/identities.rs:517-526`, replace the per-row `SELECT EXISTS(...)` check with a single JOIN query:
   ```sql
   SELECT io.identity_id FROM identity_order io
@@ -2174,5 +2174,5 @@ These META tasks validate reported bugs against the current codebase before any 
 | 4. UI/UX | 26 | 26 |
 | 5. Architecture | 13 | 13 |
 | 6. Testing | 19 | 15 |
-| 7. Features | 33 | 23 |
+| 7. Features | 33 | 24 |
 | 8. Security | 2 | 0 |

@@ -1157,3 +1157,8 @@
 **Task:** 7.5e Optimize identity loading N+1 query with JOIN
 **What was done:** Replaced the N+1 query pattern in three identity loading functions in `identities.rs` with single LEFT JOIN queries. Previously, `get_local_qualified_identities()`, `get_local_qualified_identities_in_wallets()`, and `get_identity_by_id()` each prepared a separate `top_up_stmt` and executed it per identity inside the `query_map` closure, resulting in O(n) additional queries for n identities. Now each function uses a single `SELECT ... FROM identity i LEFT JOIN top_up t ON i.id = t.identity_id` query and groups results by identity ID in Rust code. For identities with no top-ups, the LEFT JOIN produces NULL values which are handled gracefully. This reduces database round-trips from O(n+1) to O(1) per call.
 **Files changed:** src/database/identities.rs
+
+## Run 189 — 2026-02-08
+**Task:** 7.5f Optimize load_identity_order N+1 existence check
+**What was done:** Replaced the per-row `SELECT EXISTS(SELECT 1 FROM identity WHERE id = ?)` pattern in `load_identity_order()` with a single LEFT JOIN query: `SELECT io.identity_id, i.id IS NOT NULL AS exists_in_identity FROM identity_order io LEFT JOIN identity i ON io.identity_id = i.id ORDER BY io.pos ASC`. Previously, the function executed one additional query per identity in the order list to check if it still exists in the identity table, resulting in O(n) queries. Now it uses a single query that returns both the identity ID and its existence status, reducing database round-trips from O(n+1) to O(1).
+**Files changed:** src/database/identities.rs

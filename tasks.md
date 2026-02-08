@@ -1114,7 +1114,7 @@ These META tasks validate reported bugs against the current codebase before any 
   (3) After existing account filtering (line ~194), add `.retain(|data| !self.hide_zero_balances || data.balance > 0 || data.platform_credits > 0)`.
   (4) Optionally: add a column visibility toggle to hide "Total Received", "UTXOs", "Full Path" columns for a cleaner default view.
 
-- [ ] **4.1b Display pending/unconfirmed balance on wallet page** (P2)
+- [x] **4.1b Display pending/unconfirmed balance on wallet page** (P2)
   In `src/ui/wallets/wallets_screen/mod.rs`:
   (1) Modify `render_wallet_overview()` (~line 844) to show confirmed and unconfirmed balances separately. When `unconfirmed_balance_duffs() > 0`, display it in gray text (e.g., "+0.5 DASH pending") next to the confirmed balance.
   (2) Update `render_wallet_selection()` sidebar to show pending indicator next to wallet balance when unconfirmed > 0.

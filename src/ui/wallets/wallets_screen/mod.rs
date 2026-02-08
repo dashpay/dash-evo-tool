@@ -343,10 +343,13 @@ impl WalletsBalancesScreen {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read_or_recover();
                 let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
+                let unconfirmed = guard.unconfirmed_balance_duffs();
+                let pending_indicator = if unconfirmed > 0 { " *" } else { "" };
                 let label = format!(
-                    "HD: {} ({:.4} DASH)",
+                    "HD: {} ({:.4} DASH{})",
                     guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string()),
-                    balance_dash
+                    balance_dash,
+                    pending_indicator
                 );
                 items.push((label, WalletItem::Hd(wallet.clone())));
             }
@@ -357,10 +360,13 @@ impl WalletsBalancesScreen {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read_or_recover();
                 let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
+                let unconfirmed = guard.unconfirmed_balance_duffs();
+                let pending_indicator = if unconfirmed > 0 { " *" } else { "" };
                 let label = format!(
-                    "SK: {} ({:.4} DASH)",
+                    "SK: {} ({:.4} DASH{})",
                     guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string()),
-                    balance_dash
+                    balance_dash,
+                    pending_indicator
                 );
                 items.push((label, WalletItem::SingleKey(wallet.clone())));
             }
@@ -398,21 +404,21 @@ impl WalletsBalancesScreen {
             "Select a wallet".to_string()
         };
 
-        // Get current balance
-        let current_balance = if let Some(wallet) = &self.selected_wallet {
+        // Get current balance and unconfirmed balance
+        let (current_balance, current_unconfirmed) = if let Some(wallet) = &self.selected_wallet {
             wallet
                 .read()
                 .ok()
-                .map(|g| g.total_balance_duffs())
-                .unwrap_or(0)
+                .map(|g| (g.total_balance_duffs(), g.unconfirmed_balance_duffs()))
+                .unwrap_or((0, 0))
         } else if let Some(wallet) = &self.selected_single_key_wallet {
             wallet
                 .read()
                 .ok()
-                .map(|g| g.total_balance_duffs())
-                .unwrap_or(0)
+                .map(|g| (g.total_balance_duffs(), g.unconfirmed_balance_duffs()))
+                .unwrap_or((0, 0))
         } else {
-            0
+            (0, 0)
         };
 
         ui.with_layout(
@@ -446,10 +452,17 @@ impl WalletsBalancesScreen {
                             }
                         });
 
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.colored_label(
-                        DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
+                        DashColors::text_primary(dark_mode),
                         format!(" Balance: {}", format_dash(current_balance)),
                     );
+                    if current_unconfirmed > 0 {
+                        ui.colored_label(
+                            DashColors::text_secondary(dark_mode),
+                            format!("(+{} pending)", format_dash(current_unconfirmed)),
+                        );
+                    }
 
                     ui.separator();
 
@@ -847,6 +860,7 @@ impl WalletsBalancesScreen {
     fn render_wallet_overview(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let total = wallet.total_balance_duffs();
+        let unconfirmed = wallet.unconfirmed_balance_duffs();
         let platform = Self::platform_balance_duffs(wallet);
 
         ui.horizontal(|ui| {
@@ -854,6 +868,12 @@ impl WalletsBalancesScreen {
                 "Core balance: {}",
                 format_dash(total)
             )));
+            if unconfirmed > 0 {
+                ui.label(
+                    RichText::new(format!("(+{} pending)", format_dash(unconfirmed)))
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
         });
         ui.label(
             RichText::new(format!("Platform balance: {}", format_dash(platform)))

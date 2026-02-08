@@ -361,6 +361,11 @@ impl SingleKeyWallet {
         }
     }
 
+    /// Get the unconfirmed balance
+    pub fn unconfirmed_balance_duffs(&self) -> u64 {
+        self.unconfirmed_balance
+    }
+
     /// Get the total balance
     pub fn total_balance_duffs(&self) -> u64 {
         if self.total_balance > 0 {

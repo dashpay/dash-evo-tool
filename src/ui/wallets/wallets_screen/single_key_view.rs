@@ -28,6 +28,7 @@ impl WalletsBalancesScreen {
             .unwrap_or_else(|| "Unnamed Key".to_string());
         let balance_duffs = wallet.total_balance_duffs();
         let balance_dash = balance_duffs as f64 * 1e-8;
+        let unconfirmed_duffs = wallet.unconfirmed_balance_duffs();
         let utxo_count = wallet.utxos.len();
         let utxos: Vec<_> = wallet.utxos.iter().map(|(o, t)| (*o, t.clone())).collect();
         drop(wallet);
@@ -43,7 +44,16 @@ impl WalletsBalancesScreen {
                     ui.add_space(10.0);
 
                     // Balance info
-                    ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
+                        if unconfirmed_duffs > 0 {
+                            let unconfirmed_dash = unconfirmed_duffs as f64 * 1e-8;
+                            ui.label(
+                                RichText::new(format!("(+{:.8} DASH pending)", unconfirmed_dash))
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                    });
                     ui.add_space(10.0);
 
                     // Action buttons for SK wallet

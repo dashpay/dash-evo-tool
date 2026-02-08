@@ -636,3 +636,8 @@
 **Task:** 4.1a Add "hide zero balances" checkbox to wallet address table
 **What was done:** Added a `hide_zero_balances: bool` field (default `true`) to `WalletsBalancesScreen` and a corresponding checkbox in `render_address_table()`. When enabled, addresses with both zero Core balance and zero Platform credits are filtered out. The checkbox appears above the address table, allowing users to toggle visibility of empty addresses. This addresses GH#471's request to declutter the wallet address list by hiding unused addresses by default.
 **Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/address_table.rs
+
+## Run 102 — 2026-02-08
+**Task:** 4.1b Display pending/unconfirmed balance on wallet page
+**What was done:** Added pending/unconfirmed balance display to three wallet UI locations. (1) In `render_wallet_overview()`, when unconfirmed balance is non-zero, a "(+X.XXXX DASH pending)" label in secondary text color appears next to the Core balance. (2) In `render_wallet_selection()`, the Balance label next to the wallet selector combo box now shows "(+amount pending)" in secondary color when unconfirmed > 0, and wallet dropdown labels include a " *" suffix to indicate pending funds. (3) In `render_single_key_wallet_view()`, the balance line now shows pending amount in secondary color when non-zero. Also added the missing `unconfirmed_balance_duffs()` method to `SingleKeyWallet` (HD wallets already had it). This addresses GH#473's request to show pending funds near actual balance.
+**Files changed:** src/ui/wallets/wallets_screen/mod.rs, src/ui/wallets/wallets_screen/single_key_view.rs, src/model/wallet/single_key.rs

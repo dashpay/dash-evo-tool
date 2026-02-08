@@ -1032,7 +1032,7 @@ These META tasks validate reported bugs against the current codebase before any 
 
   **Sub-tasks created by priority (highest impact first):**
 
-- [ ] **3.7a Extract shared token operation screen base into a reusable struct/trait** (P2)
+- [x] **3.7a Extract shared token operation screen base into a reusable struct/trait** (P2)
   Create a `TokenOperationBase` struct (or similar) in `src/ui/tokens/` that encapsulates the shared fields and initialization logic used by all 13 token operation screens: `selected_qualified_identity`, `selected_key`, `selected_wallet`, `wallet_unlock_popup`, `confirmation_dialog`, `show_advanced_options`, `group`, `is_unilateral_group_member`, `group_action_id`, `public_note`, `error_message`. Provide a `new(app_context)` constructor with the common initialization logic. Provide shared methods: `render_wallet_locked_overlay()`, `render_key_validation_error()`, `render_status_display()`. Each token screen struct then embeds `base: TokenOperationBase` and delegates common rendering to it. Start with 2-3 screens (e.g., pause, resume which are simplest) as proof of concept.
 
 - [ ] **3.7b Extract shared Status enum into a generic OperationStatus** (P2)

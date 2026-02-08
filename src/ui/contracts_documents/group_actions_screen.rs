@@ -405,15 +405,15 @@ impl GroupActionsScreen {
                     TokenEmergencyAction::Pause => {
                         let mut pause_screen =
                             PauseTokensScreen::new(identity_token_info, &self.app_context);
-                        pause_screen.group_action_id = Some(action_id);
-                        pause_screen.public_note = note_opt.clone();
+                        pause_screen.base.group_action_id = Some(action_id);
+                        pause_screen.base.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::PauseTokensScreen(pause_screen));
                     }
                     TokenEmergencyAction::Resume => {
                         let mut resume_screen =
                             ResumeTokensScreen::new(identity_token_info, &self.app_context);
-                        resume_screen.group_action_id = Some(action_id);
-                        resume_screen.public_note = note_opt.clone();
+                        resume_screen.base.group_action_id = Some(action_id);
+                        resume_screen.base.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::ResumeTokensScreen(resume_screen));
                     }
                 }

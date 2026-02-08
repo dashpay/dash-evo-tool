@@ -796,8 +796,8 @@ impl Screen {
             Screen::DestroyFrozenFundsScreen(screen) => screen.app_context = app_context,
             Screen::FreezeTokensScreen(screen) => screen.app_context = app_context,
             Screen::UnfreezeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::PauseTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
+            Screen::PauseTokensScreen(screen) => screen.base.app_context = app_context,
+            Screen::ResumeTokensScreen(screen) => screen.base.app_context = app_context,
             Screen::ClaimTokensScreen(screen) => screen.app_context = app_context,
             Screen::ViewTokenClaimsScreen(screen) => screen.app_context = app_context,
             Screen::UpdateTokenConfigScreen(screen) => screen.app_context = app_context,
@@ -966,10 +966,10 @@ impl Screen {
                 ScreenType::UnfreezeTokensScreen(screen.identity_token_info.clone())
             }
             Screen::PauseTokensScreen(screen) => {
-                ScreenType::PauseTokensScreen(screen.identity_token_info.clone())
+                ScreenType::PauseTokensScreen(screen.base.identity_token_info.clone())
             }
             Screen::ResumeTokensScreen(screen) => {
-                ScreenType::ResumeTokensScreen(screen.identity_token_info.clone())
+                ScreenType::ResumeTokensScreen(screen.base.identity_token_info.clone())
             }
             Screen::ClaimTokensScreen(screen) => {
                 ScreenType::ClaimTokensScreen(screen.identity_token_basic_info.clone())

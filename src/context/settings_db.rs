@@ -1,6 +1,6 @@
 use crate::lock_helper::RwLockExt;
+use crate::model::settings::RootScreenType;
 use crate::model::settings::Settings;
-use crate::ui::RootScreenType;
 use rusqlite::Result;
 use std::sync::RwLockWriteGuard;
 

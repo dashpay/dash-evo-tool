@@ -1,7 +1,7 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::ui::theme::ThemeMode;
+use crate::model::settings::ThemeMode;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]

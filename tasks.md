@@ -1532,7 +1532,7 @@ These META tasks validate reported bugs against the current codebase before any 
 - [x] **5.4a Move token data types from UI to model layer** (P2)
   Move `TokenInfo`, `IdentityTokenInfo`, `IdentityTokenBasicInfo`, `IdentityTokenIdentifier`, `ContractDescriptionInfo`, `TokenInfoWithDataContract`, `IdentityTokenBalance` from `src/ui/tokens/tokens_screen/structs.rs` and `src/ui/tokens/tokens_screen/mod.rs` to `src/model/tokens/` (create new module). Update all imports in `backend_task/tokens/mod.rs`, `backend_task/contract.rs`, `database/tokens.rs`, `context/contract_token_db.rs`, and all UI files that use them. Keep re-exports in the old location if needed for smooth transition.
 
-- [ ] **5.4b Move RootScreenType and ThemeMode from UI to model layer** (P2)
+- [x] **5.4b Move RootScreenType and ThemeMode from UI to model layer** (P2)
   Move `RootScreenType` from `src/ui/mod.rs:95-121` and `ThemeMode` from `src/ui/theme.rs:5-10` to `src/model/` (e.g., `src/model/app_settings.rs` or existing `src/model/settings.rs`). Update imports in `model/settings.rs`, `database/settings.rs`, `context/settings_db.rs`, `backend_task/system_task/mod.rs`, and all UI files. Add re-exports in `ui/mod.rs` and `ui/theme.rs` for backward compatibility if needed.
 
 - [ ] **5.4c Move MAX_IDENTITY_INDEX to model layer** (P3)

@@ -791,6 +791,11 @@
 **Files changed:** tasks.md, activity.md
 **Sub-tasks created:** 9 (5.4a through 5.4i)
 
+## Run 131 — 2026-02-08
+**Task:** 5.4b Move RootScreenType and ThemeMode from UI to model layer
+**What was done:** Moved `RootScreenType` enum (with `to_int`/`from_int` methods) from `src/ui/mod.rs` and `ThemeMode` enum from `src/ui/theme.rs` to `src/model/settings.rs` as their canonical location. These types were defined in the UI layer but imported by model, database, context, and backend_task modules, creating reverse-dependency violations. Added `pub use` re-exports in the original locations (`ui/mod.rs` and `ui/theme.rs`) for backward compatibility so all ~70 UI files continue to work without import changes. Updated 4 non-UI files to import directly from `crate::model::settings::`: `database/settings.rs`, `context/settings_db.rs`, `backend_task/system_task/mod.rs`, and `app.rs`. Also removed the now-unused `std::hash::Hash` import from `ui/mod.rs` (was only needed by the `RootScreenType` derive that moved).
+**Files changed:** src/model/settings.rs, src/ui/mod.rs, src/ui/theme.rs, src/database/settings.rs, src/context/settings_db.rs, src/backend_task/system_task/mod.rs, src/app.rs
+
 ## Run 130 — 2026-02-08
 **Task:** 5.4a Move token data types from UI to model layer
 **What was done:** Created `src/model/tokens/mod.rs` as the canonical location for token data types that were previously defined in `src/ui/tokens/tokens_screen/structs.rs` and `src/ui/tokens/tokens_screen/mod.rs` but imported by backend_task, database, context, and model modules (reverse-dependency violations). Moved 10 structs (`TokenInfo`, `TokenInfoWithDataContract`, `IdentityTokenIdentifier`, `IdentityTokenBasicInfo`, `IdentityTokenInfo`, `IdentityTokenMaybeBalanceWithActions`, `IdentityTokenBalance`, `IdentityTokenBalanceWithActions`, `IdentityTokenAvailableActions`, `ContractDescriptionInfo`), 2 functions (`get_available_token_actions_for_identity`, `validate_perpetual_distribution_recipient`), and all associated `From`/`impl` blocks. Updated imports in 9 non-UI files to use `crate::model::tokens::` directly. The old `structs.rs` now re-exports from the model via `pub use crate::model::tokens::*`, and `mod.rs` re-exports `ContractDescriptionInfo`, ensuring backward compatibility for all UI files that import from `crate::ui::tokens::tokens_screen::`.

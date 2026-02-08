@@ -12,6 +12,7 @@ use crate::database::Database;
 use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
+use crate::model::settings::ThemeMode;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -19,7 +20,6 @@ use crate::ui::dpns::dpns_contested_names_screen::{
 };
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
-use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;

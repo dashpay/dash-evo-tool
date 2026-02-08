@@ -1,13 +1,7 @@
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
 
-/// Theme mode enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-    #[default]
-    System,
-}
+// ThemeMode is defined in model::settings and re-exported here for backward compatibility
+pub use crate::model::settings::ThemeMode;
 
 /// Detect system theme preference
 pub fn detect_system_theme() -> Result<ThemeMode, String> {

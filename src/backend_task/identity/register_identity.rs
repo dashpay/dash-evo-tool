@@ -1,3 +1,4 @@
+use super::IdentityResult;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info_via_dapi};
@@ -451,9 +452,8 @@ impl AppContext {
                 .map_err(|e| e.to_string())?;
 
             let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-            return Ok(BackendTaskSuccessResult::RegisteredIdentity(
-                qualified_identity,
-                fee_result,
+            return Ok(BackendTaskSuccessResult::Identity(
+                IdentityResult::RegisteredIdentity(qualified_identity, fee_result),
             ));
         }
 
@@ -598,9 +598,8 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::RegisteredIdentity(
-            qualified_identity,
-            fee_result,
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::RegisteredIdentity(qualified_identity, fee_result),
         ))
     }
 
@@ -800,9 +799,8 @@ impl AppContext {
                 }
 
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-                Ok(BackendTaskSuccessResult::RegisteredIdentity(
-                    qualified_identity,
-                    fee_result,
+                Ok(BackendTaskSuccessResult::Identity(
+                    IdentityResult::RegisteredIdentity(qualified_identity, fee_result),
                 ))
             }
             Err(e) => {

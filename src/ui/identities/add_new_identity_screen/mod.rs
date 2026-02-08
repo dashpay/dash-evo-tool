@@ -7,7 +7,8 @@ mod success_screen;
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreResult};
 use crate::backend_task::identity::{
-    IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
+    IdentityKeys, IdentityRegistrationInfo, IdentityResult, IdentityTask,
+    RegisterIdentityFundingMethod,
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
@@ -1027,8 +1028,10 @@ impl ScreenLike for AddNewIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity, fee_result) =
-            backend_task_success_result
+        if let BackendTaskSuccessResult::Identity(IdentityResult::RegisteredIdentity(
+            qualified_identity,
+            fee_result,
+        )) = backend_task_success_result
         {
             self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
             self.completed_fee_result = Some(fee_result);

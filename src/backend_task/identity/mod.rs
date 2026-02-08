@@ -39,6 +39,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum IdentityResult {
+    RegisteredIdentity(QualifiedIdentity, FeeResult),
+    ToppedUpIdentity(QualifiedIdentity, FeeResult),
+    RefreshedIdentity(QualifiedIdentity),
+    LoadedIdentity(QualifiedIdentity),
+    AddedKeyToIdentity(FeeResult),
+    TransferredCredits(FeeResult),
+    WithdrewFromIdentity(FeeResult),
+    RegisteredDpnsName(FeeResult),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
     pub identity_id_input: String,
     pub identity_type: IdentityType,
@@ -635,9 +647,8 @@ impl AppContext {
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::ToppedUpIdentity(
-            updated_identity,
-            fee_result,
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::ToppedUpIdentity(updated_identity, fee_result),
         ))
     }
 
@@ -719,6 +730,8 @@ impl AppContext {
             .map_err(|e| format!("Failed to store updated identity: {}", e))?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
-        Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::TransferredCredits(fee_result),
+        ))
     }
 }

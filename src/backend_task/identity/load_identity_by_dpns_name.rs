@@ -1,4 +1,4 @@
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, IdentityResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::{
@@ -176,6 +176,8 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
             .map_err(|e| format!("Database error: {}", e))?;
 
-        Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::LoadedIdentity(qualified_identity),
+        ))
     }
 }

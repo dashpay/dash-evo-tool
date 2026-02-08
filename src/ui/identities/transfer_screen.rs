@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -491,7 +491,7 @@ impl ScreenLike for TransferScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::TransferredCredits(fee_result) =
+        if let BackendTaskSuccessResult::Identity(IdentityResult::TransferredCredits(fee_result)) =
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);

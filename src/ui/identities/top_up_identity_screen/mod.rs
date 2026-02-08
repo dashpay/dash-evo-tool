@@ -6,7 +6,9 @@ mod success_screen;
 
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreResult};
-use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::backend_task::identity::{
+    IdentityResult, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
@@ -443,8 +445,10 @@ impl ScreenLike for TopUpIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
-            backend_task_success_result
+        if let BackendTaskSuccessResult::Identity(IdentityResult::ToppedUpIdentity(
+            qualified_identity,
+            fee_result,
+        )) = backend_task_success_result
         {
             self.identity = qualified_identity;
             self.completed_fee_result = Some(fee_result);

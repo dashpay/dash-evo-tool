@@ -12,7 +12,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
 use dash_sdk::platform::{Fetch, Identity};
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, IdentityResult};
 
 impl AppContext {
     pub(super) async fn withdraw_from_identity(
@@ -128,7 +128,9 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+            .map(|_| {
+                BackendTaskSuccessResult::Identity(IdentityResult::WithdrewFromIdentity(fee_result))
+            })
             .map_err(|e| format!("Database error: {}", e))
     }
 }

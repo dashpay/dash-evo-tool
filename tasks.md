@@ -960,7 +960,7 @@ These META tasks validate reported bugs against the current codebase before any 
   - Producers: `src/backend_task/core/`, `src/backend_task/wallet/`
   - Consumers: `src/ui/wallets/wallets_screen/mod.rs`, `send_screen/`, `single_key_send_screen.rs`, `create_asset_lock_screen.rs`, and `app.rs` ZMQ handler
 
-- [ ] **3.6d Extract Identity results into IdentityResult sub-enum** (P2)
+- [x] **3.6d Extract Identity results into IdentityResult sub-enum** (P2)
   Create `IdentityResult` with 8 variants: `Registered`, `ToppedUp`, `Refreshed`, `Loaded`, `AddedKey`, `TransferredCredits`, `Withdrew`, `RegisteredDpnsName`. Update:
   - Producers: `src/backend_task/identity/` (8 files)
   - Consumers: `src/ui/identities/` (7 screens)

@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
+use crate::backend_task::identity::{IdentityResult, IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -302,7 +302,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
+        if let BackendTaskSuccessResult::Identity(IdentityResult::RegisteredDpnsName(fee_result)) =
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);

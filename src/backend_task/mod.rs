@@ -5,12 +5,11 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreResult, CoreTask};
 use crate::backend_task::dashpay::{DashPayTask, ContactData};
 use crate::backend_task::document::DocumentTask;
-use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::{WalletResult, WalletTask};
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
@@ -101,13 +100,14 @@ pub enum BackendTaskSuccessResult {
     Wallet(WalletResult),
     Core(CoreResult),
 
+    // Identity domain results
+    Identity(IdentityResult),
+
     // Specific results
     #[allow(dead_code)] // May be used for individual document operations
     Document(Document),
     Documents(Documents),
     BroadcastedDocument(Document),
-    RegisteredIdentity(QualifiedIdentity, FeeResult),
-    ToppedUpIdentity(QualifiedIdentity, FeeResult),
     #[allow(dead_code)] // May be used for reporting successful votes
     SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
@@ -176,14 +176,6 @@ pub enum BackendTaskSuccessResult {
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
     SavedToken,
-
-    // Identity operation results (replacing string messages)
-    AddedKeyToIdentity(FeeResult),
-    TransferredCredits(FeeResult),
-    WithdrewFromIdentity(FeeResult),
-    RegisteredDpnsName(FeeResult),
-    RefreshedIdentity(QualifiedIdentity),
-    LoadedIdentity(QualifiedIdentity),
 
     // Document operation results (replacing string messages)
     DeletedDocument(Identifier, FeeResult),

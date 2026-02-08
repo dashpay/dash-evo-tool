@@ -1,4 +1,4 @@
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, IdentityResult};
 use crate::backend_task::FeeResult;
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -122,7 +122,9 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
+            .map(|_| {
+                BackendTaskSuccessResult::Identity(IdentityResult::AddedKeyToIdentity(fee_result))
+            })
             .map_err(|e| format!("Database error: {}", e))
     }
 }

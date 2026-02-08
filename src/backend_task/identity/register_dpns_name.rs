@@ -21,7 +21,7 @@ use dash_sdk::{
     platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
 
-use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
+use super::{BackendTaskSuccessResult, IdentityResult, RegisterDpnsNameInput};
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
@@ -255,6 +255,8 @@ impl AppContext {
             .map_err(|e| format!("Database error: {}", e))?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
-        Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::RegisteredDpnsName(fee_result),
+        ))
     }
 }

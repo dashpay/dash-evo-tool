@@ -1,7 +1,7 @@
 use super::withdraw_screen::WithdrawalScreen;
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
-use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::context::AppContext;
 use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::model::qualified_identity::PrivateKeyTarget::{
@@ -1135,7 +1135,7 @@ impl ScreenLike for IdentitiesScreen {
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
+        if let crate::ui::BackendTaskSuccessResult::Identity(IdentityResult::RefreshedIdentity(_)) =
             backend_task_success_result
         {
             self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;

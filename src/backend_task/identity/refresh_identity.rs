@@ -6,7 +6,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Fetch, Identity};
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, IdentityResult};
 
 impl AppContext {
     pub(super) async fn refresh_identity(
@@ -67,8 +67,8 @@ impl AppContext {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(BackendTaskSuccessResult::RefreshedIdentity(
-            qualified_identity,
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::RefreshedIdentity(qualified_identity),
         ))
     }
 }

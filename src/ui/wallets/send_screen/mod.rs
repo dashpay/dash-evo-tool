@@ -1516,7 +1516,9 @@ impl ScreenLike for WalletSendScreen {
                     _ => {}
                 }
             }
-            crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
+            crate::backend_task::BackendTaskSuccessResult::Identity(
+                crate::backend_task::identity::IdentityResult::TransferredCredits(fee_result),
+            ) => {
                 let fee_info = format!(
                     "\n\nFee: Estimated {} • Actual {}",
                     format_credits_as_dash(fee_result.estimated_fee),

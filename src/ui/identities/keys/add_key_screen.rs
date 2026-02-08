@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::identity::{IdentityResult, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -331,15 +331,17 @@ impl ScreenLike for AddKeyScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
-                self.completed_fee_result = Some(fee_result);
-                self.add_key_status = AddKeyStatus::Complete;
+        if let BackendTaskSuccessResult::Identity(identity_result) = backend_task_success_result {
+            match identity_result {
+                IdentityResult::AddedKeyToIdentity(fee_result) => {
+                    self.completed_fee_result = Some(fee_result);
+                    self.add_key_status = AddKeyStatus::Complete;
+                }
+                IdentityResult::RefreshedIdentity(_) => {
+                    self.refresh();
+                }
+                _ => {}
             }
-            BackendTaskSuccessResult::RefreshedIdentity(_) => {
-                self.refresh();
-            }
-            _ => {}
         }
     }
 

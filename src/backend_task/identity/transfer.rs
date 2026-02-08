@@ -9,7 +9,7 @@ use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::platform::Identifier;
 use dash_sdk::platform::transition::transfer::TransferToIdentity;
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, IdentityResult};
 
 impl AppContext {
     pub(super) async fn transfer_to_identity(
@@ -78,7 +78,9 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
+            .map(|_| {
+                BackendTaskSuccessResult::Identity(IdentityResult::TransferredCredits(fee_result))
+            })
             .map_err(|e| e.to_string())
     }
 }

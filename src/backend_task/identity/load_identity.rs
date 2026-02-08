@@ -1,4 +1,4 @@
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, IdentityResult};
 use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
@@ -362,7 +362,9 @@ impl AppContext {
                 .insert(identity_index, qualified_identity.identity.clone());
         }
 
-        Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::LoadedIdentity(qualified_identity),
+        ))
     }
 
     pub(super) fn match_user_identity_keys_with_wallet(

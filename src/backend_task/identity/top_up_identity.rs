@@ -1,4 +1,6 @@
-use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::backend_task::identity::{
+    IdentityResult, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info_via_dapi};
 use crate::lock_helper::{MutexExt, RwLockExt};
@@ -617,9 +619,8 @@ impl AppContext {
         };
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        Ok(BackendTaskSuccessResult::ToppedUpIdentity(
-            qualified_identity,
-            fee_result,
+        Ok(BackendTaskSuccessResult::Identity(
+            IdentityResult::ToppedUpIdentity(qualified_identity, fee_result),
         ))
     }
 }

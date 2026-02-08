@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityResult, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::lock_helper::RwLockExt;
@@ -976,7 +976,7 @@ impl ScreenLike for AddExistingIdentityScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::LoadedIdentity(_) => {
+            BackendTaskSuccessResult::Identity(IdentityResult::LoadedIdentity(_)) => {
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
                 self.backend_message = None;

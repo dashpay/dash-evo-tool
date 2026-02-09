@@ -622,3 +622,10 @@
 **Files changed:** src-tauri/src/commands/identity.rs, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/bindings.ts
 **Tests added:** 1 new Rust test (add_key_input_with_contract_bounds_serializes — verifies ContractBoundsDto is included in serialized AddKeyToIdentityInput)
 **Sub-tasks created:** 0
+
+## Run 90 — 2026-02-09
+**Task:** 4.5b Implement master key replacement UI in KeyInfoScreen
+**What was done:** Replaced the hardcoded placeholder values for the Replace Master Key dialog with a full interactive UI matching the egui version. Added a key type selector dropdown (ECDSA_SECP256K1, BLS12_381, ECDSA_HASH160, EDDSA_25519_HASH160), automatic random private key generation via Web Crypto API when the dialog opens or key type changes, a read-only copyable display of the generated key hex, and a Regenerate button. Replaced the simple ConfirmationDialog with a custom Dialog using shadcn/ui Select and Dialog components. Updated tests to mock crypto.getRandomValues for deterministic assertions.
+**Files changed:** src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx
+**Tests added:** 3 updated/new tests (replace dialog shows key type selector and generated key, calls onReplaceKey with generated key, regenerate button produces new key)
+**Sub-tasks created:** 0

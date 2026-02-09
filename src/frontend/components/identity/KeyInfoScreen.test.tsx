@@ -419,6 +419,20 @@ describe("KeyInfoScreen — disable key", () => {
 // ─── Key Actions — Replace Master ───────────────────────────────────
 
 describe("KeyInfoScreen — replace master key", () => {
+  // Mock crypto.getRandomValues for deterministic tests
+  const mockRandomValues = vi.spyOn(crypto, "getRandomValues");
+
+  beforeEach(() => {
+    // Return deterministic "random" bytes: 0x01, 0x02, ..., 0x20
+    mockRandomValues.mockImplementation((arr: ArrayBufferView) => {
+      const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+      for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = (i + 1) & 0xff;
+      }
+      return arr;
+    });
+  });
+
   it("shows replace button for master key", () => {
     setup({
       keyData: makeKey({ securityLevel: "MASTER" }),
@@ -437,28 +451,73 @@ describe("KeyInfoScreen — replace master key", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows confirmation dialog on replace click", async () => {
+  it("shows replace dialog with key type selector and generated key", async () => {
     const { user } = setup({
-      keyData: makeKey({ keyId: 0, securityLevel: "MASTER" }),
+      keyData: makeKey({ keyId: 0, securityLevel: "MASTER", keyType: "ECDSA_SECP256K1" }),
     });
     await user.click(
       screen.getByRole("button", { name: /replace master key/i }),
     );
-    // Confirmation dialog shows the warning message
+    // Dialog title and warning message
+    expect(screen.getByText("Replace Master Key", { selector: "[data-slot='dialog-title']" })).toBeInTheDocument();
     expect(
-      screen.getByText(/will replace the master key/i),
+      screen.getByText(/make sure to save the new private key/i),
     ).toBeInTheDocument();
+    // Old key info
+    expect(screen.getByText(/Old Key ID: 0/)).toBeInTheDocument();
+    // Key type selector label
+    expect(screen.getByText("New Key Type")).toBeInTheDocument();
+    // Generated private key (deterministic from mock)
+    const expectedHex = Array.from({ length: 32 }, (_, i) =>
+      ((i + 1) & 0xff).toString(16).padStart(2, "0"),
+    ).join("");
+    expect(screen.getByLabelText("Generated private key")).toHaveValue(expectedHex);
+    // Regenerate button
+    expect(screen.getByRole("button", { name: /regenerate/i })).toBeInTheDocument();
+    // Cancel and confirm buttons
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
   });
 
-  it("calls onReplaceKey after confirmation", async () => {
+  it("calls onReplaceKey with generated key after confirmation", async () => {
     const { user, props } = setup({
       keyData: makeKey({ keyId: 0, securityLevel: "MASTER" }),
     });
     await user.click(
       screen.getByRole("button", { name: /replace master key/i }),
     );
-    await user.click(screen.getByRole("button", { name: "Replace" }));
-    expect(props.onReplaceKey).toHaveBeenCalledWith(0, "ECDSA_SECP256K1", "");
+    // The generated key from our mock
+    const expectedHex = Array.from({ length: 32 }, (_, i) =>
+      ((i + 1) & 0xff).toString(16).padStart(2, "0"),
+    ).join("");
+    // Click the "Replace Master Key" button in the dialog
+    const replaceButtons = screen.getAllByRole("button", { name: /replace master key/i });
+    // The dialog confirm button is the last one (the first is the trigger button)
+    await user.click(replaceButtons[replaceButtons.length - 1]);
+    expect(props.onReplaceKey).toHaveBeenCalledWith(0, "ECDSA_SECP256K1", expectedHex);
+  });
+
+  it("regenerates key on Regenerate button click", async () => {
+    let callCount = 0;
+    mockRandomValues.mockImplementation((arr: ArrayBufferView) => {
+      callCount++;
+      const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+      for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = ((i + callCount) & 0xff);
+      }
+      return arr;
+    });
+
+    const { user } = setup({
+      keyData: makeKey({ keyId: 0, securityLevel: "MASTER" }),
+    });
+    await user.click(
+      screen.getByRole("button", { name: /replace master key/i }),
+    );
+    const input = screen.getByLabelText("Generated private key");
+    const firstValue = input.getAttribute("value");
+    await user.click(screen.getByRole("button", { name: /regenerate/i }));
+    const secondValue = input.getAttribute("value");
+    expect(firstValue).not.toBe(secondValue);
   });
 
   it("shows loading state when submitting", () => {

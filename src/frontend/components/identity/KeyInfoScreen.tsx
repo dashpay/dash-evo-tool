@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ArrowLeft,
   Shield,
@@ -20,6 +20,21 @@ import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -38,6 +53,20 @@ const KEY_TYPE_LABELS: Record<string, string> = {
   ECDSA_HASH160: "ECDSA Hash160",
   EDDSA_25519_HASH160: "EdDSA 25519 Hash160",
 };
+
+const REPLACE_KEY_TYPES = [
+  "ECDSA_SECP256K1",
+  "BLS12_381",
+  "ECDSA_HASH160",
+  "EDDSA_25519_HASH160",
+] as const;
+
+/** Generate a random 32-byte hex private key using Web Crypto. */
+function generateRandomPrivateKeyHex(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 // ─── Props ─────────────────────────────────────────────────────────
 
@@ -138,8 +167,16 @@ export function KeyInfoScreen({
   const [showConfirmDisable, setShowConfirmDisable] = useState(false);
   const [showConfirmReplace, setShowConfirmReplace] = useState(false);
   const [showConfirmRemovePrivKey, setShowConfirmRemovePrivKey] = useState(false);
-  const replaceKeyType = "ECDSA_SECP256K1";
-  const replaceKeyPrivateHex = "";
+  const [replaceKeyType, setReplaceKeyType] = useState("ECDSA_SECP256K1");
+  const [replaceKeyPrivateHex, setReplaceKeyPrivateHex] = useState("");
+
+  // Generate a random private key when the replace dialog opens or key type changes
+  useEffect(() => {
+    if (showConfirmReplace) {
+      setReplaceKeyPrivateHex(generateRandomPrivateKeyHex());
+    }
+  }, [showConfirmReplace, replaceKeyType]);
+
   const [showInfoPopup, setShowInfoPopup] = useState(false);
   const isMasterKey = keyData.securityLevel === "MASTER";
   const canDisable = !isMasterKey && !keyData.isDisabled;
@@ -193,9 +230,23 @@ export function KeyInfoScreen({
   }, [keyData.keyId, onDisableKey]);
 
   const handleConfirmReplace = useCallback(() => {
+    const type = replaceKeyType;
+    const hex = replaceKeyPrivateHex;
     setShowConfirmReplace(false);
-    onReplaceKey?.(keyData.keyId, replaceKeyType, replaceKeyPrivateHex);
+    setReplaceKeyType("ECDSA_SECP256K1");
+    setReplaceKeyPrivateHex("");
+    onReplaceKey?.(keyData.keyId, type, hex);
   }, [keyData.keyId, replaceKeyType, replaceKeyPrivateHex, onReplaceKey]);
+
+  const handleCancelReplace = useCallback(() => {
+    setShowConfirmReplace(false);
+    setReplaceKeyType("ECDSA_SECP256K1");
+    setReplaceKeyPrivateHex("");
+  }, []);
+
+  const handleRegenerateKey = useCallback(() => {
+    setReplaceKeyPrivateHex(generateRandomPrivateKeyHex());
+  }, []);
 
   const handleConfirmRemovePrivKey = useCallback(() => {
     setShowConfirmRemovePrivKey(false);
@@ -554,17 +605,80 @@ export function KeyInfoScreen({
         }}
       />
 
-      <ConfirmationDialog
-        open={showConfirmReplace}
-        onOpenChange={setShowConfirmReplace}
-        title="Replace Master Key"
-        message={`This will replace the master key (Key #${keyData.keyId}) with a new key. The old master key will be permanently disabled. Continue?`}
-        confirmText="Replace"
-        danger
-        onResult={(status) => {
-          if (status === "confirmed") handleConfirmReplace();
-        }}
-      />
+      <Dialog open={showConfirmReplace} onOpenChange={(open) => {
+        if (!open) handleCancelReplace();
+      }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Replace Master Key</DialogTitle>
+            <DialogDescription>
+              This will generate a new master key and disable the current one
+              in a single atomic transition. Make sure to save the new private
+              key! You will need it to sign future identity updates.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {/* Old key info */}
+            <div className="text-sm text-muted-foreground">
+              <span>Old Key ID: {keyData.keyId}</span>
+              <span className="mx-2">·</span>
+              <span>Key Type: {KEY_TYPE_LABELS[keyData.keyType] || keyData.keyType}</span>
+            </div>
+
+            {/* New key type selector */}
+            <div className="space-y-1.5">
+              <Label htmlFor="replace-key-type">New Key Type</Label>
+              <Select value={replaceKeyType} onValueChange={setReplaceKeyType}>
+                <SelectTrigger id="replace-key-type" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {REPLACE_KEY_TYPES.map((type) => (
+                    <SelectItem key={type} value={type}>
+                      {KEY_TYPE_LABELS[type] || type}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Generated private key */}
+            <div className="space-y-1.5">
+              <Label>New Private Key (hex)</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  readOnly
+                  value={replaceKeyPrivateHex}
+                  className="font-mono text-xs"
+                  aria-label="Generated private key"
+                />
+                <CopyButton value={replaceKeyPrivateHex} />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRegenerateKey}
+              >
+                <RefreshCw className="mr-1.5 size-3.5" />
+                Regenerate
+              </Button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={handleCancelReplace}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmReplace}
+            >
+              Replace Master Key
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmationDialog
         open={showConfirmRemovePrivKey}

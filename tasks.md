@@ -1339,7 +1339,7 @@
     3. Update backend command handler to use contract bounds instead of hardcoding `None`
     Reference: AddKeyDialog.tsx lines 236-250, IdentitiesScreen.tsx lines 600-606, identity.rs line 1152
 
-  - [ ] **4.5b Implement master key replacement UI in KeyInfoScreen** (P1)
+  - [x] **4.5b Implement master key replacement UI in KeyInfoScreen** (P1)
     Currently uses hardcoded empty values. Needs:
     1. Key type selector dropdown (ECDSA_SECP256K1, BLS12_381, ECDSA_HASH160, EDDSA_25519_HASH160)
     2. "Generate Random" button that creates random private key hex

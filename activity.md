@@ -29,3 +29,10 @@
 **Files changed:** package.json, package-lock.json, tasks.md, activity.md
 **Tests added:** 0 (dependency installation — testing comes in task 0.3)
 **Sub-tasks created:** 0
+
+## Run 5 — 2026-02-09
+**Task:** 0.1d Install dev dependencies
+**What was done:** Installed all dev dependencies for testing, linting, and formatting: vitest 4, @testing-library/react 16, @testing-library/jest-dom 6, @testing-library/user-event 14, jsdom 28, @playwright/test 1.58, eslint 9, prettier 3, eslint-plugin-react-hooks 7, @typescript-eslint/eslint-plugin 8, @typescript-eslint/parser 8, typescript-eslint 8, globals 17, @eslint/js 9. Created configuration files: vitest.config.ts (jsdom environment, globals, setup file), eslint.config.js (flat config with TypeScript + React hooks rules), .prettierrc.json, playwright.config.ts (Chromium + WebKit, port 1420). Created test setup file (src/frontend/test/setup.ts) with jest-dom matchers. Updated npm scripts with lint, format, format:check, test:components, test:e2e. Added vitest/globals types to tsconfig.app.json. All checks pass: lint, typecheck, test, build.
+**Files changed:** package.json, package-lock.json, vitest.config.ts, eslint.config.js, .prettierrc.json, playwright.config.ts, src/frontend/test/setup.ts, tsconfig.app.json, tasks.md, activity.md
+**Tests added:** 0 (infrastructure setup — tests/e2e directory created for Playwright)
+**Sub-tasks created:** 0

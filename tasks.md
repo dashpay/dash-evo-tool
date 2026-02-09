@@ -48,7 +48,7 @@
   - [x] **0.1a** Install Node.js dependencies: react, react-dom, typescript, vite, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, zustand
   - [x] **0.1b** Initialize shadcn/ui: `npx shadcn@latest init`, configure components.json, install initial components (button, dialog, dropdown-menu, input, label, select, tabs, table, sonner, card, badge, separator, sheet, tooltip, popover)
   - [x] **0.1c** Install supplementary libraries: @tanstack/react-table, @tanstack/react-virtual, @tanstack/react-router (file-based routing), @dnd-kit/core, @dnd-kit/sortable, react-json-view-lite, qrcode.react, lucide-react (icons), clsx, tailwind-merge
-  - [ ] **0.1d** Install dev dependencies: vitest, @testing-library/react, @testing-library/jest-dom, @testing-library/user-event, jsdom, @playwright/test, eslint, prettier, eslint-plugin-react-hooks, @typescript-eslint/eslint-plugin
+  - [x] **0.1d** Install dev dependencies: vitest, @testing-library/react, @testing-library/jest-dom, @testing-library/user-event, jsdom, @playwright/test, eslint, prettier, eslint-plugin-react-hooks, @typescript-eslint/eslint-plugin
   - [ ] **0.1e** Configure Tauri 2.0: install @tauri-apps/cli, @tauri-apps/api, create tauri.conf.json, set up src-tauri/ Cargo.toml with workspace deps
 
 - [ ] **0.2 Initialize Tauri 2.0 project with chosen frontend framework** (P0)
@@ -645,7 +645,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 4 |
-| Remaining | 56 |
+| Completed | 5 |
+| Remaining | 55 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

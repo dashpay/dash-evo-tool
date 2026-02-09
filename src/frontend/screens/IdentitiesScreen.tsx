@@ -29,6 +29,7 @@ import {
 import {
   RegisterDpnsNameScreen,
   type RegisterDpnsNameStatus,
+  isContestedName,
 } from "@/components/identity/RegisterDpnsNameScreen";
 import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useIdentityStore } from "@/stores/identityStore";
@@ -627,7 +628,7 @@ export function IdentitiesScreen() {
           // reload the identity when the event arrives.
           setRegisterDpnsStatus({
             type: "success",
-            contested: false,
+            contested: isContestedName(params.name),
             feeEstimated: null,
             feeActual: null,
           });

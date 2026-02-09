@@ -727,3 +727,10 @@
 **Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityDetailPanel.tsx, src/frontend/components/identity/LoadIdentityScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/components/identity/IdentityDetailPanel.test.tsx, src/frontend/components/identity/LoadIdentityScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 18 (3 encoding tooltip tests for IdentityListPanel, 3 encoding tooltip tests for IdentityDetailPanel, 12 testnet helper tests for LoadIdentityScreen including visibility by network, fill behavior, alias generation)
 **Sub-tasks created:** 0
+
+## Run 105 — 2026-02-09
+**Task:** 5.4a Fix Register Name contested success detection
+**What was done:** Fixed the register DPNS name success callback in both `DpnsRegisterNameScreen.tsx` and `IdentitiesScreen.tsx` to correctly detect contested names instead of hardcoding `contested: false`. Both files now import `isContestedName()` from `RegisterDpnsNameScreen` and pass the result of `isContestedName(params.name)` in the success status. This ensures the contested success message ("DPNS Name Submitted (Contested)") is shown when appropriate.
+**Files changed:** src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 2 (contested name shows contested success message, non-contested name shows normal success message)
+**Sub-tasks created:** 0

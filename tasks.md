@@ -535,7 +535,7 @@
   > **Review Findings (Run 84):** 95% parity, 1845 tests pass. 5 minor gaps (non-blocking). Details: [ralph/docs/phase5-dpns-design.md](ralph/docs/phase5-dpns-design.md)
 
 
-  - [ ] **5.4a Fix Register Name contested success detection** (P3)
+  - [x] **5.4a Fix Register Name contested success detection** (P3)
     In `DpnsRegisterNameScreen.tsx`, the success callback always sets `contested: false`. It should
     determine if the name was contested (using the same `isContestedName()` logic from the component)
     and pass the correct value. This ensures the contested success message ("DPNS Name Submitted (Contested)")
@@ -916,7 +916,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 71 |
-| Remaining | 35 |
+| Completed | 72 |
+| Remaining | 34 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

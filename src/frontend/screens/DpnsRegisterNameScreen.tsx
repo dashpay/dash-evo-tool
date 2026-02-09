@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   RegisterDpnsNameScreen,
   type RegisterDpnsNameStatus,
+  isContestedName,
 } from "@/components/identity/RegisterDpnsNameScreen";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContestStore } from "@/stores/contestStore";
@@ -58,7 +59,7 @@ export function DpnsRegisterNameScreen() {
         if (result.status === "ok") {
           setStatus({
             type: "success",
-            contested: false,
+            contested: isContestedName(params.name),
             feeEstimated: null,
             feeActual: null,
           });

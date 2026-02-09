@@ -427,6 +427,49 @@ describe("DpnsRegisterNameScreen — registration", () => {
     expect(screen.getByText("DPNS Name Registered!")).toBeInTheDocument();
   });
 
+  it("shows contested success message when registering a contested name", async () => {
+    const identity = makeIdentity();
+    setupWithIdentities([identity]);
+    const { user } = setup();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("name-input")).toBeInTheDocument();
+    });
+
+    // "alice" is contested: < 20 chars, no digits except 0/1
+    await user.type(screen.getByTestId("name-input"), "alice");
+    await user.click(screen.getByTestId("register-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("register-dpns-success")).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText("DPNS Name Submitted (Contested)"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows non-contested success message when registering a non-contested name", async () => {
+    const identity = makeIdentity();
+    setupWithIdentities([identity]);
+    const { user } = setup();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("name-input")).toBeInTheDocument();
+    });
+
+    // "testname99" is NOT contested: contains digits 9
+    await user.type(screen.getByTestId("name-input"), "testname99");
+    await user.click(screen.getByTestId("register-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("register-dpns-success")).toBeInTheDocument();
+    });
+    expect(screen.getByText("DPNS Name Registered!")).toBeInTheDocument();
+    expect(
+      screen.queryByText("DPNS Name Submitted (Contested)"),
+    ).not.toBeInTheDocument();
+  });
+
   it("refreshes DPNS names after successful registration", async () => {
     const identity = makeIdentity();
     setupWithIdentities([identity]);

@@ -5,7 +5,7 @@ import {
   LoadIdentityScreen,
   type LoadIdentityStatus,
 } from "./LoadIdentityScreen";
-import type { WalletDto } from "@/bindings";
+import type { WalletDto, NetworkDto } from "@/bindings";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 // ─── Test fixtures ─────────────────────────────────────────────────
@@ -499,5 +499,109 @@ describe("LoadIdentityScreen — multiple wallets", () => {
     // With 2 wallets it should show a combobox trigger, not plain text
     // The first wallet should be pre-selected in the trigger
     expect(screen.getByText(/Test Wallet/)).toBeInTheDocument();
+  });
+});
+
+// ─── Testnet helper buttons ─────────────────────────────────────────
+
+describe("LoadIdentityScreen — testnet helpers", () => {
+  it("does not show fill buttons without network prop", async () => {
+    const { user } = setup();
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    expect(screen.queryByTestId("fill-random-hpmn")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("fill-random-masternode")).not.toBeInTheDocument();
+  });
+
+  it("does not show fill buttons on mainnet", async () => {
+    const { user } = setup({ network: "dash" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    expect(screen.queryByTestId("fill-random-hpmn")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("fill-random-masternode")).not.toBeInTheDocument();
+  });
+
+  it("shows fill buttons on testnet in advanced mode", async () => {
+    const { user } = setup({ network: "testnet" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    expect(screen.getByTestId("fill-random-hpmn")).toBeInTheDocument();
+    expect(screen.getByTestId("fill-random-masternode")).toBeInTheDocument();
+  });
+
+  it("shows fill buttons on devnet in advanced mode", async () => {
+    const { user } = setup({ network: "devnet" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    expect(screen.getByTestId("fill-random-hpmn")).toBeInTheDocument();
+    expect(screen.getByTestId("fill-random-masternode")).toBeInTheDocument();
+  });
+
+  it("shows fill buttons on regtest in advanced mode", async () => {
+    const { user } = setup({ network: "regtest" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    expect(screen.getByTestId("fill-random-hpmn")).toBeInTheDocument();
+    expect(screen.getByTestId("fill-random-masternode")).toBeInTheDocument();
+  });
+
+  it("does not show fill buttons when advanced is collapsed", () => {
+    setup({ network: "testnet" as NetworkDto });
+    expect(screen.queryByTestId("fill-random-hpmn")).not.toBeInTheDocument();
+  });
+
+  it("Fill Random HPMN sets identity type to evonode and fills ID", async () => {
+    const { user, props } = setup({ network: "testnet" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    await user.click(screen.getByTestId("fill-random-hpmn"));
+
+    // The identity ID field should now have a 64-char hex value
+    const idInput = screen.getByPlaceholderText(/Enter identity ID/) as HTMLInputElement;
+    expect(idInput.value).toMatch(/^[0-9a-f]{64}$/);
+
+    // Submit should work (field is valid) and show evonode type
+    await user.click(screen.getByRole("button", { name: /Load Identity/i }));
+    expect(props.onLoadById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identityType: "evonode",
+      }),
+    );
+  });
+
+  it("Fill Random Masternode sets identity type to masternode and fills ID", async () => {
+    const { user, props } = setup({ network: "testnet" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    await user.click(screen.getByTestId("fill-random-masternode"));
+
+    // The identity ID field should now have a 64-char hex value
+    const idInput = screen.getByPlaceholderText(/Enter identity ID/) as HTMLInputElement;
+    expect(idInput.value).toMatch(/^[0-9a-f]{64}$/);
+
+    // Submit should work and show masternode type
+    await user.click(screen.getByRole("button", { name: /Load Identity/i }));
+    expect(props.onLoadById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identityType: "masternode",
+      }),
+    );
+  });
+
+  it("Fill Random HPMN generates an alias with HPMN prefix", async () => {
+    const { user, props } = setup({ network: "testnet" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    await user.click(screen.getByTestId("fill-random-hpmn"));
+    await user.click(screen.getByRole("button", { name: /Load Identity/i }));
+    expect(props.onLoadById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alias: expect.stringMatching(/^HPMN-\d+$/),
+      }),
+    );
+  });
+
+  it("Fill Random Masternode generates an alias with MN prefix", async () => {
+    const { user, props } = setup({ network: "testnet" as NetworkDto });
+    await user.click(screen.getByText(/Show Advanced Options/i));
+    await user.click(screen.getByTestId("fill-random-masternode"));
+    await user.click(screen.getByRole("button", { name: /Load Identity/i }));
+    expect(props.onLoadById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alias: expect.stringMatching(/^MN-\d+$/),
+      }),
+    );
   });
 });

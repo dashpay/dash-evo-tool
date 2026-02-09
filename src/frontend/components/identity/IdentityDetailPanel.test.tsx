@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { IdentityDetailPanel } from "./IdentityDetailPanel";
@@ -629,5 +629,46 @@ describe("IdentityDetailPanel — accessibility", () => {
         name: /key 0: authentication master/i,
       }),
     ).toBeInTheDocument();
+  });
+});
+
+// ─── Encoding tooltip ────────────────────────────────────────────────
+
+describe("IdentityDetailPanel — encoding tooltip", () => {
+  it("shows 'UserId (Base58)' tooltip for user identity ID", async () => {
+    const { user } = setup({
+      identity: makeIdentity({ identityType: "user" }),
+    });
+    const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
+    await user.hover(idCode);
+    await waitFor(() => {
+      // Radix renders tooltip content twice (visible + sr-only)
+      const matches = screen.getAllByText("UserId (Base58)");
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("shows 'ProTxHash (Hex)' tooltip for masternode identity ID", async () => {
+    const { user } = setup({
+      identity: makeIdentity({ identityType: "masternode" }),
+    });
+    const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
+    await user.hover(idCode);
+    await waitFor(() => {
+      const matches = screen.getAllByText("ProTxHash (Hex)");
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("shows 'ProTxHash (Hex)' tooltip for evonode identity ID", async () => {
+    const { user } = setup({
+      identity: makeIdentity({ identityType: "evonode" }),
+    });
+    const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
+    await user.hover(idCode);
+    await waitFor(() => {
+      const matches = screen.getAllByText("ProTxHash (Hex)");
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
   });
 });

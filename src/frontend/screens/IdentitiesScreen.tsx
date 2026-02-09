@@ -43,6 +43,7 @@ import type {
   AddKeyToIdentityInput,
   TaskResultEvent,
   TaskErrorEvent,
+  NetworkDto,
 } from "@/bindings";
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
@@ -140,10 +141,14 @@ export function IdentitiesScreen() {
   const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
   const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
 
-  // Load identities and wallets on mount
+  // Current network (for testnet helper features)
+  const [network, setNetwork] = useState<NetworkDto | null>(null);
+
+  // Load identities, wallets, and network on mount
   useEffect(() => {
     loadIdentities();
     loadWallets();
+    commands.contextGetNetwork().then(setNetwork).catch(() => {});
   }, [loadIdentities, loadWallets]);
 
   // Subscribe to identity update events
@@ -981,6 +986,7 @@ export function IdentitiesScreen() {
       <LoadIdentityScreen
         wallets={hdWallets}
         status={loadIdentityStatus}
+        network={network ?? undefined}
         onLoadById={handleLoadById}
         onSearchFromWallet={handleSearchFromWallet}
         onSearchUpToIndex={handleSearchUpToIndex}

@@ -479,7 +479,7 @@
     Translate common backend error strings into user-friendly guidance.
     Reference: egui helpers.rs lines 35-100+
 
-  - [ ] **4.5j Add identity encoding tooltips and testnet helpers** (P3)
+  - [x] **4.5j Add identity encoding tooltips and testnet helpers** (P3)
     1. Show encoding type in ID tooltip (Base58/UserId for User, Hex/ProTxHash for masternodes)
     2. Add "Fill Random HPMN" / "Fill Random Masternode" buttons in LoadIdentityScreen (testnet only)
     Reference: egui identities_screen.rs lines 249-263, add_existing_identity_screen.rs lines 156-165
@@ -916,7 +916,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 70 |
-| Remaining | 36 |
+| Completed | 71 |
+| Remaining | 35 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

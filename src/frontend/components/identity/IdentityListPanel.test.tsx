@@ -768,3 +768,50 @@ describe("IdentityListPanel — accessibility", () => {
     expect(container.firstChild).toHaveClass("custom-class");
   });
 });
+
+// ─── Encoding tooltip ──────────────────────────────────────────────
+
+describe("IdentityListPanel — encoding tooltip", () => {
+  it("shows 'UserId (Base58)' in tooltip for user identity", async () => {
+    const userIdentity = makeIdentity({
+      id: "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec",
+      identityType: "user",
+    });
+    const { user } = setup({ identities: [userIdentity] });
+    const idSpan = screen.getByText(/GWRSAVFMj/);
+    await user.hover(idSpan);
+    await waitFor(() => {
+      // Radix renders tooltip content twice (visible + sr-only)
+      const matches = screen.getAllByText(/UserId \(Base58\)/);
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("shows 'ProTxHash (Hex)' in tooltip for masternode identity", async () => {
+    const mnIdentity = makeIdentity({
+      id: "aabbccdd11223344556677889900aabb",
+      identityType: "masternode",
+    });
+    const { user } = setup({ identities: [mnIdentity] });
+    const idSpan = screen.getByText(/aabbcc/);
+    await user.hover(idSpan);
+    await waitFor(() => {
+      const matches = screen.getAllByText(/ProTxHash \(Hex\)/);
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("shows 'ProTxHash (Hex)' in tooltip for evonode identity", async () => {
+    const evoIdentity = makeIdentity({
+      id: "eeff00112233445566778899aabbccdd",
+      identityType: "evonode",
+    });
+    const { user } = setup({ identities: [evoIdentity] });
+    const idSpan = screen.getByText(/eeff00/);
+    await user.hover(idSpan);
+    await waitFor(() => {
+      const matches = screen.getAllByText(/ProTxHash \(Hex\)/);
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+});

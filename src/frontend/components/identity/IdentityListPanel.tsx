@@ -408,7 +408,15 @@ function IdentityCard({
                     {identity.id}
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>{identity.id}</TooltipContent>
+                <TooltipContent>
+                  <div className="text-xs">
+                    <span className="text-muted-foreground">
+                      {identity.identityType === "user" ? "UserId (Base58)" : "ProTxHash (Hex)"}:
+                    </span>
+                    <br />
+                    {identity.id}
+                  </div>
+                </TooltipContent>
               </Tooltip>
               <CopyButton value={identity.id} size="icon-xs" />
             </div>

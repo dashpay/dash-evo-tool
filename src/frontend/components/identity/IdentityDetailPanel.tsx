@@ -226,9 +226,16 @@ export function IdentityDetailPanel({
               {identity.alias || "Unnamed Identity"}
             </h2>
             <div className="flex items-center gap-1.5 mt-1">
-              <code className="text-xs text-muted-foreground font-mono break-all select-all">
-                {identity.id}
-              </code>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <code className="text-xs text-muted-foreground font-mono break-all select-all cursor-default">
+                    {identity.id}
+                  </code>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {identity.identityType === "user" ? "UserId (Base58)" : "ProTxHash (Hex)"}
+                </TooltipContent>
+              </Tooltip>
               <CopyButton value={identity.id} size="icon-xs" />
             </div>
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">

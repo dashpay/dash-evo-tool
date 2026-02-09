@@ -9,6 +9,7 @@ import {
   ChevronUp,
   Plus,
   Trash2,
+  Shuffle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { WalletDto, IdentityTypeDto } from "@/bindings";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import type { WalletDto, IdentityTypeDto, NetworkDto } from "@/bindings";
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -40,6 +46,8 @@ export interface LoadIdentityScreenProps {
   wallets: WalletDto[];
   /** Current status. */
   status: LoadIdentityStatus;
+  /** Current network (testnet shows extra helper buttons). */
+  network?: NetworkDto;
   /** Called to load identity by ID. */
   onLoadById?: (params: {
     identityId: string;
@@ -85,6 +93,13 @@ function formatElapsedTime(startedAt: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/** Generate a random 64-character hex string for testing. */
+function generateRandomHex64(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** Validate identity ID: 64 hex chars or valid base58 (26-35 chars). */
 function isValidIdentityId(value: string): boolean {
   const trimmed = value.trim();
@@ -102,6 +117,7 @@ function isValidIdentityId(value: string): boolean {
 export function LoadIdentityScreen({
   wallets,
   status,
+  network,
   onLoadById,
   onSearchFromWallet,
   onSearchUpToIndex,
@@ -110,6 +126,7 @@ export function LoadIdentityScreen({
   onBack,
   onLoadAnother,
 }: LoadIdentityScreenProps) {
+  const isTestnet = network === "testnet" || network === "devnet" || network === "regtest";
   // ─── State ────────────────────────────────────────────────────
 
   const [mode, setMode] = useState<LoadMode>("byId");
@@ -390,6 +407,52 @@ export function LoadIdentityScreen({
                   </SelectContent>
                 </Select>
               </div>
+
+              {/* Testnet helper buttons */}
+              {isTestnet && (
+                <div className="flex items-center gap-2">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setIdentityId(generateRandomHex64());
+                          setIdentityType("evonode");
+                          setAlias(`HPMN-${Math.floor(Math.random() * 1000)}`);
+                        }}
+                        data-testid="fill-random-hpmn"
+                      >
+                        <Shuffle className="w-3.5 h-3.5 mr-1.5" />
+                        Fill Random HPMN
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Generate a random ProTxHash for testing (Evonode)
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setIdentityId(generateRandomHex64());
+                          setIdentityType("masternode");
+                          setAlias(`MN-${Math.floor(Math.random() * 1000)}`);
+                        }}
+                        data-testid="fill-random-masternode"
+                      >
+                        <Shuffle className="w-3.5 h-3.5 mr-1.5" />
+                        Fill Random Masternode
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Generate a random ProTxHash for testing (Masternode)
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              )}
 
               {/* Masternode/Evonode keys */}
               {(identityType === "masternode" ||

@@ -2063,7 +2063,7 @@
 
 ## Phase 9: Tools Screens
 
-- [ ] **9.1 [META] Design tools screens UX** (P2)
+- [x] **9.1 [META] Design tools screens UX** (P2)
   Review all developer/power-user tools and design improved UX:
   - Platform info queries
   - State transition visualizer and broadcaster
@@ -2075,36 +2075,72 @@
   Files to review: All files in `src/ui/tools/`
   Produce implementation sub-tasks.
 
-- [ ] **9.2 Implement platform info and address balance tools** (P2)
-  Build the simpler tools:
-  - **Platform info:** Buttons for each query type (basic info, epoch, credits, version voting, validators, withdrawals). Display results in expandable panels.
-  - **Address balance:** Input address, query Core/Platform balance, display results
-  Reference: `platform_info_screen.rs`, `address_balance_screen.rs`
-  Write component tests. Write Playwright tests.
+  > **Design (Run 88):**
+  >
+  > ### Tools Screen Inventory — 9 Screens, ~85 User Actions
+  >
+  > All Tauri IPC commands are already wired: platform_info (8 commands), mnlist (5 commands), grovestark (2 commands), broadcast_state_transition (1 command). Routes already scaffolded as placeholders in `routes.tsx`. Only missing backend command: `proof_log` (SQLite read for proof history).
+  >
+  > **Architecture: Tools Landing + Sub-Tool Navigation**
+  > - Tools index (`/tools`) shows a grid of tool cards (icon + name + description) for discoverability
+  > - Each tool is a sub-route (`/tools/platform-info`, `/tools/address-balance`, etc.)
+  > - Tools grouped into 3 categories:
+  >   1. **Network Info** — Platform Info, Address Balance
+  >   2. **Data Visualizers** — Contract Visualizer, Document Visualizer, Proof Visualizer, Transition Visualizer
+  >   3. **Advanced** — Proof Log, Masternode List Diff, GroveSTARK
+  >
+  > **UX Improvements over egui:**
+  > - **Platform Info:** Replace left-sidebar buttons with a card grid of query types; results render in a collapsible panel below with copy-to-clipboard; loading skeleton instead of plain spinner
+  > - **Address Balance:** Clean single-card form with inline validation, results in a summary card with Dash/credits dual display
+  > - **Visualizers (Contract/Document/Proof):** Unified layout — top: input textarea with format auto-detection badge (hex/base64/CSV), bottom: scrollable monospace JSON output with syntax highlighting via `react-json-view-lite`; Document Visualizer adds searchable comboboxes for contract/type selection
+  > - **Transition Visualizer:** Input + parsed JSON + contract detection panel; clickable contract IDs open fetch dialog; broadcast button with elapsed time counter and toast notifications for success/error
+  > - **Proof Log:** Full data table using `@tanstack/react-table` with sortable columns, pagination, row selection → detail panel on right with display mode tabs (Hex/JSON/PathQuery); gold hash highlighting preserved
+  > - **Masternode List Diff:** Tab-based layout (Core Items / QR Info / Quorum Viewer) with resizable split panels; file open/save via Tauri dialog API
+  > - **GroveSTARK:** Two-mode UI (Generate/Verify) with stepper progress for generation; research warning banner; copy-to-clipboard for proofs/results
+  >
+  > **Shared Components Needed:**
+  > - `HexInput` — multiline textarea with format auto-detection (hex/base64/CSV) and decode-to-bytes helper
+  > - `MonospaceOutput` — scrollable, selectable monospace text area with optional syntax highlighting
+  > - `ToolPageLayout` — consistent page layout for tool screens (back nav + title + content area)
+  >
+  > **Missing Backend Work:**
+  > - Need Tauri command for `proof_log` — thin wrapper around `db.get_proof_log_items()` returning paginated, sorted results
+  > - Visualizer parsing (contract/document/proof deserialization) should be done in Rust via new Tauri commands to avoid shipping DPP/bincode/GroveDB to frontend
 
-- [ ] **9.3 Implement transition, proof, contract, and document visualizers** (P2)
-  Build the data visualization tools:
-  - **Transition visualizer:** Paste hex/base64/CSV data, parse, display formatted JSON, broadcast to platform
-  - **Proof log:** View SPV proof history, filter, export
-  - **Proof visualizer:** Input proof data, parse structure, validate, display verification status
-  - **Contract visualizer:** Paste JSON, visualize schema, data types, indexes
-  - **Document visualizer:** Paste JSON/CBOR, parse, validate against contract schema
-  Reference: `transition_visualizer_screen.rs`, `proof_log_screen.rs`, `proof_visualizer_screen.rs`, `contract_visualizer_screen.rs`, `document_visualizer_screen.rs`
-  Write component tests. Write Playwright tests.
+  **Sub-tasks:**
 
-- [ ] **9.4 Implement masternode list diff and GroveSTARK screens** (P2)
-  Build the most complex tool screens:
-  - **Masternode list diff (4 tabs):**
-    - Core Items: chain-locked blocks, instant-send transactions via ZMQ
-    - MNList Diffs: query diffs between block heights, view entries
-    - Quorum Viewer: quorum snapshots, composition, member details
-    - QR Info: quorum rotation info messages
-  - **GroveSTARK:** STARK proof input, analysis, verification
-  Reference: `masternode_list_diff_screen/` (mod.rs + 3 tab files, 2,376 lines total), `grovestark_screen.rs`
-  Write component tests. Write Playwright tests.
+  - [ ] **9.1a** Build tools landing page and shared tool components (`ToolPageLayout`, `HexInput`, `MonospaceOutput`). The tools index route (`/tools`) renders a categorized card grid linking to each sub-tool. Write component tests.
+
+  - [ ] **9.1b** Implement Platform Info screen. Two-column layout: left shows 7 query-type cards (Basic Info, Epoch, Credits, Version Voting, Validators, Withdrawals In Queue, Completed Withdrawals); clicking a card dispatches the IPC command and shows results in the right panel with loading skeleton. Results formatted as key-value pairs with copy button. All 8 `platform_*` IPC commands already exist. Reference: `platform_info_screen.rs`. Write component tests.
+
+  - [ ] **9.1c** Implement Address Balance screen. Single-card form: text input for platform address (evo1.../tevo1...) with live validation, "Fetch Balance" button, results card showing address (monospace), balance (credits + Dash dual display), and nonce. Uses `platformFetchAddressBalance` IPC. Reference: `address_balance_screen.rs`. Write component tests.
+
+  - [ ] **9.1d** Implement Contract Visualizer screen. Uses `HexInput` for hex/base64/CSV input. Parsing should be done via a new Tauri command (`parse_data_contract`) that deserializes bytes to JSON on the Rust side. Output shown in `MonospaceOutput` or `JsonViewer`. Error display for invalid input. Reference: `contract_visualizer_screen.rs`. Write component tests + Tauri command.
+
+  - [ ] **9.1e** Implement Document Visualizer screen. Adds searchable contract selector (ComboBox) and document type selector on top of `HexInput`. Parsing via new Tauri command (`parse_document`) requiring contract ID + document type name + bytes. Shows parsed JSON or error. Reference: `document_visualizer_screen.rs`. Write component tests + Tauri command.
+
+  - [ ] **9.1f** Implement Proof Visualizer screen. `HexInput` for GroveDB proof data. Parsing via new Tauri command (`parse_grovedb_proof`) using bincode deserialization on Rust side. Shows proof structure as formatted text. Reference: `proof_visualizer_screen.rs`. Write component tests + Tauri command.
+
+  - [ ] **9.1g** Implement Transition Visualizer screen. `HexInput` for state transition data. Parsing via new Tauri command (`parse_state_transition`) returning JSON + detected contract IDs. Features: contract ID detection with clickable links, fetch-contract confirmation dialog, broadcast button with `broadcastStateTransition` IPC, elapsed time display, success/error toasts with 8-second fade. Reference: `transition_visualizer_screen.rs`. Write component tests + Tauri command.
+
+  - [ ] **9.1h** Add proof log Tauri IPC command. Create `commands/proof_log.rs` wrapping `db.get_proof_log_items(show_errors_only, range)`. Returns paginated, sorted `Vec<ProofLogItemDto>` with fields: request_type, height, time_ms, error, proof_bytes_hex, verification_path_query_hex. Register in `main.rs`. Write Rust tests.
+
+  - [ ] **9.1i** Implement Proof Log screen. Full-width data table using `@tanstack/react-table` with columns: Request Type, Height, Time, Error. Sortable columns (click header toggles asc/desc). Paginated (100 items/page with Previous/Next). Row selection opens detail panel on right side. Detail panel has display mode tabs (Hex / JSON / PathQuery) — JSON and PathQuery modes use new Tauri parse commands. Gold hash highlighting for 64-char hex in error messages. Reference: `proof_log_screen.rs`. Write component tests.
+
+  - [ ] **9.1j** Implement GroveSTARK screen — Generate mode. Mode toggle (Generate/Verify) at top. Generate mode: 3-step form — (1) identity selector filtered to EdDSA-capable identities + key selector, (2) contract selector (excludes system contracts) + document type selector, (3) document ID input. Green checkmarks for completed steps. Generate button dispatches `grovestarkGenerateProof`. Shows proof result with copy-to-clipboard (base64). Research warning banner at top. Reference: `grovestark_screen.rs`. Write component tests.
+
+  - [ ] **9.1k** Implement GroveSTARK screen — Verify mode. Multiline input for proof (base64 or JSON). Verify button dispatches `grovestarkVerifyProof`. Results: green "PROOF IS VALID" card with details grid (verified_at, contract, security_level) + copy button, or red "PROOF IS INVALID" card with error reason + collapsible technical details. Reference: `grovestark_screen.rs`. Write component tests.
+
+  - [ ] **9.1l** Implement Masternode List Diff screen — Core Items tab. 3-column layout: (1) ChainLocked Blocks list with validation status icons, (2) Instant Send Transactions list with validation status, (3) Detail panel showing serialized block/transaction data. Selectable rows in both lists. Data comes from ZMQ listener events. Reference: `masternode_list_diff_screen/core_items_tab.rs`. Write component tests.
+
+  - [ ] **9.1m** Implement Masternode List Diff screen — QR Info tab. File open/save via Tauri dialog API for .dat files. Left panel: selectable QRInfo fields list (snapshots, diffs at various heights). Middle panel: items for selected field. Right panel: detail view for selected item (snapshot, diff, or quorum entry). Supports consensus and bincode file formats. Reference: `masternode_list_diff_screen/qr_info_tab.rs`. Write component tests.
+
+  - [ ] **9.1n** Implement Masternode List Diff screen — main layout and Quorum Viewer tab. Tab layout with 3 tabs (Core Items / QR Info / Quorum Viewer). Input fields for base/end block height. Fetch buttons dispatch `mnlistFetchDiff`, `mnlistFetchQrInfoWithDmls`, `mnlistFetchChainLocks`, `mnlistFetchDiffsChain`. Quorum Viewer: left panel for LLMQ type selection, middle for quorum entries, right for detailed quorum info with BLS verification status. Reference: `masternode_list_diff_screen/mod.rs`, `quorum_viewer_tab.rs`. Write component tests.
+
+  - [ ] **9.1o** Write Playwright E2E tests for tools screens. Test critical flows: Platform Info query + result display, Address Balance lookup, Contract Visualizer parse, Transition Visualizer parse + broadcast, Proof Log table interaction, GroveSTARK mode switching. At minimum 1 E2E test per tool screen verifying render and basic interaction.
 
 - [ ] **9.5 [REVIEW] Tools screens functionality parity** (P2)
-  Verify all tools work correctly. The masternode list diff screen is particularly complex — verify all 4 tabs. Create fix tasks.
+  Verify all tools work correctly. The masternode list diff screen is particularly complex — verify all 3 tabs. Verify all ~85 user actions catalogued in 9.1. Create fix tasks.
 
 ---
 
@@ -2185,7 +2221,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 68 |
-| Remaining | 38 |
+| Completed | 69 |
+| Remaining | 37 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

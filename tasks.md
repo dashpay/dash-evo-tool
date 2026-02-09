@@ -833,7 +833,7 @@
   **Sub-tasks produced:**
   - [x] **3.1a** Create wallet Zustand store: `useWalletStore` with state for HD wallets, single-key wallets, selected wallet, loading/error states, and actions for CRUD operations. Wire to Tauri IPC commands (walletListAll, walletGetHd, walletGetSingleKey, walletSelect, walletSetAlias, walletRemove, etc.). Include refresh logic with mode selector. (P1)
   - [x] **3.1b** Create wallet list component: `WalletListPanel` with HD and single-key wallet sections, wallet cards with balance/pending/lock status, selection handling, and context menu (Rename/Lock/Unlock/Remove). Include empty state. (P1)
-  - [ ] **3.1c** Create HD wallet detail component: `HdWalletDetail` with header (alias + balances), action bar (Send/Receive/Refresh + mode dropdown), and three tabs — Addresses (account selector + sortable table + hide zero toggle + Add Address + View Key), Transactions (dev only, sortable table), Asset Locks (table + Create/Search buttons). (P1)
+  - [x] **3.1c** Create HD wallet detail component: `HdWalletDetail` with header (alias + balances), action bar (Send/Receive/Refresh + mode dropdown), and three tabs — Addresses (account selector + sortable table + hide zero toggle + Add Address + View Key), Transactions (dev only, sortable table), Asset Locks (table + Create/Search buttons). (P1)
   - [ ] **3.1d** Create single-key wallet detail component: `SingleKeyWalletDetail` with header (alias + address + balance), action bar (Send/Receive), and paginated UTXO list (50 per page with First/Prev/Next/Last controls). (P1)
   - [ ] **3.1e** Create Receive dialog component: `ReceiveDialog` modal with Core/Platform tabs, QR code display (qrcode.react), address selector dropdown, full address display, balance, Copy/New Address buttons, and info text. (P1)
   - [ ] **3.1f** Create private key dialog component: `PrivateKeyDialog` modal with address display, WIF key display (masked/revealed toggle), Copy Address/Copy Key buttons, and security warning. Requires wallet unlock. (P1)
@@ -1225,7 +1225,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 50 |
-| Remaining | 36 |
+| Completed | 51 |
+| Remaining | 35 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

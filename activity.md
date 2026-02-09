@@ -741,3 +741,10 @@
 **Files changed:** src/frontend/components/identity/RegisterDpnsNameScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/components/identity/RegisterDpnsNameScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 7 (wallet locked warning display, unlock button render, unlock button click handler, register button disabled when locked, no warning when unlocked, no warning with no identity, onIdentityChange callback on mount)
 **Sub-tasks created:** 0
+
+## Run 107 — 2026-02-09
+**Task:** 6.2a Create contractStore.ts Zustand store
+**What was done:** Created `contractStore.ts` Zustand store for contract management with full CRUD operations. State includes contracts list, selected contract with full detail, loading/fetching/error states. Actions: loadContracts (from local DB), getContractById, selectContract (loads detail), setAlias (optimistic update), removeContract (with selection cleanup), fetchContracts and fetchContractsWithDescriptions (async dispatch), saveContract (async dispatch), subscribeToUpdates (listens for TaskResultEvent with resultType "Contract" and TaskErrorEvent). Follows the established walletStore/identityStore pattern. Added to stores/index.ts exports.
+**Files changed:** src/frontend/stores/contractStore.ts, src/frontend/stores/contractStore.test.ts, src/frontend/stores/index.ts, tasks.md, activity.md
+**Tests added:** 31 (initial state, loadContracts success/loading/error/exception, getContractById success/null/error, selectContract/clear/detail-loading, setAlias/update-detail/clear/error, removeContract/clear-selection/preserve-selection/error, fetchContracts/fetching/error, fetchContractsWithDescriptions, saveContract/error, subscribeToUpdates/unsubscribe/contract-event/ignore-other/error-event, clearError)
+**Sub-tasks created:** 0

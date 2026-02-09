@@ -564,7 +564,7 @@
 
 
   **Sub-tasks produced:**
-  - [ ] **6.2a** Create `contractStore.ts` Zustand store: local contract list CRUD (list, get by ID, set alias, remove), loading/error states, subscribe to `task-completed` events for contract fetch results. Follow `walletStore.ts` pattern. Write 15+ tests.
+  - [x] **6.2a** Create `contractStore.ts` Zustand store: local contract list CRUD (list, get by ID, set alias, remove), loading/error states, subscribe to `task-completed` events for contract fetch results. Follow `walletStore.ts` pattern. Write 15+ tests.
   - [ ] **6.2b** Create `documentStore.ts` Zustand store: document query state (query text, results, pagination cursors, display mode JSON/YAML), field selection, search filter. Write 10+ tests.
   - [ ] **6.2c** Create `ContractTreePanel` component: collapsible tree sidebar showing all contracts → document types → indexes → token info → contract JSON. Search/filter input. Selection updates document query. Remove contract button (with confirmation dialog, excluded for system contracts). Write 20+ component tests.
   - [ ] **6.2d** Create `DocumentQueryScreen` main screen: query input bar with "Fetch Documents" button, document results area with JSON/YAML toggle, field selector dialog, document search filter, pagination (Previous/Page N/Next). Wire to `ContractTreePanel` for contract/doc-type/index selection. Action buttons in toolbar. Write 15+ component tests. Write 1 Playwright E2E test.
@@ -916,7 +916,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 73 |
-| Remaining | 33 |
+| Completed | 74 |
+| Remaining | 32 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

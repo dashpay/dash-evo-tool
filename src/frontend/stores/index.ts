@@ -13,3 +13,6 @@ export type {
   ContestSortColumn,
   SortOrder,
 } from "./contestStore";
+
+export { useContractStore } from "./contractStore";
+export type { ContractStore } from "./contractStore";

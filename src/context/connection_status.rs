@@ -326,13 +326,7 @@ impl ConnectionStatus {
         if let Ok(sdk) = app_context.sdk.read() {
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
-            let available = if address_list.get_live_address().is_some() {
-                // At least one endpoint is live; report total since we can't
-                // count individual available endpoints through the SDK API.
-                total
-            } else {
-                0
-            };
+            let available = address_list.get_live_addresses().len() as u16;
             self.set_dapi_status(total, available);
         }
 

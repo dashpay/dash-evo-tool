@@ -281,3 +281,10 @@
 **Files changed:** src/frontend/screens/NetworkChooserScreen.tsx (new), src/frontend/screens/NetworkChooserScreen.test.tsx (new), src/frontend/routes.tsx, tests/playwright/network-chooser.spec.ts (new), tests/playwright/navigation.spec.ts, tasks.md, activity.md
 **Tests added:** 41 (33 Vitest component tests: screen rendering, headings, network badge, network selector, connection type visibility based on developer mode, Connect button visibility, Advanced Settings toggle/expand, theme selector, Dash-Qt path input, configuration checkboxes, database maintenance, SPV maintenance visibility, developer tools visibility, checkbox IPC interactions, database clear dialog, local password visibility, initial data loading, SPV warning; 8 Playwright E2E tests: screen rendering, headings, network selector, Advanced Settings expand with sub-elements, database maintenance, network badge)
 **Sub-tasks created:** 0
+
+## Run 41 — 2026-02-09
+**Task:** 2.7 [REVIEW] App shell and design system quality audit
+**What was done:** Performed comprehensive quality audit of all Phase 2 implementations (22 component/screen files, 1 CSS file, 23 test files, 322 tests). Reviewed visual consistency, accessibility, responsive behavior, component API consistency, and test coverage. Found 3 issues: (1) WalletUnlockDialog password visibility toggle has `tabIndex={-1}` preventing keyboard access; (2) light mode `--muted-foreground` (#64788c) on `--muted` (#f8fafc) contrast ratio is 4.36:1, below WCAG AA 4.5:1; (3) DesignSystem.tsx EmptyState demo uses non-existent `action` prop instead of `actionLabel`+`onAction`. Everything else passed: theme variables properly dual-defined, ARIA attributes comprehensive, dialog keyboard handling via Radix, screen reader support with proper roles, component API patterns coherent, and all tests passing.
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (REVIEW task — audit only)
+**Sub-tasks created:** 3 (2.7a keyboard accessibility fix, 2.7b color contrast fix, 2.7c DesignSystem demo fix)

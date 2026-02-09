@@ -619,7 +619,7 @@
   Reference: `src/ui/network_chooser_screen.rs` (1,916 lines)
   Write component tests. Write Playwright test for network switching.
 
-- [ ] **2.7 [REVIEW] App shell and design system quality audit** (P1)
+- [x] **2.7 [REVIEW] App shell and design system quality audit** (P1)
   Review the implemented shell, design system, and shared components:
   - Visual consistency across light/dark themes
   - Accessibility: keyboard navigation, screen reader labels, focus management, color contrast
@@ -627,6 +627,40 @@
   - Component API consistency (props patterns, event handling)
   - Test coverage completeness
   Create fix tasks for any issues.
+
+  > **Audit Findings (Run 41):**
+  >
+  > ### Overall Assessment: SOLID (B+)
+  > 322 tests pass, lint clean, typecheck clean. Good foundation with proper ARIA attributes,
+  > semantic HTML, focus management in dialogs, and comprehensive theme variable system.
+  >
+  > ### Issues Found:
+  >
+  > **Accessibility (2 issues):**
+  > 1. WalletUnlockDialog.tsx:133 — password visibility toggle has `tabIndex={-1}`, removing it
+  >    from keyboard tab order. Users cannot reach show/hide password via keyboard.
+  > 2. Light mode color contrast: `--muted-foreground` (#64788c) on `--muted` (#f8fafc) background
+  >    = 4.36:1, below WCAG AA 4.5:1 minimum. On white bg = 4.56:1 (barely passes).
+  >    Darkening to ~#5a6d80 would achieve ~5.1:1 on muted bg.
+  >
+  > **Bug (1 issue):**
+  > 3. DesignSystem.tsx:326 — EmptyState uses non-existent `action` prop instead of correct
+  >    `actionLabel` + `onAction` props. Button silently doesn't render. TypeScript doesn't
+  >    catch it because JSX allows extra props.
+  >
+  > **No Issues (areas that passed):**
+  > - Dark/light theme visual consistency: All CSS variables properly dual-defined
+  > - Dialog keyboard handling: Escape via Radix, Enter key in WalletUnlockDialog
+  > - Screen reader support: role="status", role="alert", role="navigation", role="main", aria-current, aria-expanded, aria-invalid, aria-describedby all properly used
+  > - Component API consistency: Dialogs use onOpenChange+onResult, inputs use onChange, actions use onClick — patterns are coherent
+  > - NetworkChooserScreen password toggle: Has proper aria-label (lines 531-533)
+  > - Auto-focus in WalletUnlockDialog: Working via useEffect + setTimeout
+  > - Test coverage: 322 tests across 23 test files — every component has tests
+
+  **Fix sub-tasks:**
+  - [ ] **2.7a** Fix WalletUnlockDialog keyboard accessibility: remove `tabIndex={-1}` from password visibility toggle button (P1)
+  - [ ] **2.7b** Fix light mode muted-foreground contrast: darken `--muted-foreground` from #64788c to #5a6d80 for WCAG AA compliance on muted backgrounds (P2)
+  - [ ] **2.7c** Fix DesignSystem.tsx EmptyState demo: change `action={{ label: "Create Wallet", onClick: () => {} }}` to `actionLabel="Create Wallet" onAction={() => {}}` (P3)
 
 ---
 
@@ -1030,7 +1064,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 43 |
-| Remaining | 34 |
+| Completed | 44 |
+| Remaining | 36 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

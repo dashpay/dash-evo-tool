@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AppLayout } from "./AppLayout";
 import { WelcomeScreen } from "@/screens/WelcomeScreen";
+import { NetworkChooserScreen } from "@/screens/NetworkChooserScreen";
 import { commands } from "@/bindings";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -244,7 +245,7 @@ const toolsAddressBalanceRoute = createRoute({
 const settingsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/settings",
-  component: () => <PlaceholderScreen title="Settings" />,
+  component: NetworkChooserScreen,
 });
 
 // Build the route tree

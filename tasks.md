@@ -607,7 +607,7 @@
   Reference: `src/ui/welcome_screen.rs` or the welcome logic in `src/app.rs`
   Write component test. Write Playwright test for onboarding flow.
 
-- [ ] **2.6 Implement network chooser/settings screen** (P1)
+- [x] **2.6 Implement network chooser/settings screen** (P1)
   Port the network configuration screen:
   - Network selection (Mainnet, Testnet, Devnet, Local) with visual cards
   - Connection status per network
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 42 |
-| Remaining | 35 |
+| Completed | 43 |
+| Remaining | 34 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

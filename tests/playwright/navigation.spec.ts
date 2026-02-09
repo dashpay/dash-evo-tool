@@ -98,7 +98,7 @@ test.describe("App Shell Navigation", () => {
       { nav: "tokens", title: "My Tokens" },
       { nav: "wallets", title: "Wallets" },
       { nav: "tools", title: "Platform Info" },
-      { nav: "settings", title: "Settings" },
+      { nav: "settings", title: "Connection Settings" },
     ];
 
     for (const section of sections) {

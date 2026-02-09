@@ -231,7 +231,11 @@ impl AppContext {
             // Fee NOT deducted from output: destination receives the exact requested
             // amount. We use a fresh wallet-controlled change address to absorb the
             // fee estimate surplus, keeping it spendable.
-            let amount_credits = amount.saturating_mul(CREDITS_PER_DUFF);
+            let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
+                format!(
+                    "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
+                )
+            })?;
 
             if let Some(change_address) = change_platform_address {
                 outputs.insert(destination, Some(amount_credits));
